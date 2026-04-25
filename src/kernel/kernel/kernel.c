@@ -21,6 +21,7 @@
 #include <kernel/task.h>
 #include <kernel/syscall.h>
 #include <kernel/acpi.h>
+#include <kernel/ktest.h>
 
 /*
  * Column at which "[ OK ]" starts, counting from 0.
@@ -159,6 +160,27 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	kprint_ok();
 	acpi_init();
 
+#ifdef TEST_MODE
+	/*
+	 * Automated test mode: run the full in-kernel test suite, emit a
+	 * machine-readable result to serial, then signal QEMU to exit cleanly
+	 * via the isa-debug-exit device (port 0xF4).
+	 *
+	 * isa-debug-exit maps written value v to QEMU exit code (v << 1) | 1:
+	 *   v=0 → exit 1  (pass convention used by docker-ktest.sh)
+	 *   v=1 → exit 3  (fail)
+	 *
+	 * If the device is absent (interactive QEMU) the kernel halts cleanly.
+	 */
+	{
+		int fails = ktest_run_all();
+		uint8_t exit_val = (fails > 0) ? 1 : 0;
+		Serial_WriteString(exit_val ? "KTEST_RESULT: FAIL\n"
+		                            : "KTEST_RESULT: PASS\n");
+		asm volatile("outb %b0, %w1" :: "a"(exit_val), "Nd"((uint16_t)0xF4));
+	}
+	for (;;) asm volatile("cli; hlt");
+#else
 	/*
 	 * Transfer control to the scheduler.  The shell task starts running and
 	 * the idle task (this context) resumes here whenever no other task is
@@ -169,4 +191,5 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 		task_yield();
 		asm volatile("hlt");
 	}
+#endif
 }

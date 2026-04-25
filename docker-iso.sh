@@ -11,12 +11,15 @@ if ! command -v "$DOCKER_BIN" >/dev/null 2>&1; then
 fi
 
 echo "==> Building makar.iso in Docker image: $DOCKER_IMAGE"
-# Forward CFLAGS from the caller's environment (e.g. CFLAGS='-O0 -g3') by
-# embedding it in the bash command string.  This avoids the word-splitting
-# problem that occurs when CFLAGS contains spaces and is passed via -e.
+# Forward CFLAGS/CPPFLAGS from the caller's environment (e.g. CFLAGS='-O0 -g3'
+# CPPFLAGS='-DTEST_MODE') by embedding them in the bash command string.
 _build_cmd="bash iso.sh"
-if [ -n "$CFLAGS" ]; then
+if [ -n "$CFLAGS" ] && [ -n "$CPPFLAGS" ]; then
+    _build_cmd="CFLAGS='$CFLAGS' CPPFLAGS='$CPPFLAGS' bash iso.sh"
+elif [ -n "$CFLAGS" ]; then
     _build_cmd="CFLAGS='$CFLAGS' bash iso.sh"
+elif [ -n "$CPPFLAGS" ]; then
+    _build_cmd="CPPFLAGS='$CPPFLAGS' bash iso.sh"
 fi
 "$DOCKER_BIN" run --rm \
     -u "$(id -u):$(id -g)" \

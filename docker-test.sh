@@ -1,92 +1,58 @@
 #!/bin/bash
-# docker-test.sh – build a debug ISO via Docker then run the full test suite
-# on host QEMU and host GDB.
+# docker-test.sh – run the full test suite entirely inside Docker.
+#
+# Steps:
+#   1. ktest suite  – TEST_MODE ISO, QEMU exits automatically via isa-debug-exit
+#   2. GDB tests    – normal debug ISO, GDB automation over the QEMU stub
 #
 # Usage: ./docker-test.sh
 #
-# Requirements (host):
-#   • docker
-#   • qemu-system-i386  (or the appropriate qemu-system-<arch>)
-#   • GDB with Python support: i686-elf-gdb, gdb-multiarch, or gdb
-#
-# The build step runs inside arawn780/gcc-cross-i686-elf:fast, so no local
-# cross-compiler is needed.  Running and testing still happens on the host
-# because QEMU requires direct hardware / display access that is unavailable
-# inside a container.
+# Requirements (host): docker
 
 set -e
 
-. ./src/config.sh
-QEMU_BIN="qemu-system-$(./src/target-triplet-to-arch.sh "$HOST")"
+REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+DOCKER_IMAGE=${DOCKER_IMAGE:-arawn780/gcc-cross-i686-elf:fast}
+DOCKER_BIN=${DOCKER_BIN:-docker}
 
-# ── Pre-flight checks ────────────────────────────────────────────────────────
-if ! command -v "$QEMU_BIN" >/dev/null 2>&1; then
-    echo "ERROR: host QEMU not found (expected '$QEMU_BIN')." >&2
-    exit 1
-fi
+# ── 1. In-kernel test suite (TEST_MODE) ──────────────────────────────────────
+echo "==> Step 1: ktest suite (TEST_MODE, QEMU exits when done)..."
+CFLAGS='-O0 -g3' "$REPO_ROOT/docker-ktest.sh"
 
-if   command -v i686-elf-gdb   >/dev/null 2>&1; then GDB=i686-elf-gdb
-elif command -v gdb-multiarch   >/dev/null 2>&1; then GDB=gdb-multiarch
-elif command -v gdb             >/dev/null 2>&1; then GDB=gdb
-else
-    echo "ERROR: no suitable GDB found (tried i686-elf-gdb, gdb-multiarch, gdb)." >&2
-    exit 1
-fi
-
-echo "==> Using GDB: $GDB"
-
-if ! "$GDB" --batch -ex "python print('python-ok')" /dev/null 2>/dev/null \
-        | grep -q 'python-ok'; then
-    echo "ERROR: $GDB does not have Python scripting support." >&2
-    echo "       Rebuild GDB with --with-python, or install gdb-multiarch." >&2
-    exit 1
-fi
-
-# ── Docker build (debug flags for accurate GDB symbols) ──────────────────────
+# ── 2. GDB boot test suite (normal build) ────────────────────────────────────
+echo "==> Step 2: building debug ISO for GDB tests..."
 export CFLAGS='-O0 -g3'
-echo "==> Building debug ISO in Docker (CFLAGS='$CFLAGS')..."
 ./docker-iso.sh
 
-# ── Serial smoke test ────────────────────────────────────────────────────────
-echo "==> Running serial smoke test..."
-timeout 20 "$QEMU_BIN" \
-    -cdrom makar.iso \
-    -serial stdio \
-    -display none \
-    -no-reboot \
-    -no-shutdown \
-    -d int,cpu_reset \
-    -D qemu-debug.log \
-    2>&1 | tee serial.log || true
+echo "==> Step 2: running GDB boot test suite..."
+"$DOCKER_BIN" run --rm \
+    -v "$REPO_ROOT:/work" \
+    -w /work \
+    "$DOCKER_IMAGE" \
+    bash -c '
+        qemu-system-i386 \
+            -cdrom makar.iso \
+            -serial file:/work/gdb-serial.log \
+            -display none \
+            -no-reboot \
+            -no-shutdown \
+            -s -S &
+        QEMU_PID=$!
 
-grep -q "serial: COM1 ready" serial.log
-grep -q "keyboard: PS/2 IRQ1 handler registered" serial.log
-echo "==> Serial smoke test passed."
+        sleep 2
 
-# ── GDB boot test suite ──────────────────────────────────────────────────────
-echo "==> Starting QEMU (GDB stub on :1234)..."
-"$QEMU_BIN" \
-    -cdrom makar.iso \
-    -serial stdio \
-    -display none \
-    -no-reboot \
-    -no-shutdown \
-    -s -S &
-QEMU_PID=$!
+        timeout 60 gdb-multiarch -batch \
+            -ex "source tests/gdb_boot_test.py" \
+            src/kernel/makar.kernel \
+            2>&1 | tee /work/gdb-test.log
+        GDB_EXIT=${PIPESTATUS[0]}
 
-# Give QEMU a moment to open the GDB stub socket.
-sleep 2
+        kill "$QEMU_PID" 2>/dev/null || true
+        wait "$QEMU_PID" 2>/dev/null || true
 
-echo "==> Running GDB test suite..."
-timeout 60 "$GDB" -batch \
-    -ex "source tests/gdb_boot_test.py" \
-    src/kernel/makar.kernel \
-    2>&1 | tee gdb-test.log
-GDB_EXIT=${PIPESTATUS[0]}
-
-echo "==> Stopping QEMU..."
-kill "$QEMU_PID" 2>/dev/null || true
-wait "$QEMU_PID" 2>/dev/null || true
+        exit "$GDB_EXIT"
+    '
+GDB_EXIT=$?
 
 if [ "$GDB_EXIT" -eq 0 ]; then
     echo "==> All GDB tests PASSED."

@@ -41,6 +41,8 @@
 /* Static, page-aligned structures.  All live inside the kernel image which
    is itself within the 0–256 MiB identity-mapped window.                    */
 static uint32_t page_directory[1024]                              __attribute__((aligned(4096)));
+
+uint32_t *paging_kernel_pd(void) { return page_directory; }
 static uint32_t extra_page_tables[EXTRA_PAGE_TABLES][1024]       __attribute__((aligned(4096)));
 static uint32_t next_extra_pt = 0;
 
@@ -76,9 +78,6 @@ void paging_init(void)
         uint32_t phys = i * LARGE_PAGE_SIZE;
         page_directory[i] = phys | PAGE_PRESENT | PAGE_WRITABLE | PAGE_LARGE;
     }
-
-    /* Register the page-fault handler (ISR 14). */
-    register_interrupt_handler(14, page_fault_handler);
 
     /* Load CR3 with the physical address of the page directory. */
     asm volatile("mov %0, %%cr3" :: "r"(page_directory) : "memory");

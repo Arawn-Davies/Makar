@@ -78,4 +78,7 @@ void cmd_vics(int argc, char **argv);
 /* Eject */
 void cmd_eject(int argc, char **argv);
 
+/* Ring-3 smoke test */
+void cmd_ring3test(void);
+
 #endif /* SHELL_PRIV_H */

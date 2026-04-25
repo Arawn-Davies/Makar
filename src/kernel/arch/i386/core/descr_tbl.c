@@ -248,3 +248,8 @@ void tss_set_kernel_stack(uint32_t esp0)
 {
 	tss.esp0 = esp0;
 }
+
+uint32_t tss_get_esp0(void)
+{
+	return tss.esp0;
+}

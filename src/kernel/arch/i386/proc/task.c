@@ -12,6 +12,9 @@
 
 #include <kernel/task.h>
 #include <kernel/heap.h>
+#include <kernel/vmm.h>
+#include <kernel/paging.h>
+#include <kernel/descr_tbl.h>
 #include <kernel/system.h>
 #include <kernel/tty.h>
 #include <kernel/asm.h>
@@ -72,11 +75,12 @@ static void init_task_stack(task_t *t, void (*entry)(void))
 void tasking_init(void)
 {
     /* task_pool[0] represents the current execution context (idle/kernel). */
-    task_pool[0].esp   = 0;         /* filled in by task_switch on first yield */
-    task_pool[0].stack = NULL;      /* uses the original boot stack             */
-    task_pool[0].state = TASK_RUNNING;
-    task_pool[0].name  = "idle";
-    task_pool[0].next  = &task_pool[0]; /* circular list of one for now        */
+    task_pool[0].esp      = 0;                  /* filled in by task_switch on first yield */
+    task_pool[0].stack    = NULL;               /* uses the original boot stack             */
+    task_pool[0].page_dir = paging_kernel_pd(); /* shares the kernel address space          */
+    task_pool[0].state    = TASK_RUNNING;
+    task_pool[0].name     = "idle";
+    task_pool[0].next     = &task_pool[0];      /* circular list of one for now             */
 
     task_pool_count = 1;
     current_task    = &task_pool[0];
@@ -93,9 +97,10 @@ task_t *task_create(const char *name, void (*entry)(void))
         return NULL;
 
     task_t *t = &task_pool[task_pool_count++];
-    t->stack  = stack;
-    t->state  = TASK_READY;
-    t->name   = name;
+    t->stack    = stack;
+    t->page_dir = paging_kernel_pd();  /* kernel task by default */
+    t->state    = TASK_READY;
+    t->name     = name;
 
     init_task_stack(t, entry);
 
@@ -153,6 +158,16 @@ static void schedule(void)
 
     current_task        = next;
     current_task->state = TASK_RUNNING;
+
+    /* Update the TSS so Ring-3 → Ring-0 transitions land on this task's
+       kernel stack.  Skip the idle task which uses the original boot stack. */
+    if (current_task->stack)
+        tss_set_kernel_stack((uint32_t)(current_task->stack + TASK_STACK_SIZE));
+
+    /* Switch address space only when it actually changes, to avoid an
+       unnecessary TLB flush between kernel tasks sharing the kernel PD. */
+    if (current_task->page_dir != prev->page_dir)
+        vmm_switch(current_task->page_dir);
 
     task_switch(&prev->esp, current_task->esp);
 }

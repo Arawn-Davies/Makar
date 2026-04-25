@@ -1,0 +1,35 @@
+Serial init done!
+serial: COM1 ready
+init_descriptor_tables: GDT OK
+init_descriptor_tables: IDT OK
+init_descriptor_tables: ISR handlers OK
+gdt/idt: descriptor tables loaded
+register_interrupt_handler: INT 1 registered
+register_interrupt_handler: INT 3 registered
+register_interrupt_handler: INT 8 registered
+register_interrupt_handler: INT 13 registered
+register_interrupt_handler: INT 14 registered
+debug: exception handlers registered
+pmm_init: 32523 frames free (127 MiB)
+paging_init: 256 MiB identity map via PSE large pages
+paging: init complete
+paging_map_region: 0x00800000 len=0x01000000
+heap_init: 16 MiB @ 0x00800000
+vesa_init: framebuffer 1024x768x32 @ 0xFD000000
+paging_map_region: 0xFD000000 len=0x00300000
+vesa_tty: init OK (64x48 chars, scale=2)
+register_interrupt_handler: IRQ 0 registered
+init_timer: 50 Hz, interrupts enabled
+timer: 50 Hz PIT started
+register_interrupt_handler: IRQ 1 registered
+keyboard: PS/2 IRQ1 handler registered
+ide: ATA PIO scan complete
+register_interrupt_handler: IRQ 96 registered
+acpi: RSDP found
+paging_map_region: 0x07FE1AD8 len=0x00000024
+paging_map_region: 0x07FE1AD8 len=0x00000034
+paging_map_region: 0x07FE198C len=0x00000024
+paging_map_region: 0x07FE198C len=0x00000074
+paging_map_region: 0x07FE0040 len=0x00000024
+paging_map_region: 0x07FE0040 len=0x0000194C
+acpi: init OK

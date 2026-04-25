@@ -142,5 +142,6 @@ void init_descriptor_tables();
  *         ESP should have after the CPU has pushed SS/ESP/EFLAGS/CS/EIP).
  */
 void tss_set_kernel_stack(uint32_t esp0);
+uint32_t tss_get_esp0(void);
 
 #endif // DESCRIPTOR_TABLES_H

@@ -17,11 +17,12 @@ typedef enum {
 } task_state_t;
 
 typedef struct task {
-    uint32_t      esp;    /* saved stack pointer (only valid when not running) */
-    uint8_t      *stack;  /* base of allocated stack (lowest address)          */
+    uint32_t      esp;       /* saved stack pointer (only valid when not running) */
+    uint8_t      *stack;     /* base of allocated stack (lowest address)          */
+    uint32_t     *page_dir;  /* page directory (phys == virt, identity-mapped)    */
     task_state_t  state;
     const char   *name;
-    struct task  *next;   /* intrusive circular linked list                    */
+    struct task  *next;      /* intrusive circular linked list                    */
 } task_t;
 
 /*

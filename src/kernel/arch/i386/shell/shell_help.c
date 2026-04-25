@@ -36,6 +36,8 @@ void cmd_help(void)
     t_writestring("  isols <drv> [path]           - list directory on an ISO9660 CD-ROM\n");
     t_writestring("Installer:\n");
     t_writestring("  install                      - install Makar OS to a hard drive\n");
+    t_writestring("Development:\n");
+    t_writestring("  ring3test                    - spawn a ring-3 smoke test process\n");
 }
 
 void cmd_version(void)

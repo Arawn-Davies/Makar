@@ -14,14 +14,16 @@ further divided into logical groups:
 
 | Subdirectory | Contents |
 |---|---|
-| `arch/i386/init/` | Early boot (`boot.S`, C-runtime stubs `crti.S` / `crtn.S`) |
+| `arch/i386/boot/` | Early boot (`boot.S`), C-runtime stubs (`crti.S` / `crtn.S`) |
 | `arch/i386/core/` | CPU descriptor tables (GDT/IDT), ISR / IRQ dispatch |
-| `arch/i386/mm/` | Physical memory manager, paging, kernel heap |
-| `arch/i386/hardware/` | Device drivers: serial, timer, keyboard, IDE |
-| `arch/i386/display/` | VGA text terminal, VESA linear framebuffer |
-| `arch/i386/system/` | Syscall layer, task/scheduler skeleton, kernel shell |
-| `arch/i386/debug/` | Debug helpers, GDB-friendly trap handlers |
-| `kernel/` | Portable kernel entry point (`kernel.c`) |
+| `arch/i386/mm/` | Physical memory manager, paging, VMM, kernel heap |
+| `arch/i386/drivers/` | Hardware drivers: serial, timer, keyboard, IDE, ACPI, partition |
+| `arch/i386/fs/` | Filesystem layer: FAT32, ISO9660, VFS |
+| `arch/i386/display/` | VGA text terminal, VESA linear framebuffer + TTY |
+| `arch/i386/proc/` | Scheduler, syscall layer, ring-3 entry, usertest, ktest runner |
+| `arch/i386/shell/` | Interactive kernel shell and built-in commands |
+| `arch/i386/debug/` | Exception handlers (page fault, GPF, double fault, breakpoints) |
+| `kernel/` | Architecture-independent entry point (`kernel.c` / `kernel_main`) |
 | `include/kernel/` | Public kernel headers |
 
 ---
@@ -55,7 +57,7 @@ sub-structure.
 | Path | Purpose |
 |---|---|
 | `docs/` | Subsystem documentation (one `.md` per module) |
-| `tests/` | Automated test scripts and GDB boot tests |
+| `tests/` | Automated GDB boot-test suite (`gdb_boot_test.py` + groups) |
 | `LICENSES/` | Third-party licence texts |
 
 ---
@@ -69,7 +71,8 @@ sub-structure.
 | `qemu.sh` | Build and run in QEMU (CD-ROM + HDD) |
 | `qemu-hdd.sh` | Boot directly from `hdd.img` (no CD-ROM) |
 | `docker-iso.sh` | Build `makar.iso` in the CI Docker image |
-| `docker-test.sh` | Build in Docker, run serial smoke test + GDB boot test suite on host QEMU |
+| `docker-ktest.sh` | Build TEST_MODE ISO, run ktest suite, QEMU exits when done |
+| `docker-test.sh` | Build in Docker, run ktest suite + GDB boot test suite |
 | `docker-qemu.sh` | Build in Docker, run interactively in host QEMU |
 | `gdb.sh` | Build and launch with GDB stub on `:1234` |
 | `test-gdb.sh` | Local (non-Docker) GDB boot test suite |
