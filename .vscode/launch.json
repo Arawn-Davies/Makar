@@ -1,0 +1,34 @@
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"name": "Run Makar (QEMU)",
+			"type": "node-terminal",
+			"request": "launch",
+			"command": "./qemu.sh",
+			"cwd": "${workspaceFolder}"
+		},
+		{
+			"name": "Debug Makar Kernel",
+			"type": "cppdbg",
+			"request": "launch",
+			"program": "${workspaceFolder}/src/kernel/makar.kernel",
+			"cwd": "${workspaceFolder}",
+			"MIMode": "gdb",
+			"miDebuggerPath": "/home/arawn/.i686-elf//bin/i686-elf-gdb",
+			"miDebuggerServerAddress": "localhost:1234",
+			"stopAtEntry": false,
+			"launchCompleteCommand": "None",
+			"externalConsole": false,
+			"preLaunchTask": "qemu-debug",
+			"postDebugTask": "qemu-debug-stop",
+			"setupCommands": [
+				{
+					"description": "Enable GDB pretty printing",
+					"text": "-enable-pretty-printing",
+					"ignoreFailures": true
+				}
+			]
+		}
+	]
+}

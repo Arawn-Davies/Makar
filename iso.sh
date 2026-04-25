@@ -43,28 +43,34 @@ else
     # The prefix (/boot/grub) tells GRUB where to look for modules once it
     # has been loaded from the HDD's FAT32 partition.
     #
-    # The embedded early config (-c) runs a 'search' before normal starts so
-    # that GRUB probes all partitions and sets root to whichever one contains
-    # /boot/grub/grub.cfg.  Without this, GRUB defaults to the raw disk
-    # device (hd0) instead of the FAT32 partition (hd0,msdos1) and never
-    # finds grub.cfg, dropping straight to the command prompt.
+    # Embedded early config strategy (most-to-least specific):
+    #   1. Pre-set root to the expected fixed location (hd0,msdos1) so that
+    #      if the file-based search below finds nothing, normal still has a
+    #      valid root and can load grub.cfg without dropping to a shell.
+    #   2. search --file overrides root only if grub.cfg is found somewhere
+    #      else (e.g. the disk is hd1 rather than hd0 in a multi-disk setup).
+    #   3. Call normal to load grub.cfg from ($root)/boot/grub/grub.cfg.
     _embed_cfg=$(mktemp)
     trap 'rm -f "$_embed_cfg"' EXIT
-    printf 'search --no-floppy --file --set=root /boot/grub/grub.cfg\n' \
+    printf 'set root=(hd0,msdos1)\nsearch --no-floppy --file --set=root /boot/grub/grub.cfg\nnormal\n' \
         > "$_embed_cfg"
     grub-mkimage \
         -O i386-pc \
         -o isodir/boot/grub/i386-pc/core.img \
         -p /boot/grub \
         -c "$_embed_cfg" \
-        biosdisk part_msdos fat search search_fs_file normal multiboot2 linux \
+        biosdisk part_msdos fat search search_fs_file search_fs_uuid \
+        search_label normal multiboot2 linux echo configfile minicmd \
+        boot test sleep \
         || echo "Warning: grub-mkimage failed; core.img will be missing." >&2
     rm -f "$_embed_cfg"
     trap - EXIT
 
     # GRUB modules copied to the ISO so the installer can transfer them to
     # the FAT32 partition.  Missing modules are non-fatal (skipped silently).
-    for _mod in normal part_msdos fat multiboot2 linux; do
+    for _mod in normal part_msdos fat multiboot2 linux \
+                search search_fs_file search_fs_uuid search_label \
+                echo configfile minicmd boot test sleep; do
         if [ -f "$GRUB_DIR/${_mod}.mod" ]; then
             cp "$GRUB_DIR/${_mod}.mod" "isodir/boot/grub/i386-pc/${_mod}.mod"
         fi

@@ -399,10 +399,25 @@ void installer_run(void)
     t_writestring("Copying GRUB modules...\n");
 
     static const char * const modules[] = {
+        /* Core boot modules — required for reliable startup. */
         "normal.mod",
         "part_msdos.mod",
         "fat.mod",
         "multiboot2.mod",
+        "biosdisk.mod",
+        "boot.mod",
+        /* Search modules — needed to locate partitions by file/uuid/label. */
+        "search.mod",
+        "search_fs_file.mod",
+        "search_fs_uuid.mod",
+        "search_label.mod",
+        /* Scripting / utility modules used in grub.cfg or debug. */
+        "echo.mod",
+        "configfile.mod",
+        "minicmd.mod",
+        "test.mod",
+        "sleep.mod",
+        /* Linux compatibility (kept for future use). */
         "linux.mod",
         NULL
     };
@@ -433,18 +448,26 @@ void installer_run(void)
     t_writestring("Writing grub.cfg...\n");
 
     /*
-     * HDD grub.cfg differs from the CD grub.cfg in two key ways:
-     *   1. set timeout=0  — boot immediately with no user interaction required.
-     *   2. Explicit 'boot' command inside the menuentry so the kernel loads
-     *      correctly even when GRUB is invoked manually from its command line.
-     * The CD grub.cfg uses the same multiboot2 path because the ISO9660 and
-     * the FAT32 partition share the same /boot/makar.kernel layout.
+     * HDD grub.cfg is written with an explicit root device so that GRUB
+     * does not need to search for the partition at boot time.  This makes
+     * the boot sequence fully deterministic:
+     *
+     *   set root=(hd0,msdos1)   — FAT32 partition 1 of the first HDD
+     *   set timeout=5           — 5-second countdown, then auto-boot
+     *   multiboot2 …            — load the kernel from the fixed path
+     *   boot                    — start it
+     *
+     * The root is also repeated inside the menuentry so that it is correct
+     * even if someone edits the top-level set or loads this file via
+     * 'configfile' from an alternate GRUB environment.
      */
     static const char grub_cfg[] =
         "set default=0\n"
-        "set timeout=0\n"
+        "set timeout=5\n"
+        "set root=(hd0,msdos1)\n"
         "\n"
         "menuentry \"Makar OS\" {\n"
+        "\tset root=(hd0,msdos1)\n"
         "\tmultiboot2 /boot/makar.kernel\n"
         "\tboot\n"
         "}\n";

@@ -304,21 +304,23 @@ void vfs_auto_mount(void)
      */
     int hd_mounted = 0;
 
-    /* If biosdev identifies a specific HDD, try it first. */
+    /* If biosdev identifies a specific HDD, try it first for speed. */
     if (s_boot_biosdev >= 0x80u && s_boot_biosdev <= 0xDFu) {
         uint8_t hint_drive = (uint8_t)(s_boot_biosdev - 0x80u);
-        hd_mounted = try_mount_hdd(hint_drive);
+        if (hint_drive < IDE_MAX_DRIVES)
+            hd_mounted = try_mount_hdd(hint_drive);
     }
 
-    /* Scan remaining drives in order (skip the hint drive if already tried). */
-    for (int i = 0; i < IDE_MAX_DRIVES && !hd_mounted; i++) {
-        /* Skip the hint drive — already tried above. */
-        if (s_boot_biosdev >= 0x80u && s_boot_biosdev <= 0xDFu &&
-            (uint8_t)i == (uint8_t)(s_boot_biosdev - 0x80u))
-            continue;
-
+    /*
+     * Scan ALL drives in order 0..IDE_MAX_DRIVES-1.  The !hd_mounted
+     * condition exits early once a FAT32 volume has been mounted.
+     *
+     * Note: if the hint drive was tried above and failed, we intentionally
+     * retry it here — a transient IDE error on the first probe should not
+     * permanently exclude the boot drive from auto-mount.
+     */
+    for (int i = 0; i < IDE_MAX_DRIVES && !hd_mounted; i++)
         hd_mounted = try_mount_hdd((uint8_t)i);
-    }
 
     /* Report CD-ROM status (always registered by vfs_init if present). */
     if (s_cdrom_drive >= 0) {

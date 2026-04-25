@@ -1,0 +1,47 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "qemu-debug",
+			"type": "shell",
+			"command": "set -e; cd \"${workspaceFolder}\"; . ./src/config.sh; export CFLAGS='-O0 -g3'; . ./iso.sh; rm -f .vscode/qemu-gdb.pid; qemu-system-$(./src/target-triplet-to-arch.sh \"$HOST\") -cdrom makar.iso -serial stdio -s -S & qemu_pid=$!; echo \"$qemu_pid\" > .vscode/qemu-gdb.pid; echo 'QEMU GDB stub ready on :1234'; wait \"$qemu_pid\"",
+			"isBackground": true,
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"presentation": {
+				"echo": true,
+				"reveal": "always",
+				"focus": false,
+				"panel": "dedicated",
+				"clear": true
+			},
+			"problemMatcher": {
+				"owner": "custom",
+				"pattern": {
+					"regexp": ".+"
+				},
+				"background": {
+					"activeOnStart": true,
+					"beginsPattern": ".+",
+					"endsPattern": "^QEMU GDB stub ready on :1234$"
+				}
+			}
+		},
+		{
+			"label": "qemu-debug-stop",
+			"type": "shell",
+			"command": "set -e; cd \"${workspaceFolder}\"; if [ -f .vscode/qemu-gdb.pid ]; then pid=$(cat .vscode/qemu-gdb.pid); if kill -0 \"$pid\" 2>/dev/null; then kill \"$pid\"; fi; rm -f .vscode/qemu-gdb.pid; fi",
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"presentation": {
+				"echo": true,
+				"reveal": "never",
+				"focus": false,
+				"panel": "dedicated"
+			},
+			"problemMatcher": []
+		}
+	]
+}
