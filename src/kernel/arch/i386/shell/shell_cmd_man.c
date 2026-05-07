@@ -72,7 +72,7 @@ static const man_entry_t man_table[] = {
     },
     { "uptime",
       "print ticks since boot",
-      "Usage: uptime\n\nPrints the PIT tick counter (50 Hz) since boot.\n"
+      "Usage: uptime\n\nPrints the time since boot in h:m:s.cc form, plus the raw PIT tick counter (100 Hz).\n"
     },
     { "tasks",
       "list kernel tasks",

@@ -857,11 +857,11 @@ static void res_countdown(const char *name)
     t_writestring("[ktest] vesa_resolution: switching to ");
     t_writestring(name);
     t_writestring(" in: 3");
-    ksleep(50);
+    ksleep(100);
     t_writestring("  2");
-    ksleep(50);
+    ksleep(100);
     t_writestring("  1");
-    ksleep(50);
+    ksleep(100);
     t_writestring("\n");
 }
 
@@ -900,7 +900,7 @@ static void test_vesa_resolution(void)
         t_writestring("[ktest] vesa_resolution: now at ");
         t_writestring(name);
         t_writestring("x32\n");
-        ksleep(50);
+        ksleep(100);
 
         const vesa_fb_t *fb = vesa_get_fb();
         KTEST_ASSERT(fb != NULL);
@@ -984,7 +984,7 @@ static void test_vesa_colour(void)
 
         KTEST_ASSERT(vesa_tty_is_ready());
 
-        ksleep(8); /* ~160 ms at 50 Hz — long enough to see the change */
+        ksleep(16); /* ~160 ms at 100 Hz — long enough to see the change */
     }
 
     /* Restore default white-on-blue. */
@@ -1086,9 +1086,9 @@ void ktest_bg_task(void)
         suite(); \
         total_pass += ktest_pass_count; \
         total_fail += ktest_fail_count; \
-        /* Pace tests so the loading screen stays visible (~300 ms). */ \
+        /* Pace tests so the loading screen stays visible (~300 ms at 100 Hz). */ \
         { uint32_t t0 = timer_get_ticks(); \
-          while (timer_get_ticks() - t0 < 15) task_yield(); } \
+          while (timer_get_ticks() - t0 < 30) task_yield(); } \
     } while (0)
 
     RUN(test_acpi_checksum);

@@ -120,7 +120,15 @@ The `setmode` shell command can switch freely between any supported resolution a
 - `0xBFFF0000` (`USER_STACK_TOP`): ring-3 stack top (one 4 KiB page below)
 
 ### Tasking
-Cooperative round-robin scheduler — no preemption, timer tick only advances accounting. `task_yield()` → context switch via `task_asm.S`. `task_exit()` marks the task DEAD and yields. Pool is fixed-size (`TASK_MAX_TASKS`).
+Round-robin scheduler with timer-driven preemption (PIT IRQ 0 yields every `SCHED_QUANTUM=4` ticks ≈ 80 ms at 50 Hz). Cooperative `task_yield()` is also available for explicit yields. Context switch via `task_asm.S` (callee-saved + EFLAGS). `task_exit()` marks the task DEAD and yields; the scheduler reaps the dead task's user page directory after switching CR3 away from it (`schedule()` reaper, `task.c`). Pool is fixed-size (`MAX_TASKS=8`).
+
+Per-task state (`task_t` in `kernel/task.h`):
+- `pid` — monotonically assigned (idle = 1, others from 2)
+- `cwd[VFS_PATH_MAX]` — inherited from creator; not yet authoritative (VFS still uses `s_cwd`)
+- `tty` — TTY index (TASK_TTY_NONE for unbound); not yet authoritative (vtty.c still uses `vtty_tasks[]`)
+- `sig_pending` / `sig_mask` — Linux-style signal bitmasks (subsystem to follow)
+- `fd_table` — opaque pointer (placeholder until per-task fd table lands)
+- `user_brk`, `page_dir`, `state`, `name`, `esp`, `stack`, `next`
 
 ### Syscall ABI (`int 0x80`, Linux i386 convention)
 | EAX | Syscall          | Args |
@@ -236,7 +244,7 @@ FAT32 delete/rename APIs, VFS wrappers, syscalls 208–210, shell built-ins `rm`
 
 ### Near-term kernel work
 - **Runtime test_mode via cmdline**: `MULTIBOOT2_TAG_TYPE_CMDLINE` already parsed in `kernel.c`. Next: replace remaining `#ifdef TEST_MODE` guards with runtime `if (test_mode)`.
-- **Preemptive scheduling**: timer-driven preemption path. Currently all scheduling is cooperative (`task_yield()`).
+- **Preemptive scheduling hardening**: timer preemption is wired (PIT every 4 ticks). Pending: interrupt-safe critical sections inside `schedule()`, per-task tick accounting, runtime-tunable quantum, and a ktest that proves preemption (busy-loop tasks make progress without cooperative yields).
 - **Signals**: full `kill()`/`signal()` ABI beyond the current Ctrl+C `g_sigint` flag.
 
 ### Userspace / libc porting
