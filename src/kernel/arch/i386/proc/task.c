@@ -18,6 +18,7 @@
 #include <kernel/system.h>
 #include <kernel/tty.h>
 #include <kernel/asm.h>
+#include <kernel/serial.h>
 #include <string.h>
 
 /* -------------------------------------------------------------------------
@@ -245,6 +246,9 @@ static void schedule(void)
         prev->page_dir &&
         prev->page_dir != paging_kernel_pd() &&
         prev->page_dir != current_task->page_dir) {
+        Serial_WriteString("[reaper] freeing user PD of dead pid=");
+        Serial_WriteDec((uint32_t)prev->pid);
+        Serial_WriteString("\n");
         vmm_free_pd(prev->page_dir);
         prev->page_dir = paging_kernel_pd();
     }

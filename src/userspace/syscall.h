@@ -22,6 +22,7 @@
 #define SYS_DELETE_FILE  208
 #define SYS_RENAME_FILE  209
 #define SYS_DELETE_DIR   210
+#define SYS_WRITE_SERIAL 211
 
 /* open() flags */
 #define O_RDONLY    0
@@ -105,6 +106,14 @@ static inline long sys_read(int fd, void *buf, unsigned int len)
 static inline long sys_write(int fd, const void *buf, unsigned int len)
 {
     return syscall3(SYS_WRITE, (long)fd, (long)buf, (long)len);
+}
+
+/* Write to COM1 serial only (does not touch the framebuffer). Useful for
+ * silent diagnostics. For output the user should also see, prefer
+ * sys_write(2, ...) which writes to both the screen and serial. */
+static inline long sys_write_serial(const void *buf, unsigned int len)
+{
+    return syscall2(SYS_WRITE_SERIAL, (long)buf, (long)len);
 }
 
 static inline int sys_open(const char *path, int flags)

@@ -123,13 +123,14 @@ The `setmode` shell command can switch freely between any supported resolution a
 Cooperative round-robin scheduler — no preemption, timer tick only advances accounting. `task_yield()` → context switch via `task_asm.S`. `task_exit()` marks the task DEAD and yields. Pool is fixed-size (`TASK_MAX_TASKS`).
 
 ### Syscall ABI (`int 0x80`, Linux i386 convention)
-| EAX | Syscall   | Args |
-|-----|-----------|------|
-| 1   | SYS_EXIT  | — |
-| 3   | SYS_READ  | EBX = fd (0=stdin), ECX = buf ptr, EDX = count |
-| 4   | SYS_WRITE | EBX = NUL-terminated string ptr (or fd 1) |
-| 100 | SYS_DEBUG | EBX = uint32 checkpoint value (prints to VGA + serial) |
-| 158 | SYS_YIELD | — |
+| EAX | Syscall          | Args |
+|-----|------------------|------|
+| 1   | SYS_EXIT         | EBX = status |
+| 3   | SYS_READ         | EBX = fd (0=stdin), ECX = buf ptr, EDX = count |
+| 4   | SYS_WRITE        | EBX = fd, ECX = buf ptr, EDX = count.  fd 1 = stdout (VGA only); fd 2 = stderr (VGA + COM1 serial) |
+| 100 | SYS_DEBUG        | EBX = uint32 checkpoint value (prints to VGA + serial) |
+| 158 | SYS_YIELD        | — |
+| 211 | SYS_WRITE_SERIAL | EBX = buf ptr, ECX = count.  COM1-only (no framebuffer) |
 
 ### Keyboard (Phase 2)
 - Arrow-key sentinels at `0x80`–`0x83` (no longer collide with Ctrl codes).
