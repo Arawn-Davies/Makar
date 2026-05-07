@@ -78,3 +78,5 @@ Tracked in [`CLAUDE.md`](CLAUDE.md). Active branch:
 — preemptive scheduler hardening, per-task refactor (CWD/TTY/FD migration
 from globals), Linux-style signals, fork() readiness, full PS/2 keyboard
 rewrite.
+
+<!-- ci-trigger-test: this comment is intentionally docs-only to verify the workflow path filter skips this commit. -->
