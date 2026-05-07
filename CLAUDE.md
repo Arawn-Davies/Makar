@@ -223,29 +223,57 @@ relevant source file and in `docs/userland-libc.md`.
 ## Current state (as of May 2026)
 
 Makar boots to an interactive VESA shell with 4 independent TTYs.
-Alt+F1–F4 switches between them; each is a separate cooperative kernel task
-with its own stack.  The major subsystems in place:
+Alt+F1–F4 switches between them; each is a separate **preemptive** kernel
+task with its own kernel stack and (for ring-3 programs) its own page
+directory. Major subsystems:
 
 - **Display**: VESA framebuffer (Bochs VBE, defaults to 720p), VGA text fallback (80×50). Pane abstraction (`vesa_pane_t`) used by VICS and the TTY manager.
 - **Multi-TTY**: 4 shell tasks (`shell0`–`shell3`). Alt+F1–F4 switches focus; `vtty.c` routes keyboard input and sends `KEY_FOCUS_GAIN` to the newly active task. Each task redraws on focus gain.
 - **VICS**: Pane-aware text editor. Derives column/row counts from the active `vesa_pane_t` at runtime — works correctly at any VESA resolution. Modelled on ELKS/FUZIX vi: lightweight, stable, no heap after startup.
 - **Storage**: FAT32 (HDD/USB) + ISO 9660 (CD-ROM) via IDE PIO. VFS layer with CWD, auto-mount. Full read/write/delete/rename support on FAT32.
-- **Userspace**: Ring-3 protected mode via `iret`. ELF loader (`elf_exec`). Syscalls: exit, read, write, open, close, lseek, brk, debug, yield + Makar extensions (208–210). Apps: `calc.elf`, `hello.elf`, `ls.elf`, `echo.elf`, `vics.elf`, `diskinfo.elf`, `rm.elf`, `mv.elf`, `cp.elf`.
-- **Shell**: Inline editing, history, tab completion, Ctrl+C sigint. `lsman` / `man <cmd>` replace `help`. Built-in file ops: `rm`, `rmdir`, `mv`.
-- **Tasking**: Cooperative round-robin. Background ktest at boot (runs before any shell prompt appears).
+- **Tasking**: Round-robin scheduler with timer-driven preemption (PIT 100 Hz, `SCHED_QUANTUM = 4` ticks → 40 ms slice). Per-task `pid`, `cwd`, `tty`, signal bitmasks, fd-table placeholder. User PD reaped on task exit. Background ktest harness runs before the shell prompt appears.
+- **Userspace**: Ring-3 protected mode via `iret`. ELF loader (`elf_exec`) with argc/argv. Syscalls: `SYS_EXIT`, `SYS_READ`, `SYS_WRITE` (fd 1 = VGA, fd 2 = VGA + COM1 serial), `SYS_OPEN`, `SYS_CLOSE`, `SYS_LSEEK`, `SYS_BRK`, `SYS_DEBUG`, `SYS_YIELD`, plus Makar extensions (200–211 — terminal/file ops + `SYS_WRITE_SERIAL`). Apps: `calc.elf`, `hello.elf`, `ls.elf`, `echo.elf`, `vics.elf`, `diskinfo.elf`, `rm.elf`, `mv.elf`, `cp.elf`.
+- **Shell**: Inline editing, history, tab completion, Ctrl+C sigint. `lsman` / `man <cmd>` replace `help`. Built-in file ops: `rm`, `rmdir`, `mv`. `uptime` shows humanised h/m/s.
 - **GRUB**: Two-entry menu (Makar OS + Next available device), 5-second timeout.
 
 ## Active branches
 
-### `feat/userspace-fileops` (current)
+### `feat/tty-multitasking` (current)
+
+Slice 1 of the FUZIX-meets-ELKS roadmap. Lands on top of `feat/userspace-fileops`:
+
+- Reaper for exited-task user page directories (`fcb8771`)
+- Per-task plumbing: `pid`, `cwd`, `tty`, `fd_table`, `sig_pending` / `sig_mask` (`3a0ef78`)
+- Ring-3 lifecycle ktest with full serial-log proof in the GDB test runner (`f48d730`, `1a34c20`)
+- 100 Hz timer, humanised `uptime`, stderr→serial routing, new `SYS_WRITE_SERIAL` (`5e40001`)
+- GDB-test wrapper timeout bumped to 120 s for 100 Hz headroom under CI load (`f9c67b3`)
+
+PR: [#123](https://github.com/Arawn-Davies/Makar/pull/123)
+
+### `feat/userspace-fileops` (merged → main as #120)
 FAT32 delete/rename APIs, VFS wrappers, syscalls 208–210, shell built-ins `rm`/`rmdir`/`mv`, and standalone ELFs `rm.elf`, `mv.elf`, `cp.elf`.
 
 ## Future roadmap
 
-### Near-term kernel work
-- **Runtime test_mode via cmdline**: `MULTIBOOT2_TAG_TYPE_CMDLINE` already parsed in `kernel.c`. Next: replace remaining `#ifdef TEST_MODE` guards with runtime `if (test_mode)`.
-- **Preemptive scheduling hardening**: timer preemption is wired (PIT every 4 ticks). Pending: interrupt-safe critical sections inside `schedule()`, per-task tick accounting, runtime-tunable quantum, and a ktest that proves preemption (busy-loop tasks make progress without cooperative yields).
-- **Signals**: full `kill()`/`signal()` ABI beyond the current Ctrl+C `g_sigint` flag.
+### Slice queue (`feat/tty-multitasking` → follow-ups)
+
+Tracked here, pulled into branches one at a time so each PR stays focused.
+
+| # | Slice | Status |
+|---|---|---|
+| 1 | **Reaper for dead-task user PDs** | ✅ shipped (`fcb8771`) |
+| 2 | **Per-task `task_t` plumbing** (pid/cwd/tty/fds/signals fields, no consumer migration) | ✅ shipped (`3a0ef78`) |
+| 3 | **Ring-3 lifecycle ktest** with serial proof | ✅ shipped (`f48d730`, `1a34c20`) |
+| 4 | **100 Hz timer + humanised uptime** + stderr→serial + `SYS_WRITE_SERIAL` | ✅ shipped (`5e40001`) |
+| 5 | **Test-infra cleanup** — drop `test_mode`, single ISO, split CI into smoke + GDB | ⏭ next branch |
+| 6 | **Per-task consumer migration** — VFS `task->cwd`, vtty `task->tty`, real per-task FD table replaces keyboard owner ad-hoc | ⏭ |
+| 7 | **Linux-style signal subsystem** — full sigaction table, `kill()` syscall, htop-style picker | ⏭ |
+| 8 | **Preemption hardening** — interrupt-safe `schedule()`, per-task tick accounting, runtime-tunable quantum, busy-loop ktest | ⏭ |
+| 9 | **Per-TTY screen buffers** + task pausing in background TTYs | ⏭ |
+| 10 | **`ps`-style task listing** with privilege/state/CWD/TTY columns | ⏭ |
+| 11 | **fork() readiness** — PD clone (CoW), fd dup, PID alloc, return-value split | ⏭ |
+| 12 | **Keyboard rewrite** — full PS/2 set-1 + e0, layered decoder, IRQ-driven per-TTY rings, escape-clean sentinels | ⏭ (last in queue) |
+| 13 | **UTF-8 terminal** with ASCII fallback / runtime mode switch | ⏭ deferred |
 
 ### Userspace / libc porting
 
