@@ -102,6 +102,10 @@ task_t *task_create(const char *name, void (*entry)(void))
                 prev = prev->next;
             prev->next = t->next;
 
+            /* Defensively free a user PD that the scheduler reaper missed. */
+            if (t->page_dir && t->page_dir != paging_kernel_pd())
+                vmm_free_pd(t->page_dir);
+
             /* Reuse the existing kernel stack. */
             memset(t->stack, 0, TASK_STACK_SIZE);
             break;
@@ -190,6 +194,17 @@ static void schedule(void)
        unnecessary TLB flush between kernel tasks sharing the kernel PD. */
     if (current_task->page_dir != prev->page_dir)
         vmm_switch(current_task->page_dir);
+
+    /* Reap the outgoing task's user PD if it exited. The kernel stack we are
+       still running on lives in shared kernel PDEs (mirrored into every PD
+       by vmm_create_pd), so freeing prev's PD after switching CR3 is safe. */
+    if (prev->state == TASK_DEAD &&
+        prev->page_dir &&
+        prev->page_dir != paging_kernel_pd() &&
+        prev->page_dir != current_task->page_dir) {
+        vmm_free_pd(prev->page_dir);
+        prev->page_dir = paging_kernel_pd();
+    }
 
     task_switch(&prev->esp, current_task->esp);
 }
