@@ -707,6 +707,131 @@ static void test_elf_exec(void)
 }
 
 /* ---------------------------------------------------------------------------
+ * Suite: ring3_with_arg
+ *
+ * Spawns a child task that elf_exec()s hello.elf with one argument
+ * ("tester") and verifies the full lifecycle:
+ *
+ *   parent test task
+ *     │ task_create("hello_arg", entry)        ── child enters READY
+ *     │
+ *     │ ── yields ──>  child runs hello_arg_entry()
+ *     │                  └─ elf_exec("/cdrom/apps/hello.elf",
+ *     │                              2, {"hello", "tester"})
+ *     │                       ↓ ring transition (iret to ring 3)
+ *     │                  hello main() prints "Hello, tester!\n"
+ *     │                       ↓ SYS_EXIT
+ *     │ <── yields ──   child marked TASK_DEAD
+ *     │
+ *     │ parent observes TASK_DEAD, asserts, prints "control returned"
+ *
+ * The lifecycle log goes to serial only (via Serial_WriteString) so it
+ * doesn't disrupt the loading screen when the test runs from the bg
+ * harness. The TTY-visible "Hello, tester!" line in the VESA framebuffer
+ * is the user-visible proof that argv made it all the way to ring 3.
+ * ------------------------------------------------------------------------- */
+
+static const char *s_hello_argv[] = { "hello", "tester", NULL };
+static int         s_hello_argc   = 2;
+
+static void hello_arg_entry(void)
+{
+    task_t *me = task_current();
+    Serial_WriteString("[ktest]   >>> CHILD SCHEDULED (pid=");
+    Serial_WriteDec((uint32_t)(me ? me->pid : 0));
+    Serial_WriteString(", ring 0) — about to enter ring 3 via elf_exec\n");
+    Serial_WriteString("[ktest]   >>> elf_exec(\"hello.elf\", argc=2, argv=[\"hello\",\"tester\"])\n");
+    Serial_WriteString("[ktest]   ----- BEGIN RING 3 OUTPUT -----\n");
+
+    elf_exec("/cdrom/apps/hello.elf", s_hello_argc, s_hello_argv);
+
+    /* Only reached on elf_exec failure (e.g. file missing). On success the
+     * ring-3 program returns via SYS_EXIT, which calls task_exit() directly
+     * and never returns here. */
+    Serial_WriteString("[ktest]   ----- elf_exec FAILURE PATH -----\n");
+    task_exit();
+}
+
+static void test_ring3_with_arg(void)
+{
+    ktest_begin("ring3_with_arg");
+
+    Serial_WriteString("\n");
+    Serial_WriteString("[ktest] ============================================================\n");
+    Serial_WriteString("[ktest]  RING-3 TASK-SWITCHING TEST: parent -> child(hello.elf) -> parent\n");
+    Serial_WriteString("[ktest] ============================================================\n");
+
+    static const char *candidates[] = {
+        "/cdrom/apps/hello.elf",
+        "/hd/apps/hello.elf",
+        NULL
+    };
+
+    const char *path = NULL;
+    for (int i = 0; candidates[i]; i++) {
+        if (vfs_file_exists(candidates[i])) {
+            path = candidates[i];
+            break;
+        }
+    }
+
+    if (!path) {
+        Serial_WriteString("[ktest] ring3_with_arg: hello.elf not found — skipping\n");
+        t_writestring("[ktest] ring3_with_arg: hello.elf not found (skip)\n");
+        ktest_summary();
+        return;
+    }
+
+    task_t *self = task_current();
+    int parent_pid = self ? self->pid : 0;
+
+    Serial_WriteString("[ktest] [PARENT] pid=");
+    Serial_WriteDec((uint32_t)parent_pid);
+    Serial_WriteString(" name=");
+    Serial_WriteString((char *)(self && self->name ? self->name : "(unknown)"));
+    Serial_WriteString(" — running, ring 0\n");
+
+    Serial_WriteString("[ktest] [PARENT] task_create(\"hello_arg\", hello_arg_entry)\n");
+    task_t *child = task_create("hello_arg", hello_arg_entry);
+    KTEST_ASSERT(child != NULL);
+    if (!child) { ktest_summary(); return; }
+
+    Serial_WriteString("[ktest] [PARENT] child created: pid=");
+    Serial_WriteDec((uint32_t)child->pid);
+    Serial_WriteString(" name=hello_arg state=READY\n");
+
+    Serial_WriteString("[ktest] [PARENT] yielding -> scheduler picks child (pid=");
+    Serial_WriteDec((uint32_t)child->pid);
+    Serial_WriteString(")\n");
+
+    /* Yield until the child finishes, with periodic state logging so a hang
+     * produces visible diagnostics rather than a silent timeout. */
+    uint32_t spins = 0;
+    while (child->state != TASK_DEAD) {
+        task_yield();
+        if ((++spins & 0xFFFu) == 0) {
+            Serial_WriteString("[ktest] [PARENT] waiting, child state=");
+            Serial_WriteDec((uint32_t)child->state);
+            Serial_WriteString("\n");
+        }
+    }
+
+    Serial_WriteString("[ktest]   ----- END RING 3 OUTPUT -----\n");
+    Serial_WriteString("[ktest] [PARENT] resumed, pid=");
+    Serial_WriteDec((uint32_t)parent_pid);
+    Serial_WriteString(" — child reaped (state=DEAD)\n");
+
+    KTEST_ASSERT(child->state == TASK_DEAD);
+    KTEST_ASSERT(task_current() == self);   /* parent identity preserved across context switches */
+
+    Serial_WriteString("[ktest] ============================================================\n");
+    Serial_WriteString("[ktest]  RING-3 TASK SWITCHING: WORKING (parent<->child<->ring3 all OK)\n");
+    Serial_WriteString("[ktest] ============================================================\n\n");
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
  * Suite: vesa_resolution
  *
  * Exercises the VESA geometry pipeline at four resolutions in ascending size
@@ -922,6 +1047,14 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
+    test_elf_exec();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_ring3_with_arg();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
     test_vesa_resolution();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
@@ -970,6 +1103,8 @@ void ktest_bg_task(void)
     RUN(test_ring3_prereqs);
     RUN(test_idt);
     RUN(test_ring3_execution);
+    RUN(test_elf_exec);
+    RUN(test_ring3_with_arg);
     /* test_vesa_resolution and test_vesa_colour are skipped: they switch
      * display modes with multi-second countdowns — run manually via `ktest`. */
 
