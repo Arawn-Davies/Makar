@@ -1,18 +1,22 @@
 name: CI
 
-# Runs on every push/PR that touches source, tests, or build scripts.
-# Also callable as a reusable workflow (workflow_call) so that release.yml
-# can gate the release job on both test jobs passing.
+# Trigger policy:
+#   - push to main only            (validates merge integrity, no double-run)
+#   - pull_request open/sync       (covers all feature-branch development)
+#   - workflow_call                (release.yml gates on this passing)
+#
+# Path filter: only fires when something that actually affects test outcomes
+# changed — kernel/userspace source, test harness, build/run scripts, or the
+# toolchain image. Docs-only changes (README.md, CLAUDE.md, docs/**) skip CI.
 
 on:
   workflow_call:
   push:
-    branches: ['**']
+    branches: [main]
     paths:
       - 'src/**'
       - 'tests/**'
       - '*.sh'
-      - 'scripts/**'
       - 'Dockerfile*'
       - 'docker-compose.yml'
   pull_request:
@@ -20,7 +24,6 @@ on:
       - 'src/**'
       - 'tests/**'
       - '*.sh'
-      - 'scripts/**'
       - 'Dockerfile*'
       - 'docker-compose.yml'
 
