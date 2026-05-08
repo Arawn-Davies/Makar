@@ -265,15 +265,19 @@ Tracked here, pulled into branches one at a time so each PR stays focused.
 | 2 | **Per-task `task_t` plumbing** (pid/cwd/tty/fds/signals fields, no consumer migration) | ✅ shipped (`3a0ef78`) |
 | 3 | **Ring-3 lifecycle ktest** with serial proof | ✅ shipped (`f48d730`, `1a34c20`) |
 | 4 | **100 Hz timer + humanised uptime** + stderr→serial + `SYS_WRITE_SERIAL` | ✅ shipped (`5e40001`) |
-| 5 | **Test-infra cleanup** — drop `test_mode`, single ISO, split CI into smoke + GDB | ⏭ next branch |
-| 6 | **Per-task consumer migration** — VFS `task->cwd`, vtty `task->tty`, real per-task FD table replaces keyboard owner ad-hoc | ⏭ |
-| 7 | **Linux-style signal subsystem** — full sigaction table, `kill()` syscall, htop-style picker | ⏭ |
-| 8 | **Preemption hardening** — interrupt-safe `schedule()`, per-task tick accounting, runtime-tunable quantum, busy-loop ktest | ⏭ |
-| 9 | **Per-TTY screen buffers** + task pausing in background TTYs | ⏭ |
-| 10 | **`ps`-style task listing** with privilege/state/CWD/TTY columns | ⏭ |
-| 11 | **fork() readiness** — PD clone (CoW), fd dup, PID alloc, return-value split | ⏭ |
-| 12 | **Keyboard rewrite** — full PS/2 set-1 + e0, layered decoder, IRQ-driven per-TTY rings, escape-clean sentinels | ⏭ (last in queue) |
+| 5 | **Keyboard rewrite** — full PS/2 set-1 + e0, layered decoder (scancode→keycode→ASCII/sentinel→router), IRQ-driven per-TTY rings with proper SPSC memory ordering, strict make/break separation, modifier state at decoder, key repeat / rollover / lost-IRQ recovery, `unsigned char` end-to-end (no sign-extension hazard for sentinel compares), escape-clean sentinels | 🔥 **NEXT — urgent** |
+| 6 | **Test-infra cleanup** — drop `test_mode`, single ISO, split CI into smoke + GDB | ⏭ |
+| 7 | **Per-task consumer migration** — VFS `task->cwd`, vtty `task->tty`, real per-task FD table replaces keyboard owner ad-hoc | ⏭ |
+| 8 | **Linux-style signal subsystem** — full sigaction table, `kill()` syscall, htop-style picker | ⏭ |
+| 9 | **Preemption hardening** — interrupt-safe `schedule()`, per-task tick accounting, runtime-tunable quantum, busy-loop ktest | ⏭ |
+| 10 | **Per-TTY screen buffers** + task pausing in background TTYs | ⏭ |
+| 11 | **`ps`-style task listing** with privilege/state/CWD/TTY columns | ⏭ |
+| 12 | **fork() readiness** — PD clone (CoW), fd dup, PID alloc, return-value split | ⏭ |
 | 13 | **UTF-8 terminal** with ASCII fallback / runtime mode switch | ⏭ deferred |
+
+**Keyboard rewrite — observed symptoms** (May 2026 user report, screenshot in PR #123 thread):
+- Sporadic single-character noise in shell input, **not correlated to user keystrokes** (arrow-key sentinel leak ruled out — bug appears with no arrows pressed).
+- Likely root causes (in order of suspicion): (a) `kb_slots` SPSC ring producer/consumer race — IRQ context vs task context without explicit memory ordering on i386; (b) e0 prefix state not robustly cleared on edge cases (spurious IRQs, context switches mid-decode); (c) break-code path missing `(sc & 0x80) return;` filter on some code path. Treat the rewrite as a full driver replacement, not a targeted patch.
 
 ### Userspace / libc porting
 
