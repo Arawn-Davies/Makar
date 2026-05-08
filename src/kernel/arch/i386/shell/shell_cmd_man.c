@@ -170,6 +170,18 @@ static const man_entry_t man_table[] = {
       "Note: files on /cdrom/ are read-only (ISO 9660).  Save will fail with an\n"
       "error if the file path does not resolve to the FAT32 /hd/ volume.\n"
     },
+    { "kbtester",
+      "press-all-keys keyboard tester (ring-3 ELF)",
+      "Usage: exec /apps/kbtester.elf\n\n"
+      "Reads cooked bytes from the keyboard one at a time and prints, for each:\n"
+      "the running count, hex value, decimal value, symbolic name (KEY_ARROW_UP,\n"
+      "Ctrl-G, ESC, printable, etc.) and an echoed glyph or '<ctrl>' tag.\n\n"
+      "Every line is mirrored to COM1 serial via SYS_WRITE_SERIAL so the byte\n"
+      "stream can be captured off-host (qemu -serial stdio, real UART) and\n"
+      "compared against expected scancodes -- the same way an online keyboard\n"
+      "tester verifies a physical keyboard.\n\n"
+      "Exit: Ctrl+C, or 'q'/'Q' typed on its own.\n"
+    },
     { "exec",
       "load and run an ELF binary",
       "Usage: exec <path> [args...]\n\n"
