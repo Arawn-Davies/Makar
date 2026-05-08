@@ -120,16 +120,25 @@ The `setmode` shell command can switch freely between any supported resolution a
 - `0xBFFF0000` (`USER_STACK_TOP`): ring-3 stack top (one 4 KiB page below)
 
 ### Tasking
-Cooperative round-robin scheduler — no preemption, timer tick only advances accounting. `task_yield()` → context switch via `task_asm.S`. `task_exit()` marks the task DEAD and yields. Pool is fixed-size (`TASK_MAX_TASKS`).
+Round-robin scheduler with timer-driven preemption (PIT IRQ 0 yields every `SCHED_QUANTUM=4` ticks ≈ 80 ms at 50 Hz). Cooperative `task_yield()` is also available for explicit yields. Context switch via `task_asm.S` (callee-saved + EFLAGS). `task_exit()` marks the task DEAD and yields; the scheduler reaps the dead task's user page directory after switching CR3 away from it (`schedule()` reaper, `task.c`). Pool is fixed-size (`MAX_TASKS=8`).
+
+Per-task state (`task_t` in `kernel/task.h`):
+- `pid` — monotonically assigned (idle = 1, others from 2)
+- `cwd[VFS_PATH_MAX]` — inherited from creator; not yet authoritative (VFS still uses `s_cwd`)
+- `tty` — TTY index (TASK_TTY_NONE for unbound); not yet authoritative (vtty.c still uses `vtty_tasks[]`)
+- `sig_pending` / `sig_mask` — Linux-style signal bitmasks (subsystem to follow)
+- `fd_table` — opaque pointer (placeholder until per-task fd table lands)
+- `user_brk`, `page_dir`, `state`, `name`, `esp`, `stack`, `next`
 
 ### Syscall ABI (`int 0x80`, Linux i386 convention)
-| EAX | Syscall   | Args |
-|-----|-----------|------|
-| 1   | SYS_EXIT  | — |
-| 3   | SYS_READ  | EBX = fd (0=stdin), ECX = buf ptr, EDX = count |
-| 4   | SYS_WRITE | EBX = NUL-terminated string ptr (or fd 1) |
-| 100 | SYS_DEBUG | EBX = uint32 checkpoint value (prints to VGA + serial) |
-| 158 | SYS_YIELD | — |
+| EAX | Syscall          | Args |
+|-----|------------------|------|
+| 1   | SYS_EXIT         | EBX = status |
+| 3   | SYS_READ         | EBX = fd (0=stdin), ECX = buf ptr, EDX = count |
+| 4   | SYS_WRITE        | EBX = fd, ECX = buf ptr, EDX = count.  fd 1 = stdout (VGA only); fd 2 = stderr (VGA + COM1 serial) |
+| 100 | SYS_DEBUG        | EBX = uint32 checkpoint value (prints to VGA + serial) |
+| 158 | SYS_YIELD        | — |
+| 211 | SYS_WRITE_SERIAL | EBX = buf ptr, ECX = count.  COM1-only (no framebuffer) |
 
 ### Keyboard (Phase 2)
 - Arrow-key sentinels at `0x80`–`0x83` (no longer collide with Ctrl codes).
@@ -214,29 +223,61 @@ relevant source file and in `docs/userland-libc.md`.
 ## Current state (as of May 2026)
 
 Makar boots to an interactive VESA shell with 4 independent TTYs.
-Alt+F1–F4 switches between them; each is a separate cooperative kernel task
-with its own stack.  The major subsystems in place:
+Alt+F1–F4 switches between them; each is a separate **preemptive** kernel
+task with its own kernel stack and (for ring-3 programs) its own page
+directory. Major subsystems:
 
 - **Display**: VESA framebuffer (Bochs VBE, defaults to 720p), VGA text fallback (80×50). Pane abstraction (`vesa_pane_t`) used by VICS and the TTY manager.
 - **Multi-TTY**: 4 shell tasks (`shell0`–`shell3`). Alt+F1–F4 switches focus; `vtty.c` routes keyboard input and sends `KEY_FOCUS_GAIN` to the newly active task. Each task redraws on focus gain.
 - **VICS**: Pane-aware text editor. Derives column/row counts from the active `vesa_pane_t` at runtime — works correctly at any VESA resolution. Modelled on ELKS/FUZIX vi: lightweight, stable, no heap after startup.
 - **Storage**: FAT32 (HDD/USB) + ISO 9660 (CD-ROM) via IDE PIO. VFS layer with CWD, auto-mount. Full read/write/delete/rename support on FAT32.
-- **Userspace**: Ring-3 protected mode via `iret`. ELF loader (`elf_exec`). Syscalls: exit, read, write, open, close, lseek, brk, debug, yield + Makar extensions (208–210). Apps: `calc.elf`, `hello.elf`, `ls.elf`, `echo.elf`, `vics.elf`, `diskinfo.elf`, `rm.elf`, `mv.elf`, `cp.elf`.
-- **Shell**: Inline editing, history, tab completion, Ctrl+C sigint. `lsman` / `man <cmd>` replace `help`. Built-in file ops: `rm`, `rmdir`, `mv`.
-- **Tasking**: Cooperative round-robin. Background ktest at boot (runs before any shell prompt appears).
+- **Tasking**: Round-robin scheduler with timer-driven preemption (PIT 100 Hz, `SCHED_QUANTUM = 4` ticks → 40 ms slice). Per-task `pid`, `cwd`, `tty`, signal bitmasks, fd-table placeholder. User PD reaped on task exit. Background ktest harness runs before the shell prompt appears.
+- **Userspace**: Ring-3 protected mode via `iret`. ELF loader (`elf_exec`) with argc/argv. Syscalls: `SYS_EXIT`, `SYS_READ`, `SYS_WRITE` (fd 1 = VGA, fd 2 = VGA + COM1 serial), `SYS_OPEN`, `SYS_CLOSE`, `SYS_LSEEK`, `SYS_BRK`, `SYS_DEBUG`, `SYS_YIELD`, plus Makar extensions (200–211 — terminal/file ops + `SYS_WRITE_SERIAL`). Apps: `calc.elf`, `hello.elf`, `ls.elf`, `echo.elf`, `vics.elf`, `diskinfo.elf`, `rm.elf`, `mv.elf`, `cp.elf`.
+- **Shell**: Inline editing, history, tab completion, Ctrl+C sigint. `lsman` / `man <cmd>` replace `help`. Built-in file ops: `rm`, `rmdir`, `mv`. `uptime` shows humanised h/m/s.
 - **GRUB**: Two-entry menu (Makar OS + Next available device), 5-second timeout.
 
 ## Active branches
 
-### `feat/userspace-fileops` (current)
+### `feat/tty-multitasking` (current)
+
+Slice 1 of the FUZIX-meets-ELKS roadmap. Lands on top of `feat/userspace-fileops`:
+
+- Reaper for exited-task user page directories (`fcb8771`)
+- Per-task plumbing: `pid`, `cwd`, `tty`, `fd_table`, `sig_pending` / `sig_mask` (`3a0ef78`)
+- Ring-3 lifecycle ktest with full serial-log proof in the GDB test runner (`f48d730`, `1a34c20`)
+- 100 Hz timer, humanised `uptime`, stderr→serial routing, new `SYS_WRITE_SERIAL` (`5e40001`)
+- GDB-test wrapper timeout bumped to 120 s for 100 Hz headroom under CI load (`f9c67b3`)
+
+PR: [#123](https://github.com/Arawn-Davies/Makar/pull/123)
+
+### `feat/userspace-fileops` (merged → main as #120)
 FAT32 delete/rename APIs, VFS wrappers, syscalls 208–210, shell built-ins `rm`/`rmdir`/`mv`, and standalone ELFs `rm.elf`, `mv.elf`, `cp.elf`.
 
 ## Future roadmap
 
-### Near-term kernel work
-- **Runtime test_mode via cmdline**: `MULTIBOOT2_TAG_TYPE_CMDLINE` already parsed in `kernel.c`. Next: replace remaining `#ifdef TEST_MODE` guards with runtime `if (test_mode)`.
-- **Preemptive scheduling**: timer-driven preemption path. Currently all scheduling is cooperative (`task_yield()`).
-- **Signals**: full `kill()`/`signal()` ABI beyond the current Ctrl+C `g_sigint` flag.
+### Slice queue (`feat/tty-multitasking` → follow-ups)
+
+Tracked here, pulled into branches one at a time so each PR stays focused.
+
+| # | Slice | Status |
+|---|---|---|
+| 1 | **Reaper for dead-task user PDs** | ✅ shipped (`fcb8771`) |
+| 2 | **Per-task `task_t` plumbing** (pid/cwd/tty/fds/signals fields, no consumer migration) | ✅ shipped (`3a0ef78`) |
+| 3 | **Ring-3 lifecycle ktest** with serial proof | ✅ shipped (`f48d730`, `1a34c20`) |
+| 4 | **100 Hz timer + humanised uptime** + stderr→serial + `SYS_WRITE_SERIAL` | ✅ shipped (`5e40001`) |
+| 5 | **Keyboard rewrite** — full PS/2 set-1 + e0, layered decoder (scancode→keycode→ASCII/sentinel→router), IRQ-driven per-TTY rings with proper SPSC memory ordering, strict make/break separation, modifier state at decoder, key repeat / rollover / lost-IRQ recovery, `unsigned char` end-to-end (no sign-extension hazard for sentinel compares), escape-clean sentinels | 🔥 **NEXT — urgent** |
+| 6 | **Test-infra cleanup** — drop `test_mode`, single ISO, split CI into smoke + GDB | ⏭ |
+| 7 | **Per-task consumer migration** — VFS `task->cwd`, vtty `task->tty`, real per-task FD table replaces keyboard owner ad-hoc | ⏭ |
+| 8 | **Linux-style signal subsystem** — full sigaction table, `kill()` syscall, htop-style picker | ⏭ |
+| 9 | **Preemption hardening** — interrupt-safe `schedule()`, per-task tick accounting, runtime-tunable quantum, busy-loop ktest | ⏭ |
+| 10 | **Per-TTY screen buffers** + task pausing in background TTYs | ⏭ |
+| 11 | **`ps`-style task listing** with privilege/state/CWD/TTY columns | ⏭ |
+| 12 | **fork() readiness** — PD clone (CoW), fd dup, PID alloc, return-value split | ⏭ |
+| 13 | **UTF-8 terminal** with ASCII fallback / runtime mode switch | ⏭ deferred |
+
+**Keyboard rewrite — observed symptoms** (May 2026 user report, screenshot in PR #123 thread):
+- Sporadic single-character noise in shell input, **not correlated to user keystrokes** (arrow-key sentinel leak ruled out — bug appears with no arrows pressed).
+- Likely root causes (in order of suspicion): (a) `kb_slots` SPSC ring producer/consumer race — IRQ context vs task context without explicit memory ordering on i386; (b) e0 prefix state not robustly cleared on edge cases (spurious IRQs, context switches mid-decode); (c) break-code path missing `(sc & 0x80) return;` filter on some code path. Treat the rewrite as a full driver replacement, not a targeted patch.
 
 ### Userspace / libc porting
 

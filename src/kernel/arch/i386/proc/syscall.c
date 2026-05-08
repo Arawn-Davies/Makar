@@ -130,9 +130,16 @@ void syscall_dispatch(registers_t *regs)
      * SYS_EXIT(1): terminate the calling task.
      * EBX = exit status (ignored for now).
      * ------------------------------------------------------------------ */
-    case SYS_EXIT:
+    case SYS_EXIT: {
+        task_t *t = task_current();
+        Serial_WriteString("[sys_exit] task pid=");
+        Serial_WriteDec(t ? (uint32_t)t->pid : 0u);
+        Serial_WriteString(" status=");
+        Serial_WriteDec((uint32_t)regs->ebx);
+        Serial_WriteString(" -> task_exit()\n");
         task_exit();   /* does not return */
         break;
+    }
 
     /* ------------------------------------------------------------------
      * SYS_READ(3): read bytes from a file descriptor.
@@ -182,7 +189,11 @@ void syscall_dispatch(registers_t *regs)
      * EBX = fd, ECX = buf, EDX = len
      * Returns: bytes written (EAX), (uint32_t)-1 on error.
      *
-     * fd 1 (stdout) and fd 2 (stderr) both write to the VGA terminal.
+     * fd 1 (stdout) writes to the VGA/VESA terminal only.
+     * fd 2 (stderr) writes to the VGA/VESA terminal AND COM1 serial. This
+     *   matches the bare-metal kernel-debug convention: diagnostic output
+     *   reaches both the user's screen and the captured serial log
+     *   (ktest.log / gdb-serial.log) without an extra syscall.
      * Writing to file fds is not yet implemented.
      * ------------------------------------------------------------------ */
     case SYS_WRITE: {
@@ -192,16 +203,45 @@ void syscall_dispatch(registers_t *regs)
 
         if (!buf) { regs->eax = (uint32_t)-1; break; }
 
-        if (fd == FD_STDOUT || fd == FD_STDERR) {
+        if (fd == FD_STDOUT) {
             if (!ktest_muted) {
                 for (uint32_t i = 0; i < len; i++)
                     t_putchar(buf[i]);
             }
             regs->eax = len;
+        } else if (fd == FD_STDERR) {
+            if (!ktest_muted) {
+                for (uint32_t i = 0; i < len; i++)
+                    t_putchar(buf[i]);
+            }
+            for (uint32_t i = 0; i < len; i++)
+                Serial_WriteChar(buf[i]);
+            regs->eax = len;
         } else {
             /* File write not yet implemented. */
             regs->eax = (uint32_t)-1;
         }
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_WRITE_SERIAL(211): write bytes to COM1 serial only (Makar ext).
+     * EBX = buf, ECX = len
+     * Returns: bytes written (EAX), (uint32_t)-1 on error.
+     *
+     * Useful for silent telemetry / ktest diagnostics that must not
+     * pollute the visible framebuffer. For diagnostic output the user
+     * should also see, prefer SYS_WRITE on fd 2 (stderr).
+     * ------------------------------------------------------------------ */
+    case SYS_WRITE_SERIAL: {
+        const char *buf = (const char *)(uintptr_t)regs->ebx;
+        uint32_t    len = regs->ecx;
+
+        if (!buf) { regs->eax = (uint32_t)-1; break; }
+
+        for (uint32_t i = 0; i < len; i++)
+            Serial_WriteChar(buf[i]);
+        regs->eax = len;
         break;
     }
 

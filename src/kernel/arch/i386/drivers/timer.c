@@ -30,7 +30,7 @@
 #include <kernel/asm.h>
 
 /* Preemptive scheduling: yield to the next task every SCHED_QUANTUM ticks.
- * At 50 Hz this gives an 80 ms time slice per task. */
+ * At 100 Hz this gives a 40 ms time slice per task. */
 #define SCHED_QUANTUM 4
 
 static volatile uint32_t tick = 0;

@@ -115,10 +115,10 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 		terminal_set_rows(50);
 	}
 
-	t_writestring("Starting timer (50 Hz)");
+	t_writestring("Starting timer (100 Hz)");
 	kprint_ok();
-	init_timer(50);
-	KLOG("timer: 50 Hz PIT started\n");
+	init_timer(100);
+	KLOG("timer: 100 Hz PIT started\n");
 
 	t_writestring("Registering PS/2 keyboard");
 	kprint_ok();

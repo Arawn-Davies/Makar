@@ -35,11 +35,18 @@ The command byte `0x36` written to port `0x43` selects:
 - Mode 3: square-wave generator (bits 3–1 = `011`)
 - Binary counting (bit 0 = `0`)
 
-At boot Makar calls `init_timer(50)`, giving a tick rate of **50 Hz** (one
-tick every 20 ms).
+At boot Makar calls `init_timer(100)`, giving a tick rate of **100 Hz** (one
+tick every 10 ms).
 
-Each IRQ 0 fires `timer_callback`, which increments the global `tick` counter
-and calls `t_spinner_tick(tick)` to animate the terminal spinner.
+Each IRQ 0 fires `timer_callback`, which:
+
+1. Increments the global `tick` counter.
+2. Calls `t_spinner_tick(tick)` to animate the terminal spinner.
+3. Every `SCHED_QUANTUM = 4` ticks (≈ 80 ms at 50 Hz), sends End-Of-Interrupt
+   to the master PIC and calls `task_yield()`. This drives **preemptive task
+   switching** — a busy-loop ring-0 task that never voluntarily yields will
+   still surrender the CPU at the next quantum boundary. EOI is sent before
+   the yield so further timer IRQs can fire while the new task runs.
 
 ---
 
@@ -72,8 +79,8 @@ uint32_t timer_get_ticks(void);
 ```
 
 Return the current tick count.  The counter starts at 0 and increments by 1
-on every timer interrupt.  At 50 Hz it wraps after approximately 993 days of
-continuous uptime.
+on every timer interrupt.  At 100 Hz it wraps after approximately 497 days
+of continuous uptime.
 
 ### `ksleep`
 
@@ -82,7 +89,7 @@ void ksleep(uint32_t ticks);
 ```
 
 Busy-wait until at least `ticks` timer ticks have elapsed since the call.
-At 50 Hz, `ksleep(50)` sleeps for approximately one second.
+At 100 Hz, `ksleep(100)` sleeps for approximately one second.
 
 This is a spin-wait — the CPU executes a tight loop and does not yield.  It
 is suitable for short post-boot delays but should be replaced with an

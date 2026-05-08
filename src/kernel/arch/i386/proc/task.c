@@ -18,6 +18,7 @@
 #include <kernel/system.h>
 #include <kernel/tty.h>
 #include <kernel/asm.h>
+#include <kernel/serial.h>
 #include <string.h>
 
 /* -------------------------------------------------------------------------
@@ -28,6 +29,7 @@ static task_t  task_pool[MAX_TASKS];
 static int     task_pool_count = 0;
 static task_t *current_task    = NULL;
 static int     tasking_active  = 0;
+static int     next_pid        = 2;   /* idle task gets PID 1; created tasks start at 2 */
 
 /* -------------------------------------------------------------------------
  * init_task_stack
@@ -74,16 +76,27 @@ static void init_task_stack(task_t *t, void (*entry)(void))
 
 void tasking_init(void)
 {
+    task_t *idle = &task_pool[0];
+
     /* task_pool[0] represents the current execution context (idle/kernel). */
-    task_pool[0].esp      = 0;                  /* filled in by task_switch on first yield */
-    task_pool[0].stack    = NULL;               /* uses the original boot stack             */
-    task_pool[0].page_dir = paging_kernel_pd(); /* shares the kernel address space          */
-    task_pool[0].state    = TASK_RUNNING;
-    task_pool[0].name     = "idle";
-    task_pool[0].next     = &task_pool[0];      /* circular list of one for now             */
+    memset(idle, 0, sizeof(*idle));
+    idle->esp      = 0;                  /* filled in by task_switch on first yield */
+    idle->stack    = NULL;               /* uses the original boot stack             */
+    idle->page_dir = paging_kernel_pd(); /* shares the kernel address space          */
+    idle->state    = TASK_RUNNING;
+    idle->name     = "idle";
+    idle->next     = idle;               /* circular list of one for now             */
+    idle->pid      = 1;
+    idle->user_brk = 0;
+    idle->cwd[0]   = '/';
+    idle->cwd[1]   = '\0';
+    idle->tty      = TASK_TTY_NONE;
+    idle->sig_pending = 0;
+    idle->sig_mask    = 0;
+    idle->fd_table    = NULL;
 
     task_pool_count = 1;
-    current_task    = &task_pool[0];
+    current_task    = idle;
     tasking_active  = 1;
 }
 
@@ -102,6 +115,10 @@ task_t *task_create(const char *name, void (*entry)(void))
                 prev = prev->next;
             prev->next = t->next;
 
+            /* Defensively free a user PD that the scheduler reaper missed. */
+            if (t->page_dir && t->page_dir != paging_kernel_pd())
+                vmm_free_pd(t->page_dir);
+
             /* Reuse the existing kernel stack. */
             memset(t->stack, 0, TASK_STACK_SIZE);
             break;
@@ -117,13 +134,34 @@ task_t *task_create(const char *name, void (*entry)(void))
             return NULL;
 
         t = &task_pool[task_pool_count++];
+        /* Zero a freshly-claimed slot before populating, so unset fields
+         * (cwd[], sig_*, fd_table) start in a known state. */
+        memset(t, 0, sizeof(*t));
         t->stack = stack;
     }
 
-    t->page_dir = paging_kernel_pd();
-    t->state    = TASK_READY;
-    t->name     = name;
-    t->user_brk = 0;
+    t->page_dir    = paging_kernel_pd();
+    t->state       = TASK_READY;
+    t->name        = name;
+    t->user_brk    = 0;
+    t->pid         = next_pid++;
+    t->sig_pending = 0;
+    t->sig_mask    = 0;
+    t->fd_table    = NULL;
+
+    /* Inherit CWD and TTY binding from the creating task, mirroring POSIX
+     * fork-then-exec semantics. */
+    if (current_task) {
+        size_t n = strlen(current_task->cwd);
+        if (n >= VFS_PATH_MAX) n = VFS_PATH_MAX - 1;
+        memcpy(t->cwd, current_task->cwd, n);
+        t->cwd[n] = '\0';
+        t->tty    = current_task->tty;
+    } else {
+        t->cwd[0] = '/';
+        t->cwd[1] = '\0';
+        t->tty    = TASK_TTY_NONE;
+    }
 
     init_task_stack(t, entry);
 
@@ -131,6 +169,16 @@ task_t *task_create(const char *name, void (*entry)(void))
     current_task->next = t;
 
     return t;
+}
+
+task_t *task_by_pid(int pid)
+{
+    for (int i = 0; i < task_pool_count; i++) {
+        task_t *t = &task_pool[i];
+        if (t->pid == pid && t->state != TASK_DEAD)
+            return t;
+    }
+    return NULL;
 }
 
 task_t *task_current(void)
@@ -190,6 +238,20 @@ static void schedule(void)
        unnecessary TLB flush between kernel tasks sharing the kernel PD. */
     if (current_task->page_dir != prev->page_dir)
         vmm_switch(current_task->page_dir);
+
+    /* Reap the outgoing task's user PD if it exited. The kernel stack we are
+       still running on lives in shared kernel PDEs (mirrored into every PD
+       by vmm_create_pd), so freeing prev's PD after switching CR3 is safe. */
+    if (prev->state == TASK_DEAD &&
+        prev->page_dir &&
+        prev->page_dir != paging_kernel_pd() &&
+        prev->page_dir != current_task->page_dir) {
+        Serial_WriteString("[reaper] freeing user PD of dead pid=");
+        Serial_WriteDec((uint32_t)prev->pid);
+        Serial_WriteString("\n");
+        vmm_free_pd(prev->page_dir);
+        prev->page_dir = paging_kernel_pd();
+    }
 
     task_switch(&prev->esp, current_task->esp);
 }

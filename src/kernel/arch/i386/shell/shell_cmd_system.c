@@ -38,9 +38,27 @@ static void cmd_meminfo(int argc, char **argv)
 static void cmd_uptime(int argc, char **argv)
 {
     (void)argc; (void)argv;
+
+    /* Timer runs at 100 Hz, so 1 second = 100 ticks. Decompose into
+     * h:mm:ss, with the leftover tick remainder shown for sub-second
+     * precision. */
+    uint32_t ticks   = timer_get_ticks();
+    uint32_t total_s = ticks / 100u;
+    uint32_t rem     = ticks % 100u;          /* 0..99, hundredths of a sec */
+    uint32_t hours   = total_s / 3600u;
+    uint32_t minutes = (total_s % 3600u) / 60u;
+    uint32_t seconds = total_s % 60u;
+
     t_writestring("uptime: ");
-    t_dec(timer_get_ticks());
-    t_writestring(" ticks\n");
+    t_dec(hours);   t_writestring("h ");
+    t_dec(minutes); t_writestring("m ");
+    t_dec(seconds); t_writestring(".");
+    /* Pad hundredths to two digits without a printf. */
+    if (rem < 10) t_putchar('0');
+    t_dec(rem);
+    t_writestring("s  (");
+    t_dec(ticks);
+    t_writestring(" ticks @ 100 Hz)\n");
 }
 
 static void cmd_tasks(int argc, char **argv)
