@@ -568,6 +568,22 @@ void shell_run(void)
     while (1) {
         shell_print_prompt();
         shell_readline(buf, SHELL_MAX_INPUT);
+
+        /* !! — recall and re-execute the most recent history entry. */
+        if (strcmp(buf, "!!") == 0) {
+            const char *prev = history_get(0);
+            if (!prev || !*prev) {
+                t_setcolor(SHELL_ERROR_COLOR_VGA);
+                t_writestring("!!: no previous command\n\n");
+                t_setcolor(SHELL_COLOR_VGA);
+                continue;
+            }
+            strncpy(buf, prev, SHELL_MAX_INPUT - 1);
+            buf[SHELL_MAX_INPUT - 1] = '\0';
+            t_writestring(buf);
+            t_writestring("\n");
+        }
+
         history_push(buf);
 
         int argc = shell_parse(buf, argv, SHELL_MAX_ARGS);
