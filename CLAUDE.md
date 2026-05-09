@@ -152,6 +152,7 @@ Per-task state (`task_t` in `kernel/task.h`):
 ### Shell features
 - Inline editing (cursor movement, insert at point).
 - History navigation (↑/↓ arrows), up to 16 entries.
+- `!!` recalls and runs the most recent history entry (echoes the recalled line first so the operator sees what's about to run).
 - Ctrl+C: abort current input line (prints `^C`, returns empty line to REPL).
 - Tab completion: first token completes command names; subsequent tokens complete VFS paths via `vfs_complete()` → `fat32_complete()`.
 - `exec <path>`: loads and runs an ELF binary from the VFS. Ctrl+C during exec force-kills the child task.
