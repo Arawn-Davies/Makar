@@ -611,7 +611,14 @@ int vfs_complete(const char *dir, const char *prefix,
     path_resolve(dir ? dir : s_cwd, abs);
 
     const char *drv;
-    if (vfs_route(abs, &drv) != VFS_FS_HD) return -1;
-    if (!fat32_mounted()) return -1;
-    return fat32_complete(drv, prefix, cb, ctx);
+    switch (vfs_route(abs, &drv)) {
+    case VFS_FS_HD:
+        if (!fat32_mounted()) return -1;
+        return fat32_complete(drv, prefix, cb, ctx);
+    case VFS_FS_CDROM:
+        if (s_cdrom_drive < 0) return -1;
+        return iso9660_complete((uint8_t)s_cdrom_drive, drv, prefix, cb, ctx);
+    default:
+        return -1;
+    }
 }

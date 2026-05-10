@@ -501,3 +501,62 @@ int iso9660_ls(uint8_t drive, const char *path)
 
     return 0;
 }
+
+int iso9660_complete(uint8_t drive, const char *dir_path, const char *prefix,
+                     iso9660_complete_cb_t cb, void *ctx)
+{
+    (void)prefix;   /* caller filters by prefix in cb */
+
+    uint32_t lba, size;
+    int isdir;
+    int err = path_resolve(drive, dir_path, &lba, &size, &isdir);
+    if (err)
+        return err;
+    if (!isdir)
+        return -2;
+
+    uint32_t sectors = (size + ISO9660_SECTOR_SIZE - 1u) / ISO9660_SECTOR_SIZE;
+
+    for (uint32_t s = 0; s < sectors; s++) {
+        if (ide_read_atapi_sectors(drive, lba + s, 1, s_sector))
+            return -1;
+
+        uint32_t pos = 0;
+        while (pos < ISO9660_SECTOR_SIZE) {
+            uint8_t rec_len = s_sector[pos];
+            if (rec_len == 0)
+                break;
+
+            uint8_t     name_len = s_sector[pos + 32];
+            const char *ident    = (const char *)(s_sector + pos + 33);
+            uint8_t     flags    = s_sector[pos + 25];
+
+            /* Skip "." and ".." entries. */
+            if (name_len == 1 &&
+                ((uint8_t)ident[0] == 0x00u || (uint8_t)ident[0] == 0x01u))
+            {
+                pos += rec_len;
+                continue;
+            }
+
+            char name[ISO_MAX_COMPONENT_LEN + 1];
+            int  nlen = rr_get_name(s_sector + pos, name, (int)sizeof(name));
+            if (nlen <= 0) {
+                /* Fallback: ISO9660 identifier with ;N and trailing dot
+                 * stripped — same cleanup iso9660_ls applies. */
+                int il = (int)name_len;
+                if (il >= 2 && ident[il - 2] == ';') il -= 2;
+                if (il > 0  && ident[il - 1] == '.') il--;
+                if (il > ISO_MAX_COMPONENT_LEN) il = ISO_MAX_COMPONENT_LEN;
+                for (int i = 0; i < il; i++) name[i] = ident[i];
+                name[il] = '\0';
+                nlen = il;
+            }
+            if (nlen > 0)
+                cb(name, (flags & ISO_FLAG_DIR) ? 1 : 0, ctx);
+
+            pos += rec_len;
+        }
+    }
+    return 0;
+}
