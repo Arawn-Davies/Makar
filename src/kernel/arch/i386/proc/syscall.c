@@ -402,17 +402,29 @@ void syscall_dispatch(registers_t *regs)
         const tty_cell_t *cells = (const tty_cell_t *)(uintptr_t)regs->ebx;
         uint32_t n = regs->ecx;
         if (!cells || n == 0) { regs->eax = 0; break; }
+        /* SYS_PUTCH_AT cells carry their own colour attribute, so writing
+         * each cell mutates the default pane's fg/bg.  Save the pane
+         * colours up-front and restore at the end so apps that paint
+         * coloured chrome (kbtester, future status bars) don't leave the
+         * shell stuck in their palette after exit. */
+        vesa_pane_t *dp = vesa_tty_is_ready() ? vesa_tty_default_pane() : NULL;
+        uint32_t saved_fg = dp ? dp->fg : 0;
+        uint32_t saved_bg = dp ? dp->bg : 0;
         for (uint32_t i = 0; i < n; i++) {
             uint8_t col = cells[i].col;
             uint8_t row = cells[i].row;
             uint8_t ch  = cells[i].ch;
             uint8_t clr = cells[i].clr;
             t_putentryat((char)ch, clr, col, row);
-            if (vesa_tty_is_ready()) {
+            if (dp) {
                 vesa_tty_setcolor(s_vga_palette[clr & 0x0F],
                                   s_vga_palette[(clr >> 4) & 0x0F]);
                 vesa_tty_put_at((char)ch, col, row);
             }
+        }
+        if (dp) {
+            dp->fg = saved_fg;
+            dp->bg = saved_bg;
         }
         regs->eax = n;
         break;
