@@ -224,10 +224,42 @@ static void cmd_setmode(int argc, char **argv)
  * Module table
  * --------------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------------
+ * caret <under|block|flash> — switch the visible-cursor style on the VESA
+ * framebuffer.  No-op in pure VGA text mode (the hardware cursor is already
+ * a flashing underscore there).
+ * --------------------------------------------------------------------------- */
+static void cmd_caret(int argc, char **argv)
+{
+    if (!vesa_tty_is_ready()) {
+        t_writestring("caret: VESA not active — VGA hardware cursor is in use.\n");
+        return;
+    }
+    if (argc < 2) {
+        const uint32_t s = vesa_tty_get_caret_style();
+        t_writestring("caret: ");
+        t_writestring(s == VESA_CARET_BLOCK ? "block"
+                    : s == VESA_CARET_FLASH ? "flash"
+                    :                         "under");
+        t_writestring("\nusage: caret <under|block|flash>\n");
+        return;
+    }
+    const char *m = argv[1];
+    if      (strcmp(m, "under") == 0) vesa_tty_set_caret_style(VESA_CARET_UNDERSCORE);
+    else if (strcmp(m, "block") == 0) vesa_tty_set_caret_style(VESA_CARET_BLOCK);
+    else if (strcmp(m, "flash") == 0) vesa_tty_set_caret_style(VESA_CARET_FLASH);
+    else {
+        t_writestring("caret: unknown style '");
+        t_writestring(m);
+        t_writestring("'\nusage: caret <under|block|flash>\n");
+    }
+}
+
 const shell_cmd_entry_t display_cmds[] = {
     { "clear",   cmd_clear   },
     { "fgcol",   cmd_fgcol   },
     { "bgcol",   cmd_bgcol   },
     { "setmode", cmd_setmode },
+    { "caret",   cmd_caret   },
     { NULL, NULL }
 };

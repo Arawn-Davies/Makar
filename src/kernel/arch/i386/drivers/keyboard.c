@@ -107,6 +107,8 @@
 #include <kernel/isr.h>
 #include <kernel/asm.h>
 #include <kernel/task.h>
+#include <kernel/timer.h>
+#include <kernel/vesa_tty.h>
 
 /* ===========================================================================
  * Memory-ordering primitives
@@ -1028,12 +1030,14 @@ char keyboard_getchar(void)
     if (s >= 0) {
         kb_slot_t *slot = &kb_slots[s];
         while (slot_empty_v(slot)) {
+            vesa_tty_caret_blink_tick(timer_get_ticks());
             task_yield();
             asm volatile("pause");
         }
         return (char)slot_pop(slot);
     }
     while (buf_count_v() == 0) {
+        vesa_tty_caret_blink_tick(timer_get_ticks());
         task_yield();
         asm volatile("pause");
     }

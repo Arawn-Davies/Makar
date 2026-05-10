@@ -106,6 +106,22 @@ void vesa_tty_clear(void);
  * Always renders into the default pane regardless of focus. */
 void vesa_tty_spinner_tick(uint32_t tick);
 
+/* ------------------------------------------------------------------ */
+/* Visible caret on the default pane                                   */
+/* ------------------------------------------------------------------ */
+
+#define VESA_CARET_UNDERSCORE  0u
+#define VESA_CARET_BLOCK       1u
+#define VESA_CARET_FLASH       2u
+
+void     vesa_tty_set_caret_style(uint32_t style);
+uint32_t vesa_tty_get_caret_style(void);
+
+/* Drive caret blink animation.  Pass the current kernel tick count.  No-op
+ * unless the FLASH style is active.  Safe to call frequently from the
+ * keyboard wait loop. */
+void vesa_tty_caret_blink_tick(uint32_t ticks);
+
 /* Change the font scale factor (1 = small, 2 = large).  Clears the screen
  * and re-initialises the default pane to the new geometry. */
 void vesa_tty_set_scale(uint32_t scale);
