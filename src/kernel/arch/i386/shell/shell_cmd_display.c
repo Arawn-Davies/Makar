@@ -78,14 +78,19 @@ static void print_palette(void)
  * Command handlers
  * --------------------------------------------------------------------------- */
 
-static void cmd_clear(int argc, char **argv)
+void shell_clear_screen(void)
 {
-    (void)argc; (void)argv;
     terminal_set_colorscheme(SHELL_COLOR_VGA);
     if (vesa_tty_is_ready()) {
         vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
         vesa_tty_clear();
     }
+}
+
+static void cmd_clear(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    shell_clear_screen();
 }
 
 static void cmd_fgcol(int argc, char **argv)

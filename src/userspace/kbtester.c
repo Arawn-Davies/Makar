@@ -28,9 +28,12 @@
  *   3. Input echo   - the last 60 printable characters are mirrored at
  *                     the top of the screen as a typing buffer.
  *
- * Exit: Ctrl+C (sentinel 0x03). Pressing 'q' on its own does NOT exit
- *       in this version because the operator legitimately needs to test
- *       'q' and 'Q'.
+ * Exit: hold Escape for 4 s. Ctrl+C, 'q' etc. are keys under test
+ *       and only light up their cells — using them as exit commands
+ *       defeats the point of a key tester.  The shell will still
+ *       force-kill on Ctrl+C through the parent task; the resulting
+ *       dirty screen is acceptable until per-TTY screen buffers land
+ *       in slice #10.
  *
  * Falls back to a one-line-per-key text mode if the terminal is narrower
  * than 70 columns (e.g. VESA TTY at font_scale=2 / 720p / 40 cols).
@@ -192,23 +195,17 @@ static void fill_spaces(unsigned int col, unsigned int row, unsigned int n)
 }
 
 /*
- * Wipe the entire screen with a single SYS_TTY_CLEAR syscall.  This is
- * resolution agnostic by design — the kernel paints the whole VGA cell
- * buffer plus the entire VESA framebuffer in one shot, regardless of
- * width.  The 0x1F attribute (white-on-blue) matches the shell default;
- * fgcol/bgcol customisation isn't observable from userspace yet, so we
- * accept the slight palette discontinuity if the operator changed it.
- *
- * Replaces an earlier row-by-row fill_spaces loop that wrote through
- * t_putchar — that path doesn't sync t_column/t_row to sys_set_cursor,
- * so VGA cells landed at the previous stream position and the wipe
- * appeared incomplete.
+ * Wipe the entire screen via SYS_SHELL_CLEAR — the same code path the
+ * `clear` shell command runs.  Resets the VGA colour scheme, the VESA
+ * pane fg/bg, the framebuffer contents, and both cursors.  Apps that
+ * paint custom chrome need the palette reset; plain sys_tty_clear only
+ * fills with the *current* pane.bg, which can match the app's last
+ * cell colour and leave the screen looking unchanged.
  */
 static void clear_screen(unsigned int cols, unsigned int rows)
 {
     (void)cols; (void)rows;
-    sys_tty_clear(VGA_CLR(VGA_WHITE, VGA_BLUE));
-    sys_set_cursor(0, 0);
+    sys_shell_clear();
 }
 
 /* ===========================================================================
@@ -393,7 +390,7 @@ static void draw_static(unsigned int cols)
 {
     /* Title bar (row 0) -- shell colour.  (Full-screen wipe happens in
      * main() before draw_static, so the canvas is already clean.) */
-    put_at(0, 0, " kbtester  -- press any key, Ctrl+C to exit");
+    put_at(0, 0, " kbtester  -- press any key; hold Esc for 4s to exit");
 
     /* Separator (row 1) -- shell colour.  Spans the actual terminal
      * width, chunked through an 80-byte buffer to stay resolution
@@ -415,7 +412,7 @@ static void draw_static(unsigned int cols)
 
     /* Footer hint. */
     put_at(0, KB_ROW0 + 11,
-           "Raw mode active: every key reaches kbtester. Ctrl+C exits.");
+           "Raw mode active: every key reaches kbtester. Hold ESC for 4s to exit.");
 
     /* Key cells -- the only thing with a custom palette. */
     for (unsigned int i = 0; i < NUM_KEYS; i++)
@@ -653,7 +650,28 @@ int main(int argc, char **argv)
 
     put_serial("KBTESTER_BEGIN visual\n", 22);
 
-    unsigned int count = 0;
+    /*
+     * Exit policy:
+     *   Ctrl+C is a key under test, not an exit command — pressing it
+     *   just lights up the Ctrl + C cells.  The shell's exec wait loop
+     *   still observes the sigint and force-kills kbtester, but the
+     *   resulting "dirty" exit is fine here because (next slice) the
+     *   per-TTY screen buffer will restore the pre-exec view anyway.
+     *
+     *   Hold Escape for ~4 seconds → graceful exit.  PS/2 key-repeat
+     *   fires ~30 Hz after the initial delay, so we count consecutive
+     *   Escape bytes from sys_getkey and exit once we've seen enough
+     *   to be confident the operator is holding the key rather than
+     *   just tapping it.  Any non-Escape byte resets the counter so a
+     *   single tap still tests the Esc cell normally.
+     */
+    /* PS/2 typematic defaults: ~500 ms delay, then ~30 Hz repeats.
+     * 4 s ⇒ 1 initial + (3500 ms / 33 ms) ≈ 106 events.  Round to 120 so
+     * a slightly slower repeat rate still hits 4 s rather than under. */
+    const unsigned int ESC_HOLD_EXIT = 120;
+    unsigned int esc_held = 0;
+    unsigned int count    = 0;
+
     while (1) {
         int k = sys_getkey();
         unsigned char b = (unsigned char)k;
@@ -661,14 +679,18 @@ int main(int argc, char **argv)
 
         log_serial(count, b);
 
-        if (b == 0x03) {       /* Ctrl-C: clean exit */
-            put_serial("KBTESTER_END (Ctrl+C; see COM1 for full byte log)\n", 50);
-            sys_keyboard_raw(0);
-            clear_screen(cols, rows);
-            /* Leave the cursor at the top with no goodbye text — the shell
-             * prompt about to be drawn is the only thing the operator
-             * needs to see.  The serial log records the exit. */
-            return 0;
+        if (b == 0x1B) {
+            esc_held++;
+            if (esc_held >= ESC_HOLD_EXIT) {
+                put_serial("KBTESTER_END (Esc-hold)\n", 24);
+                sys_keyboard_raw(0);
+                sys_shell_clear();
+                return 0;
+            }
+            /* Still register the press visually on every repeat so the
+             * Esc cell stays sticky-lit while the operator holds it. */
+        } else {
+            esc_held = 0;
         }
 
         update_echo(b);

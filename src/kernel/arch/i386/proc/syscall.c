@@ -248,6 +248,22 @@ void syscall_dispatch(registers_t *regs)
         regs->eax = 0;
         break;
 
+    /* ------------------------------------------------------------------
+     * SYS_SHELL_CLEAR(213): full-screen reset identical to the `clear`
+     * shell command.  Calls the same shell_clear_screen() entry point so
+     * the VGA colour scheme, VESA pane fg/bg, framebuffer contents, and
+     * both cursors all land in the shell's default state.
+     *
+     * Use this from ring-3 apps that paint custom chrome (kbtester etc.)
+     * — sys_tty_clear alone doesn't restore the pane palette, which
+     * left the screen looking unchanged when the post-clear background
+     * happened to match the app's last cell colour.
+     * ------------------------------------------------------------------ */
+    case SYS_SHELL_CLEAR:
+        shell_clear_screen();
+        regs->eax = 0;
+        break;
+
     case SYS_WRITE_SERIAL: {
         const char *buf = (const char *)(uintptr_t)regs->ebx;
         uint32_t    len = regs->ecx;

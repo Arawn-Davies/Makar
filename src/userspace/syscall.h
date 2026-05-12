@@ -24,6 +24,7 @@
 #define SYS_DELETE_DIR   210
 #define SYS_WRITE_SERIAL 211
 #define SYS_KEYBOARD_RAW 212
+#define SYS_SHELL_CLEAR  213
 
 /* open() flags */
 #define O_RDONLY    0
@@ -146,6 +147,15 @@ static inline long sys_write_serial(const void *buf, unsigned int len)
 static inline void sys_keyboard_raw(int on)
 {
     syscall1(SYS_KEYBOARD_RAW, (long)on);
+}
+
+/* Reset the terminal to the shell's default palette and clear it — the
+ * same code path the `clear` shell command executes.  Use this from
+ * apps that paint custom chrome and want to leave the screen in a known
+ * state on exit; plain sys_tty_clear doesn't restore the pane palette. */
+static inline void sys_shell_clear(void)
+{
+    syscall1(SYS_SHELL_CLEAR, 0);
 }
 
 static inline int sys_open(const char *path, int flags)

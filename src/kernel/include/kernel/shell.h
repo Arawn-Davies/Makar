@@ -23,4 +23,14 @@ void shell_run(void);
  */
 void shell_readline(char *buf, size_t max);
 
+/*
+ * shell_clear_screen – the exact code path the `clear` shell command runs.
+ *
+ * Resets the VGA colour scheme to SHELL_COLOR_VGA, sets the VESA pane fg/bg
+ * to SHELL_FG_RGB/SHELL_BG_RGB, fills the framebuffer with the new bg, and
+ * resets the cursors.  Exposed so SYS_SHELL_CLEAR / ring-3 apps can reach
+ * an identical clean canvas without re-implementing colour reset.
+ */
+void shell_clear_screen(void);
+
 #endif /* _KERNEL_SHELL_H */
