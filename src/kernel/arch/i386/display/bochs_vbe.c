@@ -186,6 +186,21 @@ void bochs_vbe_disable(void)
     vga_load_text_font();
 }
 
+/* The kernel's FONT8x8 stores glyphs LSB-first (bit 0 = leftmost pixel),
+ * matching how vesa_tty.c rasterises them (`bits & (1u << x)` with
+ * x=0 = leftmost screen pixel).  VGA hardware reads plane-2 font bytes
+ * MSB-first (bit 7 = leftmost), so each byte needs flipping on upload
+ * — otherwise every 80×50 glyph comes out horizontally mirrored.
+ * FONT8x16 is already in the VGA-native MSB-first order, so its upload
+ * path doesn't need this. */
+static inline uint8_t bitrev8(uint8_t b)
+{
+    b = (uint8_t)(((b & 0xF0u) >> 4) | ((b & 0x0Fu) << 4));
+    b = (uint8_t)(((b & 0xCCu) >> 2) | ((b & 0x33u) << 2));
+    b = (uint8_t)(((b & 0xAAu) >> 1) | ((b & 0x55u) << 1));
+    return b;
+}
+
 /* Public sibling of vga_load_text_font().  Same plane-2 protocol, but
  * sources from FONT8x8 instead of FONT8x16 — the 80×50 CRTC only reads
  * the first 8 bytes of each glyph slot, where an 8×16 source clips the
@@ -210,7 +225,7 @@ void vga_load_text_font_8x8(void)
         if (c < 128) {
             const uint8_t *src = FONT8x8[c];
             for (int y = 0; y < FONT8x8_CHAR_H; y++)
-                dst[y] = src[y];
+                dst[y] = bitrev8(src[y]);
         } else {
             for (int y = 0; y < FONT8x8_CHAR_H; y++) dst[y] = 0;
         }
