@@ -1,5 +1,6 @@
 #include <kernel/bochs_vbe.h>
 #include <kernel/asm.h>
+#include <kernel/vesa_font.h>
 
 #define VBE_PORT_INDEX  0x01CEu
 #define VBE_PORT_DATA   0x01CFu
@@ -77,24 +78,112 @@ static const uint8_t cga_dac_palette[16][3] = {
     { 63, 63, 63 },  /* 15 WHITE     */
 };
 
-void bochs_vbe_disable(void)
+/* IBM VGA Mode 03h (80×25 colour text) register dump.  Cross-checked
+ * against the OSDev VGA Hardware article and the FreeDOS mode_03 table. */
+static const uint8_t mode3_seq[5] = {
+    0x03, 0x00, 0x03, 0x00, 0x02
+};
+static const uint8_t mode3_crtc[25] = {
+    0x5F, 0x4F, 0x50, 0x82, 0x55, 0x81, 0xBF, 0x1F,
+    0x00, 0x4F, 0x0D, 0x0E, 0x00, 0x00, 0x00, 0x50,
+    0x9C, 0x0E, 0x8F, 0x28, 0x1F, 0x96, 0xB9, 0xA3,
+    0xFF
+};
+static const uint8_t mode3_gc[9] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x0E, 0x00, 0xFF
+};
+static const uint8_t mode3_ac[21] = {
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x14, 0x07,
+    0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F,
+    0x0C, 0x00, 0x0F, 0x08, 0x00
+};
+
+static void vga_load_mode_3(void)
 {
-    vbe_write(VBE_IDX_ENABLE, VBE_DISABLED);
+    outb(0x3C2, 0x67);                          /* Misc Output       */
 
-    /* After disabling VBE the VGA attribute controller's PAS bit may be
-     * clear, which blanks all video output.  Reset the flip-flop by reading
-     * ISR1, then write the AR address register with PAS=1 to re-enable. */
-    inb(VGA_PORT_ISR1);
-    outb(VGA_PORT_AR, VGA_AR_PAS);
+    for (uint8_t i = 0; i < 5; i++) {           /* Sequencer         */
+        outb(0x3C4, i);
+        outb(0x3C5, mode3_seq[i]);
+    }
 
-    /* Reload the CGA 16-colour DAC palette.  VESA modes leave the DAC in
-     * linear graphics-palette state, which renders text-mode attribute
-     * bytes invisibly — `setmode 80x25` and `setmode 80x50` showed a
-     * solid black screen until the colours were restored. */
-    outb(0x3C8, 0);  /* DAC write index, start at colour 0 */
+    outb(0x3D4, 0x11);                          /* unlock CRTC 0..7  */
+    outb(0x3D5, (uint8_t)(inb(0x3D5) & 0x7F));
+    for (uint8_t i = 0; i < 25; i++) {          /* CRTC              */
+        outb(0x3D4, i);
+        outb(0x3D5, mode3_crtc[i]);
+    }
+
+    for (uint8_t i = 0; i < 9; i++) {           /* Graphics Ctrl     */
+        outb(0x3CE, i);
+        outb(0x3CF, mode3_gc[i]);
+    }
+
+    inb(VGA_PORT_ISR1);                         /* AC flip-flop      */
+    for (uint8_t i = 0; i < 21; i++) {          /* Attribute Ctrl    */
+        outb(VGA_PORT_AR, i);
+        outb(VGA_PORT_AR, mode3_ac[i]);
+    }
+    outb(VGA_PORT_AR, VGA_AR_PAS);              /* re-enable display */
+
+    outb(0x3C8, 0);                             /* DAC palette       */
     for (int i = 0; i < 16; i++) {
         outb(0x3C9, cga_dac_palette[i][0]);
         outb(0x3C9, cga_dac_palette[i][1]);
         outb(0x3C9, cga_dac_palette[i][2]);
     }
+}
+
+/* Reload plane-2 font data after a VESA session.  VBE leaves plane 2
+ * full of graphics pixels, which renders as junk glyphs in text mode.
+ * Synthesize an 8×16 cell by doubling each FONT8x8 row vertically so the
+ * same source font serves both 80×25 (reads all 16 lines) and 80×50
+ * (reads the first 8, which after doubling are FONT8x8 rows 0..3).
+ *
+ * Follows Linux vgacon's recipe: bracket the sequencer/GC reprogramming
+ * with a synchronous reset (Seq[0] = 1 → 3) so the chip doesn't see
+ * half-changed state mid-write. */
+static void vga_load_text_font(void)
+{
+    outb(0x3C4, 0); outb(0x3C5, 0x01);   /* sync reset start             */
+
+    outb(0x3C4, 2); outb(0x3C5, 0x04);   /* map mask = plane 2 only      */
+    outb(0x3C4, 4); outb(0x3C5, 0x07);   /* mem mode: ext + sequential   */
+
+    outb(0x3C4, 0); outb(0x3C5, 0x03);   /* sync reset end               */
+
+    outb(0x3CE, 4); outb(0x3CF, 0x02);   /* read map select = plane 2    */
+    outb(0x3CE, 5); outb(0x3CF, 0x00);   /* graphics mode: write mode 0  */
+    outb(0x3CE, 6); outb(0x3CF, 0x00);   /* misc: A0000-BFFFF, alpha     */
+
+    volatile uint8_t *plane2 = (volatile uint8_t *)0xA0000;
+    for (int c = 0; c < 256; c++) {
+        volatile uint8_t *dst = plane2 + c * 32;
+        if (c < 128) {
+            const uint8_t *src = FONT8x8[c];
+            for (int y = 0; y < 16; y++)
+                dst[y] = src[y >> 1];
+        } else {
+            for (int y = 0; y < 16; y++) dst[y] = 0;
+        }
+        for (int y = 16; y < 32; y++) dst[y] = 0;
+    }
+
+    outb(0x3C4, 0); outb(0x3C5, 0x01);   /* sync reset start             */
+
+    outb(0x3C4, 2); outb(0x3C5, 0x03);   /* map mask: planes 0+1 (text)  */
+    outb(0x3C4, 4); outb(0x3C5, 0x02);   /* mem mode: text (odd/even on) */
+
+    outb(0x3C4, 0); outb(0x3C5, 0x03);   /* sync reset end               */
+
+    outb(0x3CE, 4); outb(0x3CF, 0x00);   /* read map = plane 0 (chars)   */
+    outb(0x3CE, 5); outb(0x3CF, 0x10);   /* graphics mode: odd/even      */
+    outb(0x3CE, 6); outb(0x3CF, 0x0E);   /* misc: B8000-BFFFF 32K text   */
+}
+
+void bochs_vbe_disable(void)
+{
+    vbe_write(VBE_IDX_ENABLE, VBE_DISABLED);
+    vga_load_mode_3();
+    vga_load_text_font();
 }
