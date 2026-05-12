@@ -264,9 +264,12 @@ static key_t KEYS[] = {
     KN("F7",  0x8B, 0,                             42, KB_ROW0 + 0, 4),
     KN("F8",  0x8C, 0,                             47, KB_ROW0 + 0, 4),
     KN("F9",  0x8D, 0,                             53, KB_ROW0 + 0, 4),
-    KN("F10", 0x8E, 0,                             58, KB_ROW0 + 0, 4),
-    KN("F11", 0x8F, 0,                             63, KB_ROW0 + 0, 4),
-    KN("F12", 0x90, 0,                             68, KB_ROW0 + 0, 4),
+    /* F10/F11/F12 need an extra inner cell so the 3-char label fits;
+     * width 4 only leaves room for two characters between the brackets,
+     * which clipped every two-digit F-key to "F1". */
+    KN("F10", 0x8E, 0,                             58, KB_ROW0 + 0, 5),
+    KN("F11", 0x8F, 0,                             64, KB_ROW0 + 0, 5),
+    KN("F12", 0x90, 0,                             70, KB_ROW0 + 0, 5),
 
     /* --- number row (row 2) --------------------------------------------- */
     KN("`",   '`', '~',                             2, KB_ROW0 + 2, 3),
@@ -662,10 +665,12 @@ int main(int argc, char **argv)
         log_serial(count, b);
 
         if (b == 0x03) {       /* Ctrl-C: clean exit */
-            put_serial("KBTESTER_END\n", 13);
-            clear_screen(cols, rows);
-            put_str("kbtester: exited (Ctrl+C). See COM1 for full byte log.\n");
+            put_serial("KBTESTER_END (Ctrl+C; see COM1 for full byte log)\n", 50);
             sys_keyboard_raw(0);
+            clear_screen(cols, rows);
+            /* Leave the cursor at the top with no goodbye text — the shell
+             * prompt about to be drawn is the only thing the operator
+             * needs to see.  The serial log records the exit. */
             return 0;
         }
 

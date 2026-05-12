@@ -701,6 +701,7 @@ void keyboard_set_raw(int on)
 static unsigned char translate_make(kc_t kc)
 {
     switch (kc) {
+        case KC_ESC:         return 0x1B;
         case KC_ARROW_UP:    return (unsigned char)KEY_ARROW_UP;
         case KC_ARROW_DOWN:  return (unsigned char)KEY_ARROW_DOWN;
         case KC_ARROW_LEFT:  return (unsigned char)KEY_ARROW_LEFT;
