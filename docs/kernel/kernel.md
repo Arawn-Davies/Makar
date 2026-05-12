@@ -1,4 +1,4 @@
-# kernel — Boot entry point
+# kernel - Boot entry point
 
 **Source:** `kernel/kernel/kernel.c`
 
@@ -22,17 +22,17 @@ in `mbi`.
 
 Initialisation order:
 
-1. `terminal_initialize()` — clear the VGA text buffer and set up the cursor.
-2. `init_serial(COM1)` — configure the UART at 38 400 baud.
-3. `init_descriptor_tables()` — load the GDT and IDT, register ISR stubs.
-4. `init_debug_handlers()` — install INT 1 / INT 3 fallback handlers.
-5. `pmm_init(magic, mbi)` — build the physical frame bitmap from the Multiboot 2 memory map.
-6. `paging_init()` — identity-map the first 8 MiB and enable CR0.PG.
-7. `heap_init()` — map the heap region and set up the free-list allocator.
-8. `vesa_init(mbi)` — locate the Multiboot 2 framebuffer tag and populate `vesa_fb_t`.
-9. `vesa_tty_init()` — map the framebuffer and start the bitmap-font renderer.
-10. `init_timer(50)` — program the PIT for 50 Hz and enable interrupts.
-11. `kernel_post_boot()` — run the post-boot heartbeat loop.
+1. `terminal_initialize()` - clear the VGA text buffer and set up the cursor.
+2. `init_serial(COM1)` - configure the UART at 38 400 baud.
+3. `init_descriptor_tables()` - load the GDT and IDT, register ISR stubs.
+4. `init_debug_handlers()` - install INT 1 / INT 3 fallback handlers.
+5. `pmm_init(magic, mbi)` - build the physical frame bitmap from the Multiboot 2 memory map.
+6. `paging_init()` - identity-map the first 8 MiB and enable CR0.PG.
+7. `heap_init()` - map the heap region and set up the free-list allocator.
+8. `vesa_init(mbi)` - locate the Multiboot 2 framebuffer tag and populate `vesa_fb_t`.
+9. `vesa_tty_init()` - map the framebuffer and start the bitmap-font renderer.
+10. `init_timer(50)` - program the PIT for 50 Hz and enable interrupts.
+11. `kernel_post_boot()` - run the post-boot heartbeat loop.
 
 ---
 

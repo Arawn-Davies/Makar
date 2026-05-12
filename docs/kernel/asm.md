@@ -1,4 +1,4 @@
-# asm — Inline x86 port I/O and CPU-control helpers
+# asm - Inline x86 port I/O and CPU-control helpers
 
 **Header:** `kernel/include/kernel/asm.h`
 
@@ -34,7 +34,7 @@ Read and return one byte from I/O port `port` using the x86 `IN` instruction.
 void enable_interrupts(void);
 ```
 
-Execute `STI` — sets the CPU interrupt-enable flag, allowing hardware
+Execute `STI` - sets the CPU interrupt-enable flag, allowing hardware
 interrupts to be delivered.  Call only after the IDT is fully configured.
 
 ### `disable_interrupts`
@@ -43,7 +43,7 @@ interrupts to be delivered.  Call only after the IDT is fully configured.
 void disable_interrupts(void);
 ```
 
-Execute `CLI` — clears the CPU interrupt-enable flag, masking all maskable
+Execute `CLI` - clears the CPU interrupt-enable flag, masking all maskable
 hardware interrupts.  Used in critical sections and panic handlers.
 
 ### `invlpg`

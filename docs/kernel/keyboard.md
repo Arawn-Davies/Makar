@@ -1,4 +1,4 @@
-# keyboard — PS/2 keyboard driver
+# keyboard - PS/2 keyboard driver
 
 **Header:** `src/kernel/include/kernel/keyboard.h`
 **Source:** `src/kernel/arch/i386/drivers/keyboard.c`
@@ -11,7 +11,7 @@ a global fallback ring.
 This document describes the post-rewrite driver landed for slice #5 of the
 `feat/tty-multitasking` follow-up roadmap. It replaces the older single-
 state-flag implementation that suffered from "sticky e0", an unsynchronised
-SPSC ring race, and a tearing slot table — see "Why the rewrite" below.
+SPSC ring race, and a tearing slot table - see "Why the rewrite" below.
 
 ---
 
@@ -69,7 +69,7 @@ modifier state and never reaches the translator.
 
 The public API still uses `char` so existing consumers (`if (c == KEY_ARROW_UP) ...`)
 continue to compile unchanged. The producer pipeline is `unsigned char` end
-to end — see "Sentinel safety" below.
+to end - see "Sentinel safety" below.
 
 ### Sentinel byte values (in `keyboard.h`)
 
@@ -159,17 +159,17 @@ without touching the driver logic.
 used for any field read or written across context boundaries, to defeat
 compiler hoisting and tear-introducing optimisations.
 
-### Slot table — lock-free lookup, locked CAS mutation
+### Slot table - lock-free lookup, locked CAS mutation
 
 `kb_slots[KB_TASK_SLOTS]` is a fixed array. `owner == NULL` means the slot
-is free. Slots are **never compacted** — once a task is registered, its
+is free. Slots are **never compacted** - once a task is registered, its
 slot index is stable for the task's lifetime.
 
 - **Lookup** (`slot_lookup`): walks the array with `__atomic_load_n` on
   `owner`. Lock-free, safe from any context including IRQ.
 - **Registration** (`slot_register`): fast path is a lock-free lookup;
   slow path takes `kb_slots_lock` and does a CAS-based claim of the first
-  `NULL` slot. SMP-safe — concurrent registrations resolve via CAS.
+  `NULL` slot. SMP-safe - concurrent registrations resolve via CAS.
 - **Release** (`keyboard_release_task`): clears focus and pane bindings
   *before* nulling the owner pointer, so the IRQ never routes a byte to a
   released slot.
@@ -197,11 +197,11 @@ require revisits when a second CPU comes online:
   handler trying to take the same lock.
 - `kb_focused` and `kb_pane[]` are pointer-sized, naturally aligned, and
   always accessed via `__atomic_load_n` / `__atomic_store_n` with
-  acquire/release semantics — so a future SMP runtime always sees a
+  acquire/release semantics - so a future SMP runtime always sees a
   fully-published owner pointer for the current focus.
 
 On UP, the spinlocks reduce to a single CAS on the fast path and an
-unconditional store on release — i.e. effectively free.
+unconditional store on release - i.e. effectively free.
 
 ---
 
@@ -209,7 +209,7 @@ unconditional store on release — i.e. effectively free.
 
 The `KEY_*` sentinels live in `0x80..0x88`. Stored as a *signed* `char`
 they sign-extend to `0xFFFFFF80..` when widened to `int`, which breaks any
-comparison that goes via `int` — e.g. `c >= 0x80` evaluates `(int)(char)0x80
+comparison that goes via `int` - e.g. `c >= 0x80` evaluates `(int)(char)0x80
 >= (int)0x80`, i.e. `-128 >= 128`, i.e. false.
 
 Equality testing between two `char`-typed operands survives the widening
@@ -220,7 +220,7 @@ sentinel is corrupted.
 
 The driver enforces this discipline by:
 
-1. Keeping the **producer pipeline `unsigned char` end-to-end** —
+1. Keeping the **producer pipeline `unsigned char` end-to-end** -
    scancodes, keycodes, ring storage, translator output.
 2. Performing the conversion to `char` at exactly two places:
    `keyboard_getchar()` and `keyboard_poll()`, on the return value.
@@ -234,10 +234,10 @@ The driver enforces this discipline by:
 On every IRQ:
 
 1. Read `0x64` status; bail if `OBF` is clear.
-2. Read `0x60` data — this acks the byte to the controller.
+2. Read `0x60` data - this acks the byte to the controller.
 3. If `AUXB` is set the byte is from the mouse channel; discard.
 4. Filter controller-internal status bytes (`0x00`, `0xAA`, `0xEE`, `0xFA`,
-   `0xFE`, `0xFF`) — they are responses to commands, never keystrokes.
+   `0xFE`, `0xFF`) - they are responses to commands, never keystrokes.
 5. Loop up to 16 times so a runaway controller can't livelock the kernel,
    but stacked-up bytes from a previously-lost IRQ are still drained.
 
@@ -250,20 +250,20 @@ queued before our handler was registered.
 
 Three classes of latent bug in the previous driver:
 
-1. **Sticky `e0`** — `extended_key` was a single bit set on every `0xE0`
+1. **Sticky `e0`** - `extended_key` was a single bit set on every `0xE0`
    byte and cleared only by the next non-prefix byte. A lost byte (typematic
    burst, lost EOI, emulator hiccup) left it sticky and silently corrupted
    the *next* normal scancode. New decoder is a full state machine and
    re-issuing `0xE0` cleanly restarts the prefix.
 
-2. **SPSC ring race** — IRQ producer wrote `slot->buf[head]` then incremented
+2. **SPSC ring race** - IRQ producer wrote `slot->buf[head]` then incremented
    `head` with no barrier between the two stores. Under `-O2` the compiler
    was free to reorder, and a consumer that observed the new `head` before
    the new byte landed would read stale ring memory. Most likely cause of
    the "sporadic single-character noise not correlated to keystrokes" symptom
    reported on PR #123.
 
-3. **Slot-table tearing** — `kb_find_or_register()` mutated the slot array
+3. **Slot-table tearing** - `kb_find_or_register()` mutated the slot array
    and `kb_nslots` from task context with no synchronisation. An IRQ1
    firing mid-mutation walked a partial table and either dereferenced
    garbage or routed to the wrong task. New design is fixed-slot + CAS, and

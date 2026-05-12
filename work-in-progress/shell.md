@@ -1,4 +1,4 @@
-# Shell — interactive kernel command loop
+# Shell - interactive kernel command loop
 
 > **Status:** complete (ongoing: new commands added with each feature)
 > **Branch:** landed on `main`

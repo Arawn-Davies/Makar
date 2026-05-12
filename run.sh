@@ -1,5 +1,5 @@
 #!/bin/bash
-# run.sh — single entrypoint for building, testing, and running Makar OS.
+# run.sh - single entrypoint for building, testing, and running Makar OS.
 #
 # Usage: ./run.sh <mode>
 #
@@ -150,7 +150,7 @@ _run_qemu_interactive() {
         # shellcheck disable=SC2086
         "$_qemu" $_host_args
     elif [ "$(_build_ctx)" = "docker" ]; then
-        echo "==> Host QEMU not found — running QEMU in Docker (serial stdio)..."
+        echo "==> Host QEMU not found - running QEMU in Docker (serial stdio)..."
         "$DOCKER_BIN" run --rm -it \
             --platform "$DOCKER_PLATFORM" \
             -v "$REPO_ROOT:/work" -w /work \
@@ -195,9 +195,9 @@ _check_ktest() {
     if grep -q "KTEST_RESULT: PASS" "$REPO_ROOT/ktest.log"; then
         echo "==> ktest: ALL PASSED"
     elif grep -q "KTEST_RESULT: FAIL" "$REPO_ROOT/ktest.log"; then
-        echo "==> ktest: FAILED — see ktest.log"; exit 1
+        echo "==> ktest: FAILED - see ktest.log"; exit 1
     else
-        echo "==> ktest: TIMEOUT or no result — see ktest.log"; exit 1
+        echo "==> ktest: TIMEOUT or no result - see ktest.log"; exit 1
     fi
 }
 
@@ -217,7 +217,7 @@ _make_fat32_disk() {
 }
 
 # Run the GDB ISO boot-checkpoint test.
-# Boots from CD-ROM only — verifies boot sequence, background ktest, and
+# Boots from CD-ROM only - verifies boot sequence, background ktest, and
 # CD-ROM filesystem content.
 _run_gdb_iso_test() {
     echo "==> Running GDB boot tests (ISO boot)..."
@@ -358,7 +358,7 @@ iso-test)
     ;;
 
 # ── iso-ktest-gui ─────────────────────────────────────────────────────────────
-# Requires host QEMU and a display server — cannot fall back to Docker.
+# Requires host QEMU and a display server - cannot fall back to Docker.
 iso-ktest-gui)
     QEMU_BIN=$(_host_qemu)
     if [ -z "$QEMU_BIN" ]; then
@@ -368,7 +368,7 @@ iso-ktest-gui)
     fi
     _clean
     _build_iso "CFLAGS='-O0 -g3' KERNEL_ARGS=test_mode"
-    echo "==> Running ktest suite (graphical QEMU — window closes on completion)..."
+    echo "==> Running ktest suite (graphical QEMU - window closes on completion)..."
     rm -f "$REPO_ROOT/ktest.log"
     "$QEMU_BIN" \
         -cdrom "$REPO_ROOT/makar.iso" \

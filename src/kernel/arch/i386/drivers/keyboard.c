@@ -292,9 +292,9 @@ typedef uint8_t kc_t;
 #define KC_ARROW_DOWN   KC_EXT(0x50)
 #define KC_ARROW_LEFT   KC_EXT(0x4B)
 #define KC_ARROW_RIGHT  KC_EXT(0x4D)
-#define KC_LSUPER       KC_EXT(0x5B)   /* e0 5b — left Windows/Super  */
-#define KC_RSUPER       KC_EXT(0x5C)   /* e0 5c — right Windows/Super */
-#define KC_MENU         KC_EXT(0x5D)   /* e0 5d — Menu/Application    */
+#define KC_LSUPER       KC_EXT(0x5B)   /* e0 5b - left Windows/Super  */
+#define KC_RSUPER       KC_EXT(0x5C)   /* e0 5c - right Windows/Super */
+#define KC_MENU         KC_EXT(0x5D)   /* e0 5d - Menu/Application    */
 
 /* ===========================================================================
  * Set-1 -> ASCII translation tables (US QWERTY).
@@ -668,7 +668,7 @@ static int mod_ralt    = 0;
  * still fires so a raw-mode app can be exited the usual way.
  *
  * A single global flag is fine because only the focused task receives
- * cooked-mode shortcuts in the first place — there is no scenario where
+ * cooked-mode shortcuts in the first place - there is no scenario where
  * one running task wants raw delivery and another wants cooked. */
 static volatile int kb_raw_mode = 0;
 
@@ -838,7 +838,7 @@ static void on_make(kc_t kc)
         }
     }
 
-    /* Ctrl+C fires in BOTH modes — it's how a raw-mode app gets exited. */
+    /* Ctrl+C fires in BOTH modes - it's how a raw-mode app gets exited. */
     if (mod_ctrl && letter == 'c') {
         __atomic_store_n(&kb_sigint, 1, __ATOMIC_RELEASE);
         kb_route(0x03);

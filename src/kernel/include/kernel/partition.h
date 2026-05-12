@@ -2,11 +2,11 @@
 #define _KERNEL_PARTITION_H
 
 /*
- * partition.h — partition table discovery and management.
+ * partition.h - partition table discovery and management.
  *
  * Supports:
- *   MBR  — up to four primary partitions, 16-byte entries at sector 0.
- *   GPT  — up to 128 entries, with protective MBR, primary and backup headers.
+ *   MBR  - up to four primary partitions, 16-byte entries at sector 0.
+ *   GPT  - up to 128 entries, with protective MBR, primary and backup headers.
  *
  * Partition type MDFS (0xFA / PART_GUID_MDFS) represents the Makar/Medli
  * File System used by both this OS and its sibling Medli.
@@ -102,7 +102,7 @@ extern const uint8_t PART_GUID_MDFS[16];
  * part_probe – detect and read the partition table on drive 0–3.
  *
  * Fills *out with scheme, total_sectors, count, and parts[].
- * Returns 0 on success (even if no partition table was found — check
+ * Returns 0 on success (even if no partition table was found - check
  * out->scheme for PART_SCHEME_NONE in that case), or negative on I/O error.
  */
 int part_probe(uint8_t drive, disk_parts_t *out);

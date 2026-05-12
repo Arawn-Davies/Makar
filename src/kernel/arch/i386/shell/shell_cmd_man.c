@@ -1,10 +1,10 @@
 /*
- * shell_cmd_man.c — man page viewer and command lister.
+ * shell_cmd_man.c - man page viewer and command lister.
  *
  * lsman : list all built-in commands in a fixed-width table.
  * man   : print the full manual entry for a named command.
  *
- * Man text is static — no filesystem dependency.
+ * Man text is static - no filesystem dependency.
  */
 
 #include "shell_priv.h"
@@ -26,7 +26,7 @@ typedef struct {
 static const man_entry_t man_table[] = {
     { "help",
       "list all built-in commands (alias for lsman)",
-      "Usage: help\n\nAlias for lsman — prints the full command table.\n"
+      "Usage: help\n\nAlias for lsman - prints the full command table.\n"
     },
     { "lsman",
       "list all built-in commands",
@@ -107,7 +107,7 @@ static const man_entry_t man_table[] = {
     { "mkfs",
       "format a partition as FAT32",
       "Usage: mkfs <drv> <part#>\n\n"
-      "Formats the specified partition as FAT32.  DESTRUCTIVE — all data lost.\n"
+      "Formats the specified partition as FAT32.  DESTRUCTIVE - all data lost.\n"
     },
     { "mount",
       "mount a FAT32 partition at /hd/",
@@ -212,7 +212,7 @@ static const man_entry_t man_table[] = {
 };
 
 /* -------------------------------------------------------------------------
- * lsman — fixed-width two-column table
+ * lsman - fixed-width two-column table
  * ---------------------------------------------------------------------- */
 
 static void print_padded(const char *s, int width)

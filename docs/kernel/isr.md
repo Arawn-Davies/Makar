@@ -1,4 +1,4 @@
-# isr — Interrupt and IRQ dispatch
+# isr - Interrupt and IRQ dispatch
 
 **Header:** `kernel/include/kernel/isr.h`  
 **Source:** `kernel/arch/i386/isr.c`  

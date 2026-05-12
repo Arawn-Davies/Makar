@@ -1,4 +1,4 @@
-# timer — PIT timer driver and `ksleep`
+# timer - PIT timer driver and `ksleep`
 
 **Header:** `kernel/include/kernel/timer.h`  
 **Source:** `kernel/arch/i386/hardware/timer.c`
@@ -15,7 +15,7 @@ function built on the resulting tick counter.
 
 | Port | Direction | Description |
 |---|---|---|
-| `0x40` | R/W | Channel 0 data — divisor (lo byte then hi byte). |
+| `0x40` | R/W | Channel 0 data - divisor (lo byte then hi byte). |
 | `0x41` | R/W | Channel 1 data (unused; historically DRAM refresh). |
 | `0x42` | R/W | Channel 2 data (unused; drives PC speaker). |
 | `0x43` | Write | Mode/Command register. |
@@ -44,7 +44,7 @@ Each IRQ 0 fires `timer_callback`, which:
 2. Calls `t_spinner_tick(tick)` to animate the terminal spinner.
 3. Every `SCHED_QUANTUM = 4` ticks (≈ 80 ms at 50 Hz), sends End-Of-Interrupt
    to the master PIC and calls `task_yield()`. This drives **preemptive task
-   switching** — a busy-loop ring-0 task that never voluntarily yields will
+   switching** - a busy-loop ring-0 task that never voluntarily yields will
    still surrender the CPU at the next quantum boundary. EOI is sent before
    the yield so further timer IRQs can fire while the new task runs.
 
@@ -65,7 +65,7 @@ interrupts.
 2. Computes the 16-bit divisor (`1193180 / frequency`).
 3. Writes command byte `0x36` to port `0x43`.
 4. Writes the divisor to port `0x40` (lo byte first, then hi byte).
-5. Calls `enable_interrupts()` — this is the point at which hardware interrupts
+5. Calls `enable_interrupts()` - this is the point at which hardware interrupts
    first become active in the boot sequence.
 
 | Parameter | Description |
@@ -91,7 +91,7 @@ void ksleep(uint32_t ticks);
 Busy-wait until at least `ticks` timer ticks have elapsed since the call.
 At 100 Hz, `ksleep(100)` sleeps for approximately one second.
 
-This is a spin-wait — the CPU executes a tight loop and does not yield.  It
+This is a spin-wait - the CPU executes a tight loop and does not yield.  It
 is suitable for short post-boot delays but should be replaced with an
 interrupt-driven sleep once a scheduler exists.
 

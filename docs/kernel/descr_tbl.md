@@ -1,4 +1,4 @@
-# descr_tbl — GDT and IDT initialisation
+# descr_tbl - GDT and IDT initialisation
 
 **Header:** `kernel/include/kernel/descr_tbl.h`  
 **Source:** `kernel/arch/i386/core/descr_tbl.c`  
@@ -89,7 +89,7 @@ A packed struct holding the 32-bit Task State Segment fields.  Only `esp0`,
 |---|---|---|
 | `ss0` | `0x10` | Kernel data segment for the ring-0 stack. |
 | `esp0` | updated per task-switch | Kernel stack pointer for ring 3 → ring 0 transitions. |
-| `iomap_base` | `sizeof(tss_t)` | Points past the TSS — no I/O permission bitmap. |
+| `iomap_base` | `sizeof(tss_t)` | Points past the TSS - no I/O permission bitmap. |
 
 See the [TSS OSDev article](https://wiki.osdev.org/TSS) for the complete field list.
 

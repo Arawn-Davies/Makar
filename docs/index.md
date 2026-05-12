@@ -1,8 +1,8 @@
-# Makar — Documentation
+# Makar - Documentation
 
 Makar is a bare-metal i686 operating system written in C, booted via GRUB
 Multiboot 2.  It is the C/C++ sibling of
-[Medli](https://github.com/Arawn-Davies/Medli) — both implement the same OS
+[Medli](https://github.com/Arawn-Davies/Medli) - both implement the same OS
 concept, sharing UX conventions, filesystem design, and long-term binary
 format goals.  See [Makar × Medli](makar-medli.md) for the full co-operation
 roadmap.
@@ -58,7 +58,7 @@ roadmap.
 
 | Document | Description |
 |---|---|
-| [Building & running](building.md) | Full build guide — native, Docker scripts, Docker Compose, environment variables, QEMU drive layout |
+| [Building & running](building.md) | Full build guide - native, Docker scripts, Docker Compose, environment variables, QEMU drive layout |
 | [Testing](testing.md) | Serial smoke test, GDB boot-test suite, debugging with GDB |
 | [WSL2 guide](wsl2.md) | Building and running on Windows via WSL2 + Docker Desktop, including QEMU GUI options |
 

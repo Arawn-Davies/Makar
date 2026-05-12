@@ -2,7 +2,7 @@
 #define _KERNEL_VFS_H
 
 /*
- * vfs.h — lightweight Virtual Filesystem layer.
+ * vfs.h - lightweight Virtual Filesystem layer.
  *
  * Provides a single, unified path namespace:
  *

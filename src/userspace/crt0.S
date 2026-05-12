@@ -13,7 +13,7 @@ _start:
      * So char **argv = esp+4 and char **envp = esp+4+(argc+1)*4.
      */
     movl  (%esp), %eax       /* argc                             */
-    leal 4(%esp), %ecx       /* &argv[0] — this IS char **argv   */
+    leal 4(%esp), %ecx       /* &argv[0] - this IS char **argv   */
     /* envp starts after argv[argc]=NULL, i.e. 4(%ecx,%eax,4) */
     leal 4(%ecx,%eax,4), %edx  /* char **envp                   */
 

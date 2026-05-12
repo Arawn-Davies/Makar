@@ -1,15 +1,15 @@
 /*
- * syscall.c — int 0x80 syscall dispatcher (Linux i386 ABI subset).
+ * syscall.c - int 0x80 syscall dispatcher (Linux i386 ABI subset).
  *
  * Supported calls:
- *   SYS_EXIT  (1)  — terminate current task
- *   SYS_READ  (3)  — read from fd (0=keyboard, 3+ = open file)
- *   SYS_WRITE (4)  — write to fd  (1/2=VGA, 3+ = open file [NYI])
- *   SYS_OPEN  (5)  — open a VFS path, returns fd
- *   SYS_CLOSE (6)  — close a file fd
- *   SYS_BRK   (45) — expand/query user-space heap break
- *   SYS_YIELD (158)— cooperative yield
- *   SYS_DEBUG (100)— debug checkpoint (Makar extension)
+ *   SYS_EXIT  (1)  - terminate current task
+ *   SYS_READ  (3)  - read from fd (0=keyboard, 3+ = open file)
+ *   SYS_WRITE (4)  - write to fd  (1/2=VGA, 3+ = open file [NYI])
+ *   SYS_OPEN  (5)  - open a VFS path, returns fd
+ *   SYS_CLOSE (6)  - close a file fd
+ *   SYS_BRK   (45) - expand/query user-space heap break
+ *   SYS_YIELD (158)- cooperative yield
+ *   SYS_DEBUG (100)- debug checkpoint (Makar extension)
  *
  * File descriptors:
  *   0 = stdin  (keyboard, blocking via keyboard_getchar)
@@ -19,7 +19,7 @@
  *
  * Interrupts stay disabled for the duration of the syscall (the isr_common_stub
  * begins with cli). keyboard_getchar() task_yield()s internally so other tasks
- * — which have IF=1 in their saved EFLAGS — can receive IRQ1 and fill the
+ * - which have IF=1 in their saved EFLAGS - can receive IRQ1 and fill the
  * keyboard ring buffer while this task waits.
  */
 
@@ -63,7 +63,7 @@ static void ls_cb(const char *name, int is_dir, void *ctx)
 }
 
 /* -------------------------------------------------------------------------
- * File descriptor table (global — only one user process runs at a time)
+ * File descriptor table (global - only one user process runs at a time)
  * ------------------------------------------------------------------------- */
 
 #define FD_SLOT_COUNT  8   /* fds 3..10 */
@@ -239,7 +239,7 @@ void syscall_dispatch(registers_t *regs)
      *
      * Raw mode suppresses cooked shortcuts (Alt+Fn TTY switch, Ctrl+A
      * pane prefix) and delivers modifier presses + every F-key as
-     * sentinel bytes — kbtester is the canonical consumer.  shell_exec_elf
+     * sentinel bytes - kbtester is the canonical consumer.  shell_exec_elf
      * defensively forces raw=0 after the child exits in case the app
      * was killed before its own cleanup ran.
      * ------------------------------------------------------------------ */
@@ -255,7 +255,7 @@ void syscall_dispatch(registers_t *regs)
      * both cursors all land in the shell's default state.
      *
      * Use this from ring-3 apps that paint custom chrome (kbtester etc.)
-     * — sys_tty_clear alone doesn't restore the pane palette, which
+     * - sys_tty_clear alone doesn't restore the pane palette, which
      * left the screen looking unchanged when the post-clear background
      * happened to match the app's last cell colour.
      * ------------------------------------------------------------------ */
@@ -389,7 +389,7 @@ void syscall_dispatch(registers_t *regs)
         break;
 
     /* ------------------------------------------------------------------
-     * SYS_DEBUG(100): Makar extension — print a debug checkpoint.
+     * SYS_DEBUG(100): Makar extension - print a debug checkpoint.
      * EBX = uint32 checkpoint value, written to VGA + serial.
      * ------------------------------------------------------------------ */
     case SYS_DEBUG:
@@ -427,7 +427,7 @@ void syscall_dispatch(registers_t *regs)
     }
 
     /* ------------------------------------------------------------------
-     * SYS_GETKEY(200): raw single-char keyboard read — no echo, no
+     * SYS_GETKEY(200): raw single-char keyboard read - no echo, no
      * line-buffering.  Returns raw char value including arrow sentinels
      * (0x80-0x83) as unsigned bytes in EAX.
      * ------------------------------------------------------------------ */
@@ -612,7 +612,7 @@ void syscall_dispatch(registers_t *regs)
     }
 
     default:
-        /* Unknown syscall — return -ENOSYS. */
+        /* Unknown syscall - return -ENOSYS. */
         regs->eax = (uint32_t)-38;   /* -ENOSYS */
         break;
     }

@@ -399,7 +399,7 @@ __attribute__((noreturn)) void acpi_reboot(void)
                           | ((uint16_t)fadt_raw[FADT_OFFSET_RESET_ADDR + 1] << 8));
             uint8_t  val  = fadt_raw[FADT_OFFSET_RESET_VALUE];
             outb(port, val);
-            /* Short spin — most hardware resets within microseconds. */
+            /* Short spin - most hardware resets within microseconds. */
             for (volatile int i = 0; i < 100000; i++)
                 asm volatile("pause");
         }
@@ -410,6 +410,6 @@ __attribute__((noreturn)) void acpi_reboot(void)
     for (volatile int i = 0; i < 100000; i++)
         asm volatile("pause");
 
-    /* 3. Triple-fault (last resort — always works). */
+    /* 3. Triple-fault (last resort - always works). */
     triple_fault_reboot();
 }

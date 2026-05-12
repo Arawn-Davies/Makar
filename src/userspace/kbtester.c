@@ -29,7 +29,7 @@
  *                     the top of the screen as a typing buffer.
  *
  * Exit: hold Escape for 4 s. Ctrl+C, 'q' etc. are keys under test
- *       and only light up their cells — using them as exit commands
+ *       and only light up their cells - using them as exit commands
  *       defeats the point of a key tester.  The shell will still
  *       force-kill on Ctrl+C through the parent task; the resulting
  *       dirty screen is acceptable until per-TTY screen buffers land
@@ -195,7 +195,7 @@ static void fill_spaces(unsigned int col, unsigned int row, unsigned int n)
 }
 
 /*
- * Wipe the entire screen via SYS_SHELL_CLEAR — the same code path the
+ * Wipe the entire screen via SYS_SHELL_CLEAR - the same code path the
  * `clear` shell command runs.  Resets the VGA colour scheme, the VESA
  * pane fg/bg, the framebuffer contents, and both cursors.  Apps that
  * paint custom chrome need the palette reset; plain sys_tty_clear only
@@ -652,7 +652,7 @@ int main(int argc, char **argv)
 
     /*
      * Exit policy:
-     *   Ctrl+C is a key under test, not an exit command — pressing it
+     *   Ctrl+C is a key under test, not an exit command - pressing it
      *   just lights up the Ctrl + C cells.  The shell's exec wait loop
      *   still observes the sigint and force-kills kbtester, but the
      *   resulting "dirty" exit is fine here because (next slice) the

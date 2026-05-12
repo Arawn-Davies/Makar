@@ -1,4 +1,4 @@
-# heap — Kernel heap allocator
+# heap - Kernel heap allocator
 
 **Header:** `kernel/include/kernel/heap.h`  
 **Source:** `kernel/arch/i386/heap.c`

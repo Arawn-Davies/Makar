@@ -15,7 +15,7 @@ NAME = 'Background ktest'
 
 
 def run():
-    # Always advance to keyboard_getchar — this guarantees:
+    # Always advance to keyboard_getchar - this guarantees:
     #   1. The shell has exited the ktest wait loop (ktest_bg_done == 1).
     #   2. vfs_init() + vfs_auto_mount() have completed.
     #   3. The inferior is stopped in normal task context (not an ISR frame),
@@ -41,6 +41,6 @@ def run():
               flush=True)
         return False
 
-    print('PASS: ktest_bg_done = 1 — background tests completed', flush=True)
+    print('PASS: ktest_bg_done = 1 - background tests completed', flush=True)
     print('GROUP PASS: ' + NAME, flush=True)
     return True

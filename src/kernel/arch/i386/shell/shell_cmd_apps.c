@@ -181,7 +181,7 @@ static void cmd_eject(int argc, char **argv)
 
     t_writestring("eject: unknown target '");
     t_writestring(target);
-    t_writestring("' — use 'hdd' or 'cdrom'\n");
+    t_writestring("' - use 'hdd' or 'cdrom'\n");
 }
 
 /* ---------------------------------------------------------------------------

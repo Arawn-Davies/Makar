@@ -11,13 +11,13 @@ precedence, parentheses, unary minus, modulo).
 
 ## Implemented
 
-- [x] `src/userspace/calc.c` — bc-style expression evaluator
+- [x] `src/userspace/calc.c` - bc-style expression evaluator
       (grammar: expr / term / unary / factor; no libc dependency)
-- [x] `src/userspace/Makefile` — `calc.elf` added to `PROGS`
-- [x] `keyboard.h` — arrow-key sentinels moved from 0x01–0x04 to
+- [x] `src/userspace/Makefile` - `calc.elf` added to `PROGS`
+- [x] `keyboard.h` - arrow-key sentinels moved from 0x01–0x04 to
       0x80–0x83, freeing the Ctrl code range; `KEY_CTRL_C = 0x03` added;
       `keyboard_sigint_consume()` declared
-- [x] `keyboard.c` — `g_sigint` flag + `keyboard_sigint_consume()`
+- [x] `keyboard.c` - `g_sigint` flag + `keyboard_sigint_consume()`
       foundation committed
 
 ## TODO
@@ -27,7 +27,7 @@ precedence, parentheses, unary minus, modulo).
       remove old `if (ctrl_code > 4)` guard (arrow keys no longer conflict)
 - [ ] `keyboard.c` `keyboard_getchar()`: check `g_sigint` in the wait loop;
       if set, consume and return `KEY_CTRL_C`
-- [ ] `shell.c` `shell_readline()`: handle `KEY_CTRL_C` — print `^C\n`,
+- [ ] `shell.c` `shell_readline()`: handle `KEY_CTRL_C` - print `^C\n`,
       call `task_exit()` if in a user task, abandon line if in shell task
 - [ ] `shell_cmd_apps.c` `cmd_exec()` wait loop: poll `keyboard_sigint_consume()`;
       if true, mark task DEAD, restore kernel VMM, print `^C\n`, break

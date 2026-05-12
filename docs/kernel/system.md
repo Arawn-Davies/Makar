@@ -1,4 +1,4 @@
-# system — Panic, halt, and assertion helpers
+# system - Panic, halt, and assertion helpers
 
 **Headers:** `kernel/include/kernel/system.h`  
 **Source:** `kernel/arch/i386/system.c`

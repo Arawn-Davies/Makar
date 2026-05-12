@@ -1,6 +1,6 @@
 # Building & Running Makar
 
-The entire build and test toolchain runs inside Docker — no cross-compiler or
+The entire build and test toolchain runs inside Docker - no cross-compiler or
 native GDB is required on the host.  For Windows-specific setup see
 [WSL2 guide](wsl2.md).
 
@@ -21,7 +21,7 @@ native GDB is required on the host.  For Windows-specific setup see
 # Interactive kernel shell (builds in Docker, QEMU runs on host or in Docker):
 ./run.sh iso-boot
 
-# Full CI test suite (ktest + GDB boot tests — works with or without host QEMU):
+# Full CI test suite (ktest + GDB boot tests - works with or without host QEMU):
 ./run.sh iso-test
 
 # Interactive HDD boot:
@@ -57,9 +57,9 @@ All build, test, and boot operations go through a single script:
 
 | Context | Condition | Effect |
 |---|---|---|
-| **container** | `/.dockerenv` present (GitHub Actions `container:` job, or manual `docker run`) | Steps run directly — no inner `docker run` |
+| **container** | `/.dockerenv` present (GitHub Actions `container:` job, or manual `docker run`) | Steps run directly - no inner `docker run` |
 | **docker** | Docker CLI available on the host | Steps are wrapped in `docker run` |
-| **native** | `i686-elf-gcc` on the host PATH | Steps run directly — no Docker |
+| **native** | `i686-elf-gcc` on the host PATH | Steps run directly - no Docker |
 | **none** | None of the above | Error with install hints |
 
 ### QEMU strategy
@@ -88,7 +88,7 @@ All build, test, and boot operations go through a single script:
 
 ## Internal build scripts
 
-These run inside the container and are called by `run.sh` — do not invoke directly.
+These run inside the container and are called by `run.sh` - do not invoke directly.
 
 | Script | What it does |
 |---|---|
@@ -150,8 +150,8 @@ docker buildx build --platform linux/amd64 \
 
 | IDE slot | Purpose |
 |---|---|
-| index 0 | Hard disk — 512 MiB raw image (`hdd.img`, auto-created blank) |
-| index 2 | Live CD — `makar.iso`, GRUB boots from here (`-boot order=d`) |
+| index 0 | Hard disk - 512 MiB raw image (`hdd.img`, auto-created blank) |
+| index 2 | Live CD - `makar.iso`, GRUB boots from here (`-boot order=d`) |
 
 `run.sh hdd-boot` attaches only the HDD (`-boot c`, no CD-ROM).
 

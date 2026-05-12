@@ -1,5 +1,5 @@
 /*
- * timer.c — Intel 8253/8254 PIT driver.
+ * timer.c - Intel 8253/8254 PIT driver.
  *
  * Programs PIT channel 0 to fire IRQ 0 at a configurable rate and provides
  * a busy-wait sleep built on the resulting tick counter.

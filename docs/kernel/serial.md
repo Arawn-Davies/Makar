@@ -1,4 +1,4 @@
-# serial — Serial port (UART) driver
+# serial - Serial port (UART) driver
 
 **Header:** `kernel/include/kernel/serial.h`  
 **Source:** `kernel/arch/i386/serial.c`

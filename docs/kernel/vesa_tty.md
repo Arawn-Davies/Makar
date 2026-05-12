@@ -1,4 +1,4 @@
-# vesa_tty — VESA bitmap-font text renderer
+# vesa_tty - VESA bitmap-font text renderer
 
 **Header:** `kernel/include/kernel/vesa_tty.h`  
 **Source:** `kernel/arch/i386/vesa_tty.c`  
@@ -33,7 +33,7 @@ both outputs show identical content.
 bool vesa_tty_init(void);
 ```
 
-1. Call `vesa_get_fb()` — returns `false` immediately if no framebuffer is
+1. Call `vesa_get_fb()` - returns `false` immediately if no framebuffer is
    available.
 2. Call `paging_map_region()` to map the framebuffer physical address range
    into the virtual address space before any pixel write.
@@ -62,11 +62,11 @@ void vesa_tty_putchar(char c);
 
 Render character `c` at the current cursor position and advance the cursor.
 
-- `'\n'` — move to column 0 of the next row; scroll up one row if the
+- `'\n'` - move to column 0 of the next row; scroll up one row if the
   cursor reaches the bottom.
-- `'\r'` — move to column 0 of the current row.
-- `'\b'` — erase the character to the left of the cursor (draw a space).
-- Any other character — draw the glyph and advance the column; wrap to the
+- `'\r'` - move to column 0 of the current row.
+- `'\b'` - erase the character to the left of the cursor (draw a space).
+- Any other character - draw the glyph and advance the column; wrap to the
   next row at the right edge, scrolling if necessary.
 
 ### `vesa_tty_setcolor`

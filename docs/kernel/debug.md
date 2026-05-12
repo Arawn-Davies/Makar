@@ -1,4 +1,4 @@
-# debug — INT 1 / INT 3 debug-exception handlers
+# debug - INT 1 / INT 3 debug-exception handlers
 
 **Header:** `kernel/include/kernel/debug.h`  
 **Source:** `kernel/arch/i386/debug.c`
@@ -19,8 +19,8 @@ or the exceptions are triggered by kernel code directly.
 void init_debug_handlers(void);
 ```
 
-Register `debug_exception_handler` on vector 1 (INT 1 — debug / single-step)
-and `breakpoint_handler` on vector 3 (INT 3 — software breakpoint).
+Register `debug_exception_handler` on vector 1 (INT 1 - debug / single-step)
+and `breakpoint_handler` on vector 3 (INT 3 - software breakpoint).
 
 Called from `kernel_main` immediately after `init_descriptor_tables()`.
 
@@ -33,7 +33,7 @@ Both handlers follow the same pattern:
 1. Print an identification line to the VGA terminal and the serial port.
 2. Dump all general-purpose registers, `EIP`, `EFLAGS`, `CS`, `SS`, `ESP`,
    and `EBP` to both outputs.
-3. **Return normally** — execution resumes at the instruction after the trap.
+3. **Return normally** - execution resumes at the instruction after the trap.
 
 This means the kernel does not panic on a debug exception.  If QEMU's GDB
 stub is active, control is passed to the debugger before the kernel handler
@@ -49,7 +49,7 @@ per register, formatted for easy grepping in the serial log.
 
 ---
 
-## INT 1 — Debug exception (vector 1)
+## INT 1 - Debug exception (vector 1)
 
 Fired by:
 - Hardware single-step mode (EFLAGS.TF set).
@@ -59,7 +59,7 @@ In a GDB session, QEMU intercepts this and notifies the debugger.  The kernel
 handler prints `[DEBUG] INT1 debug exception` and the register dump if it
 is ever reached without a debugger.
 
-## INT 3 — Breakpoint (vector 3)
+## INT 3 - Breakpoint (vector 3)
 
 Fired by:
 - The `INT3` instruction (opcode `0xCC`), which GDB inserts as a software
@@ -74,7 +74,7 @@ dump.
 ## Future work
 
 - Add a minimal kernel debugger (command loop over the serial port) that
-  activates when INT 3 is hit without a GDB stub — letting a developer
+  activates when INT 3 is hit without a GDB stub - letting a developer
   inspect state over a serial cable without a separate debugger binary.
 - Log the faulting `EIP` against the kernel symbol table to print a
   function name in the register dump.

@@ -1,5 +1,5 @@
 /*
- * vfs.c — lightweight Virtual Filesystem routing layer.
+ * vfs.c - lightweight Virtual Filesystem routing layer.
  *
  * Path namespace:
  *   /          virtual root (ls shows mount-points)
@@ -179,7 +179,7 @@ static void ls_root(void)
     if (fat32_mounted())    t_writestring("[hd]\n");
     if (s_cdrom_drive >= 0) t_writestring("[cdrom]\n");
     if (!fat32_mounted() && s_cdrom_drive < 0)
-        t_writestring("(no filesystems mounted — use 'mount' to mount FAT32)\n");
+        t_writestring("(no filesystems mounted - use 'mount' to mount FAT32)\n");
 }
 
 /* =========================================================================
@@ -301,7 +301,7 @@ void vfs_auto_mount(void)
      * The BIOS boot-device number (set by vfs_set_boot_drive) is used only
      * as a priority hint: if biosdev is in the HDD range (0x80–0xDF), the
      * corresponding IDE index (biosdev − 0x80) is tried first.  The full
-     * scan that follows is always exhaustive — it does NOT skip the hint
+     * scan that follows is always exhaustive - it does NOT skip the hint
      * drive even if the hint already failed.
      *
      * Why exhaustive?  The biosdev → IDE-index mapping is not guaranteed
@@ -338,7 +338,7 @@ void vfs_auto_mount(void)
     }
 
     if (!hd_mounted && s_cdrom_drive < 0) {
-        /* Nothing mounted — leave CWD at "/" and let the user mount manually. */
+        /* Nothing mounted - leave CWD at "/" and let the user mount manually. */
     }
 }
 
@@ -365,7 +365,7 @@ int vfs_ls(const char *path)
 
     case VFS_FS_CDROM:
         if (s_cdrom_drive < 0) {
-            t_writestring("ls: /cdrom — no ISO9660 CD-ROM detected\n");
+            t_writestring("ls: /cdrom - no ISO9660 CD-ROM detected\n");
             return -1;
         }
         return iso9660_ls((uint8_t)s_cdrom_drive, drv);
@@ -409,7 +409,7 @@ int vfs_cd(const char *path)
 
     case VFS_FS_CDROM:
         if (s_cdrom_drive < 0) {
-            t_writestring("cd: /cdrom — no ISO9660 CD-ROM detected\n");
+            t_writestring("cd: /cdrom - no ISO9660 CD-ROM detected\n");
             return -1;
         }
         /* No cheap directory check for ISO9660; optimistically update CWD. */
@@ -456,7 +456,7 @@ int vfs_cat(const char *path)
 
     case VFS_FS_CDROM:
         if (s_cdrom_drive < 0) {
-            t_writestring("cat: /cdrom — no ISO9660 CD-ROM detected\n");
+            t_writestring("cat: /cdrom - no ISO9660 CD-ROM detected\n");
             kfree(buf);
             return -1;
         }
@@ -595,7 +595,7 @@ int vfs_file_exists(const char *path)
 }
 
 /* -------------------------------------------------------------------------
- * vfs_complete — enumerate directory entries for tab completion.
+ * vfs_complete - enumerate directory entries for tab completion.
  *
  * dir    : VFS directory path to enumerate (NULL → use CWD).
  * prefix : passed through to the callback context (caller filters by it).

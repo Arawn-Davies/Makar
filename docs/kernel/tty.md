@@ -1,4 +1,4 @@
-# tty — VGA text terminal driver
+# tty - VGA text terminal driver
 
 **Header:** `kernel/include/kernel/tty.h`  
 **Source:** `kernel/arch/i386/tty.c`

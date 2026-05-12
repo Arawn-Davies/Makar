@@ -136,17 +136,17 @@ static void cmd_bgcol(int argc, char **argv)
 }
 
 /* ---------------------------------------------------------------------------
- * setmode — switch display mode on the fly.
+ * setmode - switch display mode on the fly.
  *
  * VGA text modes (Bochs VBE disabled, QEMU reverts to mode 3):
- *   80x25  /  text   — 80×25 VGA text (9×16 px glyphs)
- *   80x50            — 80×50 VGA text (9×8 px glyphs)
+ *   80x25  /  text   - 80×25 VGA text (9×16 px glyphs)
+ *   80x50            - 80×50 VGA text (9×8 px glyphs)
  *
  * VESA framebuffer modes (set via Bochs VBE I/O ports):
- *   320x240          — 320×240×32
- *   640x480  / 480p  — 640×480×32
- *   1280x720 / 720p  — 1280×720×32
- *   1920x1080/ 1080p — 1920×1080×32
+ *   320x240          - 320×240×32
+ *   640x480  / 480p  - 640×480×32
+ *   1280x720 / 720p  - 1280×720×32
+ *   1920x1080/ 1080p - 1920×1080×32
  * --------------------------------------------------------------------------- */
 
 typedef struct { const char *name; uint32_t w; uint32_t h; } vesa_mode_t;
@@ -234,14 +234,14 @@ static void cmd_setmode(int argc, char **argv)
  * --------------------------------------------------------------------------- */
 
 /* ---------------------------------------------------------------------------
- * caret <under|block|flash> — switch the visible-cursor style on the VESA
+ * caret <under|block|flash> - switch the visible-cursor style on the VESA
  * framebuffer.  No-op in pure VGA text mode (the hardware cursor is already
  * a flashing underscore there).
  * --------------------------------------------------------------------------- */
 static void cmd_caret(int argc, char **argv)
 {
     if (!vesa_tty_is_ready()) {
-        t_writestring("caret: VESA not active — VGA hardware cursor is in use.\n");
+        t_writestring("caret: VESA not active - VGA hardware cursor is in use.\n");
         return;
     }
     if (argc < 2) {

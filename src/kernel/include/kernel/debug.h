@@ -5,7 +5,7 @@
  * INT 8/13/14 (double-fault, GPF, page-fault). */
 void init_debug_handlers(void);
 
-/* Unconditional kernel panic — renders panic screen and halts. Never returns. */
+/* Unconditional kernel panic - renders panic screen and halts. Never returns. */
 void kpanic(const char *msg);
 
 /* Like kpanic but records file, function, and line for the panic screen. */

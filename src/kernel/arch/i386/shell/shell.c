@@ -54,10 +54,10 @@ static const char *history_get(int ago)
     return s_history[idx];
 }
 
-/* Forward declaration — defined later in this file. */
+/* Forward declaration - defined later in this file. */
 static void shell_print_prompt(void);
 
-/* Search path for executables — also used by tab completion to enumerate
+/* Search path for executables - also used by tab completion to enumerate
  * the available `*.elf` binaries when completing the first token. */
 static const char *const s_app_path[] = {
     "/cdrom/apps/",
@@ -329,7 +329,7 @@ void shell_readline(char *buf, size_t max)
             }
             /* Path-style word ('/abs/...' or './rel/...' or contains a '/')
              * always completes against the VFS, regardless of token
-             * position — bash treats `./fo<TAB>` and `ls /etc/fo<TAB>` the
+             * position - bash treats `./fo<TAB>` and `ls /etc/fo<TAB>` the
              * same way: enumerate the named directory. */
             int is_path = 0;
             for (size_t i = 0; i < wlen; i++)
@@ -563,7 +563,7 @@ static int shell_dispatch(int argc, char **argv)
     if (cmd[0] == '/' || (cmd[0] == '.' && cmd[1] == '/')) {
         if (try_exec_path(cmd, argc, argv))
             return 1;
-        /* Fall through to "Unknown command" — the user explicitly named a
+        /* Fall through to "Unknown command" - the user explicitly named a
          * path; PATH lookup wouldn't make sense as a fallback. */
         return 0;
     }
@@ -652,7 +652,7 @@ void shell_run(void)
         shell_print_prompt();
         shell_readline(buf, SHELL_MAX_INPUT);
 
-        /* !! — recall and re-execute the most recent history entry. */
+        /* !! - recall and re-execute the most recent history entry. */
         if (strcmp(buf, "!!") == 0) {
             const char *prev = history_get(0);
             if (!prev || !*prev) {
@@ -677,7 +677,7 @@ void shell_run(void)
             t_setcolor(SHELL_ERROR_COLOR_VGA);
             t_writestring("Unknown command '");
             t_writestring(argv[0]);
-            t_writestring("' — try 'lsman'.\n\n");
+            t_writestring("' - try 'lsman'.\n\n");
             t_setcolor(SHELL_COLOR_VGA);
         }
     }

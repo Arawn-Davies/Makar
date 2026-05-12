@@ -7,12 +7,12 @@ the Makar kernel.  It sits on top of the ATA/IDE driver (`ide.c`) and is used
 by the kernel shell to list and interactively create partition tables.
 
 Supported schemes:
-- **MBR** — up to four primary 16-byte entries at offset `0x1BE` of sector 0.
-- **GPT** — protective MBR in sector 0, primary header in sector 1, up to 128
+- **MBR** - up to four primary 16-byte entries at offset `0x1BE` of sector 0.
+- **GPT** - protective MBR in sector 0, primary header in sector 1, up to 128
   entries in sectors 2–33, with backup copies in the last 34 sectors of the
   disk.
 
-No filesystem code is included — this layer handles only the partition table
+No filesystem code is included - this layer handles only the partition table
 metadata.
 
 ---
@@ -212,7 +212,7 @@ After writing, the command re-reads and displays the new partition table.
 ## Implementation Notes
 
 - All large sector buffers (`s_entry_buf` at 16384 bytes, etc.) are
-  `static` — they live in BSS and never appear on the kernel stack.
+  `static` - they live in BSS and never appear on the kernel stack.
 - The CRC32 implementation is a bit-by-bit loop; no 1 KB static table is needed.
 - Partition unique GUIDs are generated from `timer_get_ticks()` XOR'd with a
   running seed and per-entry discriminator.  The output is stamped with UUID

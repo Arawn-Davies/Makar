@@ -15,7 +15,7 @@ static void write_str(const char *s)
     sys_write(1, s, len);
 }
 
-/* 64 KiB static buffer — matches the kernel's SYSCALL_FILE_MAX. */
+/* 64 KiB static buffer - matches the kernel's SYSCALL_FILE_MAX. */
 static unsigned char s_buf[65536];
 
 int main(int argc, char **argv)

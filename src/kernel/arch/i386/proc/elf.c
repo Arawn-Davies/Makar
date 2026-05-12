@@ -1,5 +1,5 @@
 /*
- * elf.c — ELF32 executable loader for i386.
+ * elf.c - ELF32 executable loader for i386.
  *
  * elf_exec() reads an ELF32 ET_EXEC binary from the VFS, maps its PT_LOAD
  * segments into a fresh per-process page directory, and drops to ring 3 at
@@ -24,7 +24,7 @@
 #include <kernel/tty.h>
 #include <string.h>
 
-/* User stack top — same convention as usertest.c. */
+/* User stack top - same convention as usertest.c. */
 #define ELF_STACK_TOP   0xBFFF0000u
 #define PAGE_SIZE       PMM_FRAME_SIZE
 
@@ -218,7 +218,7 @@ int elf_exec(const char *path, int argc, const char *const *argv)
         while (s[len] && len < (uint32_t)(ELF_ARG_MAX - 1))
             len++;
         if (off < len + 1u) {
-            /* Strings overflow the page — truncate argument list. */
+            /* Strings overflow the page - truncate argument list. */
             argc = i;
             break;
         }
@@ -240,7 +240,7 @@ int elf_exec(const char *path, int argc, const char *const *argv)
      */
     uint32_t needed = (uint32_t)(argc + 3) * 4u;
     if (off < needed) {
-        /* Pathological case — give up on arguments rather than corrupt memory. */
+        /* Pathological case - give up on arguments rather than corrupt memory. */
         argc = 0;
         off  = PAGE_SIZE & ~3u;
     }
@@ -257,7 +257,7 @@ int elf_exec(const char *path, int argc, const char *const *argv)
         *(uint32_t *)(spage + off) = uargv[i];
     }
 
-    /* argc — _start reads this at the initial ESP. */
+    /* argc - _start reads this at the initial ESP. */
     off -= 4u;
     *(uint32_t *)(spage + off) = (uint32_t)argc;
 

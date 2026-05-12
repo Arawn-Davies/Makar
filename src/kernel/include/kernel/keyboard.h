@@ -5,7 +5,7 @@
 #include <kernel/task.h>
 
 /*
- * Sentinels for extended (non-ASCII) keys — high-byte range so they never
+ * Sentinels for extended (non-ASCII) keys - high-byte range so they never
  * collide with any Ctrl+letter code (0x01-0x1A).
  */
 #define KEY_ARROW_UP    ((char)0x80)
@@ -85,7 +85,7 @@ int keyboard_sigint_consume(void);
  *     sentinels instead of being silent
  *   - F1..F12 always deliver KEY_F1..KEY_F12 sentinels
  *
- * Ctrl+C still routes 0x03 and sets the sigint flag — so a raw-mode app
+ * Ctrl+C still routes 0x03 and sets the sigint flag - so a raw-mode app
  * can still be exited the usual way.
  *
  * Diagnostic tools like kbtester call this on entry and pair the disable

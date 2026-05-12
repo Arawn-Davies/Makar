@@ -2,7 +2,7 @@
 #define _KERNEL_ISO9660_H
 
 /*
- * iso9660.h — read-only ISO9660 filesystem driver public API.
+ * iso9660.h - read-only ISO9660 filesystem driver public API.
  *
  * All I/O is delegated to ide_read_atapi_sectors() (2048-byte CD sectors).
  * The driver is stateless; the ATAPI drive number is passed to every call.

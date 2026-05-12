@@ -1,7 +1,7 @@
 #ifndef _USERSPACE_SYSCALL_H
 #define _USERSPACE_SYSCALL_H
 
-/* Syscall numbers — Linux i386 ABI subset + Makar extensions. */
+/* Syscall numbers - Linux i386 ABI subset + Makar extensions. */
 #define SYS_EXIT       1
 #define SYS_READ       3
 #define SYS_WRITE      4
@@ -60,7 +60,7 @@
 typedef struct { unsigned char col, row, ch, clr; } tty_cell_t;
 
 /* Key sentinels returned by sys_getkey() (unsigned byte values).  Mirrors
- * <kernel/keyboard.h> KEY_* — kept in sync by hand because the userspace
+ * <kernel/keyboard.h> KEY_* - kept in sync by hand because the userspace
  * build doesn't see kernel headers. */
 #define KEY_ARROW_UP    0x80
 #define KEY_ARROW_DOWN  0x81
@@ -141,7 +141,7 @@ static inline long sys_write_serial(const void *buf, unsigned int len)
 }
 
 /* Enable (on=1) or disable (on=0) raw keyboard delivery for the calling
- * app — see <kernel/keyboard.h> keyboard_set_raw().  Pair every enable
+ * app - see <kernel/keyboard.h> keyboard_set_raw().  Pair every enable
  * with a disable on the way out; the kernel forces raw=0 after exec
  * returns as a safety net, but apps that want to keep cooked-mode
  * shortcuts working for the operator should still clean up themselves. */
@@ -150,7 +150,7 @@ static inline void sys_keyboard_raw(int on)
     syscall1(SYS_KEYBOARD_RAW, (long)on);
 }
 
-/* Reset the terminal to the shell's default palette and clear it — the
+/* Reset the terminal to the shell's default palette and clear it - the
  * same code path the `clear` shell command executes.  Use this from
  * apps that paint custom chrome and want to leave the screen in a known
  * state on exit; plain sys_tty_clear doesn't restore the pane palette. */
@@ -160,7 +160,7 @@ static inline void sys_shell_clear(void)
 }
 
 /* Kernel tick counter (100 Hz).  Use for wall-clock duration measurement
- * — counting input events alone is unreliable because the rate depends
+ * - counting input events alone is unreliable because the rate depends
  * on the PS/2 typematic configuration. */
 static inline unsigned int sys_uptime(void)
 {

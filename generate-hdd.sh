@@ -1,5 +1,5 @@
 #!/bin/sh
-# generate-hdd.sh — build an installed Makar HDD image bootable with -boot c.
+# generate-hdd.sh - build an installed Makar HDD image bootable with -boot c.
 #
 # What it produces:
 #   makar-hdd.img   512 MiB raw disk, MBR + FAT32 + GRUB 2 in embedding area
@@ -22,7 +22,7 @@
 #   doesn't match at runtime and GRUB drops into rescue mode.
 #
 #   grub-mkimage with -p '(hd0,msdos1)/boot/grub' hardcodes the root
-#   directly — no UUID search, no device probing, boots cleanly.
+#   directly - no UUID search, no device probing, boots cleanly.
 #
 # Requirements on the host: Docker (all other tools run inside a container).
 
@@ -70,7 +70,7 @@ fi
 # ---------------------------------------------------------------------------
 # Step 2: create the HDD image inside the compiler container.
 # dosfstools (mkfs.fat), fdisk (sfdisk), grub-pc-bin, and grub-common are
-# all pre-installed in BUILD_IMAGE — no runtime apt-get needed.
+# all pre-installed in BUILD_IMAGE - no runtime apt-get needed.
 # All loop-device work runs as root (--privileged); the final image is
 # chown-ed back to the calling user before the container exits.
 # ---------------------------------------------------------------------------
@@ -105,8 +105,8 @@ start=2048, type=c, bootable
 PTAB
 
 # Attach two loop devices:
-#   LOOP  — whole disk (needed by grub-install to write MBR + embedding area)
-#   PART  — partition 1 only, via --offset (avoids --partscan which may not
+#   LOOP  - whole disk (needed by grub-install to write MBR + embedding area)
+#   PART  - partition 1 only, via --offset (avoids --partscan which may not
 #            create sub-devices inside Docker containers)
 # Partition 1 starts at LBA 2048; each sector is 512 bytes.
 PART_OFFSET=$(( 2048 * 512 ))
@@ -159,7 +159,7 @@ GCFG
 #
 # We avoid grub-install entirely:
 #   1. grub-mkimage builds core.img with the explicit prefix
-#      (hd0,msdos1)/boot/grub — no device search, no UUID embedded.
+#      (hd0,msdos1)/boot/grub - no device search, no UUID embedded.
 #   2. boot.img is written to the first 446 bytes of the disk (MBR),
 #      preserving the partition table in bytes 446-511.
 #   3. core.img goes into the BIOS Boot / embedding area (sectors 1-2047).
@@ -179,7 +179,7 @@ cp /usr/lib/grub/i386-pc/*.mod "$MNT/boot/grub/i386-pc/"
 cp /usr/lib/grub/i386-pc/*.lst "$MNT/boot/grub/i386-pc/" 2>/dev/null || true
 cp /usr/lib/grub/i386-pc/core.img "$MNT/boot/grub/i386-pc/core.img" 2>/dev/null || true
 
-# Write boot.img to MBR (first 446 bytes only — leave partition table intact).
+# Write boot.img to MBR (first 446 bytes only - leave partition table intact).
 dd if=/usr/lib/grub/i386-pc/boot.img of="$LOOP" bs=1 count=446 conv=notrunc status=none
 
 # Write core.img to the embedding area (sectors 1 onwards).

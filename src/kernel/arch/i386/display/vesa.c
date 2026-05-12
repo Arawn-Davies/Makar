@@ -131,7 +131,7 @@ void vesa_clear(uint32_t colour)
 		for (uint32_t i = 0; i < total; i++)
 			row[i] = colour;
 	} else {
-		/* Non-32bpp fallback — write row-by-row using the byte layout. */
+		/* Non-32bpp fallback - write row-by-row using the byte layout. */
 		uint8_t  px[4];
 		for (uint32_t i = 0; i < bytes_per_pixel && i < 4; i++)
 			px[i] = (uint8_t)(colour >> (i * 8));

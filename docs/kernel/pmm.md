@@ -1,4 +1,4 @@
-# pmm — Physical memory manager
+# pmm - Physical memory manager
 
 **Header:** `kernel/include/kernel/pmm.h`  
 **Source:** `kernel/arch/i386/pmm.c`
@@ -37,7 +37,7 @@ Build the frame bitmap from the Multiboot 2 memory map tag.
 3. Walk the tag list to find the memory map tag (type 6).
 4. For each `MULTIBOOT2_MEMORY_AVAILABLE` region, round the region boundaries
    to 4 KiB and clear the corresponding bitmap bits (free).
-5. Re-mark frame 0 (physical address `0x0000–0x0FFF`) as used — guards
+5. Re-mark frame 0 (physical address `0x0000–0x0FFF`) as used - guards
    against null-pointer dereferences.
 6. Re-mark all frames occupied by the kernel image (loaded at 1 MiB) as used,
    using the `_kernel_end` symbol from the linker script as the upper bound.

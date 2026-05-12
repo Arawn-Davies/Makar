@@ -1,5 +1,5 @@
 /*
- * iso9660.c — read-only ISO9660 filesystem driver.
+ * iso9660.c - read-only ISO9660 filesystem driver.
  *
  * Supports:
  *   - Primary Volume Descriptor parsing (sector 16)
@@ -51,7 +51,7 @@
 #define ISO_MAX_COMPONENT_LEN  220
 
 /* -------------------------------------------------------------------------
- * Static sector buffer — never on the kernel stack (2048 bytes).
+ * Static sector buffer - never on the kernel stack (2048 bytes).
  * ---------------------------------------------------------------------- */
 static uint8_t s_sector[ISO9660_SECTOR_SIZE];
 
@@ -543,7 +543,7 @@ int iso9660_complete(uint8_t drive, const char *dir_path, const char *prefix,
             int  nlen = rr_get_name(s_sector + pos, name, (int)sizeof(name));
             if (nlen <= 0) {
                 /* Fallback: ISO9660 identifier with ;N and trailing dot
-                 * stripped — same cleanup iso9660_ls applies. */
+                 * stripped - same cleanup iso9660_ls applies. */
                 int il = (int)name_len;
                 if (il >= 2 && ident[il - 2] == ';') il -= 2;
                 if (il > 0  && ident[il - 1] == '.') il--;

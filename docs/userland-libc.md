@@ -10,20 +10,20 @@ draws heavily from the OSDev wiki, ELKS, FUZIX, and musl's own porting notes.
 
 Makar's userspace design is informed by the work of several FOSS projects:
 
-- **Linux kernel** (GPLv2) — syscall ABI conventions, ELF loading model,
+- **Linux kernel** (GPLv2) - syscall ABI conventions, ELF loading model,
   and process/memory layout.  Linux i386 syscall numbers are used directly
   (SYS_EXIT=1, SYS_READ=3, SYS_WRITE=4, etc.).
-- **ELKS** (GPLv2, https://github.com/ghaerr/elks) — lightweight kernel for
+- **ELKS** (GPLv2, https://github.com/ghaerr/elks) - lightweight kernel for
   8086/286 that demonstrates how far you can push a minimal libc on real iron.
   ELKS's approach to a tiny `crt0.S` + static libc is the direct model for
   Makar's `src/userspace/` layout.
-- **FUZIX** (GPLv2, https://github.com/EtchedPixels/FUZIX) — Alan Cox's
+- **FUZIX** (GPLv2, https://github.com/EtchedPixels/FUZIX) - Alan Cox's
   Unix-like OS for small systems.  FUZIX's vi implementation and its approach
   to portable libc stubs across wildly different hardware influenced VICS.
-- **musl libc** (MIT, https://musl.libc.org) — the preferred libc target for
+- **musl libc** (MIT, https://musl.libc.org) - the preferred libc target for
   Makar once the fd table and fork() are in place.  Clean, auditable, and does
   not pull in glibc's dynamic-linker complexity.
-- **CP/M** — the philosophical ancestor: a small OS that got out of the way,
+- **CP/M** - the philosophical ancestor: a small OS that got out of the way,
   let the shell own the terminal, and expected programs to be self-contained.
 
 All FOSS code used or referenced is attributed in the relevant source files.
@@ -189,11 +189,11 @@ Once musl or uClibc-ng is linked, the goal is to build simple C programs
 **on a running Makar system** using a stripped-down `tcc` (Tiny C Compiler):
 
 - `tcc` is ~200 KiB, requires only `malloc`/`free`/`open`/`read`/`write`
-- No need for `fork()` — `tcc` compiles to an ELF in memory and writes it
+- No need for `fork()` - `tcc` compiles to an ELF in memory and writes it
 - Makar's VFS write support (`vfs_write_file`) is already in place
 - The ELF can then be `exec`'d directly from the shell
 
-This mirrors the CP/M / ELKS model: boot, write code, compile, run — all on
+This mirrors the CP/M / ELKS model: boot, write code, compile, run - all on
 the bare metal.
 
 ---
@@ -216,8 +216,8 @@ SYS_WRITE(fd,buf,len)
 
 ## References
 
-- OSDev wiki — Porting GCC: https://wiki.osdev.org/Porting_GCC_to_your_OS
-- OSDev wiki — Creating a libc: https://wiki.osdev.org/Creating_a_C_Library
+- OSDev wiki - Porting GCC: https://wiki.osdev.org/Porting_GCC_to_your_OS
+- OSDev wiki - Creating a libc: https://wiki.osdev.org/Creating_a_C_Library
 - musl libc porting: https://musl.libc.org/doc/musl-cross-tools.html
 - ELKS libc: https://github.com/ghaerr/elks/tree/master/libc
 - FUZIX libc: https://github.com/EtchedPixels/FUZIX/tree/master/Library/libs

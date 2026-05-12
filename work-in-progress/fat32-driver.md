@@ -1,4 +1,4 @@
-# FAT32 driver — read/write access
+# FAT32 driver - read/write access
 
 > **Status:** complete (read + write; HDD boot self-contained)
 > **Branch:** landed on `main`
@@ -17,7 +17,7 @@ Both are unified under a VFS layer.
 - [x] Read files and directories (FAT32 cluster chain traversal)
 - [x] Write files and create/delete directories
 - [x] `ls`, `cd`, `cat`, `mkdir`, `rm`, `cp` shell commands
-- [x] HDD image is self-contained — kernel at `/boot/makar.kernel`,
+- [x] HDD image is self-contained - kernel at `/boot/makar.kernel`,
       userspace apps at `/apps/` (no CD-ROM required)
 - [x] Path separator is `/` (POSIX-style, not `\`)
 

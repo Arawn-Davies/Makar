@@ -4,12 +4,12 @@
 #include <stdint.h>
 
 /*
- * IBM PC VGA 8×16 ROM font — the canonical text-mode glyph set used by
+ * IBM PC VGA 8×16 ROM font - the canonical text-mode glyph set used by
  * VGA cards since the 1987 IBM PS/2.  Each entry is 16 bytes (16
  * scanlines); within each byte bit 7 is the leftmost pixel.
  *
  * Reproduced from the public-domain dump in the Linux kernel's
- * lib/fonts/font_8x16.c — that file is the canonical free-software
+ * lib/fonts/font_8x16.c - that file is the canonical free-software
  * reference and itself derives from the original IBM ROM, which has
  * been freely distributable since the early 1990s.
  *

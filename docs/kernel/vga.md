@@ -1,4 +1,4 @@
-# vga — VGA text-mode constants and low-level helpers
+# vga - VGA text-mode constants and low-level helpers
 
 **Header:** `kernel/include/kernel/vga.h`
 
@@ -17,7 +17,7 @@ at physical address `0xB8000`.  These are used by the [tty](tty.md) driver.
 
 ---
 
-## Enum — `vga_color`
+## Enum - `vga_color`
 
 The 16 standard CGA/VGA palette indices:
 

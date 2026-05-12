@@ -57,7 +57,7 @@ echo "    (window will close automatically when tests finish)"
 
 rm -f "$REPO_ROOT/ktest.log"
 
-# Write serial to a file rather than piping through tee — piping stdout breaks
+# Write serial to a file rather than piping through tee - piping stdout breaks
 # SDL/GTK display initialisation because QEMU detects it is not connected to a
 # TTY and refuses to open a window.
 #
@@ -85,9 +85,9 @@ echo ""
 if grep -q "KTEST_RESULT: PASS" "$REPO_ROOT/ktest.log"; then
     echo "==> ktest: ALL PASSED"
 elif grep -q "KTEST_RESULT: FAIL" "$REPO_ROOT/ktest.log"; then
-    echo "==> ktest: FAILED — see ktest.log"
+    echo "==> ktest: FAILED - see ktest.log"
     exit 1
 else
-    echo "==> ktest: TIMEOUT or no result — see ktest.log"
+    echo "==> ktest: TIMEOUT or no result - see ktest.log"
     exit 1
 fi

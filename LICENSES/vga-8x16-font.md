@@ -10,7 +10,7 @@ glyph set as dumped in the Linux kernel's `lib/fonts/font_8x16.c`.
 The Linux kernel is GPLv2. The 8×16 ROM glyph set itself originated in
 the IBM VGA BIOS, which has been freely distributable since the early
 1990s and is reproduced verbatim across open-source operating systems
-(Linux, FreeBSD, OpenBSD, FreeDOS, GRUB, etc.) — it is widely treated
+(Linux, FreeBSD, OpenBSD, FreeDOS, GRUB, etc.) - it is widely treated
 as **public domain**.
 
 This Makar copy was retyped from the Linux `font_8x16.c` table.  No
@@ -38,7 +38,7 @@ bit 0 is the rightmost (standard IBM/VGA MSB-first order).
 
 Entries 0x00–0x7F carry the ASCII printable glyphs.  Entries 0x80–0xFF
 are reserved for the extended CP437 set and currently render as blank
-glyphs — Makar's kernel TTY does not emit those code points anywhere
+glyphs - Makar's kernel TTY does not emit those code points anywhere
 today.
 
 The font is uploaded to VGA plane 2 by `vga_load_text_font()` in

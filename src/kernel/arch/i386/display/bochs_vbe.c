@@ -22,7 +22,7 @@
 /* VGA attribute controller ports used when re-enabling text-mode display. */
 #define VGA_PORT_ISR1   0x3DAu   /* input status register 1 (resets AR flip-flop) */
 #define VGA_PORT_AR     0x3C0u   /* attribute controller address/data register */
-#define VGA_AR_PAS      0x20u    /* Palette Address Source — bit 5 enables video */
+#define VGA_AR_PAS      0x20u    /* Palette Address Source - bit 5 enables video */
 
 static uint16_t vbe_read(uint16_t idx)
 {
@@ -54,7 +54,7 @@ void bochs_vbe_set_mode(uint32_t width, uint32_t height, uint8_t bpp)
 /* Standard CGA 16-colour palette, 6-bit per channel, in the order the VGA
  * DAC expects (palette indices 0..15 are what text-mode attribute bytes
  * pick from).  After VBE switched the DAC to a linear graphics-mode
- * palette, attribute-byte writes don't render visibly any more — every
+ * palette, attribute-byte writes don't render visibly any more - every
  * cell shows up as black.  Restoring these 16 entries gets text mode
  * looking correct again.
  *
@@ -190,7 +190,7 @@ void bochs_vbe_disable(void)
  * matching how vesa_tty.c rasterises them (`bits & (1u << x)` with
  * x=0 = leftmost screen pixel).  VGA hardware reads plane-2 font bytes
  * MSB-first (bit 7 = leftmost), so each byte needs flipping on upload
- * — otherwise every 80×50 glyph comes out horizontally mirrored.
+ * - otherwise every 80×50 glyph comes out horizontally mirrored.
  * FONT8x16 is already in the VGA-native MSB-first order, so its upload
  * path doesn't need this. */
 static inline uint8_t bitrev8(uint8_t b)
@@ -202,7 +202,7 @@ static inline uint8_t bitrev8(uint8_t b)
 }
 
 /* Public sibling of vga_load_text_font().  Same plane-2 protocol, but
- * sources from FONT8x8 instead of FONT8x16 — the 80×50 CRTC only reads
+ * sources from FONT8x8 instead of FONT8x16 - the 80×50 CRTC only reads
  * the first 8 bytes of each glyph slot, where an 8×16 source clips the
  * letter body.  Each cell renders as the native 8-row glyph plus 8
  * blank trailing rows (zeroed, harmless). */

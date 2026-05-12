@@ -6,7 +6,7 @@ name: CI
 #   - workflow_call                (release.yml gates on this passing)
 #
 # Path filter: only fires when something that actually affects test outcomes
-# changed — kernel/userspace source, test harness, build/run scripts, or the
+# changed - kernel/userspace source, test harness, build/run scripts, or the
 # toolchain image. Docs-only changes (README.md, CLAUDE.md, docs/**) skip CI.
 
 on:

@@ -43,7 +43,7 @@ static uint32_t compose_rgb(uint32_t rgb)
 /* the bottom of the active cell.  We stash the framebuffer pixels      */
 /* underneath the strip so we can restore them when the cursor moves.   */
 /* If the cell is overwritten by a character draw, the stash is         */
-/* invalidated (don't restore — the new char is the truth).             */
+/* invalidated (don't restore - the new char is the truth).             */
 /* ------------------------------------------------------------------ */
 
 #define CARET_STASH_MAX  1024  /* worst case: FONT_CELL_W*FONT_CELL_H @ scale 4 */
@@ -230,7 +230,7 @@ vesa_pane_t *vesa_tty_default_pane(void) { return &default_pane; }
 void vesa_tty_pane_init(vesa_pane_t *p, uint32_t top_row, uint32_t rows)
 {
 	p->top_row = top_row;
-	p->cols    = tty_cols;     /* zero before init — fine, gets fixed up later */
+	p->cols    = tty_cols;     /* zero before init - fine, gets fixed up later */
 	p->rows    = rows;
 	p->cur_col = 0;
 	p->cur_row = 0;
@@ -350,7 +350,7 @@ void vesa_tty_set_caret_style(uint32_t style)
 	if (!tty_ready) { caret_style = style; return; }
 
 	/* Erase the existing caret with the old geometry before flipping
-	 * style — otherwise a UNDER->BLOCK switch would leave the underline
+	 * style - otherwise a UNDER->BLOCK switch would leave the underline
 	 * pixels behind. */
 	if (caret_drawn) {
 		caret_restore_stash(caret_abs_col, caret_abs_row);
@@ -411,7 +411,7 @@ uint32_t vesa_tty_pane_get_col(const vesa_pane_t *p) { return p->cur_col; }
 uint32_t vesa_tty_pane_get_row(const vesa_pane_t *p) { return p->cur_row; }
 
 /* ------------------------------------------------------------------ */
-/* Legacy global API — delegates to the default pane                  */
+/* Legacy global API - delegates to the default pane                  */
 /* ------------------------------------------------------------------ */
 
 uint32_t vesa_tty_get_col(void) { return default_pane.cur_col; }
@@ -467,5 +467,5 @@ void vesa_tty_set_scale(uint32_t scale)
 {
 	if (scale == 0)
 		scale = 1;
-	font_scale = scale;   /* always update — vesa_tty_init() uses this */
+	font_scale = scale;   /* always update - vesa_tty_init() uses this */
 }

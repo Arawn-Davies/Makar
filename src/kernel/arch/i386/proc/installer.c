@@ -1,5 +1,5 @@
 /*
- * installer.c — interactive OS-to-disk installer.
+ * installer.c - interactive OS-to-disk installer.
  *
  * Implements the full installation sequence documented in installer.h.
  * All sector-level buffers are declared at file scope to avoid large
@@ -41,7 +41,7 @@
 #define MBR_SIG_OFF            0x1FEu
 
 /* -------------------------------------------------------------------------
- * File-scope buffers — never on the kernel stack
+ * File-scope buffers - never on the kernel stack
  * ---------------------------------------------------------------------- */
 static uint8_t s_mbr[512];        /* scratch sector for the MBR           */
 static uint8_t s_boot_img[512];   /* boot.img read from the ISO           */
@@ -207,7 +207,7 @@ void installer_run(void)
                 hdd_drive = n;
         }
         if (hdd_drive < 0)
-            t_writestring("  Invalid selection — try again.\n");
+            t_writestring("  Invalid selection - try again.\n");
     }
 
     const ide_drive_t *hdd = ide_get_drive((uint8_t)hdd_drive);
@@ -289,11 +289,11 @@ void installer_run(void)
     /* First (and only) partition entry at byte 0x1BE. */
     uint8_t *pe = s_mbr + MBR_PART_TABLE_OFF;
     pe[0] = 0x80u;              /* bootable flag                           */
-    pe[1] = 0xFEu;              /* CHS start — beyond range, use LBA       */
+    pe[1] = 0xFEu;              /* CHS start - beyond range, use LBA       */
     pe[2] = 0xFFu;
     pe[3] = 0xFFu;
     pe[4] = PART_MBR_FAT32_LBA; /* partition type 0x0C                    */
-    pe[5] = 0xFEu;              /* CHS end — beyond range                  */
+    pe[5] = 0xFEu;              /* CHS end - beyond range                  */
     pe[6] = 0xFFu;
     pe[7] = 0xFFu;
     inst_wr32(pe,  8, part_start);
@@ -390,7 +390,7 @@ void installer_run(void)
     if (copy_file((uint8_t)cd_drive,
                   "/boot/makar.kernel", "/boot/makar.kernel",
                   file_buf) != 0) {
-        t_writestring("Warning: kernel copy failed — installation may be incomplete.\n");
+        t_writestring("Warning: kernel copy failed - installation may be incomplete.\n");
     }
 
     /* ------------------------------------------------------------------
@@ -423,7 +423,7 @@ void installer_run(void)
         memcpy(dst, grub_mod_dir, pflen);
         memcpy(dst + pflen, modules[i], mlen + 1u);
 
-        /* A missing module is not fatal — skip silently on error. */
+        /* A missing module is not fatal - skip silently on error. */
         copy_file((uint8_t)cd_drive, src, dst, file_buf);
     }
 
@@ -434,7 +434,7 @@ void installer_run(void)
 
     /*
      * HDD grub.cfg differs from the CD grub.cfg in two key ways:
-     *   1. set timeout=0  — boot immediately with no user interaction required.
+     *   1. set timeout=0  - boot immediately with no user interaction required.
      *   2. Explicit 'boot' command inside the menuentry so the kernel loads
      *      correctly even when GRUB is invoked manually from its command line.
      * The CD grub.cfg uses the same multiboot2 path because the ISO9660 and
