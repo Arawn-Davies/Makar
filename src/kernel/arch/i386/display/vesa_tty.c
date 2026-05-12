@@ -446,6 +446,11 @@ void vesa_tty_clear(void)
 	vesa_clear(default_pane.bg);
 	default_pane.cur_col = 0;
 	default_pane.cur_row = 0;
+	/* The full-framebuffer paint also wiped any caret strip we'd drawn
+	 * and the pixels stashed under it; mark the cache invalid so the
+	 * next set_cursor saves fresh pixels instead of restoring stale
+	 * ones over the now-blank cell. */
+	caret_drawn = false;
 }
 
 void vesa_tty_spinner_tick(uint32_t tick)

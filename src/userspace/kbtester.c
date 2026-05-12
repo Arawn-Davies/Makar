@@ -192,25 +192,22 @@ static void fill_spaces(unsigned int col, unsigned int row, unsigned int n)
 }
 
 /*
- * Wipe the entire screen using the shell's current fg/bg (via fd 1 so we
- * don't need to know the palette ourselves).  Used at launch and at exit
- * so kbtester leaves a clean canvas in both directions.
+ * Wipe the entire screen with a single SYS_TTY_CLEAR syscall.  This is
+ * resolution agnostic by design — the kernel paints the whole VGA cell
+ * buffer plus the entire VESA framebuffer in one shot, regardless of
+ * width.  The 0x1F attribute (white-on-blue) matches the shell default;
+ * fgcol/bgcol customisation isn't observable from userspace yet, so we
+ * accept the slight palette discontinuity if the operator changed it.
  *
- * Resolution-agnostic: fill_spaces' internal buffer caps a single write at
- * 80 cells, so for wider terminals we chunk across the row.  No upper
- * bound on rows — sys_term_rows() drives the outer loop.
+ * Replaces an earlier row-by-row fill_spaces loop that wrote through
+ * t_putchar — that path doesn't sync t_column/t_row to sys_set_cursor,
+ * so VGA cells landed at the previous stream position and the wipe
+ * appeared incomplete.
  */
 static void clear_screen(unsigned int cols, unsigned int rows)
 {
-    for (unsigned int r = 0; r < rows; r++) {
-        unsigned int x = 0;
-        while (x < cols) {
-            unsigned int chunk = cols - x;
-            if (chunk > 80) chunk = 80;
-            fill_spaces(x, r, chunk);
-            x += chunk;
-        }
-    }
+    (void)cols; (void)rows;
+    sys_tty_clear(VGA_CLR(VGA_WHITE, VGA_BLUE));
     sys_set_cursor(0, 0);
 }
 
