@@ -1,4 +1,4 @@
-# shell — Interactive kernel command shell
+# shell - Interactive kernel command shell
 
 **Header:** `kernel/include/kernel/shell.h`  
 **Sources:** `kernel/arch/i386/shell/shell.c`, `shell_cmd_*.c`, `shell_help.c`
@@ -28,7 +28,7 @@ lines are skipped.
 
 ### Dispatch
 
-Commands are looked up in a **module table** — a NULL-terminated array of
+Commands are looked up in a **module table** - a NULL-terminated array of
 `shell_cmd_entry_t[]` pointers, one per category file:
 
 ```c

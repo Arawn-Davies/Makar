@@ -1,8 +1,8 @@
 name: Release
 
 # Triggered two ways:
-#   1. Push to main (PR merge) — auto-release tagged v<date>-<sha>, marked pre-release.
-#   2. Version tag push (e.g. v0.1.0) — proper versioned release.
+#   1. Push to main (PR merge) - auto-release tagged v<date>-<sha>, marked pre-release.
+#   2. Version tag push (e.g. v0.1.0) - proper versioned release.
 #
 # Both paths run the full CI suite (iso-test + hdd-test) before building artifacts.
 #

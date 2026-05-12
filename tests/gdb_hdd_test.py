@@ -1,4 +1,4 @@
-"""GDB test runner for Makar — HDD boot.
+"""GDB test runner for Makar - HDD boot.
 
 Usage (invoked by run.sh hdd-test):
     gdb-multiarch -batch -ex "source tests/gdb_hdd_test.py" src/kernel/makar.kernel

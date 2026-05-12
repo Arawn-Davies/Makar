@@ -54,8 +54,16 @@ static const char *history_get(int ago)
     return s_history[idx];
 }
 
-/* Forward declaration — defined later in this file. */
+/* Forward declaration - defined later in this file. */
 static void shell_print_prompt(void);
+
+/* Search path for executables - also used by tab completion to enumerate
+ * the available `*.elf` binaries when completing the first token. */
+static const char *const s_app_path[] = {
+    "/cdrom/apps/",
+    "/hd/apps/",
+    NULL,
+};
 
 /* ---------------------------------------------------------------------------
  * readline_redraw – repaint the input line in-place and position cursors.
@@ -118,6 +126,32 @@ static void tab_complete_cb(const char *name, int is_dir, void *ctx)
     strncpy(v->matches[v->n], name, 63);
     v->matches[v->n][63] = '\0';
     v->is_dir[v->n] = is_dir;
+    v->n++;
+}
+
+/* First-token completion variant: only accept regular files ending in
+ * ".elf"; record the name with the extension stripped so the suggestion
+ * matches what the user actually types to run it. */
+static void tab_app_cb(const char *name, int is_dir, void *ctx)
+{
+    if (is_dir) return;
+    tab_vctx_t *v = (tab_vctx_t *)ctx;
+    if (v->n >= 32) return;
+    size_t nlen = strlen(name);
+    if (nlen < 4 || strcmp(name + nlen - 4, ".elf") != 0) return;
+    size_t base_len = nlen - 4;
+    if (base_len < v->pfxlen) return;
+    if (strncmp(name, v->pfx, v->pfxlen) != 0) return;
+    /* Avoid duplicates if the same name exists on multiple app paths. */
+    for (int i = 0; i < v->n; i++) {
+        if (strncmp(v->matches[i], name, base_len) == 0 &&
+            v->matches[i][base_len] == '\0')
+            return;
+    }
+    if (base_len > 63) base_len = 63;
+    memcpy(v->matches[v->n], name, base_len);
+    v->matches[v->n][base_len] = '\0';
+    v->is_dir[v->n] = 0;
     v->n++;
 }
 
@@ -293,6 +327,13 @@ void shell_readline(char *buf, size_t max)
             for (size_t i = 0; i < ws; i++) {
                 if (buf[i] != ' ') { is_cmd = 0; break; }
             }
+            /* Path-style word ('/abs/...' or './rel/...' or contains a '/')
+             * always completes against the VFS, regardless of token
+             * position - bash treats `./fo<TAB>` and `ls /etc/fo<TAB>` the
+             * same way: enumerate the named directory. */
+            int is_path = 0;
+            for (size_t i = 0; i < wlen; i++)
+                if (word[i] == '/') { is_path = 1; break; }
 
             /* Collect matches using tab_vctx_t / tab_complete_cb defined above. */
             tab_vctx_t vctx;
@@ -301,8 +342,11 @@ void shell_readline(char *buf, size_t max)
             vctx.n      = 0;
             int nmatches = 0;
 
-            if (is_cmd) {
-                /* Complete from command tables. */
+            if (is_cmd && !is_path) {
+                /* Bash-style first-token completion: built-ins + every ELF
+                 * on the search path + entries in CWD whose name parses as
+                 * an executable.  Order matters only for ranking duplicates;
+                 * tab_app_cb dedupes by base name. */
                 static const shell_cmd_entry_t *mods[] = {
                     help_cmds, display_cmds, system_cmds,
                     disk_cmds, fs_cmds, apps_cmds, NULL
@@ -313,6 +357,21 @@ void shell_readline(char *buf, size_t max)
                         tab_complete_cb(e->name, 0, &vctx);
                     }
                 }
+                /* PATH dirs.  s_app_path entries always end in '/'; trim it
+                 * before passing to vfs_complete for consistent normalisation. */
+                for (int p = 0; s_app_path[p] && vctx.n < 32; p++) {
+                    char dir[VFS_PATH_MAX];
+                    size_t dlen = strlen(s_app_path[p]);
+                    if (dlen >= sizeof(dir)) continue;
+                    memcpy(dir, s_app_path[p], dlen);
+                    if (dlen > 1 && dir[dlen - 1] == '/') dlen--;
+                    dir[dlen] = '\0';
+                    vfs_complete(dir, word, tab_app_cb, &vctx);
+                }
+                /* CWD: pick up `./foo` style executables typed without the
+                 * leading "./".  Same .elf-stripping rule as PATH dirs. */
+                if (vctx.n < 32)
+                    vfs_complete(vfs_getcwd(), word, tab_app_cb, &vctx);
                 nmatches = vctx.n;
             } else {
                 /* Complete from VFS: split word into dir_part + file_prefix. */
@@ -465,12 +524,27 @@ static const shell_cmd_entry_t * const cmd_modules[] = {
     NULL,
 };
 
-/* Directories searched in order when a command is not a built-in. */
-static const char *const s_app_path[] = {
-    "/cdrom/apps/",
-    "/hd/apps/",
-    NULL,
-};
+/* Try to exec at `path`; if that fails, try with ".elf" appended.  Returns
+ * 1 if a binary was launched, 0 otherwise.  Used by both the path-prefix
+ * branch (./foo, /cdrom/apps/foo) and the PATH lookup. */
+static int try_exec_path(const char *path, int argc, char **argv)
+{
+    static char with_ext[VFS_PATH_MAX];
+    if (vfs_file_exists(path)) {
+        shell_exec_elf(path, argc, argv);
+        return 1;
+    }
+    size_t plen = strlen(path);
+    if (plen + 4 >= VFS_PATH_MAX)
+        return 0;
+    strncpy(with_ext, path, VFS_PATH_MAX - 1);
+    strncpy(with_ext + plen, ".elf", 5);
+    if (vfs_file_exists(with_ext)) {
+        shell_exec_elf(with_ext, argc, argv);
+        return 1;
+    }
+    return 0;
+}
 
 static int shell_dispatch(int argc, char **argv)
 {
@@ -483,7 +557,18 @@ static int shell_dispatch(int argc, char **argv)
         }
     }
 
-    /* PATH lookup: try <dir><cmd>.elf for each entry in s_app_path. */
+    /* Path-style invocation: `/abs/path[.elf]` or `./relative[.elf]`.
+     * Resolved by the VFS so `./foo` is interpreted relative to the CWD. */
+    const char *cmd = argv[0];
+    if (cmd[0] == '/' || (cmd[0] == '.' && cmd[1] == '/')) {
+        if (try_exec_path(cmd, argc, argv))
+            return 1;
+        /* Fall through to "Unknown command" - the user explicitly named a
+         * path; PATH lookup wouldn't make sense as a fallback. */
+        return 0;
+    }
+
+    /* PATH lookup: try <dir><cmd>[.elf] for each entry in s_app_path. */
     static char path_buf[VFS_PATH_MAX];
     for (int p = 0; s_app_path[p]; p++) {
         size_t dlen = strlen(s_app_path[p]);
@@ -492,11 +577,9 @@ static int shell_dispatch(int argc, char **argv)
             continue;
         strncpy(path_buf, s_app_path[p], VFS_PATH_MAX - 1);
         strncpy(path_buf + dlen, argv[0], VFS_PATH_MAX - 1 - dlen);
-        strncpy(path_buf + dlen + nlen, ".elf", 5);
-        if (vfs_file_exists(path_buf)) {
-            shell_exec_elf(path_buf, argc, argv);
+        path_buf[dlen + nlen] = '\0';
+        if (try_exec_path(path_buf, argc, argv))
             return 1;
-        }
     }
 
     return 0;
@@ -568,6 +651,22 @@ void shell_run(void)
     while (1) {
         shell_print_prompt();
         shell_readline(buf, SHELL_MAX_INPUT);
+
+        /* !! - recall and re-execute the most recent history entry. */
+        if (strcmp(buf, "!!") == 0) {
+            const char *prev = history_get(0);
+            if (!prev || !*prev) {
+                t_setcolor(SHELL_ERROR_COLOR_VGA);
+                t_writestring("!!: no previous command\n\n");
+                t_setcolor(SHELL_COLOR_VGA);
+                continue;
+            }
+            strncpy(buf, prev, SHELL_MAX_INPUT - 1);
+            buf[SHELL_MAX_INPUT - 1] = '\0';
+            t_writestring(buf);
+            t_writestring("\n");
+        }
+
         history_push(buf);
 
         int argc = shell_parse(buf, argv, SHELL_MAX_ARGS);
@@ -578,7 +677,7 @@ void shell_run(void)
             t_setcolor(SHELL_ERROR_COLOR_VGA);
             t_writestring("Unknown command '");
             t_writestring(argv[0]);
-            t_writestring("' — try 'lsman'.\n\n");
+            t_writestring("' - try 'lsman'.\n\n");
             t_setcolor(SHELL_COLOR_VGA);
         }
     }

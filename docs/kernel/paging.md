@@ -1,4 +1,4 @@
-# paging — Paging and virtual memory
+# paging - Paging and virtual memory
 
 **Header:** `kernel/include/kernel/paging.h`  
 **Source:** `kernel/arch/i386/mm/paging.c`
@@ -22,7 +22,7 @@ outside the initial boot window.
 
 Before loading CR3, `CR4.PSE` (bit 4) is set so the processor honours the
 PS bit in PDE entries.  Each of the 64 large-page PDE entries maps one
-aligned 4 MiB region directly — no intermediate page table is needed.
+aligned 4 MiB region directly - no intermediate page table is needed.
 This is the 32-bit equivalent of the 2 MiB large pages used by x86-64
 long-mode kernels.
 
@@ -81,9 +81,9 @@ exhausted the function returns without mapping anything further.
 | `size` | Length in bytes. Need not be page-aligned; the function rounds up. |
 
 Called by:
-- `heap_init()` — to map the 16 MiB heap region.
-- `vesa_tty_init()` — to map the VESA linear framebuffer before the first pixel write.
-- `acpi_init()` (via `acpi_map_table()`) — to map RSDT, FADT, and DSDT.
+- `heap_init()` - to map the 16 MiB heap region.
+- `vesa_tty_init()` - to map the VESA linear framebuffer before the first pixel write.
+- `acpi_init()` (via `acpi_map_table()`) - to map RSDT, FADT, and DSDT.
 
 ---
 

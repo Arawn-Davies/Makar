@@ -20,7 +20,7 @@ static void diag_str(const char *s)
 int main(int argc, char **argv, char **envp)
 {
     /* ---------------------------------------------------------------------
-     * Argument handling — POSIX / SUSv4 (XSI) convention.
+     * Argument handling - POSIX / SUSv4 (XSI) convention.
      *
      * The signature `int main(int argc, char **argv, char **envp)` is the
      * standard hosted-environment entry point defined by ISO C (§5.1.2.2.1)
@@ -39,7 +39,7 @@ int main(int argc, char **argv, char **envp)
      *     argc = 2
      *     argv = { "hello", "tester", NULL }
      *
-     * argv[0] is *not* the data — it's metadata identifying the program for
+     * argv[0] is *not* the data - it's metadata identifying the program for
      * tools like ps(1), getopt(3), and any "Usage:" output. The first real
      * argument is therefore at argv[1]. This is why we don't read argv[0]:
      * doing so would "greet" the program's own name when called bare, which
@@ -49,7 +49,7 @@ int main(int argc, char **argv, char **envp)
      * loader → shell `exec` builtin → here) so that any future libc port
      * (musl, uClibc-ng, etc.) drops in with no glue.
      *
-     * Disclaimer: Makar is not, in fact, a UNIX® — that mark belongs to The
+     * Disclaimer: Makar is not, in fact, a UNIX® - that mark belongs to The
      * Open Group and requires passing the SUS test suite plus a cheque we
      * are not in a position to write. Spiritually, however, it is one. The
      * code in this file would pass; the paperwork would not.

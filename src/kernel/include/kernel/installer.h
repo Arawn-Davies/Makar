@@ -2,7 +2,7 @@
 #define _KERNEL_INSTALLER_H
 
 /*
- * installer.h — OS-to-disk installer public API.
+ * installer.h - OS-to-disk installer public API.
  *
  * installer_run() performs a complete interactive installation:
  *

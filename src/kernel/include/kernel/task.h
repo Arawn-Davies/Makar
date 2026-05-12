@@ -57,7 +57,7 @@ typedef struct task {
 
     /* --- file descriptors ---
      * Opaque pointer until the FD table slice lands; NULL means "no fd table
-     * allocated yet — fall back to legacy global keyboard/serial routing". */
+     * allocated yet - fall back to legacy global keyboard/serial routing". */
     void         *fd_table;
 } task_t;
 

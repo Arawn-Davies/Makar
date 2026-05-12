@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Makar is a hobby x86 (i386) bare-metal OS kernel written in C and AT&T assembly, booted via GRUB Multiboot 2. It targets 32-bit protected mode and runs in QEMU. Docker wraps the full build/test toolchain — no host cross-compiler is required.
+Makar is a hobby x86 (i386) bare-metal OS kernel written in C and AT&T assembly, booted via GRUB Multiboot 2. It targets 32-bit protected mode and runs in QEMU. Docker wraps the full build/test toolchain - no host cross-compiler is required.
 
 ## Build commands
 
@@ -22,7 +22,7 @@ All build, test, and boot operations go through a single entrypoint:
 
 ./run.sh clean          # remove all build artefacts
 
-# Internal scripts (called inside the Docker container — do not invoke directly):
+# Internal scripts (called inside the Docker container - do not invoke directly):
 ./build.sh              # compile kernel + libc (parallel via -j$(nproc))
 ./iso.sh                # build + package into makar.iso
 ./clean.sh              # remove build artefacts
@@ -70,7 +70,7 @@ Both GDB test scripts (`tests/gdb_boot_test.py`, `tests/gdb_hdd_test.py`) run al
 | `boot_checkpoints` | Every major boot function reached (`kernel_main` → `shell_run`) |
 | `hardware_state` | CR0.PG set, CR3 non-zero, PIT is ticking |
 | `vesa` | VESA framebuffer / TTY init state |
-| `hdd_mount` | `fat32_mounted()` non-zero — FAT32 auto-mounted at `/hd` |
+| `hdd_mount` | `fat32_mounted()` non-zero - FAT32 auto-mounted at `/hd` |
 
 The ISO GDB test attaches a 32 MiB FAT32 test disk (created via `mkfs.fat --offset`, no losetup needed) so `hdd_mount` is valid on the CD-ROM boot path too.
 
@@ -84,18 +84,18 @@ docker run --rm -it -v "$PWD:/work" -w /work arawn780/gcc-cross-i686-elf:fast \
 `generate-hdd.sh` uses `grub-mkimage` (not `grub-install`) to avoid the UUID-search failure that `grub-install` produces when probing loop devices inside Docker. The FAT32 partition receives the kernel at `/boot/makar.kernel` and userspace binaries from `isodir/apps/` at `/apps/`.
 
 **In-kernel test suite (interactive)**: shell command `ktest` runs all suites from the kernel shell.
-At boot (non-TEST_MODE), `ktest_bg_task` runs all suites silently in the background — only prints to VGA on failure; always writes `KTEST_BG: PASS/FAIL` to serial.
+At boot (non-TEST_MODE), `ktest_bg_task` runs all suites silently in the background - only prints to VGA on failure; always writes `KTEST_BG: PASS/FAIL` to serial.
 
 **TODO:** 
 
-HDD test/interactive should use the same kernel binary — mode controlled by a GRUB kernel argument rather than a separate `-DTEST_MODE` build.
+HDD test/interactive should use the same kernel binary - mode controlled by a GRUB kernel argument rather than a separate `-DTEST_MODE` build.
 - `kernel.c` needs to parse `MULTIBOOT2_TAG_TYPE_CMDLINE` (type 1) and set a runtime `test_mode` flag, replacing `#ifdef TEST_MODE` guards with `if (test_mode)`.
 - `multiboot.h` needs `#define MULTIBOOT2_TAG_TYPE_CMDLINE 1`.
 
 Startup ktests: On startup, before we start the shell task we need to run background ktests that test capabilities without affecting the loading screen output. 
 Only once all ktests silently pass may the loading screen progress and we start the shell. 
 Make sure it's a bit of a delay between each test so the startup screen is visible. Print to serial should be remain. 
-- The spinner loop is inside ```if (vesa_tty_is_ready())``` — if VBE isn't active (VGA fallback), the whole block is skipped and we drop straight into the REPL.  
+- The spinner loop is inside ```if (vesa_tty_is_ready())``` - if VBE isn't active (VGA fallback), the whole block is skipped and we drop straight into the REPL.  
 - The wait must be outside that conditional. 
 
 ## Architecture
@@ -123,11 +123,11 @@ The `setmode` shell command can switch freely between any supported resolution a
 Round-robin scheduler with timer-driven preemption (PIT IRQ 0 yields every `SCHED_QUANTUM=4` ticks ≈ 80 ms at 50 Hz). Cooperative `task_yield()` is also available for explicit yields. Context switch via `task_asm.S` (callee-saved + EFLAGS). `task_exit()` marks the task DEAD and yields; the scheduler reaps the dead task's user page directory after switching CR3 away from it (`schedule()` reaper, `task.c`). Pool is fixed-size (`MAX_TASKS=8`).
 
 Per-task state (`task_t` in `kernel/task.h`):
-- `pid` — monotonically assigned (idle = 1, others from 2)
-- `cwd[VFS_PATH_MAX]` — inherited from creator; not yet authoritative (VFS still uses `s_cwd`)
-- `tty` — TTY index (TASK_TTY_NONE for unbound); not yet authoritative (vtty.c still uses `vtty_tasks[]`)
-- `sig_pending` / `sig_mask` — Linux-style signal bitmasks (subsystem to follow)
-- `fd_table` — opaque pointer (placeholder until per-task fd table lands)
+- `pid` - monotonically assigned (idle = 1, others from 2)
+- `cwd[VFS_PATH_MAX]` - inherited from creator; not yet authoritative (VFS still uses `s_cwd`)
+- `tty` - TTY index (TASK_TTY_NONE for unbound); not yet authoritative (vtty.c still uses `vtty_tasks[]`)
+- `sig_pending` / `sig_mask`  Linux-style signal bitmasks (subsystem to follow)
+- `fd_table` - opaque pointer (placeholder until per-task fd table lands)
 - `user_brk`, `page_dir`, `state`, `name`, `esp`, `stack`, `next`
 
 ### Syscall ABI (`int 0x80`, Linux i386 convention)
@@ -137,7 +137,7 @@ Per-task state (`task_t` in `kernel/task.h`):
 | 3   | SYS_READ         | EBX = fd (0=stdin), ECX = buf ptr, EDX = count |
 | 4   | SYS_WRITE        | EBX = fd, ECX = buf ptr, EDX = count.  fd 1 = stdout (VGA only); fd 2 = stderr (VGA + COM1 serial) |
 | 100 | SYS_DEBUG        | EBX = uint32 checkpoint value (prints to VGA + serial) |
-| 158 | SYS_YIELD        | — |
+| 158 | SYS_YIELD        | - |
 | 211 | SYS_WRITE_SERIAL | EBX = buf ptr, ECX = count.  COM1-only (no framebuffer) |
 
 ### Keyboard (Phase 2)
@@ -152,14 +152,15 @@ Per-task state (`task_t` in `kernel/task.h`):
 ### Shell features
 - Inline editing (cursor movement, insert at point).
 - History navigation (↑/↓ arrows), up to 16 entries.
+- `!!` recalls and runs the most recent history entry (echoes the recalled line first so the operator sees what's about to run).
 - Ctrl+C: abort current input line (prints `^C`, returns empty line to REPL).
 - Tab completion: first token completes command names; subsequent tokens complete VFS paths via `vfs_complete()` → `fat32_complete()`.
 - `exec <path>`: loads and runs an ELF binary from the VFS. Ctrl+C during exec force-kills the child task.
 
 ### VMM (per-task page directories)
-- `vmm_create_pd()` — allocates a page directory and mirrors kernel PDEs (indices 0–63)
-- `vmm_map_page(pd, vaddr, paddr, flags)` — installs 4 KiB mapping; creates page tables on demand with `PAGE_USER`
-- `vmm_switch(pd)` — loads CR3
+- `vmm_create_pd()` - allocates a page directory and mirrors kernel PDEs (indices 0–63)
+- `vmm_map_page(pd, vaddr, paddr, flags)` - installs 4 KiB mapping; creates page tables on demand with `PAGE_USER`
+- `vmm_switch(pd)` - loads CR3
 
 ### Ring-3 entry (`ring3.S`)
 `ring3_enter(entry, stack_top)` loads user data selector (0x23) into DS/ES/FS/GS, builds a 5-word `iret` frame (SS=0x23, ESP, EFLAGS|IF, CS=0x1B, EIP), and executes `iret`. Never returns. Caller must call `tss_set_kernel_stack()` and `vmm_switch(pd)` first.
@@ -170,19 +171,19 @@ Freestanding ELF binaries built with the cross-compiler. Link against `crt0.S` +
 | Binary | Description |
 |--------|-------------|
 | `hello.elf` | Hello-world smoke test |
-| `calc.elf` | bc-style expression calculator — `+`, `-`, `*`, `/`, `%`, parentheses, recursive-descent parser |
+| `calc.elf` | bc-style expression calculator - `+`, `-`, `*`, `/`, `%`, parentheses, recursive-descent parser |
 
 ### ktest harness
-`KTEST_ASSERT(expr)` — records pass/fail to VGA + serial.
-`KTEST_ASSERT_EQ(a, b)` — equality variant.
-`KTEST_ASSERT_MAJOR(expr)` — like `KTEST_ASSERT` but calls `kpanic_at` on failure; use for invariants whose violation indicates kernel corruption (GDT validity, PMM sanity, etc.).
+`KTEST_ASSERT(expr)` - records pass/fail to VGA + serial.
+`KTEST_ASSERT_EQ(a, b)` - equality variant.
+`KTEST_ASSERT_MAJOR(expr)` - like `KTEST_ASSERT` but calls `kpanic_at` on failure; use for invariants whose violation indicates kernel corruption (GDT validity, PMM sanity, etc.).
 
 ## Debug output
 - VGA: `t_writestring`, `t_hex`, `t_dec`, `t_putchar` (`include/kernel/tty.h`)
 - Serial: `Serial_WriteString`, `Serial_WriteHex` (`include/kernel/serial.h`)
-- `KLOG` / `KLOG_HEX` macros — serial only, require `-DDEV_BUILD` compile flag (no-ops in release)
-- `SYS_DEBUG` writes to **both** VGA and serial unconditionally — preferred for ring-3 debugging
-- `kpanic(msg)` / `KPANIC(msg)` / `kpanic_at(msg, file, func, line)` — renders a panic screen and halts
+- `KLOG` / `KLOG_HEX` macros - serial only, require `-DDEV_BUILD` compile flag (no-ops in release)
+- `SYS_DEBUG` writes to **both** VGA and serial unconditionally - preferred for ring-3 debugging
+- `kpanic(msg)` / `KPANIC(msg)` / `kpanic_at(msg, file, func, line)` - renders a panic screen and halts
 
 ## Key source layout
 ```
@@ -229,10 +230,10 @@ directory. Major subsystems:
 
 - **Display**: VESA framebuffer (Bochs VBE, defaults to 720p), VGA text fallback (80×50). Pane abstraction (`vesa_pane_t`) used by VICS and the TTY manager.
 - **Multi-TTY**: 4 shell tasks (`shell0`–`shell3`). Alt+F1–F4 switches focus; `vtty.c` routes keyboard input and sends `KEY_FOCUS_GAIN` to the newly active task. Each task redraws on focus gain.
-- **VICS**: Pane-aware text editor. Derives column/row counts from the active `vesa_pane_t` at runtime — works correctly at any VESA resolution. Modelled on ELKS/FUZIX vi: lightweight, stable, no heap after startup.
+- **VICS**: Pane-aware text editor. Derives column/row counts from the active `vesa_pane_t` at runtime - works correctly at any VESA resolution. Modelled on ELKS/FUZIX vi: lightweight, stable, no heap after startup.
 - **Storage**: FAT32 (HDD/USB) + ISO 9660 (CD-ROM) via IDE PIO. VFS layer with CWD, auto-mount. Full read/write/delete/rename support on FAT32.
 - **Tasking**: Round-robin scheduler with timer-driven preemption (PIT 100 Hz, `SCHED_QUANTUM = 4` ticks → 40 ms slice). Per-task `pid`, `cwd`, `tty`, signal bitmasks, fd-table placeholder. User PD reaped on task exit. Background ktest harness runs before the shell prompt appears.
-- **Userspace**: Ring-3 protected mode via `iret`. ELF loader (`elf_exec`) with argc/argv. Syscalls: `SYS_EXIT`, `SYS_READ`, `SYS_WRITE` (fd 1 = VGA, fd 2 = VGA + COM1 serial), `SYS_OPEN`, `SYS_CLOSE`, `SYS_LSEEK`, `SYS_BRK`, `SYS_DEBUG`, `SYS_YIELD`, plus Makar extensions (200–211 — terminal/file ops + `SYS_WRITE_SERIAL`). Apps: `calc.elf`, `hello.elf`, `ls.elf`, `echo.elf`, `vics.elf`, `diskinfo.elf`, `rm.elf`, `mv.elf`, `cp.elf`.
+- **Userspace**: Ring-3 protected mode via `iret`. ELF loader (`elf_exec`) with argc/argv. Syscalls: `SYS_EXIT`, `SYS_READ`, `SYS_WRITE` (fd 1 = VGA, fd 2 = VGA + COM1 serial), `SYS_OPEN`, `SYS_CLOSE`, `SYS_LSEEK`, `SYS_BRK`, `SYS_DEBUG`, `SYS_YIELD`, plus Makar extensions (200–211 - terminal/file ops + `SYS_WRITE_SERIAL`). Apps: `calc.elf`, `hello.elf`, `ls.elf`, `echo.elf`, `vics.elf`, `diskinfo.elf`, `rm.elf`, `mv.elf`, `cp.elf`, `kbtester.elf`.
 - **Shell**: Inline editing, history, tab completion, Ctrl+C sigint. `lsman` / `man <cmd>` replace `help`. Built-in file ops: `rm`, `rmdir`, `mv`. `uptime` shows humanised h/m/s.
 - **GRUB**: Two-entry menu (Makar OS + Next available device), 5-second timeout.
 
@@ -265,19 +266,19 @@ Tracked here, pulled into branches one at a time so each PR stays focused.
 | 2 | **Per-task `task_t` plumbing** (pid/cwd/tty/fds/signals fields, no consumer migration) | ✅ shipped (`3a0ef78`) |
 | 3 | **Ring-3 lifecycle ktest** with serial proof | ✅ shipped (`f48d730`, `1a34c20`) |
 | 4 | **100 Hz timer + humanised uptime** + stderr→serial + `SYS_WRITE_SERIAL` | ✅ shipped (`5e40001`) |
-| 5 | **Keyboard rewrite** — full PS/2 set-1 + e0, layered decoder (scancode→keycode→ASCII/sentinel→router), IRQ-driven per-TTY rings with proper SPSC memory ordering, strict make/break separation, modifier state at decoder, key repeat / rollover / lost-IRQ recovery, `unsigned char` end-to-end (no sign-extension hazard for sentinel compares), escape-clean sentinels | 🔥 **NEXT — urgent** |
-| 6 | **Test-infra cleanup** — drop `test_mode`, single ISO, split CI into smoke + GDB | ⏭ |
-| 7 | **Per-task consumer migration** — VFS `task->cwd`, vtty `task->tty`, real per-task FD table replaces keyboard owner ad-hoc | ⏭ |
-| 8 | **Linux-style signal subsystem** — full sigaction table, `kill()` syscall, htop-style picker | ⏭ |
-| 9 | **Preemption hardening** — interrupt-safe `schedule()`, per-task tick accounting, runtime-tunable quantum, busy-loop ktest | ⏭ |
+| 5 | **Keyboard rewrite** - full PS/2 set-1 + e0, layered decoder (scancode→keycode→ASCII/sentinel→router), IRQ-driven per-TTY rings with proper SPSC memory ordering, strict make/break separation, modifier state at decoder, key repeat / rollover / lost-IRQ recovery, `unsigned char` end-to-end (no sign-extension hazard for sentinel compares), escape-clean sentinels | 🔥 **NEXT - urgent** |
+| 6 | **Test-infra cleanup** - drop `test_mode`, single ISO, split CI into smoke + GDB | ⏭ |
+| 7 | **Per-task consumer migration** - VFS `task->cwd`, vtty `task->tty`, real per-task FD table replaces keyboard owner ad-hoc | ⏭ |
+| 8 | **Linux-style signal subsystem** - full sigaction table, `kill()` syscall, htop-style picker | ⏭ |
+| 9 | **Preemption hardening** - interrupt-safe `schedule()`, per-task tick accounting, runtime-tunable quantum, busy-loop ktest | ⏭ |
 | 10 | **Per-TTY screen buffers** + task pausing in background TTYs | ⏭ |
 | 11 | **`ps`-style task listing** with privilege/state/CWD/TTY columns | ⏭ |
-| 12 | **fork() readiness** — PD clone (CoW), fd dup, PID alloc, return-value split | ⏭ |
+| 12 | **fork() readiness** - PD clone (CoW), fd dup, PID alloc, return-value split | ⏭ |
 | 13 | **UTF-8 terminal** with ASCII fallback / runtime mode switch | ⏭ deferred |
 
-**Keyboard rewrite — observed symptoms** (May 2026 user report, screenshot in PR #123 thread):
-- Sporadic single-character noise in shell input, **not correlated to user keystrokes** (arrow-key sentinel leak ruled out — bug appears with no arrows pressed).
-- Likely root causes (in order of suspicion): (a) `kb_slots` SPSC ring producer/consumer race — IRQ context vs task context without explicit memory ordering on i386; (b) e0 prefix state not robustly cleared on edge cases (spurious IRQs, context switches mid-decode); (c) break-code path missing `(sc & 0x80) return;` filter on some code path. Treat the rewrite as a full driver replacement, not a targeted patch.
+**Keyboard rewrite - observed symptoms** (May 2026 user report, screenshot in PR #123 thread):
+- Sporadic single-character noise in shell input, **not correlated to user keystrokes** (arrow-key sentinel leak ruled out - bug appears with no arrows pressed).
+- Likely root causes (in order of suspicion): (a) `kb_slots` SPSC ring producer/consumer race - IRQ context vs task context without explicit memory ordering on i386; (b) e0 prefix state not robustly cleared on edge cases (spurious IRQs, context switches mid-decode); (c) break-code path missing `(sc & 0x80) return;` filter on some code path. Treat the rewrite as a full driver replacement, not a targeted patch.
 
 ### Userspace / libc porting
 
@@ -285,10 +286,10 @@ The long-term goal is a self-hosting userspace. Prerequisites and approach:
 
 1. **musl libc** (preferred over glibc or uClibc for size):
    - Needs: `mmap`/`munmap`, `brk`/`sbrk`, `read`/`write`/`open`/`close`/`stat`, `fork`/`exec`/`wait` (or at minimum `posix_spawn`), `getpid`, signals.
-   - Current blocker: no `fork` — Makar has cooperative tasks, not POSIX processes. Either implement `fork` (requires COW page tables) or target a no-fork musl config (`musl` + `MUSL_NO_FORK` equivalent).
+   - Current blocker: no `fork` - Makar has cooperative tasks, not POSIX processes. Either implement `fork` (requires COW page tables) or target a no-fork musl config (`musl` + `MUSL_NO_FORK` equivalent).
    - Recommended path: add `SYS_OPEN`, `SYS_CLOSE`, `SYS_READ` (file), `SYS_WRITE` (file), `SYS_STAT`, `SYS_LSEEK` first, then `SYS_BRK` (heap extension), then `SYS_MMAP` (anonymous), then attempt musl.
 
-2. **uClibc-ng** (lighter than musl, targets embedded — no fork required for static linking):
+2. **uClibc-ng** (lighter than musl, targets embedded - no fork required for static linking):
    - Still needs the file-I/O syscall set above plus `SYS_GETPID`, `SYS_UNAME`.
    - Static-link userspace apps against uClibc-ng for a known-good libc without porting musl's threading.
 
@@ -303,16 +304,16 @@ The long-term goal is a self-hosting userspace. Prerequisites and approach:
 
 5. **Process model**:
    - True POSIX processes require `fork` (COW) + separate address spaces. The current VMM can map per-task page directories; `fork` would clone one.
-   - Alternative: implement `posix_spawn` semantics (create + exec without fork) — sufficient for a non-interactive shell and simpler to implement.
+   - Alternative: implement `posix_spawn` semantics (create + exec without fork) - sufficient for a non-interactive shell and simpler to implement.
 
 ### Hardware / platform
 - **USB HID keyboard**: currently PS/2 only. QEMU emulates PS/2 by default; real hardware may need USB HID via OHCI/EHCI.
 - **Network**: RTL8139 driver → lwIP → DHCP/DNS → wget/curl-lite. See Next PR section above.
-- **64-bit (x86-64)**: significant rewrite — new GDT/IDT, long mode entry, 64-bit paging. Worth considering once userspace is stable on i386.
+- **64-bit (x86-64)**: significant rewrite - new GDT/IDT, long mode entry, 64-bit paging. Worth considering once userspace is stable on i386.
 
 ## Documentation
 
-- `docs/userland-libc.md` — how to build and link a freestanding libc for Makar userspace; step-by-step from syscall fixes through musl/uClibc-ng to TCC in-kernel compilation. Includes FOSS attribution and OSDev wiki references.
+- `docs/userland-libc.md` - how to build and link a freestanding libc for Makar userspace; step-by-step from syscall fixes through musl/uClibc-ng to TCC in-kernel compilation. Includes FOSS attribution and OSDev wiki references.
 
 ---
 
@@ -321,21 +322,21 @@ The long-term goal is a self-hosting userspace. Prerequisites and approach:
 See `SURVEY.md` for complete inventory of shell commands, userspace apps, VFS/FAT32 APIs, and the installer.
 
 ### Kernel prerequisites (must land first)
-1. **`SYS_WRITE(fd, buf, len)`** — fix EAX=4 to standard Linux i386 convention (fd + buffer + length). Unblocks all libc stdio.
-2. **`SYS_GETCWD` + `SYS_READDIR`** — needed for shell tab completion and `ls` from userspace.
+1. **`SYS_WRITE(fd, buf, len)`** - fix EAX=4 to standard Linux i386 convention (fd + buffer + length). Unblocks all libc stdio.
+2. **`SYS_GETCWD` + `SYS_READDIR`** - needed for shell tab completion and `ls` from userspace.
 
 ### Libc / toolchain
-3. **musl static link** — once the fd table and `SYS_BRK` exist, a musl static binary compiles with the existing i686-elf cross-compiler. See `docs/userland-libc.md` for the step-by-step.
+3. **musl static link** - once the fd table and `SYS_BRK` exist, a musl static binary compiles with the existing i686-elf cross-compiler. See `docs/userland-libc.md` for the step-by-step.
 4. **uClibc-ng** as a lighter fallback if musl proves difficult without `fork`.
 
 ### In-kernel compiler
-5. **TCC (Tiny C Compiler)** — ~200 KiB, compiles C to ELF in memory, writes output via `vfs_write_file`. No `fork` needed. Enables write-compile-run on bare metal, CP/M-style.
+5. **TCC (Tiny C Compiler)** - ~200 KiB, compiles C to ELF in memory, writes output via `vfs_write_file`. No `fork` needed. Enables write-compile-run on bare metal, CP/M-style.
 
 ### Networking (longer-term, same PR series)
-6. **NIC driver** — RTL8139 is the primary target (well-documented, QEMU `-device rtl8139`). AMD PCNet (`-device pcnet`) is the QEMU default and also well-documented.
-7. **lwIP** — BSD-licensed, small footprint, designed for embedded. Needs a `sys_arch` adapter and a packet Rx/Tx hook from the NIC driver.
-8. **DHCP + DNS stubs** — lwIP includes both; just need the netif glue.
-9. **wget/curl-lite** — a minimal HTTP GET over lwIP. No TLS initially; TLS via mbedTLS or BearSSL later.
+6. **NIC driver** - RTL8139 is the primary target (well-documented, QEMU `-device rtl8139`). AMD PCNet (`-device pcnet`) is the QEMU default and also well-documented.
+7. **lwIP** - BSD-licensed, small footprint, designed for embedded. Needs a `sys_arch` adapter and a packet Rx/Tx hook from the NIC driver.
+8. **DHCP + DNS stubs** - lwIP includes both; just need the netif glue.
+9. **wget/curl-lite** - a minimal HTTP GET over lwIP. No TLS initially; TLS via mbedTLS or BearSSL later.
 
 ### Process model (prerequisite for userland shell)
-10. **`fork()` or `posix_spawn`** — COW page-table clone (or simpler: exec-without-fork via `posix_spawn` semantics). Required before moving the shell to userland. See `docs/userland-libc.md` roadmap graph.
+10. **`fork()` or `posix_spawn`** - COW page-table clone (or simpler: exec-without-fork via `posix_spawn` semantics). Required before moving the shell to userland. See `docs/userland-libc.md` roadmap graph.

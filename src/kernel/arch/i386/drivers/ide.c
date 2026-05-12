@@ -1,5 +1,5 @@
 /*
- * ide.c — ATA PIO driver (28-bit LBA, polling mode).
+ * ide.c - ATA PIO driver (28-bit LBA, polling mode).
  *
  * Supports up to four drives across two channels:
  *   Index 0: primary   master  (base 0x1F0, ctrl 0x3F6)
@@ -104,7 +104,7 @@ static inline void ide_write(uint8_t ch, uint8_t reg, uint8_t val)
     outb((uint16_t)(channels[ch].base + reg), val);
 }
 
-/* Read the alternate-status register — does NOT clear a pending IRQ. */
+/* Read the alternate-status register - does NOT clear a pending IRQ. */
 static inline uint8_t ide_read_altstatus(uint8_t ch)
 {
     return inb(channels[ch].ctrl);
@@ -212,7 +212,7 @@ void ide_init(void)
                 ide_write(ch, ATA_REG_COMMAND, ATAPI_CMD_IDENTIFY);
                 ide_400ns_delay(ch);
             } else if (lba_md != 0x00 || lba_hi != 0x00) {
-                /* Unknown / non-standard signature — skip slot. */
+                /* Unknown / non-standard signature - skip slot. */
                 continue;
             }
 
@@ -385,7 +385,7 @@ static int atapi_read_one(uint8_t ch, uint8_t dr, uint32_t lba, uint8_t *buf)
     ide_write(ch, ATA_REG_COMMAND, ATA_CMD_PACKET);
     ide_400ns_delay(ch);
 
-    /* Wait for DRQ — device is ready to accept the 12-byte command packet. */
+    /* Wait for DRQ - device is ready to accept the 12-byte command packet. */
     if (ide_poll(ch, 1))
         return 1;
 
@@ -410,7 +410,7 @@ static int atapi_read_one(uint8_t ch, uint8_t dr, uint32_t lba, uint8_t *buf)
         outw(channels[ch].base + ATA_REG_DATA, w);
     }
 
-    /* Wait for DRQ — data is ready to be read. */
+    /* Wait for DRQ - data is ready to be read. */
     if (ide_poll(ch, 1))
         return 1;
 
@@ -492,7 +492,7 @@ int ide_eject_atapi(uint8_t drive_num)
     ide_write(ch, ATA_REG_COMMAND, ATA_CMD_PACKET);
     ide_400ns_delay(ch);
 
-    /* Wait for DRQ — drive is ready to receive the 12-byte command packet. */
+    /* Wait for DRQ - drive is ready to receive the 12-byte command packet. */
     if (ide_poll(ch, 1))
         return 1;
 

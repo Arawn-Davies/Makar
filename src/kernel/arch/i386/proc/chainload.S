@@ -57,7 +57,7 @@ chainload_tramp_start:
     movw    %ax, %gs
     movw    %ax, %ss
 
-    /* Clear CR0.PE — exit protected mode.
+    /* Clear CR0.PE - exit protected mode.
      * GAS adds the 0x66 operand-size prefix automatically in .code16. */
     movl    %cr0, %eax
     andl    $0xFFFFFFFE, %eax
@@ -80,7 +80,7 @@ chainload_tramp_start:
     movw    %ax, %ss
     movw    $0x7C00, %sp            /* stack top just below the boot sector */
 
-    /* BIOS drive number — the immediate byte is patched by chainload_enter(). */
+    /* BIOS drive number - the immediate byte is patched by chainload_enter(). */
 .global chainload_tramp_dl_patch
 chainload_tramp_dl_patch:
     movb    $0x80, %dl              /* patched at runtime: byte 1 = drive   */
@@ -97,7 +97,7 @@ chainload_tramp_end:
  * chainload_enter(uint8_t dl)
  *
  * Caller convention (cdecl):
- *   [esp+4]  uint8_t dl — BIOS drive number to pass to the boot sector
+ *   [esp+4]  uint8_t dl - BIOS drive number to pass to the boot sector
  *                         (0x80 = first HDD, 0x00 = first floppy, …).
  *
  * The 512-byte boot sector must already be at physical 0x7C00.

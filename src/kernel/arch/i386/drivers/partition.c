@@ -1,5 +1,5 @@
 /*
- * partition.c — MBR and GPT partition table driver.
+ * partition.c - MBR and GPT partition table driver.
  *
  * Provides:
  *   part_probe()       – detect partition scheme and enumerate entries
@@ -296,7 +296,7 @@ int part_probe(uint8_t drive, disk_parts_t *out)
 
     /* Any valid partition table has the 0x55AA boot signature. */
     if (s_sector0[510] != 0x55u || s_sector0[511] != 0xAAu)
-        return 0; /* no table — scheme stays NONE */
+        return 0; /* no table - scheme stays NONE */
 
     /* If the first MBR entry has type 0xEE, this is a GPT protective MBR. */
     if (s_sector0[0x1BE + 4] == PART_MBR_GPT_PROT) {
@@ -306,7 +306,7 @@ int part_probe(uint8_t drive, disk_parts_t *out)
             if (err == 0)
                 return 0;
         }
-        /* GPT unreadable — fall through and parse the protective MBR itself. */
+        /* GPT unreadable - fall through and parse the protective MBR itself. */
     }
 
     parse_mbr(s_sector0, out);

@@ -22,7 +22,7 @@ mb2_header_start:
 .short 5        # type = framebuffer request
 .short 1        # flags = optional
 .long  20       # size  = 20 bytes (header + 3 × uint32)
-.long  VESA_WIDTH    # preferred width  — change in kernel/include/kernel/vesa_config.h
+.long  VESA_WIDTH    # preferred width  - change in kernel/include/kernel/vesa_config.h
 .long  VESA_HEIGHT   # preferred height
 .long  VESA_BPP      # preferred depth (bits per pixel)
 # End tag (type=0, flags=0, size=8)

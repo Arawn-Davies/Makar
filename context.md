@@ -1,4 +1,4 @@
-# Makar Kernel — Project Context
+# Makar Kernel - Project Context
 
 ## What it is
 Makar is a hobby x86 (i386) kernel written in C and AT&T assembly, booted via Multiboot 2 (GRUB).
@@ -17,7 +17,7 @@ src/kernel/
     display/    VGA text mode (tty.c), VESA framebuffer (vesa.c/vesa_tty.c)
     debug/      exception handlers
   include/kernel/   all public headers
-  kernel/kernel.c   kernel_main — boot sequence
+  kernel/kernel.c   kernel_main - boot sequence
 src/libc/           minimal freestanding libc (string, stdio, stdlib)
 tests/              ktest suite (run via `ktest` shell command)
 ```
@@ -43,19 +43,19 @@ and yields.  Pool is fixed-size.
 ## Syscall ABI (int 0x80, Linux i386 convention)
 | EAX | Syscall      | Args            |
 |-----|--------------|-----------------|
-| 1   | SYS_EXIT     | —               |
+| 1   | SYS_EXIT     | -               |
 | 4   | SYS_WRITE    | EBX = NUL-term string ptr |
 | 100 | SYS_DEBUG    | EBX = uint32 checkpoint value (prints to VGA + serial) |
-| 158 | SYS_YIELD    | —               |
+| 158 | SYS_YIELD    | -               |
 
 `syscall_init()` → `register_interrupt_handler(0x80, syscall_dispatch)`.
 The IDT gate is DPL=3 (opened in `init_descriptor_tables`) so ring-3 `int 0x80` is legal.
 
 ## VMM (per-task page directories)
-`vmm_create_pd()` — allocates a page directory and mirrors the kernel PDEs (0–63).
-`vmm_map_page(pd, vaddr, paddr, flags)` — installs a 4 KiB mapping; creates page tables on demand
+`vmm_create_pd()` - allocates a page directory and mirrors the kernel PDEs (0–63).
+`vmm_map_page(pd, vaddr, paddr, flags)` - installs a 4 KiB mapping; creates page tables on demand
 with `PAGE_USER` so user code can access them.
-`vmm_switch(pd)` — loads CR3.
+`vmm_switch(pd)` - loads CR3.
 
 ## Ring-3 entry (`ring3_enter`)
 - Located: `src/kernel/arch/i386/system/ring3.S`
@@ -72,13 +72,13 @@ Shell command `ring3test` → `task_create("ring3test", usertest_task)` → `tas
 
 Embedded binary (`user_test_bin`): PIC i386 bytecode that calls
 SYS_DEBUG(1) → SYS_WRITE("Welcome to userspace!\n") → SYS_DEBUG(2) → SYS_EXIT(0).
-CP1 fires before any syscall; CP2 fires after the write but before exit — if CP1 appears but
+CP1 fires before any syscall; CP2 fires after the write but before exit - if CP1 appears but
 CP2 does not, the write syscall is the fault; if neither appears, ring-3 entry itself failed.
 
 ## Debug output
 - VGA: `t_writestring`, `t_hex`, `t_dec`, `t_putchar`  (`include/kernel/tty.h`)
 - Serial (COM1): `Serial_WriteString`, `Serial_WriteHex`  (`include/kernel/serial.h`)
-- `KLOG` / `KLOG_HEX` macros — serial only, require `-DDEV_BUILD` (no-ops in release)
+- `KLOG` / `KLOG_HEX` macros - serial only, require `-DDEV_BUILD` (no-ops in release)
 - SYS_DEBUG writes to **both** VGA and serial unconditionally (useful from ring-3)
 
 ## Build / run
@@ -94,17 +94,17 @@ Serial output lands in `serial.log`; GDB transcript in `gdb-test.log`.
 
 ### What was done this session
 - Added exception handlers for #8 (double fault), #13 (GPF), #14 (page fault) in
-  `src/kernel/arch/i386/debug/debug.c` — all write to VGA + serial then halt.
+  `src/kernel/arch/i386/debug/debug.c` - all write to VGA + serial then halt.
 - Added `tss_get_esp0()` accessor to `descr_tbl.c/.h` for ktest use.
 - Added ktest suites: `"task"`, `"syscall"`, `"gdt"`, `"ring3_prereqs"` in
   `src/kernel/arch/i386/system/ktest.c`.
 - `syscall_dispatch` de-static-ified and declared in `syscall.h` so ktest can call it directly.
 - Ran a diagnostic build (temporarily auto-ran `ring3test` in `shell_run`) and captured
-  `serial.log` — found the root cause (see below). Reverted the diagnostic change.
+  `serial.log` - found the root cause (see below). Reverted the diagnostic change.
 
 ### Root cause of ring3test freeze (CONFIRMED, NOT YET FIXED)
 
-**Bug 1 — INT 14 handler override:**
+**Bug 1 - INT 14 handler override:**
 `kernel_main` calls `init_debug_handlers()` (which registers our INT 14 handler) and then
 `paging_init()` (which also calls `register_interrupt_handler(14, ...)`, overriding ours).
 Paging's INT 14 handler only writes to VGA (no serial), then calls `PANIC("Page fault")` which
@@ -114,7 +114,7 @@ File: `src/kernel/arch/i386/mm/paging.c`, function `paging_init()`
 Fix: remove the `register_interrupt_handler(14, page_fault_handler)` call from `paging_init()`.
 The debug.c handler supersedes it and writes to both VGA and serial.
 
-**Bug 2 — VESA framebuffer not mapped in user PD (ROOT CAUSE of the page fault):**
+**Bug 2 - VESA framebuffer not mapped in user PD (ROOT CAUSE of the page fault):**
 `vmm_create_pd()` copies only the first 64 kernel PDEs (covering 0x00000000–0x0FFFFFFF, the
 256 MiB identity window). The VESA framebuffer is at `0xFD000000` (PDE 1008 in the kernel PD)
 and is NOT copied. When a syscall fires from ring 3, the CPU stays on the user PD (CR3 unchanged
@@ -125,7 +125,7 @@ File: `src/kernel/arch/i386/mm/vmm.c`, constant `KERNEL_PDE_COUNT` and function 
 
 ### Fixes to apply next session
 
-**Fix A — vmm.c:** Change `vmm_create_pd` to copy **all 1024** PDEs from the kernel PD (not just 64).
+**Fix A - vmm.c:** Change `vmm_create_pd` to copy **all 1024** PDEs from the kernel PD (not just 64).
 Update `vmm_free_pd` to skip PDEs that are identical to the kernel PD (shared entries, not
 user-owned) so it does not accidentally free the VESA extra_page_tables static pool.
 
@@ -137,7 +137,7 @@ for (uint32_t i = 0; i < 1024; i++)
 /* vmm_free_pd: skip shared kernel PDEs */
 uint32_t *kpd = paging_kernel_pd();
 for (uint32_t pdi = 0; pdi < 1024; pdi++) {
-    if (pd[pdi] == kpd[pdi])          /* shared with kernel — do not free */
+    if (pd[pdi] == kpd[pdi])          /* shared with kernel - do not free */
         continue;
     if (!(pd[pdi] & PAGE_PRESENT) || (pd[pdi] & PAGE_LARGE))
         continue;
@@ -146,10 +146,10 @@ for (uint32_t pdi = 0; pdi < 1024; pdi++) {
 }
 ```
 
-**Fix B — paging.c:** Remove the `register_interrupt_handler(14, page_fault_handler)` line from
+**Fix B - paging.c:** Remove the `register_interrupt_handler(14, page_fault_handler)` line from
 `paging_init()`. The debug.c handler is the authoritative INT 14 handler.
 
-After both fixes, rebuild and run `ring3test` — expect to see `[ring3] CP: 0x1` and
+After both fixes, rebuild and run `ring3test` - expect to see `[ring3] CP: 0x1` and
 `[ring3] CP: 0x2` in serial.log, followed by "Welcome to userspace!" on VGA.
 
 ### Memory leak (known, low priority)

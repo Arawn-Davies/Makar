@@ -91,7 +91,7 @@ static void test_acpi_checksum(void)
 {
     ktest_begin("acpi_checksum");
 
-    /* A buffer whose byte sum is 0 — valid. */
+    /* A buffer whose byte sum is 0 - valid. */
     uint8_t good[4] = {0x01, 0x02, 0x03, 0xFA}; /* 1+2+3+250 = 256 → 0 mod 256 */
     KTEST_ASSERT(acpi_checksum(good, 4));
 
@@ -99,15 +99,15 @@ static void test_acpi_checksum(void)
     uint8_t bad[4] = {0x01, 0x02, 0x03, 0xFB};
     KTEST_ASSERT(!acpi_checksum(bad, 4));
 
-    /* Single byte whose value is 0 — valid (sum = 0). */
+    /* Single byte whose value is 0 - valid (sum = 0). */
     uint8_t zero[1] = {0x00};
     KTEST_ASSERT(acpi_checksum(zero, 1));
 
-    /* Single byte whose value is non-zero — invalid. */
+    /* Single byte whose value is non-zero - invalid. */
     uint8_t nonzero[1] = {0x01};
     KTEST_ASSERT(!acpi_checksum(nonzero, 1));
 
-    /* Empty buffer (length 0) — sum is 0, always valid. */
+    /* Empty buffer (length 0) - sum is 0, always valid. */
     KTEST_ASSERT(acpi_checksum(good, 0));
 
     ktest_summary();
@@ -382,7 +382,7 @@ static void test_task(void)
     ktest_begin("task");
 
     /* Disable interrupts across both creates so the timer cannot preempt
-     * noop1 before noop2 exists — otherwise noop1 runs, dies, and its slot
+     * noop1 before noop2 exists - otherwise noop1 runs, dies, and its slot
      * gets recycled for noop2, making t1 == t2. */
     disable_interrupts();
     noop_ran = 0;
@@ -408,7 +408,7 @@ static void test_task(void)
  *
  * Calls syscall_dispatch directly with a stack-allocated registers_t frame,
  * verifying that safe syscalls do not crash and return control to the caller.
- * SYS_EXIT is intentionally excluded — it calls task_exit() which is noreturn.
+ * SYS_EXIT is intentionally excluded - it calls task_exit() which is noreturn.
  * ------------------------------------------------------------------------- */
 
 static void test_syscall(void)
@@ -418,7 +418,7 @@ static void test_syscall(void)
     registers_t regs;
     memset(&regs, 0, sizeof(regs));
 
-    /* SYS_WRITE(fd=1, buf, len): write to stdout — must not crash and must
+    /* SYS_WRITE(fd=1, buf, len): write to stdout - must not crash and must
      * return the byte count. */
     static const char msg[] = "[ktest] syscall SYS_WRITE\n";
     regs.eax = SYS_WRITE;
@@ -469,9 +469,9 @@ static void test_syscall(void)
  *
  * Verifies that the GDT segment descriptors ring-3 entry depends on are
  * installed correctly:
- *   index 3 (selector 0x1B) — user code,  DPL=3
- *   index 4 (selector 0x23) — user data,  DPL=3
- *   index 5 (selector 0x28) — TSS,        type=9 (32-bit available)
+ *   index 3 (selector 0x1B) - user code,  DPL=3
+ *   index 4 (selector 0x23) - user data,  DPL=3
+ *   index 5 (selector 0x28) - TSS,        type=9 (32-bit available)
  *
  * Also round-trips tss_set_kernel_stack / tss_get_esp0 to confirm the TSS
  * ESP0 field is writable (the CPU reads it on every ring-3 → ring-0 entry).
@@ -490,7 +490,7 @@ static void test_gdt(void)
     KTEST_ASSERT(((gdt_entries[4].access >> 5) & 0x3u) == 3u);
 
     /* TSS descriptor (index 5): access byte must be 0x89 (available) or 0x8B
-     * (busy) — the CPU sets the busy bit when ltr loads the selector. */
+     * (busy) - the CPU sets the busy bit when ltr loads the selector. */
     KTEST_ASSERT(gdt_entries[5].access == 0x89u || gdt_entries[5].access == 0x8Bu);
 
     /* tss_set_kernel_stack must update the TSS ESP0 field the CPU will read. */
@@ -535,7 +535,7 @@ static void test_ring3_prereqs(void)
     KTEST_ASSERT(phys_code  != PMM_ALLOC_ERROR);
     KTEST_ASSERT(phys_stack != PMM_ALLOC_ERROR);
 
-    /* Code page — user-readable, not writable (ring 3 must not write .text). */
+    /* Code page - user-readable, not writable (ring 3 must not write .text). */
     vmm_map_page(pd, RT_USER_CODE_BASE, phys_code, VMM_FLAG_USER);
     uint32_t pdi_code = RT_USER_CODE_BASE >> 22;
     uint32_t *pt_code = (uint32_t *)(pd[pdi_code] & ~0xFFFu);
@@ -544,7 +544,7 @@ static void test_ring3_prereqs(void)
     KTEST_ASSERT((pte_code & 0x4u) != 0);   /* USER     */
     KTEST_ASSERT((pte_code & 0x2u) == 0);   /* !WRITABLE */
 
-    /* Stack page — user-readable and writable. */
+    /* Stack page - user-readable and writable. */
     vmm_map_page(pd, RT_USER_STACK_VIRT, phys_stack,
                  VMM_FLAG_USER | VMM_FLAG_WRITABLE);
     uint32_t pdi_stack = RT_USER_STACK_VIRT >> 22;
@@ -688,7 +688,7 @@ static void test_elf_exec(void)
     }
 
     if (!path) {
-        Serial_WriteString("[ktest] elf_exec: echo.elf not found on cdrom or hd — skipping\n");
+        Serial_WriteString("[ktest] elf_exec: echo.elf not found on cdrom or hd - skipping\n");
         t_writestring("[ktest] elf_exec: echo.elf not found (skip)\n");
         ktest_summary();
         return;
@@ -739,7 +739,7 @@ static void hello_arg_entry(void)
     task_t *me = task_current();
     Serial_WriteString("[ktest]   >>> CHILD SCHEDULED (pid=");
     Serial_WriteDec((uint32_t)(me ? me->pid : 0));
-    Serial_WriteString(", ring 0) — about to enter ring 3 via elf_exec\n");
+    Serial_WriteString(", ring 0) - about to enter ring 3 via elf_exec\n");
     Serial_WriteString("[ktest]   >>> elf_exec(\"hello.elf\", argc=2, argv=[\"hello\",\"tester\"])\n");
     Serial_WriteString("[ktest]   ----- BEGIN RING 3 OUTPUT -----\n");
 
@@ -776,7 +776,7 @@ static void test_ring3_with_arg(void)
     }
 
     if (!path) {
-        Serial_WriteString("[ktest] ring3_with_arg: hello.elf not found — skipping\n");
+        Serial_WriteString("[ktest] ring3_with_arg: hello.elf not found - skipping\n");
         t_writestring("[ktest] ring3_with_arg: hello.elf not found (skip)\n");
         ktest_summary();
         return;
@@ -789,7 +789,7 @@ static void test_ring3_with_arg(void)
     Serial_WriteDec((uint32_t)parent_pid);
     Serial_WriteString(" name=");
     Serial_WriteString((char *)(self && self->name ? self->name : "(unknown)"));
-    Serial_WriteString(" — running, ring 0\n");
+    Serial_WriteString(" - running, ring 0\n");
 
     Serial_WriteString("[ktest] [PARENT] task_create(\"hello_arg\", hello_arg_entry)\n");
     task_t *child = task_create("hello_arg", hello_arg_entry);
@@ -819,7 +819,7 @@ static void test_ring3_with_arg(void)
     Serial_WriteString("[ktest]   ----- END RING 3 OUTPUT -----\n");
     Serial_WriteString("[ktest] [PARENT] resumed, pid=");
     Serial_WriteDec((uint32_t)parent_pid);
-    Serial_WriteString(" — child reaped (state=DEAD)\n");
+    Serial_WriteString(" - child reaped (state=DEAD)\n");
 
     KTEST_ASSERT(child->state == TASK_DEAD);
     KTEST_ASSERT(task_current() == self);   /* parent identity preserved across context switches */
@@ -984,7 +984,7 @@ static void test_vesa_colour(void)
 
         KTEST_ASSERT(vesa_tty_is_ready());
 
-        ksleep(16); /* ~160 ms at 100 Hz — long enough to see the change */
+        ksleep(16); /* ~160 ms at 100 Hz - long enough to see the change */
     }
 
     /* Restore default white-on-blue. */
@@ -1072,7 +1072,7 @@ int ktest_run_all(void)
 }
 
 /* Background task entry: run safe suites silently during the loading screen.
- * Skips test_vesa_resolution and test_vesa_colour — both switch display modes
+ * Skips test_vesa_resolution and test_vesa_colour - both switch display modes
  * and have multi-second sleeps that would corrupt the loading screen.
  * Sets ktest_bg_done = 1 when finished so shell_run can proceed. */
 void ktest_bg_task(void)
@@ -1106,7 +1106,7 @@ void ktest_bg_task(void)
     RUN(test_elf_exec);
     RUN(test_ring3_with_arg);
     /* test_vesa_resolution and test_vesa_colour are skipped: they switch
-     * display modes with multi-second countdowns — run manually via `ktest`. */
+     * display modes with multi-second countdowns - run manually via `ktest`. */
 
     #undef RUN
 
@@ -1115,7 +1115,7 @@ void ktest_bg_task(void)
     if (total_fail > 0) {
         t_writestring("[ktest] ");
         t_dec((uint32_t)total_fail);
-        t_writestring(" failure(s) — run `ktest` for details\n");
+        t_writestring(" failure(s) - run `ktest` for details\n");
         Serial_WriteString("KTEST_BG: FAIL\n");
     } else {
         Serial_WriteString("KTEST_BG: PASS\n");

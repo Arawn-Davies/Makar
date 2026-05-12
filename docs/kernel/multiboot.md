@@ -1,4 +1,4 @@
-# multiboot — Multiboot 2 structure definitions
+# multiboot - Multiboot 2 structure definitions
 
 **Header:** `kernel/include/kernel/multiboot.h`
 

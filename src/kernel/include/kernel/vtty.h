@@ -2,7 +2,7 @@
 #define _KERNEL_VTTY_H
 
 /*
- * vtty — virtual TTY manager.
+ * vtty - virtual TTY manager.
  *
  * Up to VTTY_MAX shell tasks run concurrently; Alt+F1-F4 switches the active
  * (focused) TTY.  Only the active TTY receives keyboard input and is expected

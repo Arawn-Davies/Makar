@@ -1,4 +1,4 @@
-# stdio — Standard I/O
+# stdio - Standard I/O
 
 **Header:** `libc/include/stdio.h`  
 **Sources:** `libc/stdio/printf.c`, `libc/stdio/putchar.c`, `libc/stdio/puts.c`
@@ -58,7 +58,7 @@ written, or `-1` on error.
 | `%%` | Literal `%` character. |
 
 Unsupported specifiers (e.g. `%d`, `%x`, `%u`) are passed through verbatim
-as a fallback — the format string from the first unrecognised `%` is printed
+as a fallback - the format string from the first unrecognised `%` is printed
 unchanged.
 
 ---

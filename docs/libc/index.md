@@ -1,8 +1,8 @@
-# libc — Freestanding standard library
+# libc - Freestanding standard library
 
 Makar ships a minimal freestanding C library (`libc/`) that provides just
 enough of the standard C interface for the kernel to compile against.  It is
-**not** a full POSIX libc — it exists solely to satisfy the `#include`
+**not** a full POSIX libc - it exists solely to satisfy the `#include`
 dependencies of the kernel and its subdirectories.
 
 ---
@@ -14,7 +14,7 @@ dependencies of the kernel and its subdirectories.
 | [`stdio.h`](stdio.md) | `stdio/printf.c`, `putchar.c`, `puts.c` | Formatted and character output. |
 | [`stdlib.h`](stdlib.md) | `stdlib/abort.c` | Abnormal termination. |
 | [`string.h`](string.md) | `string/mem*.c`, `strlen.c` | Memory and string utilities. |
-| `sys/cdefs.h` | — | Compiler/libc identification macros. |
+| `sys/cdefs.h` | - | Compiler/libc identification macros. |
 
 ---
 
@@ -31,7 +31,7 @@ the Makar environment at compile time can test `#ifdef __makar_libc`.
 
 ## Design notes
 
-- All sources are compiled with `-ffreestanding` — no hosted runtime is
+- All sources are compiled with `-ffreestanding` - no hosted runtime is
   available.
 - `putchar` is the single output primitive; `printf` and `puts` are built on
   top of it.  The kernel's `tty.c` supplies the concrete `putchar`

@@ -10,7 +10,7 @@ kernel blocks in shell_run() → keyboard_getchar() waiting for PS/2 input, so
 there is no autonomous terminal output to intercept.
 
 If no framebuffer was provided by the bootloader (e.g. headless CI) the
-group still passes — what matters is that the driver handled the absence
+group still passes - what matters is that the driver handled the absence
 cleanly and did not crash.
 """
 

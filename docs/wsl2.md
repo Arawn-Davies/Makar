@@ -11,7 +11,7 @@ distribution using **Docker Desktop for Windows** with the WSL2 backend.
 |---|---|
 | **Windows 10 (build 19041+) or Windows 11** | Windows Update |
 | **WSL2** with a Linux distro (e.g. Ubuntu) | `wsl --install` in an admin terminal |
-| **Docker Desktop for Windows** with the *WSL 2 backend* enabled | [Install Docker Desktop](https://docs.docker.com/desktop/install/windows-install/) — enable **Use the WSL 2 based engine** in Settings → General |
+| **Docker Desktop for Windows** with the *WSL 2 backend* enabled | [Install Docker Desktop](https://docs.docker.com/desktop/install/windows-install/) - enable **Use the WSL 2 based engine** in Settings → General |
 | **WSL integration** for your distro | Docker Desktop → Settings → Resources → WSL Integration → enable your distro |
 
 Once Docker Desktop is running and WSL integration is enabled, the `docker`
@@ -25,7 +25,7 @@ Open your WSL2 terminal (e.g. Ubuntu):
 
 ```sh
 # Clone into the WSL2 filesystem for best I/O performance.
-# Avoid /mnt/c/ paths — they use the 9P bridge and are much slower.
+# Avoid /mnt/c/ paths - they use the 9P bridge and are much slower.
 cd ~
 git clone https://github.com/Arawn-Davies/Makar.git
 cd Makar
@@ -49,7 +49,7 @@ because the source tree is bind-mounted into the container.
 ## Running the headless smoke test
 
 The `test` Compose service runs QEMU in headless mode (`-display none`) and
-checks serial output — no GUI needed:
+checks serial output - no GUI needed:
 
 ```sh
 docker compose run --rm test
@@ -65,7 +65,7 @@ window.
 QEMU's graphical display requires an X11 or Wayland connection.  Whether this
 works from WSL2 depends on your Windows version and display server setup.
 
-### Option A — WSLg (Windows 11, or Windows 10 build 21364+)
+### Option A - WSLg (Windows 11, or Windows 10 build 21364+)
 
 Windows ships a built-in Wayland/X11 compositor called **WSLg**.  If your
 system supports it, GUI apps run inside WSL2 automatically.
@@ -89,7 +89,7 @@ system supports it, GUI apps run inside WSL2 automatically.
 > simple X11 app: `sudo apt install -y x11-apps && xclock`.  If `xclock`
 > shows a window, WSLg is functional.
 
-### Option B — Third-party X server (older Windows 10)
+### Option B - Third-party X server (older Windows 10)
 
 If WSLg is not available, install an X server on Windows such as
 [VcXsrv](https://sourceforge.net/projects/vcxsrv/) or
@@ -102,7 +102,7 @@ export DISPLAY=$(ip route show default | awk '{print $3}'):0.0
 
 Then follow the same steps as Option A above.
 
-### Option C — No GUI, serial only
+### Option C - No GUI, serial only
 
 If you only need to interact with Makar's serial console (the kernel shell),
 skip the GUI entirely:
@@ -117,7 +117,7 @@ qemu-system-i386 \
     -no-reboot
 ```
 
-This gives you the full kernel shell over your terminal — no X server or
+This gives you the full kernel shell over your terminal - no X server or
 WSLg required.
 
 ---

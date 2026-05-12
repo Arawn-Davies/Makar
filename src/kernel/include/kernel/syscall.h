@@ -5,7 +5,7 @@
 #include <kernel/isr.h>
 
 /*
- * Syscall numbers — Linux i386 ABI subset.
+ * Syscall numbers - Linux i386 ABI subset.
  *
  * Registers (int 0x80 calling convention):
  *   EAX = syscall number
@@ -22,7 +22,7 @@
 #define SYS_DEBUG      100  /* void debug(uint32_t cp)      [Makar ext]         */
 #define SYS_YIELD      158  /* void sched_yield(void)                           */
 /* Makar display/input extensions (200+) */
-#define SYS_GETKEY     200  /* int getkey(void)  — raw single-char keyboard     */
+#define SYS_GETKEY     200  /* int getkey(void)  - raw single-char keyboard     */
 #define SYS_PUTCH_AT   201  /* int putch_at(tty_cell_t*, uint32_t n)            */
 #define SYS_SET_CURSOR 202  /* void set_cursor(uint32_t col, uint32_t row)      */
 #define SYS_TTY_CLEAR  203  /* void tty_clear(uint8_t clr)                      */
@@ -34,9 +34,12 @@
 #define SYS_RENAME_FILE  209  /* int rename_file(old_path, new_path)              */
 #define SYS_DELETE_DIR   210  /* int delete_dir(path)                             */
 #define SYS_WRITE_SERIAL 211  /* ssize_t write_serial(const void *buf, size_t len)*/
+#define SYS_KEYBOARD_RAW 212  /* void keyboard_raw(int on)   - see keyboard.h     */
+#define SYS_SHELL_CLEAR  213  /* void shell_clear(void)     - same as `clear`     */
+#define SYS_UPTIME       214  /* uint32_t uptime_ticks(void) - 100 Hz timer ticks */
 
 /*
- * tty_cell_t — one screen cell passed to SYS_PUTCH_AT.
+ * tty_cell_t - one screen cell passed to SYS_PUTCH_AT.
  * clr is a standard VGA attribute byte: fg = bits[3:0], bg = bits[6:4].
  */
 typedef struct {
@@ -60,25 +63,25 @@ typedef struct {
 #define SYSCALL_FILE_MAX  (64u * 1024u)
 
 /*
- * g_ring3_last_cp — last SYS_DEBUG checkpoint value received from ring-3.
+ * g_ring3_last_cp - last SYS_DEBUG checkpoint value received from ring-3.
  * Reset to 0 before launching a ring-3 test task; read after it exits.
  */
 extern volatile uint32_t g_ring3_last_cp;
 
 /*
- * syscall_init — register int 0x80 in the interrupt-handler table.
+ * syscall_init - register int 0x80 in the interrupt-handler table.
  *
  * Must be called after init_descriptor_tables() and tasking_init().
  */
 void syscall_init(void);
 
 /*
- * syscall_dispatch — the int 0x80 C handler; exposed for in-kernel testing.
+ * syscall_dispatch - the int 0x80 C handler; exposed for in-kernel testing.
  */
 void syscall_dispatch(registers_t *regs);
 
 /*
- * syscall_reset_fds — close all open file descriptors.
+ * syscall_reset_fds - close all open file descriptors.
  *
  * Called by elf_exec() before launching a new process so that a fresh exec
  * does not inherit stale file handles from the previous run.

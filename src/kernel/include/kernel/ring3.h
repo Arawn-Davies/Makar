@@ -8,7 +8,7 @@
  *
  * Loads the user data segment (0x23) into DS/ES/FS/GS, builds the five-word
  * iret frame on the kernel stack (SS=0x23, user ESP, EFLAGS with IF=1,
- * CS=0x1B, user EIP), and executes iret.  Never returns — the task exits via
+ * CS=0x1B, user EIP), and executes iret.  Never returns - the task exits via
  * SYS_EXIT (int 0x80 → task_exit()).
  *
  * Prerequisites:

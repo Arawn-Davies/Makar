@@ -7,7 +7,7 @@
  * current stack, stores the resulting stack pointer into *old_esp, then
  * loads new_esp and restores the saved state.  The "ret" at the end returns
  * into the function that originally called task_switch() in the new task's
- * context — or into the task entry function for a brand-new task.
+ * context - or into the task entry function for a brand-new task.
  *
  * Caller-saved registers (EAX, ECX, EDX) do not need to be preserved here
  * because this follows the standard cdecl calling convention.

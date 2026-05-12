@@ -78,14 +78,19 @@ static void print_palette(void)
  * Command handlers
  * --------------------------------------------------------------------------- */
 
-static void cmd_clear(int argc, char **argv)
+void shell_clear_screen(void)
 {
-    (void)argc; (void)argv;
     terminal_set_colorscheme(SHELL_COLOR_VGA);
     if (vesa_tty_is_ready()) {
         vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
         vesa_tty_clear();
     }
+}
+
+static void cmd_clear(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    shell_clear_screen();
 }
 
 static void cmd_fgcol(int argc, char **argv)
@@ -131,17 +136,17 @@ static void cmd_bgcol(int argc, char **argv)
 }
 
 /* ---------------------------------------------------------------------------
- * setmode — switch display mode on the fly.
+ * setmode - switch display mode on the fly.
  *
  * VGA text modes (Bochs VBE disabled, QEMU reverts to mode 3):
- *   80x25  /  text   — 80×25 VGA text (9×16 px glyphs)
- *   80x50            — 80×50 VGA text (9×8 px glyphs)
+ *   80x25  /  text   - 80×25 VGA text (9×16 px glyphs)
+ *   80x50            - 80×50 VGA text (9×8 px glyphs)
  *
  * VESA framebuffer modes (set via Bochs VBE I/O ports):
- *   320x240          — 320×240×32
- *   640x480  / 480p  — 640×480×32
- *   1280x720 / 720p  — 1280×720×32
- *   1920x1080/ 1080p — 1920×1080×32
+ *   320x240          - 320×240×32
+ *   640x480  / 480p  - 640×480×32
+ *   1280x720 / 720p  - 1280×720×32
+ *   1920x1080/ 1080p - 1920×1080×32
  * --------------------------------------------------------------------------- */
 
 typedef struct { const char *name; uint32_t w; uint32_t h; } vesa_mode_t;
@@ -185,6 +190,10 @@ static void cmd_setmode(int argc, char **argv)
         vesa_disable();
         vesa_tty_disable();
         terminal_set_rows(50);
+        /* 80x50 cells are 8 scanlines; the CRTC reads only the first 8
+         * bytes of each font slot.  Swap the freshly-uploaded 8×16 font
+         * for the native 8×8 set so letter bodies aren't clipped. */
+        vga_load_text_font_8x8();
         terminal_set_colorscheme((uint8_t)((s_vga_bg << 4) | (s_vga_fg & 0x0F)));
         t_writestring("Mode: VGA 80x50 text\n");
         return;
@@ -224,10 +233,42 @@ static void cmd_setmode(int argc, char **argv)
  * Module table
  * --------------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------------
+ * caret <under|block|flash> - switch the visible-cursor style on the VESA
+ * framebuffer.  No-op in pure VGA text mode (the hardware cursor is already
+ * a flashing underscore there).
+ * --------------------------------------------------------------------------- */
+static void cmd_caret(int argc, char **argv)
+{
+    if (!vesa_tty_is_ready()) {
+        t_writestring("caret: VESA not active - VGA hardware cursor is in use.\n");
+        return;
+    }
+    if (argc < 2) {
+        const uint32_t s = vesa_tty_get_caret_style();
+        t_writestring("caret: ");
+        t_writestring(s == VESA_CARET_BLOCK ? "block"
+                    : s == VESA_CARET_FLASH ? "flash"
+                    :                         "under");
+        t_writestring("\nusage: caret <under|block|flash>\n");
+        return;
+    }
+    const char *m = argv[1];
+    if      (strcmp(m, "under") == 0) vesa_tty_set_caret_style(VESA_CARET_UNDERSCORE);
+    else if (strcmp(m, "block") == 0) vesa_tty_set_caret_style(VESA_CARET_BLOCK);
+    else if (strcmp(m, "flash") == 0) vesa_tty_set_caret_style(VESA_CARET_FLASH);
+    else {
+        t_writestring("caret: unknown style '");
+        t_writestring(m);
+        t_writestring("'\nusage: caret <under|block|flash>\n");
+    }
+}
+
 const shell_cmd_entry_t display_cmds[] = {
     { "clear",   cmd_clear   },
     { "fgcol",   cmd_fgcol   },
     { "bgcol",   cmd_bgcol   },
     { "setmode", cmd_setmode },
+    { "caret",   cmd_caret   },
     { NULL, NULL }
 };

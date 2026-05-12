@@ -1,4 +1,4 @@
-# vesa — VESA linear framebuffer driver
+# vesa - VESA linear framebuffer driver
 
 **Header:** `kernel/include/kernel/vesa.h`  
 **Source:** `kernel/arch/i386/vesa.c`  

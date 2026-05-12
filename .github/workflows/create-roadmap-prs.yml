@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Dry run — print PRs that would be created without creating them'
+        description: 'Dry run - print PRs that would be created without creating them'
         type: boolean
         default: false
       base_branch:
@@ -58,7 +58,7 @@ jobs:
             local stub_file="$4" stub_content="$5" pr_body="$6"
 
             if [ "$DRY_RUN" = "true" ]; then
-              echo "DRY RUN — would create PR: '$title'  [branch: $branch, labels: $labels]"
+              echo "DRY RUN - would create PR: '$title'  [branch: $branch, labels: $labels]"
               return
             fi
 
@@ -104,12 +104,12 @@ jobs:
 
           create_pr \
             "roadmap/keyboard-driver" \
-            "feat(kernel): PS/2 keyboard driver — IRQ 1 with scan-code-to-ASCII translation" \
+            "feat(kernel): PS/2 keyboard driver - IRQ 1 with scan-code-to-ASCII translation" \
             "roadmap,near-term,kernel" \
             "work-in-progress/keyboard-driver.md" \
-            "# Keyboard driver — PS/2 IRQ 1
+            "# Keyboard driver - PS/2 IRQ 1
 
-          > **Status:** placeholder — implementation not yet started
+          > **Status:** placeholder - implementation not yet started
           > **Milestone:** near-term
 
           ## Summary
@@ -126,7 +126,7 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — near-term](docs/makar-medli.md#near-term)
+          - Roadmap: [Makar × Medli - near-term](docs/makar-medli.md#near-term)
           - OSDev wiki: https://wiki.osdev.org/PS/2_Keyboard" \
             "## Summary
 
@@ -141,17 +141,17 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — near-term](docs/makar-medli.md#near-term)
+          - Roadmap: [Makar × Medli - near-term](docs/makar-medli.md#near-term)
           - OSDev wiki: https://wiki.osdev.org/PS/2_Keyboard"
 
           create_pr \
             "roadmap/shell" \
-            "feat(kernel): shell — minimal interactive command loop over VGA/VESA terminal" \
+            "feat(kernel): shell - minimal interactive command loop over VGA/VESA terminal" \
             "roadmap,near-term,kernel" \
             "work-in-progress/shell.md" \
-            "# Shell — minimal interactive command loop
+            "# Shell - minimal interactive command loop
 
-          > **Status:** placeholder — implementation not yet started
+          > **Status:** placeholder - implementation not yet started
           > **Milestone:** near-term
 
           ## Summary
@@ -169,8 +169,8 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — near-term](docs/makar-medli.md#near-term)
-          - UX conventions: [Makar × Medli — shared UX conventions](docs/makar-medli.md#shared-ux-conventions)" \
+          - Roadmap: [Makar × Medli - near-term](docs/makar-medli.md#near-term)
+          - UX conventions: [Makar × Medli - shared UX conventions](docs/makar-medli.md#shared-ux-conventions)" \
             "## Summary
 
           Implement a minimal interactive shell that reads keyboard input and executes built-in commands, matching the Medli command vocabulary.
@@ -185,17 +185,17 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — near-term](docs/makar-medli.md#near-term)
-          - UX conventions: [Makar × Medli — shared UX conventions](docs/makar-medli.md#shared-ux-conventions)"
+          - Roadmap: [Makar × Medli - near-term](docs/makar-medli.md#near-term)
+          - UX conventions: [Makar × Medli - shared UX conventions](docs/makar-medli.md#shared-ux-conventions)"
 
           create_pr \
             "roadmap/fat32-driver" \
-            "feat(kernel): FAT32 driver — read/write access with Medli filesystem layout" \
+            "feat(kernel): FAT32 driver - read/write access with Medli filesystem layout" \
             "roadmap,near-term,kernel" \
             "work-in-progress/fat32-driver.md" \
-            "# FAT32 driver — read/write access
+            "# FAT32 driver - read/write access
 
-          > **Status:** placeholder — implementation not yet started
+          > **Status:** placeholder - implementation not yet started
           > **Milestone:** near-term
 
           ## Summary
@@ -213,8 +213,8 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — near-term](docs/makar-medli.md#near-term)
-          - Filesystem layout: [Makar × Medli — filesystem layout](docs/makar-medli.md#filesystem-layout)" \
+          - Roadmap: [Makar × Medli - near-term](docs/makar-medli.md#near-term)
+          - Filesystem layout: [Makar × Medli - filesystem layout](docs/makar-medli.md#filesystem-layout)" \
             "## Summary
 
           Implement a FAT32 filesystem driver providing read and write access to FAT32 volumes, adopting the shared Makar/Medli directory layout.
@@ -229,17 +229,17 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — near-term](docs/makar-medli.md#near-term)
-          - Filesystem layout: [Makar × Medli — filesystem layout](docs/makar-medli.md#filesystem-layout)"
+          - Roadmap: [Makar × Medli - near-term](docs/makar-medli.md#near-term)
+          - Filesystem layout: [Makar × Medli - filesystem layout](docs/makar-medli.md#filesystem-layout)"
 
           create_pr \
             "roadmap/ata-ide-driver" \
-            "feat(kernel): ATA/IDE driver — PIO-mode disk access" \
+            "feat(kernel): ATA/IDE driver - PIO-mode disk access" \
             "roadmap,near-term,kernel" \
             "work-in-progress/ata-ide-driver.md" \
-            "# ATA/IDE driver — PIO-mode disk access
+            "# ATA/IDE driver - PIO-mode disk access
 
-          > **Status:** placeholder — implementation not yet started
+          > **Status:** placeholder - implementation not yet started
           > **Milestone:** near-term
 
           ## Summary
@@ -256,7 +256,7 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — near-term](docs/makar-medli.md#near-term)
+          - Roadmap: [Makar × Medli - near-term](docs/makar-medli.md#near-term)
           - OSDev wiki: https://wiki.osdev.org/ATA_PIO_Mode" \
             "## Summary
 
@@ -271,7 +271,7 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — near-term](docs/makar-medli.md#near-term)
+          - Roadmap: [Makar × Medli - near-term](docs/makar-medli.md#near-term)
           - OSDev wiki: https://wiki.osdev.org/ATA_PIO_Mode"
 
           # ------------------------------------------------------------------ #
@@ -280,12 +280,12 @@ jobs:
 
           create_pr \
             "roadmap/process-model" \
-            "feat(kernel): process model — round-robin scheduler with per-process address spaces" \
+            "feat(kernel): process model - round-robin scheduler with per-process address spaces" \
             "roadmap,medium-term,kernel" \
             "work-in-progress/process-model.md" \
-            "# Process model — round-robin scheduler
+            "# Process model - round-robin scheduler
 
-          > **Status:** placeholder — implementation not yet started
+          > **Status:** placeholder - implementation not yet started
           > **Milestone:** medium-term
 
           ## Summary
@@ -304,7 +304,7 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — medium-term](docs/makar-medli.md#medium-term)" \
+          - Roadmap: [Makar × Medli - medium-term](docs/makar-medli.md#medium-term)" \
             "## Summary
 
           Implement a simple process model: a round-robin scheduler, a fork-like primitive for spawning processes, and per-process virtual address spaces built on the existing paging infrastructure.
@@ -319,16 +319,16 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — medium-term](docs/makar-medli.md#medium-term)"
+          - Roadmap: [Makar × Medli - medium-term](docs/makar-medli.md#medium-term)"
 
           create_pr \
             "roadmap/elf-loader" \
-            "feat(kernel): ELF loader — load and execute ELF32 static binaries from FAT32" \
+            "feat(kernel): ELF loader - load and execute ELF32 static binaries from FAT32" \
             "roadmap,medium-term,kernel" \
             "work-in-progress/elf-loader.md" \
-            "# ELF loader — ELF32 static binary execution
+            "# ELF loader - ELF32 static binary execution
 
-          > **Status:** placeholder — implementation not yet started
+          > **Status:** placeholder - implementation not yet started
           > **Milestone:** medium-term
 
           ## Summary
@@ -346,8 +346,8 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — medium-term](docs/makar-medli.md#medium-term)
-          - Binary compatibility: [Makar × Medli — binary compatibility](docs/makar-medli.md#binary-compatibility-goals)" \
+          - Roadmap: [Makar × Medli - medium-term](docs/makar-medli.md#medium-term)
+          - Binary compatibility: [Makar × Medli - binary compatibility](docs/makar-medli.md#binary-compatibility-goals)" \
             "## Summary
 
           Implement an ELF32 loader that reads static ELF executables from the FAT32 filesystem and maps them into a new process address space for execution.
@@ -361,17 +361,17 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — medium-term](docs/makar-medli.md#medium-term)
-          - Binary compatibility: [Makar × Medli — binary compatibility](docs/makar-medli.md#binary-compatibility-goals)"
+          - Roadmap: [Makar × Medli - medium-term](docs/makar-medli.md#medium-term)
+          - Binary compatibility: [Makar × Medli - binary compatibility](docs/makar-medli.md#binary-compatibility-goals)"
 
           create_pr \
             "roadmap/com-loader" \
-            "feat(kernel): COM loader — flat binary loader for Medli COM programs" \
+            "feat(kernel): COM loader - flat binary loader for Medli COM programs" \
             "roadmap,medium-term,kernel" \
             "work-in-progress/com-loader.md" \
-            "# COM loader — flat binary execution
+            "# COM loader - flat binary execution
 
-          > **Status:** placeholder — implementation not yet started
+          > **Status:** placeholder - implementation not yet started
           > **Milestone:** medium-term
 
           ## Summary
@@ -389,8 +389,8 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — medium-term](docs/makar-medli.md#medium-term)
-          - Binary compatibility: [Makar × Medli — binary compatibility](docs/makar-medli.md#binary-compatibility-goals)" \
+          - Roadmap: [Makar × Medli - medium-term](docs/makar-medli.md#medium-term)
+          - Binary compatibility: [Makar × Medli - binary compatibility](docs/makar-medli.md#binary-compatibility-goals)" \
             "## Summary
 
           Implement a simple COM binary loader that loads flat DOS-style COM executables at a fixed address and transfers control to them, enabling the lowest-common-denominator binary compatibility with Medli.
@@ -404,17 +404,17 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — medium-term](docs/makar-medli.md#medium-term)
-          - Binary compatibility: [Makar × Medli — binary compatibility](docs/makar-medli.md#binary-compatibility-goals)"
+          - Roadmap: [Makar × Medli - medium-term](docs/makar-medli.md#medium-term)
+          - Binary compatibility: [Makar × Medli - binary compatibility](docs/makar-medli.md#binary-compatibility-goals)"
 
           create_pr \
             "roadmap/serial-shell" \
-            "feat(kernel): serial shell — interactive command loop over UART (COM1)" \
+            "feat(kernel): serial shell - interactive command loop over UART (COM1)" \
             "roadmap,medium-term,kernel" \
             "work-in-progress/serial-shell.md" \
-            "# Serial shell — UART interactive shell
+            "# Serial shell - UART interactive shell
 
-          > **Status:** placeholder — implementation not yet started
+          > **Status:** placeholder - implementation not yet started
           > **Milestone:** medium-term
 
           ## Summary
@@ -431,7 +431,7 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — medium-term](docs/makar-medli.md#medium-term)" \
+          - Roadmap: [Makar × Medli - medium-term](docs/makar-medli.md#medium-term)" \
             "## Summary
 
           Run the same shell command loop over the UART (COM1) so Makar can be operated headlessly and interoperate with Medli's serial daemon model.
@@ -445,16 +445,16 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — medium-term](docs/makar-medli.md#medium-term)"
+          - Roadmap: [Makar × Medli - medium-term](docs/makar-medli.md#medium-term)"
 
           create_pr \
             "roadmap/vics-port" \
-            "feat(kernel): VICS port — port the VICS text editor from Medli C# to Makar C" \
+            "feat(kernel): VICS port - port the VICS text editor from Medli C# to Makar C" \
             "roadmap,medium-term,kernel" \
             "work-in-progress/vics-port.md" \
-            "# VICS port — text editor from Medli C# to Makar C
+            "# VICS port - text editor from Medli C# to Makar C
 
-          > **Status:** placeholder — implementation not yet started
+          > **Status:** placeholder - implementation not yet started
           > **Milestone:** medium-term
 
           ## Summary
@@ -472,8 +472,8 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — medium-term](docs/makar-medli.md#medium-term)
-          - UX conventions: [Makar × Medli — shared UX conventions](docs/makar-medli.md#shared-ux-conventions)" \
+          - Roadmap: [Makar × Medli - medium-term](docs/makar-medli.md#medium-term)
+          - UX conventions: [Makar × Medli - shared UX conventions](docs/makar-medli.md#shared-ux-conventions)" \
             "## Summary
 
           Port the VICS text editor from the Medli C# implementation to a Makar C implementation, keeping the same key bindings and file format so users have a consistent editing experience on both OSes.
@@ -487,8 +487,8 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — medium-term](docs/makar-medli.md#medium-term)
-          - UX conventions: [Makar × Medli — shared UX conventions](docs/makar-medli.md#shared-ux-conventions)"
+          - Roadmap: [Makar × Medli - medium-term](docs/makar-medli.md#medium-term)
+          - UX conventions: [Makar × Medli - shared UX conventions](docs/makar-medli.md#shared-ux-conventions)"
 
           # ------------------------------------------------------------------ #
           # LONG-TERM
@@ -496,12 +496,12 @@ jobs:
 
           create_pr \
             "roadmap/mxf-format" \
-            "feat(kernel): MXF executable format — joint Makar/Medli lightweight binary format" \
+            "feat(kernel): MXF executable format - joint Makar/Medli lightweight binary format" \
             "roadmap,long-term,kernel" \
             "work-in-progress/mxf-format.md" \
-            "# MXF executable format — joint Makar/Medli binary format
+            "# MXF executable format - joint Makar/Medli binary format
 
-          > **Status:** placeholder — implementation not yet started
+          > **Status:** placeholder - implementation not yet started
           > **Milestone:** long-term
 
           ## Summary
@@ -520,8 +520,8 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — long-term](docs/makar-medli.md#long-term)
-          - Binary compatibility: [Makar × Medli — binary compatibility](docs/makar-medli.md#binary-compatibility-goals)" \
+          - Roadmap: [Makar × Medli - long-term](docs/makar-medli.md#long-term)
+          - Binary compatibility: [Makar × Medli - binary compatibility](docs/makar-medli.md#binary-compatibility-goals)" \
             "## Summary
 
           Design and implement MXF (Makar/Medli Executable Format): a lightweight ELF-inspired format with a common header that both kernels can parse, containing native i686 code and supporting relocation.
@@ -536,17 +536,17 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — long-term](docs/makar-medli.md#long-term)
-          - Binary compatibility: [Makar × Medli — binary compatibility](docs/makar-medli.md#binary-compatibility-goals)"
+          - Roadmap: [Makar × Medli - long-term](docs/makar-medli.md#long-term)
+          - Binary compatibility: [Makar × Medli - binary compatibility](docs/makar-medli.md#binary-compatibility-goals)"
 
           create_pr \
             "roadmap/network-stack" \
-            "feat(kernel): network stack — IP/TCP over NE2000-compatible NIC or virtio-net" \
+            "feat(kernel): network stack - IP/TCP over NE2000-compatible NIC or virtio-net" \
             "roadmap,long-term,kernel" \
             "work-in-progress/network-stack.md" \
-            "# Network stack — IP/TCP
+            "# Network stack - IP/TCP
 
-          > **Status:** placeholder — implementation not yet started
+          > **Status:** placeholder - implementation not yet started
           > **Milestone:** long-term
 
           ## Summary
@@ -565,7 +565,7 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — long-term](docs/makar-medli.md#long-term)" \
+          - Roadmap: [Makar × Medli - long-term](docs/makar-medli.md#long-term)" \
             "## Summary
 
           Implement a minimal network stack (IP/TCP) over a NE2000-compatible NIC or virtio-net (for QEMU), enabling the same HTTP/FTP/SSH/Telnet daemon model as Medli.
@@ -580,16 +580,16 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — long-term](docs/makar-medli.md#long-term)"
+          - Roadmap: [Makar × Medli - long-term](docs/makar-medli.md#long-term)"
 
           create_pr \
             "roadmap/user-accounts" \
-            "feat(kernel): user accounts — root and guest accounts in System\\Data\\usrinfo.sys" \
+            "feat(kernel): user accounts - root and guest accounts in System\\Data\\usrinfo.sys" \
             "roadmap,long-term,kernel" \
             "work-in-progress/user-accounts.md" \
-            "# User accounts — root and guest
+            "# User accounts - root and guest
 
-          > **Status:** placeholder — implementation not yet started
+          > **Status:** placeholder - implementation not yet started
           > **Milestone:** long-term
 
           ## Summary
@@ -607,8 +607,8 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — long-term](docs/makar-medli.md#long-term)
-          - UX conventions: [Makar × Medli — shared UX conventions](docs/makar-medli.md#shared-ux-conventions)" \
+          - Roadmap: [Makar × Medli - long-term](docs/makar-medli.md#long-term)
+          - UX conventions: [Makar × Medli - shared UX conventions](docs/makar-medli.md#shared-ux-conventions)" \
             "## Summary
 
           Implement a user account system matching the Medli account format: \`root\` and \`guest\` accounts stored in \`System\\Data\\usrinfo.sys\` on the FAT32 volume, with a login prompt at boot.
@@ -622,17 +622,17 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — long-term](docs/makar-medli.md#long-term)
-          - UX conventions: [Makar × Medli — shared UX conventions](docs/makar-medli.md#shared-ux-conventions)"
+          - Roadmap: [Makar × Medli - long-term](docs/makar-medli.md#long-term)
+          - UX conventions: [Makar × Medli - shared UX conventions](docs/makar-medli.md#shared-ux-conventions)"
 
           create_pr \
             "roadmap/inter-os-file-exchange" \
-            "feat(kernel): inter-OS file exchange — shared INI-style config and data formats" \
+            "feat(kernel): inter-OS file exchange - shared INI-style config and data formats" \
             "roadmap,long-term,kernel" \
             "work-in-progress/inter-os-file-exchange.md" \
-            "# Inter-OS file exchange — shared config and data formats
+            "# Inter-OS file exchange - shared config and data formats
 
-          > **Status:** placeholder — implementation not yet started
+          > **Status:** placeholder - implementation not yet started
           > **Milestone:** long-term
 
           ## Summary
@@ -651,7 +651,7 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — long-term](docs/makar-medli.md#long-term)" \
+          - Roadmap: [Makar × Medli - long-term](docs/makar-medli.md#long-term)" \
             "## Summary
 
           Define and adopt shared plain-text (INI-style) config and data file formats readable by both Makar and Medli from a shared FAT32 partition, so configuration and data created on one OS can be used on the other.
@@ -666,4 +666,4 @@ jobs:
 
           ## References
 
-          - Roadmap: [Makar × Medli — long-term](docs/makar-medli.md#long-term)"
+          - Roadmap: [Makar × Medli - long-term](docs/makar-medli.md#long-term)"

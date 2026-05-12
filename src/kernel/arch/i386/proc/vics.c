@@ -1,5 +1,5 @@
 /*
- * vics.c — VICS interactive text editor for Makar.
+ * vics.c - VICS interactive text editor for Makar.
  *
  * Renders into a vesa_pane_t so it works correctly at any VESA resolution.
  * Pass pane=NULL to vics_edit() and it falls back to the default full-screen
@@ -30,7 +30,7 @@
 #define CTRL_S  '\x13'
 #define CTRL_Q  '\x11'
 
-/* Runtime screen geometry — set at entry from the active pane. */
+/* Runtime screen geometry - set at entry from the active pane. */
 static vesa_pane_t *v_pane;
 static int v_cols;
 static int v_text_rows;

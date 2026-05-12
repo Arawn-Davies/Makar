@@ -2,7 +2,7 @@
 #define _KERNEL_ISO9660_H
 
 /*
- * iso9660.h — read-only ISO9660 filesystem driver public API.
+ * iso9660.h - read-only ISO9660 filesystem driver public API.
  *
  * All I/O is delegated to ide_read_atapi_sectors() (2048-byte CD sectors).
  * The driver is stateless; the ATAPI drive number is passed to every call.
@@ -50,5 +50,18 @@ int iso9660_read_file(uint8_t drive, const char *path,
 int iso9660_file_exists(uint8_t drive, const char *path);
 
 int iso9660_ls(uint8_t drive, const char *path);
+
+/*
+ * iso9660_complete – enumerate entries in dir_path, calling cb for each.
+ * Mirrors fat32_complete's signature so the VFS layer can route uniformly.
+ * Caller is responsible for filtering by 'prefix' inside the callback.
+ *
+ * Returns  0 on success.
+ * Returns -1 on I/O error.
+ * Returns -2 if dir_path does not resolve to a directory.
+ */
+typedef void (*iso9660_complete_cb_t)(const char *name, int is_dir, void *ctx);
+int iso9660_complete(uint8_t drive, const char *dir_path, const char *prefix,
+                     iso9660_complete_cb_t cb, void *ctx);
 
 #endif /* _KERNEL_ISO9660_H */

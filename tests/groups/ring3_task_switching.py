@@ -24,7 +24,7 @@ NAME = 'Ring-3 task switching'
 # for the test to pass. Each tuple is (substring_to_find, human_label).
 #
 # hello.elf writes its greeting to fd 2 (stderr), which the kernel routes
-# to BOTH the framebuffer and COM1 — so "Hello, tester!" appears in this
+# to BOTH the framebuffer and COM1 - so "Hello, tester!" appears in this
 # log as direct evidence that argv reached ring 3 and a write syscall
 # returned successfully.
 MARKERS = [
@@ -81,7 +81,7 @@ def run():
     #   [PARENT] child created: pid=[ktest]   >>> CHILD SCHEDULED (pid=11...
     #
     # That is a real, harmless artefact of cooperative multitasking on a
-    # shared output device — fixing it would require a per-line lock.
+    # shared output device - fixing it would require a per-line lock.
     # Instead we verify every lifecycle marker appears somewhere; the boot
     # checkpoints group already proves the kernel reached normal task
     # context, and the ktest_bg group already proves all suites finished.

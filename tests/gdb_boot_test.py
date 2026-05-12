@@ -1,4 +1,4 @@
-"""GDB test runner for Makar — ISO boot.
+"""GDB test runner for Makar - ISO boot.
 
 Usage (invoked by run.sh iso-test):
     gdb-multiarch -batch -ex "source tests/gdb_boot_test.py" kernel/makar.kernel

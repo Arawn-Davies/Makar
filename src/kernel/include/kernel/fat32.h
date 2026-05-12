@@ -2,7 +2,7 @@
 #define _KERNEL_FAT32_H
 
 /*
- * fat32.h — FAT32 filesystem driver public API.
+ * fat32.h - FAT32 filesystem driver public API.
  *
  * Supports one mounted volume at a time.  All paths accept both '\' and '/'
  * as separators and are matched case-insensitively.  Absolute paths start

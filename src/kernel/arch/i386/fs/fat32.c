@@ -1,5 +1,5 @@
 /*
- * fat32.c — FAT32 read/write filesystem driver.
+ * fat32.c - FAT32 read/write filesystem driver.
  *
  * Supports one mounted volume at a time.  All paths accept both '\' and '/'
  * as separators and are matched case-insensitively.
@@ -69,7 +69,7 @@ typedef struct {
 static fat32_vol_t vol;
 
 /* -------------------------------------------------------------------------
- * Static sector buffers — never on the kernel stack
+ * Static sector buffers - never on the kernel stack
  * ---------------------------------------------------------------------- */
 static uint8_t  s_sec[512];        /* general-purpose sector scratch   */
 static uint8_t  s_fat[512];        /* FAT sector cache                 */
@@ -303,7 +303,7 @@ static void make_83_name(const char *src, uint8_t *dst)
 /* LFN offsets of the 13 UTF-16LE characters within one LFN entry. */
 static const int s_lfn_char_off[13] = { 1,3,5,7,9, 14,16,18,20,22,24, 28,30 };
 
-/* Forward declaration — dir_add_entry is defined after the LFN block. */
+/* Forward declaration - dir_add_entry is defined after the LFN block. */
 static uint32_t dir_add_entry(uint32_t dir_cluster, const uint8_t *short_name,
                                uint8_t attr, uint32_t first_cluster,
                                uint32_t file_size, uint32_t *out_off);
@@ -761,7 +761,7 @@ static int path_split(const char *path,
     }
 
     if (last_sep == path) {
-        /* "/foo" — parent is root. */
+        /* "/foo" - parent is root. */
         *parent_cluster = vol.root_cluster;
         *basename       = last_sep + 1;
         return 0;
@@ -830,7 +830,7 @@ static uint32_t dir_add_entry(uint32_t        dir_cluster,
 
         uint32_t next = fat_read(cluster);
         if (next >= FAT32_BAD) {
-            /* Chain exhausted — allocate a new cluster. */
+            /* Chain exhausted - allocate a new cluster. */
             uint32_t nc = fat_alloc(cluster);
             if (!nc) return 0;
             if (fat_flush()) return 0;
@@ -863,7 +863,7 @@ static uint32_t dir_add_entry(uint32_t        dir_cluster,
 }
 
 /* -------------------------------------------------------------------------
- * Public API — mount / unmount
+ * Public API - mount / unmount
  * ---------------------------------------------------------------------- */
 
 int fat32_mount(uint8_t drive, uint32_t part_lba)
@@ -879,9 +879,9 @@ int fat32_mount(uint8_t drive, uint32_t part_lba)
     uint8_t  spc    = s_sec[13];
     uint32_t rsvd   = rd16(s_sec, 14);
     uint8_t  nfats  = s_sec[16];
-    uint16_t rc16   = rd16(s_sec, 17); /* root entry count — must be 0 */
+    uint16_t rc16   = rd16(s_sec, 17); /* root entry count - must be 0 */
     uint32_t ts16   = rd16(s_sec, 19); /* total sectors 16-bit */
-    uint16_t spf16  = rd16(s_sec, 22); /* sectors/FAT 16-bit — must be 0 */
+    uint16_t spf16  = rd16(s_sec, 22); /* sectors/FAT 16-bit - must be 0 */
     uint32_t ts32   = rd32(s_sec, 32);
     uint32_t spf32  = rd32(s_sec, 36);
     uint32_t root_c = rd32(s_sec, 44);
@@ -1215,7 +1215,7 @@ int fat32_write_file(const char *path, const void *buf, uint32_t size)
 }
 
 /* -------------------------------------------------------------------------
- * fat32_delete_file — delete a file, freeing its cluster chain.
+ * fat32_delete_file - delete a file, freeing its cluster chain.
  * Returns 0 on success, negative on error.
  * ---------------------------------------------------------------------- */
 int fat32_delete_file(const char *path)
@@ -1243,7 +1243,7 @@ int fat32_delete_file(const char *path)
 }
 
 /* -------------------------------------------------------------------------
- * fat32_delete_dir — delete an empty directory.
+ * fat32_delete_dir - delete an empty directory.
  * Returns 0 on success, -5 if not empty, negative on other errors.
  * ---------------------------------------------------------------------- */
 int fat32_delete_dir(const char *path)
@@ -1351,7 +1351,7 @@ int fat32_rename_dir(const char *old_path, const char *new_path)
 }
 
 /* -------------------------------------------------------------------------
- * fat32_mkfs — format a partition as FAT32
+ * fat32_mkfs - format a partition as FAT32
  * ---------------------------------------------------------------------- */
 int fat32_mkfs(uint8_t drive, uint32_t part_lba, uint32_t part_sectors)
 {
@@ -1448,7 +1448,7 @@ int fat32_mkfs(uint8_t drive, uint32_t part_lba, uint32_t part_sectors)
 }
 
 /* -------------------------------------------------------------------------
- * fat32_complete — enumerate entries in dir_path, calling cb for each.
+ * fat32_complete - enumerate entries in dir_path, calling cb for each.
  * The callback receives the entry name, a is_dir flag, and the ctx pointer.
  * Prefix filtering is left to the caller.
  * ---------------------------------------------------------------------- */

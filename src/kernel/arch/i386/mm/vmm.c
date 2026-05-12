@@ -84,7 +84,7 @@ void vmm_free_pd(uint32_t *pd)
     for (uint32_t pdi = 0; pdi < 1024; pdi++) {
         if (!(pd[pdi] & PAGE_PRESENT) || (pd[pdi] & PAGE_LARGE))
             continue;
-        /* Skip PDEs shared with the kernel — freeing them would corrupt the
+        /* Skip PDEs shared with the kernel - freeing them would corrupt the
          * kernel's own mappings. */
         if (pd[pdi] == kpd[pdi])
             continue;

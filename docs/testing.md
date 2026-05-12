@@ -15,13 +15,13 @@ The single command for complete ISO CI validation:
 
 Runs two phases; build steps use Docker, QEMU/GDB prefer the host if available:
 
-**Phase 1 — in-kernel ktest suite**
+**Phase 1 - in-kernel ktest suite**
 
 Builds a `TEST_MODE` ISO. The kernel boots, runs `ktest_run_all()` (all
 subsystem unit tests including a live ring-3 userspace execution), then exits
 QEMU cleanly via `isa-debug-exit`. Output: `ktest.log`.
 
-**Phase 2 — GDB boot-checkpoint tests**
+**Phase 2 - GDB boot-checkpoint tests**
 
 Builds a normal debug ISO. Creates a 32 MiB FAT32 test disk and attaches it
 on IDE:0 alongside the CD-ROM so the kernel can mount `/hd`. Launches QEMU
@@ -33,7 +33,7 @@ Exit code 0 = everything passed; 1 = any failure or timeout.
 
 ## HDD boot test (`./run.sh hdd-test`)
 
-Verifies the installed HDD boot path end-to-end — no CD-ROM attached:
+Verifies the installed HDD boot path end-to-end - no CD-ROM attached:
 
 ```sh
 ./run.sh hdd-test
@@ -41,9 +41,9 @@ Verifies the installed HDD boot path end-to-end — no CD-ROM attached:
 
 What it does:
 
-1. **Clean rebuild** — ensures `src/kernel/makar.kernel` (GDB symbol file) matches the binary written into the image.
-2. **Generate `makar-hdd-test.img`** — fresh raw MBR + FAT32 + GRUB 2 image using the interactive kernel so `shell_run` is called and `vfs_auto_mount()` runs. Kept separate from `makar-hdd.img` so interactive and test images never share state.
-3. **GDB boot test** — boots the image with `-boot c` (HDD-only) and runs `tests/gdb_hdd_test.py`.
+1. **Clean rebuild** - ensures `src/kernel/makar.kernel` (GDB symbol file) matches the binary written into the image.
+2. **Generate `makar-hdd-test.img`** - fresh raw MBR + FAT32 + GRUB 2 image using the interactive kernel so `shell_run` is called and `vfs_auto_mount()` runs. Kept separate from `makar-hdd.img` so interactive and test images never share state.
+3. **GDB boot test** - boots the image with `-boot c` (HDD-only) and runs `tests/gdb_hdd_test.py`.
 
 Output files: `hdd-test-gdb.log`, `hdd-test-serial.log`.
 
@@ -59,8 +59,8 @@ boot medium:
 |---|---|
 | `boot_checkpoints` | Every major boot function reached in order: `kernel_main` → `terminal_initialize` → … → `shell_run` |
 | `hardware_state` | CR0.PG set (paging enabled), CR3 non-zero (page directory loaded), `timer_callback` fires (PIT ticking) |
-| `vesa` | VESA framebuffer active and TTY initialised (or absent without crashing — graceful headless) |
-| `hdd_mount` | `fat32_mounted()` non-zero — FAT32 partition auto-mounted at `/hd` after `shell_run` |
+| `vesa` | VESA framebuffer active and TTY initialised (or absent without crashing - graceful headless) |
+| `hdd_mount` | `fat32_mounted()` non-zero - FAT32 partition auto-mounted at `/hd` after `shell_run` |
 
 The `hdd_mount` check advances execution to `keyboard_getchar` (the shell's
 read-loop entry) before inspecting `fat32_mounted()`, ensuring
@@ -82,11 +82,11 @@ To add a new group: create `tests/groups/<name>.py` exposing `NAME` and
 # Build a debug ISO first
 ./run.sh iso-boot   # or: CFLAGS='-O0 -g3' ./run.sh iso-release
 
-# In one terminal — start QEMU with GDB stub (inside Docker)
+# In one terminal - start QEMU with GDB stub (inside Docker)
 docker run --rm -it -v "$PWD:/work" -w /work arawn780/gcc-cross-i686-elf:fast \
     bash -lc 'qemu-system-i386 -cdrom makar.iso -s -S -display none -serial stdio'
 
-# In another terminal — attach GDB (inside Docker or native)
+# In another terminal - attach GDB (inside Docker or native)
 docker run --rm -it -v "$PWD:/work" -w /work arawn780/gcc-cross-i686-elf:fast \
     gdb-multiarch src/kernel/makar.kernel \
         -ex "target remote :1234" \

@@ -2,7 +2,7 @@
 #define _KERNEL_VESA_CONFIG_H
 
 /*
- * VESA framebuffer resolution — the single place to change width/height/bpp.
+ * VESA framebuffer resolution - the single place to change width/height/bpp.
  *
  * This header is included by both C code (vesa.h) and the Multiboot 2
  * assembly header (boot.s, via -x assembler-with-cpp) so that one edit here

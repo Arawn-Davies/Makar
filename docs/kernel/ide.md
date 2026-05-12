@@ -7,7 +7,7 @@ kernel.  It supports 28-bit LBA sector reads and writes over two ATA channels
 (primary and secondary), giving access to up to four drives (primary master,
 primary slave, secondary master, secondary slave).
 
-All transfers are polling-based — no DMA, no IRQ-driven I/O.  ATAPI (CD-ROM)
+All transfers are polling-based - no DMA, no IRQ-driven I/O.  ATAPI (CD-ROM)
 devices are detected and labelled but sector read/write is not supported for
 them.
 
@@ -28,11 +28,11 @@ Command-block register offsets:
 |--------|-----------------|----------|
 | `+0`   | Data (16-bit)   | Data     |
 | `+1`   | Error           | Features |
-| `+2`   | Sector Count    | —        |
-| `+3`   | LBA bits 0–7    | —        |
-| `+4`   | LBA bits 8–15   | —        |
-| `+5`   | LBA bits 16–23  | —        |
-| `+6`   | Drive/Head      | —        |
+| `+2`   | Sector Count    | -        |
+| `+3`   | LBA bits 0–7    | -        |
+| `+4`   | LBA bits 8–15   | -        |
+| `+5`   | LBA bits 16–23  | -        |
+| `+6`   | Drive/Head      | -        |
 | `+7`   | Status          | Command  |
 
 The control block base (`+0`) holds the alternate-status register (read) or
@@ -80,7 +80,7 @@ drive `drive_num` into `buf`.
 |--------------|-------------------------------------------------|
 | `0`          | Success                                         |
 | `-1`         | Drive index out of range or drive not present   |
-| `-2`         | Drive is ATAPI — not supported by PIO read      |
+| `-2`         | Drive is ATAPI - not supported by PIO read      |
 | `1`          | ATA error bit set during transfer               |
 | `2`          | Drive fault during transfer                     |
 | `3`          | DRQ not asserted after command                  |

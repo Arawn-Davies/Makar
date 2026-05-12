@@ -1,10 +1,10 @@
 /*
- * debug.c — exception handlers and kernel panic screen.
+ * debug.c - exception handlers and kernel panic screen.
  *
  * Panic rendering:
- *   • VESA path  — when vesa_tty_is_ready(): renders on the active framebuffer,
+ *   • VESA path  - when vesa_tty_is_ready(): renders on the active framebuffer,
  *                  no mode switch.  Survives 1080p without touching VGA.
- *   • VGA path   — fallback: writes directly to 0xB8000 (always identity-mapped),
+ *   • VGA path   - fallback: writes directly to 0xB8000 (always identity-mapped),
  *                  re-enables VGA display via PAS bit.
  *   Serial output is written first; it is always safe.
  *
@@ -43,7 +43,7 @@
 #include <stddef.h>
 
 /* ============================================================
- * Pure formatting helpers — no I/O, no external dependencies
+ * Pure formatting helpers - no I/O, no external dependencies
  * ============================================================ */
 
 static const char HEX[] = "0123456789ABCDEF";
@@ -589,7 +589,7 @@ static void kernel_panic(const char *fault_type, const char *msg,
                           uint32_t fault_addr, int show_addr,
                           registers_t *r)
 {
-    /* 1. Serial — always written first; always safe */
+    /* 1. Serial - always written first; always safe */
     Serial_WriteString("\n\n");
     Serial_WriteString("panic(cpu 0): ");
     if (fault_type) Serial_WriteString((char *)fault_type);
@@ -639,7 +639,7 @@ static void kernel_panic(const char *fault_type, const char *msg,
                          fault_addr, show_addr, r);
     }
 
-    /* 3. Halt — once, no loop */
+    /* 3. Halt - once, no loop */
     asm volatile("cli; hlt");
 }
 
@@ -647,7 +647,7 @@ static void kernel_panic(const char *fault_type, const char *msg,
  * CPU state capture for software panics (no hardware exception frame)
  *
  * __attribute__((noinline)) so __builtin_return_address(0) gives the
- * address inside kpanic/kpanic_at that called us — i.e. the panic site.
+ * address inside kpanic/kpanic_at that called us - i.e. the panic site.
  * ============================================================ */
 
 static void __attribute__((noinline)) capture_cpu_state(registers_t *r)
@@ -682,7 +682,7 @@ static void __attribute__((noinline)) capture_cpu_state(registers_t *r)
         : "memory"
     );
 
-    /* Segment registers — 16-bit source, zero-extend to 32-bit field */
+    /* Segment registers - 16-bit source, zero-extend to 32-bit field */
     { uint16_t v; asm volatile("movw %%cs, %0" : "=r"(v)); r->cs = v; }
     { uint16_t v; asm volatile("movw %%ss, %0" : "=r"(v)); r->ss = v; }
     { uint16_t v; asm volatile("movw %%ds, %0" : "=r"(v)); r->ds = v; }

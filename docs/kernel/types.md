@@ -1,4 +1,4 @@
-# types — Common type aliases and geometric structs
+# types - Common type aliases and geometric structs
 
 **Header:** `kernel/include/kernel/types.h`
 

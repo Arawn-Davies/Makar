@@ -4,7 +4,7 @@ Verifies that vfs_auto_mount() successfully mounted the FAT32 partition
 from the boot HDD at /hd.
 
 The ktest_bg group runs before this one and always advances execution to
-keyboard_getchar() — guaranteeing that vfs_auto_mount() has already completed
+keyboard_getchar() - guaranteeing that vfs_auto_mount() has already completed
 and the inferior is stopped in normal task context.  This group therefore
 checks fat32_mounted() directly without issuing another continue.
 
@@ -29,11 +29,11 @@ def run():
         return False
 
     if not mounted:
-        print('FAIL: fat32_mounted() returned 0 — /hd was NOT mounted',
+        print('FAIL: fat32_mounted() returned 0 - /hd was NOT mounted',
               flush=True)
         return False
 
-    print('PASS: fat32_mounted() returned {} — /hd is mounted'.format(mounted),
+    print('PASS: fat32_mounted() returned {} - /hd is mounted'.format(mounted),
           flush=True)
     print('GROUP PASS: ' + NAME, flush=True)
     return True

@@ -84,6 +84,20 @@ The `FONT8x8` glyph table in `kernel/include/kernel/vesa_font.h` is based
 on the classic IBM PC VGA 8×8 character ROM, widely reproduced in open-source
 OS projects and considered public domain.  See `LICENSES/vesa-font.md`.
 
+### IBM PC VGA 8×16 glyph ROM (via Linux kernel)
+**Status:** Public domain (glyphs); Linux source is GPLv2  
+**URL:** https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/lib/fonts/font_8x16.c
+
+The `FONT8x16` glyph table in `kernel/include/kernel/vga_8x16_font.h` was
+retyped from Linux's `lib/fonts/font_8x16.c`, which is itself a verbatim
+copy of the IBM VGA BIOS character ROM (treated as public domain across
+Linux, the BSDs, FreeDOS, GRUB, etc.).  No Linux source code is linked
+into Makar; only the glyph data is reused.  Gratitude is documented in
+`LICENSES/vga-8x16-font.md`.
+
+The font is uploaded to VGA plane 2 on every transition out of VESA so
+`setmode 80x25` / `setmode 80x50` come up readable.
+
 ---
 
 ## Documentation and learning resources

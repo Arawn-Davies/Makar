@@ -1,5 +1,5 @@
 /*
- * usertest.c — minimal ring-3 smoke test.
+ * usertest.c - minimal ring-3 smoke test.
  *
  * Spawns a kernel task that builds a one-page user address space, copies a
  * tiny position-independent binary into it, and drops to ring 3 via
@@ -85,7 +85,7 @@ void ring3_usertest_task(void)
         return;
     }
 
-    /* 2. Code page — user-readable, not writable. */
+    /* 2. Code page - user-readable, not writable. */
     uint32_t code_phys = pmm_alloc_frame();
     if (code_phys == PMM_ALLOC_ERROR) {
         t_writestring("ring3test: pmm_alloc_frame failed (code)\n");
@@ -96,7 +96,7 @@ void ring3_usertest_task(void)
     memcpy((void *)code_phys, user_test_bin, sizeof(user_test_bin));
     vmm_map_page(pd, USER_CODE_BASE, code_phys, VMM_FLAG_USER);
 
-    /* 3. Stack page — user-readable and writable. */
+    /* 3. Stack page - user-readable and writable. */
     uint32_t stack_phys = pmm_alloc_frame();
     if (stack_phys == PMM_ALLOC_ERROR) {
         t_writestring("ring3test: pmm_alloc_frame failed (stack)\n");
@@ -114,7 +114,7 @@ void ring3_usertest_task(void)
     tss_set_kernel_stack((uint32_t)(task_current()->stack + TASK_STACK_SIZE));
     vmm_switch(pd);
 
-    /* 5. Drop to ring 3 — does not return. */
+    /* 5. Drop to ring 3 - does not return. */
     ring3_enter(USER_CODE_BASE, USER_STACK_TOP);
 }
 
@@ -128,7 +128,7 @@ void cmd_ring3test(int argc, char **argv)
         return;
     }
     /* Yield so the new task runs before the shell blocks on keyboard input.
-       This is a cooperative scheduler — without an explicit yield here the
+       This is a cooperative scheduler - without an explicit yield here the
        ring3test task would never get CPU time until the next keypress. */
     task_yield();
 }

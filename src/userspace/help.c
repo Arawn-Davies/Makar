@@ -13,7 +13,7 @@ int main(int argc, char **argv)
 {
     (void)argc; (void)argv;
 
-    PUTS("Makar OS — built-in commands\n");
+    PUTS("Makar OS - built-in commands\n");
     PUTS("\n");
     PUTS("Display:\n");
     PUTS("  clear                        clear the terminal\n");

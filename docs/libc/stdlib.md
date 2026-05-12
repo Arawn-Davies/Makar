@@ -1,4 +1,4 @@
-# stdlib — Standard utilities
+# stdlib - Standard utilities
 
 **Header:** `libc/include/stdlib.h`  
 **Source:** `libc/stdlib/abort.c`

@@ -1,5 +1,5 @@
 /*
- * vics.c — VICS interactive text editor (userland port).
+ * vics.c - VICS interactive text editor (userland port).
  *
  * Ported from src/kernel/arch/i386/proc/vics.c.
  * All kernel calls replaced with int 0x80 syscalls.
@@ -33,7 +33,7 @@ static int  v_dirty;
 static int  v_quit_warn;
 static char v_path[VFS_PATH_MAX];
 
-/* Cell batch buffer — flushed once per redraw. */
+/* Cell batch buffer - flushed once per redraw. */
 static tty_cell_t g_cells[VGA_WIDTH * (VICS_TEXT_ROWS + 1)];
 static int        g_ncells;
 

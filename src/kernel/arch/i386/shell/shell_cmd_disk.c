@@ -153,7 +153,7 @@ static void cmd_lspart(int argc, char **argv)
     disk_parts_print(&s_disk_parts);
 }
 
-/* Static entries array for mkpart — avoids putting ~10 KB on the stack. */
+/* Static entries array for mkpart - avoids putting ~10 KB on the stack. */
 static part_info_t s_mkpart_entries[128];
 
 static uint8_t mkpart_mbr_type(const char *kw)
@@ -240,7 +240,7 @@ static void cmd_mkpart(int argc, char **argv)
             } else {
                 if (mkpart_gpt_type(inbuf, gpt_guid) == 0) break;
             }
-            t_writestring("  Unknown type — try again.\n");
+            t_writestring("  Unknown type - try again.\n");
         }
 
         uint32_t avail_mib = (last_lba - next_lba + 1u) / 2048u;

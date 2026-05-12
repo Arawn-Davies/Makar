@@ -6,7 +6,7 @@ future **userspace** (Ring 3), mirroring the structure used in
 
 ---
 
-## `src/kernel/` — Kernelspace (Ring 0)
+## `src/kernel/` - Kernelspace (Ring 0)
 
 The bare-metal kernel, compiled with `-ffreestanding` and linked against
 `libk`.  Architecture-specific code lives under `arch/<arch>/` and is
@@ -28,20 +28,20 @@ further divided into logical groups:
 
 ---
 
-## `src/libc/` — C Standard Library
+## `src/libc/` - C Standard Library
 
 A freestanding C library built in two flavours:
 
-* **`libk`** — kernel variant (`-D__is_libk`), linked into the kernel.
-* **`libc`** — hosted variant (not yet built), intended for future userspace.
+* **`libk`** - kernel variant (`-D__is_libk`), linked into the kernel.
+* **`libc`** - hosted variant (not yet built), intended for future userspace.
 
 Provides `stdio`, `stdlib`, and `string` primitives.
 
 ---
 
-## `src/userspace/` — Userspace (Ring 3)
+## `src/userspace/` - Userspace (Ring 3)
 
-*Placeholder — not yet built.*
+*Placeholder - not yet built.*
 
 This is the future home of Ring-3 programs (init, shell, user utilities).
 Once the kernel exposes a stable syscall ABI and ELF loader, user programs
@@ -86,4 +86,4 @@ sub-structure.
 | File | Purpose |
 |---|---|
 | `Dockerfile` | Extends `arawn780/gcc-cross-i686-elf:fast` (the CI image) to create a self-contained build environment with the i686-elf cross-toolchain, GRUB tools, QEMU, and GDB pre-installed |
-| `docker-compose.yml` | Defines three services — `build` (release ISO), `build-debug` (debug ISO), and `test` (debug build + headless serial smoke test) — all bind-mounting the source tree so output lands in your checkout |
+| `docker-compose.yml` | Defines three services - `build` (release ISO), `build-debug` (debug ISO), and `test` (debug build + headless serial smoke test) - all bind-mounting the source tree so output lands in your checkout |

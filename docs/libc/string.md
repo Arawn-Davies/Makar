@@ -1,4 +1,4 @@
-# string — Memory and string utilities
+# string - Memory and string utilities
 
 **Header:** `libc/include/string.h`  
 **Sources:** `libc/string/memcmp.c`, `memcpy.c`, `memmove.c`, `memset.c`, `strlen.c`

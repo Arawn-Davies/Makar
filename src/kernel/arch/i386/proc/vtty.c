@@ -1,5 +1,5 @@
 /*
- * vtty.c — virtual TTY manager.
+ * vtty.c - virtual TTY manager.
  *
  * Each slot holds one shell task.  Alt+F1-F4 (handled in keyboard.c) calls
  * vtty_switch() to change the active slot, update keyboard routing, and send

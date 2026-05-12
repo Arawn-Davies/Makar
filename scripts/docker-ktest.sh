@@ -2,8 +2,8 @@
 # docker-ktest.sh – comprehensive CI test suite (everything).
 #
 # Step 1: in-kernel ktest suite
-#   Builds a TEST_MODE ISO.  The kernel runs ktest_run_all() — all subsystem
-#   unit tests including a live ring-3 execution — then exits QEMU cleanly via
+#   Builds a TEST_MODE ISO.  The kernel runs ktest_run_all() - all subsystem
+#   unit tests including a live ring-3 execution - then exits QEMU cleanly via
 #   isa-debug-exit.
 #
 # Step 2: GDB boot-checkpoint tests
@@ -58,10 +58,10 @@ echo "==> Step 1: running ktest suite in QEMU (headless)..."
         if grep -q "KTEST_RESULT: PASS" /work/ktest.log; then
             echo "==> ktest: ALL PASSED"
         elif grep -q "KTEST_RESULT: FAIL" /work/ktest.log; then
-            echo "==> ktest: FAILED — see ktest.log"
+            echo "==> ktest: FAILED - see ktest.log"
             exit 1
         else
-            echo "==> ktest: TIMEOUT or no result — see ktest.log"
+            echo "==> ktest: TIMEOUT or no result - see ktest.log"
             exit 1
         fi
     '
