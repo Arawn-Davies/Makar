@@ -34,6 +34,7 @@
 #define SYS_RENAME_FILE  209  /* int rename_file(old_path, new_path)              */
 #define SYS_DELETE_DIR   210  /* int delete_dir(path)                             */
 #define SYS_WRITE_SERIAL 211  /* ssize_t write_serial(const void *buf, size_t len)*/
+#define SYS_KEYBOARD_RAW 212  /* void keyboard_raw(int on)   — see keyboard.h     */
 
 /*
  * tty_cell_t — one screen cell passed to SYS_PUTCH_AT.

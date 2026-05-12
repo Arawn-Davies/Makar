@@ -93,7 +93,25 @@ static const char *byte_name(unsigned char b)
         case 0x81: return "ARROW_DOWN";
         case 0x82: return "ARROW_LEFT";
         case 0x83: return "ARROW_RIGHT";
+        case 0x84: return "F1";
+        case 0x85: return "F2";
+        case 0x86: return "F3";
+        case 0x87: return "F4";
         case 0x88: return "FOCUS_GAIN";
+        case 0x89: return "F5";
+        case 0x8A: return "F6";
+        case 0x8B: return "F7";
+        case 0x8C: return "F8";
+        case 0x8D: return "F9";
+        case 0x8E: return "F10";
+        case 0x8F: return "F11";
+        case 0x90: return "F12";
+        case 0x91: return "Shift";
+        case 0x92: return "Ctrl";
+        case 0x93: return "Alt";
+        case 0x94: return "CapsLock";
+        case 0x95: return "Super";
+        case 0x96: return "Menu";
         case 0x00: return "NUL";
         case 0x03: return "Ctrl-C";
         case 0x08: return "Backspace";
@@ -106,7 +124,6 @@ static const char *byte_name(unsigned char b)
     }
     if (b >= 0x01 && b <= 0x1A) return "Ctrl+letter";
     if (b >= 0x21 && b <= 0x7E) return "printable";
-    if (b >= 0x84 && b <= 0x87) return "F-key sentinel";
     return "extended";
 }
 
@@ -238,18 +255,18 @@ typedef struct {
 static key_t KEYS[] = {
     /* --- function row (row 0) ------------------------------------------- */
     KN("Esc", 0x1B, 0,                              2, KB_ROW0 + 0, 5),
-    KU("F1",                                       11, KB_ROW0 + 0, 4),
-    KU("F2",                                       16, KB_ROW0 + 0, 4),
-    KU("F3",                                       21, KB_ROW0 + 0, 4),
-    KU("F4",                                       26, KB_ROW0 + 0, 4),
-    KU("F5",                                       32, KB_ROW0 + 0, 4),
-    KU("F6",                                       37, KB_ROW0 + 0, 4),
-    KU("F7",                                       42, KB_ROW0 + 0, 4),
-    KU("F8",                                       47, KB_ROW0 + 0, 4),
-    KU("F9",                                       53, KB_ROW0 + 0, 4),
-    KU("F10",                                      58, KB_ROW0 + 0, 4),
-    KU("F11",                                      63, KB_ROW0 + 0, 4),
-    KU("F12",                                      68, KB_ROW0 + 0, 4),
+    KN("F1",  0x84, 0,                             11, KB_ROW0 + 0, 4),
+    KN("F2",  0x85, 0,                             16, KB_ROW0 + 0, 4),
+    KN("F3",  0x86, 0,                             21, KB_ROW0 + 0, 4),
+    KN("F4",  0x87, 0,                             26, KB_ROW0 + 0, 4),
+    KN("F5",  0x89, 0,                             32, KB_ROW0 + 0, 4),
+    KN("F6",  0x8A, 0,                             37, KB_ROW0 + 0, 4),
+    KN("F7",  0x8B, 0,                             42, KB_ROW0 + 0, 4),
+    KN("F8",  0x8C, 0,                             47, KB_ROW0 + 0, 4),
+    KN("F9",  0x8D, 0,                             53, KB_ROW0 + 0, 4),
+    KN("F10", 0x8E, 0,                             58, KB_ROW0 + 0, 4),
+    KN("F11", 0x8F, 0,                             63, KB_ROW0 + 0, 4),
+    KN("F12", 0x90, 0,                             68, KB_ROW0 + 0, 4),
 
     /* --- number row (row 2) --------------------------------------------- */
     KN("`",   '`', '~',                             2, KB_ROW0 + 2, 3),
@@ -284,7 +301,7 @@ static key_t KEYS[] = {
     KN("\\",  '\\','|',                            56, KB_ROW0 + 3, 3),
 
     /* --- ASDF row (row 4) ----------------------------------------------- */
-    KU("Caps",                                      2, KB_ROW0 + 4, 6),
+    KN("Caps",0x94, 0,                              2, KB_ROW0 + 4, 6),
     KN("A",   'a', 'A',                             9, KB_ROW0 + 4, 3),
     KN("S",   's', 'S',                            13, KB_ROW0 + 4, 3),
     KN("D",   'd', 'D',                            17, KB_ROW0 + 4, 3),
@@ -312,14 +329,19 @@ static key_t KEYS[] = {
     KN("/",   '/', '?',                            46, KB_ROW0 + 5, 3),
     KS("Shift",                                    50, KB_ROW0 + 5, 7),
 
-    /* --- bottom row (row 6) --------------------------------------------- */
-    KC("Ctrl",                                      2, KB_ROW0 + 6, 5),
-    KU("Win",                                       8, KB_ROW0 + 6, 4),
-    KU("Alt",                                      13, KB_ROW0 + 6, 4),
+    /* --- bottom row (row 6) ---------------------------------------------
+     * In raw mode the kernel routes a sentinel byte for every Ctrl/Alt/
+     * Super/Caps press, so the cells are SP_NONE with explicit match
+     * bytes rather than SP_CTRL inference.  The SP_CTRL fallback is
+     * still useful for cooked mode (Ctrl+letter inference) but raw mode
+     * gives us the press event directly. */
+    KN("Ctrl",0x92, 0,                              2, KB_ROW0 + 6, 5),
+    KN("Win", 0x95, 0,                              8, KB_ROW0 + 6, 4),
+    KN("Alt", 0x93, 0,                             13, KB_ROW0 + 6, 4),
     KN("Space", ' ', 0,                            18, KB_ROW0 + 6,15),
-    KU("Alt",                                      34, KB_ROW0 + 6, 4),
-    KU("Win",                                      39, KB_ROW0 + 6, 4),
-    KC("Ctrl",                                     44, KB_ROW0 + 6, 5),
+    KN("Alt", 0x93, 0,                             34, KB_ROW0 + 6, 4),
+    KN("Win", 0x95, 0,                             39, KB_ROW0 + 6, 4),
+    KN("Ctrl",0x92, 0,                             44, KB_ROW0 + 6, 5),
 
     /* --- arrows (rows 8-9) ---------------------------------------------- */
     KN("^",   0x80, 0,                             32, KB_ROW0 + 8, 3),  /* up    */
@@ -393,7 +415,7 @@ static void draw_static(unsigned int cols)
 
     /* Footer hint. */
     put_at(0, KB_ROW0 + 11,
-           "Untestable keys are greyed out (no byte produced today).");
+           "Raw mode active: every key reaches kbtester. Ctrl+C exits.");
 
     /* Key cells -- the only thing with a custom palette. */
     for (unsigned int i = 0; i < NUM_KEYS; i++)
@@ -480,7 +502,10 @@ static void update_status(unsigned char b, unsigned int count)
 
 static int byte_is_shifted(unsigned char b)
 {
-    /* Uppercase letter or any character that appears as match_b elsewhere. */
+    /* Explicit Shift press sentinel (raw mode) lights up the Shift cell
+     * directly.  Inferred shift (uppercase letter / shifted symbol) is
+     * preserved as a backup for any cooked-mode use. */
+    if (b == 0x91) return 1;
     if (b >= 'A' && b <= 'Z') return 1;
     for (unsigned int i = 0; i < NUM_KEYS; i++)
         if (KEYS[i].special == SP_NONE && KEYS[i].match_b && KEYS[i].match_b == b)
@@ -600,6 +625,13 @@ int main(int argc, char **argv)
 {
     (void)argc; (void)argv;
 
+    /* Raw mode: the shell's Alt+Fn TTY switch and Ctrl+A pane prefix are
+     * suspended for the duration of this run, modifier and F-key presses
+     * arrive as sentinel bytes.  Paired with sys_keyboard_raw(0) on
+     * every exit path; shell_exec_elf also resets it after we return as
+     * a safety net.  Ctrl+C still fires so the operator can quit. */
+    sys_keyboard_raw(1);
+
     /* Resolution-agnostic: clear the whole screen we were handed, not a
      * hardcoded 80×25 rectangle, so wide VESA modes don't show stale
      * shell text framing kbtester's UI. */
@@ -610,6 +642,7 @@ int main(int argc, char **argv)
     if (cols < 70) {
         line_mode_loop(cols, rows);
         clear_screen(cols, rows);
+        sys_keyboard_raw(0);
         return 0;
     }
 
@@ -632,6 +665,7 @@ int main(int argc, char **argv)
             put_serial("KBTESTER_END\n", 13);
             clear_screen(cols, rows);
             put_str("kbtester: exited (Ctrl+C). See COM1 for full byte log.\n");
+            sys_keyboard_raw(0);
             return 0;
         }
 

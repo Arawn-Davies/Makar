@@ -233,6 +233,21 @@ void syscall_dispatch(registers_t *regs)
      * pollute the visible framebuffer. For diagnostic output the user
      * should also see, prefer SYS_WRITE on fd 2 (stderr).
      * ------------------------------------------------------------------ */
+    /* ------------------------------------------------------------------
+     * SYS_KEYBOARD_RAW(212): enable/disable raw key event delivery
+     * for the duration of the current app.  EBX = 0/1.
+     *
+     * Raw mode suppresses cooked shortcuts (Alt+Fn TTY switch, Ctrl+A
+     * pane prefix) and delivers modifier presses + every F-key as
+     * sentinel bytes — kbtester is the canonical consumer.  shell_exec_elf
+     * defensively forces raw=0 after the child exits in case the app
+     * was killed before its own cleanup ran.
+     * ------------------------------------------------------------------ */
+    case SYS_KEYBOARD_RAW:
+        keyboard_set_raw((int)regs->ebx);
+        regs->eax = 0;
+        break;
+
     case SYS_WRITE_SERIAL: {
         const char *buf = (const char *)(uintptr_t)regs->ebx;
         uint32_t    len = regs->ecx;

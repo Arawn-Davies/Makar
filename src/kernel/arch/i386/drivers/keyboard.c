@@ -292,6 +292,9 @@ typedef uint8_t kc_t;
 #define KC_ARROW_DOWN   KC_EXT(0x50)
 #define KC_ARROW_LEFT   KC_EXT(0x4B)
 #define KC_ARROW_RIGHT  KC_EXT(0x4D)
+#define KC_LSUPER       KC_EXT(0x5B)   /* e0 5b — left Windows/Super  */
+#define KC_RSUPER       KC_EXT(0x5C)   /* e0 5c — right Windows/Super */
+#define KC_MENU         KC_EXT(0x5D)   /* e0 5d — Menu/Application    */
 
 /* ===========================================================================
  * Set-1 -> ASCII translation tables (US QWERTY).
@@ -659,6 +662,26 @@ static int mod_rctrl   = 0;
 static int mod_lalt    = 0;
 static int mod_ralt    = 0;
 
+/* Raw mode: see keyboard_set_raw().  When set, on_make delivers modifier
+ * presses, F-keys, Caps, and Super as sentinel bytes; cooked shortcuts
+ * (Alt+F1..F4 vtty switch, Ctrl-A pane prefix) are suspended.  Ctrl+C
+ * still fires so a raw-mode app can be exited the usual way.
+ *
+ * A single global flag is fine because only the focused task receives
+ * cooked-mode shortcuts in the first place — there is no scenario where
+ * one running task wants raw delivery and another wants cooked. */
+static volatile int kb_raw_mode = 0;
+
+void keyboard_set_raw(int on)
+{
+    /* Memory ordering: a sequentially consistent store keeps the IRQ
+     * handler from observing the flag before any other state the caller
+     * wrote (the raw-mode contract doesn't actually require any other
+     * shared state today, but the cost is one mfence and the future-
+     * proofing is worth it). */
+    __atomic_store_n(&kb_raw_mode, on ? 1 : 0, __ATOMIC_SEQ_CST);
+}
+
 /*
  * translate_make - convert a keycode into the cooked byte that should be
  * routed to the focused task, taking current modifier state into account.
@@ -754,22 +777,45 @@ static void apply_modifier(kc_t kc, int is_break)
  */
 static void on_make(kc_t kc)
 {
+    int raw = __atomic_load_n(&kb_raw_mode, __ATOMIC_ACQUIRE);
+
+    /* Modifier keys: silent in cooked mode, sentinel byte in raw mode.
+     * The state itself is updated by apply_modifier irrespective of mode
+     * so Ctrl+C / shift+letter / Alt+Fn semantics keep working. */
     switch (kc) {
         case KC_LSHIFT: case KC_RSHIFT:
+            if (raw) kb_route((unsigned char)KEY_SHIFT_DOWN);
+            return;
         case KC_LCTRL:  case KC_RCTRL:
+            if (raw) kb_route((unsigned char)KEY_CTRL_DOWN);
+            return;
         case KC_LALT:   case KC_RALT:
+            if (raw) kb_route((unsigned char)KEY_ALT_DOWN);
+            return;
         case KC_CAPSLOCK:
+            if (raw) kb_route((unsigned char)KEY_CAPS_TOGGLE);
+            return;
+        case KC_LSUPER: case KC_RSUPER:
+            if (raw) kb_route((unsigned char)KEY_SUPER_DOWN);
+            return;
+        case KC_MENU:
+            if (raw) kb_route((unsigned char)KEY_MENU_DOWN);
             return;
         default: break;
     }
 
-    if (mod_alt) {
-        switch (kc) {
-            case KC_F1: vtty_switch(0); return;
-            case KC_F2: vtty_switch(1); return;
-            case KC_F3: vtty_switch(2); return;
-            case KC_F4: vtty_switch(3); return;
-            default: break;
+    /* Cooked-mode shortcuts: Alt+Fn TTY switch and Ctrl-A pane prefix.
+     * Raw-mode apps (kbtester) need every keystroke as data, so these
+     * intercepts are suspended for the duration of their session. */
+    if (!raw) {
+        if (mod_alt) {
+            switch (kc) {
+                case KC_F1: vtty_switch(0); return;
+                case KC_F2: vtty_switch(1); return;
+                case KC_F3: vtty_switch(2); return;
+                case KC_F4: vtty_switch(3); return;
+                default: break;
+            }
         }
     }
 
@@ -777,22 +823,44 @@ static void on_make(kc_t kc)
      * shortcuts; this avoids hardcoding scancode magic numbers. */
     unsigned char letter = (kc < sizeof(kc_ascii_lower)) ? kc_ascii_lower[kc] : 0;
 
-    if (mod_ctrl && letter == 'a') {
-        kb_prefix = 1;
-        return;
+    if (!raw) {
+        if (mod_ctrl && letter == 'a') {
+            kb_prefix = 1;
+            return;
+        }
+
+        if (kb_prefix) {
+            kb_prefix = 0;
+            if (letter == 'u')      keyboard_focus_pane(KB_PANE_TOP);
+            else if (letter == 'j') keyboard_focus_pane(KB_PANE_BOTTOM);
+            return;
+        }
     }
 
-    if (kb_prefix) {
-        kb_prefix = 0;
-        if (letter == 'u')      keyboard_focus_pane(KB_PANE_TOP);
-        else if (letter == 'j') keyboard_focus_pane(KB_PANE_BOTTOM);
-        return;
-    }
-
+    /* Ctrl+C fires in BOTH modes — it's how a raw-mode app gets exited. */
     if (mod_ctrl && letter == 'c') {
         __atomic_store_n(&kb_sigint, 1, __ATOMIC_RELEASE);
         kb_route(0x03);
         return;
+    }
+
+    /* F1..F12 sentinels.  Cooked mode reaches here only when Alt is not
+     * held (Alt+F1..F4 was intercepted above); raw mode reaches here
+     * unconditionally and the Alt sentinel was already routed. */
+    switch (kc) {
+        case KC_F1:  kb_route((unsigned char)KEY_F1);  return;
+        case KC_F2:  kb_route((unsigned char)KEY_F2);  return;
+        case KC_F3:  kb_route((unsigned char)KEY_F3);  return;
+        case KC_F4:  kb_route((unsigned char)KEY_F4);  return;
+        case KC_F5:  kb_route((unsigned char)KEY_F5);  return;
+        case KC_F6:  kb_route((unsigned char)KEY_F6);  return;
+        case KC_F7:  kb_route((unsigned char)KEY_F7);  return;
+        case KC_F8:  kb_route((unsigned char)KEY_F8);  return;
+        case KC_F9:  kb_route((unsigned char)KEY_F9);  return;
+        case KC_F10: kb_route((unsigned char)KEY_F10); return;
+        case KC_F11: kb_route((unsigned char)KEY_F11); return;
+        case KC_F12: kb_route((unsigned char)KEY_F12); return;
+        default: break;
     }
 
     unsigned char out = translate_make(kc);

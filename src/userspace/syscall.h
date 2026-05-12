@@ -23,6 +23,7 @@
 #define SYS_RENAME_FILE  209
 #define SYS_DELETE_DIR   210
 #define SYS_WRITE_SERIAL 211
+#define SYS_KEYBOARD_RAW 212
 
 /* open() flags */
 #define O_RDONLY    0
@@ -56,11 +57,32 @@
 /* One screen cell passed to sys_putch_at(). */
 typedef struct { unsigned char col, row, ch, clr; } tty_cell_t;
 
-/* Arrow key sentinels returned by sys_getkey() (unsigned byte values). */
+/* Key sentinels returned by sys_getkey() (unsigned byte values).  Mirrors
+ * <kernel/keyboard.h> KEY_* — kept in sync by hand because the userspace
+ * build doesn't see kernel headers. */
 #define KEY_ARROW_UP    0x80
 #define KEY_ARROW_DOWN  0x81
 #define KEY_ARROW_LEFT  0x82
 #define KEY_ARROW_RIGHT 0x83
+#define KEY_F1          0x84
+#define KEY_F2          0x85
+#define KEY_F3          0x86
+#define KEY_F4          0x87
+#define KEY_FOCUS_GAIN  0x88
+#define KEY_F5          0x89
+#define KEY_F6          0x8A
+#define KEY_F7          0x8B
+#define KEY_F8          0x8C
+#define KEY_F9          0x8D
+#define KEY_F10         0x8E
+#define KEY_F11         0x8F
+#define KEY_F12         0x90
+#define KEY_SHIFT_DOWN  0x91
+#define KEY_CTRL_DOWN   0x92
+#define KEY_ALT_DOWN    0x93
+#define KEY_CAPS_TOGGLE 0x94
+#define KEY_SUPER_DOWN  0x95
+#define KEY_MENU_DOWN   0x96
 #define KEY_CTRL_S      0x13
 #define KEY_CTRL_Q      0x11
 #define KEY_CTRL_C      0x03
@@ -114,6 +136,16 @@ static inline long sys_write(int fd, const void *buf, unsigned int len)
 static inline long sys_write_serial(const void *buf, unsigned int len)
 {
     return syscall2(SYS_WRITE_SERIAL, (long)buf, (long)len);
+}
+
+/* Enable (on=1) or disable (on=0) raw keyboard delivery for the calling
+ * app — see <kernel/keyboard.h> keyboard_set_raw().  Pair every enable
+ * with a disable on the way out; the kernel forces raw=0 after exec
+ * returns as a safety net, but apps that want to keep cooked-mode
+ * shortcuts working for the operator should still clean up themselves. */
+static inline void sys_keyboard_raw(int on)
+{
+    syscall1(SYS_KEYBOARD_RAW, (long)on);
 }
 
 static inline int sys_open(const char *path, int flags)

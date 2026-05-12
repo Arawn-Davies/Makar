@@ -113,6 +113,12 @@ void shell_exec_elf(const char *path, int argc, char **argv)
 
     keyboard_release_task(t);
     keyboard_set_focus(self);
+    /* Defensive: a ring-3 app that enabled raw mode (kbtester etc.) is
+     * expected to disable it on the way out, but if it crashed or was
+     * sigint-killed it never got the chance.  Forcing cooked mode here
+     * means a dead app can never lock the user out of Alt+Fn TTY switching
+     * or the Ctrl+A pane prefix. */
+    keyboard_set_raw(0);
 }
 
 static void cmd_exec(int argc, char **argv)
