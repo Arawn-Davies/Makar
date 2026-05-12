@@ -3,6 +3,16 @@
 [![CI](https://github.com/Arawn-Davies/Makar/actions/workflows/ci.yml/badge.svg)](https://github.com/Arawn-Davies/Makar/actions/workflows/ci.yml)
 [![Release](https://github.com/Arawn-Davies/Makar/actions/workflows/release.yml/badge.svg)](https://github.com/Arawn-Davies/Makar/actions/workflows/release.yml)
 
+> *We're standing on the shoulders of giants, and none of this would be
+> possible without the hard work and contributions of the thousands of
+> developers throughout time.*
+>
+> *Homage to the Kernel. Homage to the Contributors. Homage to the Source
+> Control.*
+>
+> See [`LICENSES/THANKS.md`](LICENSES/THANKS.md) for the full
+> acknowledgements.
+
 A bare-metal **i686 hobby OS** written in C, booted via GRUB Multiboot 2.
 Makar is the **C / GCC sibling** of
 [Medli](https://github.com/Arawn-Davies/Medli) — two independent

@@ -1,6 +1,6 @@
 #include <kernel/bochs_vbe.h>
 #include <kernel/asm.h>
-#include <kernel/vesa_font.h>
+#include <kernel/vga_8x16_font.h>
 
 #define VBE_PORT_INDEX  0x01CEu
 #define VBE_PORT_DATA   0x01CFu
@@ -136,9 +136,10 @@ static void vga_load_mode_3(void)
 
 /* Reload plane-2 font data after a VESA session.  VBE leaves plane 2
  * full of graphics pixels, which renders as junk glyphs in text mode.
- * Synthesize an 8×16 cell by doubling each FONT8x8 row vertically so the
- * same source font serves both 80×25 (reads all 16 lines) and 80×50
- * (reads the first 8, which after doubling are FONT8x8 rows 0..3).
+ * Uses the real 8×16 IBM VGA ROM font (FONT8x16) so 80×25 cells get
+ * proper full-height glyphs and 80×50 cells get the top 8 scanlines
+ * (the hardware reads only the first 8 bytes of each 32-byte slot
+ * when CRTC max-scan-line is 7).
  *
  * Follows Linux vgacon's recipe: bracket the sequencer/GC reprogramming
  * with a synchronous reset (Seq[0] = 1 → 3) so the chip doesn't see
@@ -159,14 +160,10 @@ static void vga_load_text_font(void)
     volatile uint8_t *plane2 = (volatile uint8_t *)0xA0000;
     for (int c = 0; c < 256; c++) {
         volatile uint8_t *dst = plane2 + c * 32;
-        if (c < 128) {
-            const uint8_t *src = FONT8x8[c];
-            for (int y = 0; y < 16; y++)
-                dst[y] = src[y >> 1];
-        } else {
-            for (int y = 0; y < 16; y++) dst[y] = 0;
-        }
-        for (int y = 16; y < 32; y++) dst[y] = 0;
+        for (int y = 0; y < VGA_FONT_8X16_BYTES_PER_GLYPH; y++)
+            dst[y] = FONT8x16[c][y];
+        for (int y = VGA_FONT_8X16_BYTES_PER_GLYPH; y < 32; y++)
+            dst[y] = 0;
     }
 
     outb(0x3C4, 0); outb(0x3C5, 0x01);   /* sync reset start             */
