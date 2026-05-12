@@ -190,6 +190,10 @@ static void cmd_setmode(int argc, char **argv)
         vesa_disable();
         vesa_tty_disable();
         terminal_set_rows(50);
+        /* 80x50 cells are 8 scanlines; the CRTC reads only the first 8
+         * bytes of each font slot.  Swap the freshly-uploaded 8×16 font
+         * for the native 8×8 set so letter bodies aren't clipped. */
+        vga_load_text_font_8x8();
         terminal_set_colorscheme((uint8_t)((s_vga_bg << 4) | (s_vga_fg & 0x0F)));
         t_writestring("Mode: VGA 80x50 text\n");
         return;

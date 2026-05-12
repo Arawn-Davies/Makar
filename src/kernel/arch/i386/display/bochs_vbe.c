@@ -1,6 +1,7 @@
 #include <kernel/bochs_vbe.h>
 #include <kernel/asm.h>
 #include <kernel/vga_8x16_font.h>
+#include <kernel/vesa_font.h>
 
 #define VBE_PORT_INDEX  0x01CEu
 #define VBE_PORT_DATA   0x01CFu
@@ -183,4 +184,47 @@ void bochs_vbe_disable(void)
     vbe_write(VBE_IDX_ENABLE, VBE_DISABLED);
     vga_load_mode_3();
     vga_load_text_font();
+}
+
+/* Public sibling of vga_load_text_font().  Same plane-2 protocol, but
+ * sources from FONT8x8 instead of FONT8x16 — the 80×50 CRTC only reads
+ * the first 8 bytes of each glyph slot, where an 8×16 source clips the
+ * letter body.  Each cell renders as the native 8-row glyph plus 8
+ * blank trailing rows (zeroed, harmless). */
+void vga_load_text_font_8x8(void)
+{
+    outb(0x3C4, 0); outb(0x3C5, 0x01);   /* sync reset start             */
+
+    outb(0x3C4, 2); outb(0x3C5, 0x04);   /* map mask = plane 2 only      */
+    outb(0x3C4, 4); outb(0x3C5, 0x07);   /* mem mode: ext + sequential   */
+
+    outb(0x3C4, 0); outb(0x3C5, 0x03);   /* sync reset end               */
+
+    outb(0x3CE, 4); outb(0x3CF, 0x02);   /* read map select = plane 2    */
+    outb(0x3CE, 5); outb(0x3CF, 0x00);   /* graphics mode: write mode 0  */
+    outb(0x3CE, 6); outb(0x3CF, 0x00);   /* misc: A0000-BFFFF, alpha     */
+
+    volatile uint8_t *plane2 = (volatile uint8_t *)0xA0000;
+    for (int c = 0; c < 256; c++) {
+        volatile uint8_t *dst = plane2 + c * 32;
+        if (c < 128) {
+            const uint8_t *src = FONT8x8[c];
+            for (int y = 0; y < FONT8x8_CHAR_H; y++)
+                dst[y] = src[y];
+        } else {
+            for (int y = 0; y < FONT8x8_CHAR_H; y++) dst[y] = 0;
+        }
+        for (int y = FONT8x8_CHAR_H; y < 32; y++) dst[y] = 0;
+    }
+
+    outb(0x3C4, 0); outb(0x3C5, 0x01);   /* sync reset start             */
+
+    outb(0x3C4, 2); outb(0x3C5, 0x03);   /* map mask: planes 0+1 (text)  */
+    outb(0x3C4, 4); outb(0x3C5, 0x02);   /* mem mode: text (odd/even on) */
+
+    outb(0x3C4, 0); outb(0x3C5, 0x03);   /* sync reset end               */
+
+    outb(0x3CE, 4); outb(0x3CF, 0x00);   /* read map = plane 0 (chars)   */
+    outb(0x3CE, 5); outb(0x3CF, 0x10);   /* graphics mode: odd/even      */
+    outb(0x3CE, 6); outb(0x3CF, 0x0E);   /* misc: B8000-BFFFF 32K text   */
 }
