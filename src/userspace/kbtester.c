@@ -174,6 +174,29 @@ static void fill_spaces(unsigned int col, unsigned int row, unsigned int n)
     sys_write(1, buf, n);
 }
 
+/*
+ * Wipe the entire screen using the shell's current fg/bg (via fd 1 so we
+ * don't need to know the palette ourselves).  Used at launch and at exit
+ * so kbtester leaves a clean canvas in both directions.
+ *
+ * Resolution-agnostic: fill_spaces' internal buffer caps a single write at
+ * 80 cells, so for wider terminals we chunk across the row.  No upper
+ * bound on rows — sys_term_rows() drives the outer loop.
+ */
+static void clear_screen(unsigned int cols, unsigned int rows)
+{
+    for (unsigned int r = 0; r < rows; r++) {
+        unsigned int x = 0;
+        while (x < cols) {
+            unsigned int chunk = cols - x;
+            if (chunk > 80) chunk = 80;
+            fill_spaces(x, r, chunk);
+            x += chunk;
+        }
+    }
+    sys_set_cursor(0, 0);
+}
+
 /* ===========================================================================
  * Key descriptor table.
  *
@@ -346,21 +369,23 @@ static void draw_key(const key_t *k)
 
 static void draw_static(unsigned int cols)
 {
-    /* Wipe rows 0..KB_ROW0+11 with shell colour by writing spaces.
-     * (Slice #10 will replace this with proper screen save/restore.) */
-    unsigned int wipe_w = (cols > 80 ? 80 : cols);
-    for (unsigned int r = 0; r <= KB_ROW0 + 11; r++)
-        fill_spaces(0, r, wipe_w);
-
-    /* Title bar (row 0) -- shell colour. */
+    /* Title bar (row 0) -- shell colour.  (Full-screen wipe happens in
+     * main() before draw_static, so the canvas is already clean.) */
     put_at(0, 0, " kbtester  -- press any key, Ctrl+C to exit");
 
-    /* Separator (row 1) -- shell colour. */
+    /* Separator (row 1) -- shell colour.  Spans the actual terminal
+     * width, chunked through an 80-byte buffer to stay resolution
+     * agnostic on wide modes. */
     char sep[80];
-    unsigned int sw = (cols > 80 ? 80 : cols);
-    for (unsigned int i = 0; i < sw; i++) sep[i] = '-';
-    sys_set_cursor(0, 1);
-    sys_write(1, sep, sw);
+    for (unsigned int i = 0; i < sizeof(sep); i++) sep[i] = '-';
+    unsigned int x = 0;
+    while (x < cols) {
+        unsigned int chunk = cols - x;
+        if (chunk > sizeof(sep)) chunk = sizeof(sep);
+        sys_set_cursor(x, 1);
+        sys_write(1, sep, chunk);
+        x += chunk;
+    }
 
     /* Input + status labels. */
     put_at(0, 2, "Input:");
@@ -530,8 +555,9 @@ static void log_serial(unsigned int count, unsigned char b)
  * Fallback line-mode for narrow terminals (< 70 cols).
  * ======================================================================== */
 
-static void line_mode_loop(void)
+static void line_mode_loop(unsigned int cols, unsigned int rows)
 {
+    clear_screen(cols, rows);
     put_str(
 "kbtester (compact mode -- terminal too narrow for visual layout)\n"
 "Press any key; Ctrl+C exits. Output mirrored to COM1.\n"
@@ -558,6 +584,7 @@ static void line_mode_loop(void)
         sys_write(1, line, p);
 
         if (b == 0x03) {
+            clear_screen(cols, rows);
             put_str("KBTESTER_END\n");
             put_serial("KBTESTER_END\n", 13);
             return;
@@ -573,9 +600,16 @@ int main(int argc, char **argv)
 {
     (void)argc; (void)argv;
 
+    /* Resolution-agnostic: clear the whole screen we were handed, not a
+     * hardcoded 80×25 rectangle, so wide VESA modes don't show stale
+     * shell text framing kbtester's UI. */
     unsigned int cols = sys_term_cols();
+    unsigned int rows = sys_term_rows();
+    clear_screen(cols, rows);
+
     if (cols < 70) {
-        line_mode_loop();
+        line_mode_loop(cols, rows);
+        clear_screen(cols, rows);
         return 0;
     }
 
@@ -596,12 +630,7 @@ int main(int argc, char **argv)
 
         if (b == 0x03) {       /* Ctrl-C: clean exit */
             put_serial("KBTESTER_END\n", 13);
-            /* Wipe our chrome + keys to shell colour. Proper screen
-             * save/restore lands in slice #10 (per-TTY screen buffers). */
-            unsigned int wipe_w = (cols > 80 ? 80 : cols);
-            for (unsigned int r = 0; r <= KB_ROW0 + 11; r++)
-                fill_spaces(0, r, wipe_w);
-            sys_set_cursor(0, 0);
+            clear_screen(cols, rows);
             put_str("kbtester: exited (Ctrl+C). See COM1 for full byte log.\n");
             return 0;
         }
