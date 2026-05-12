@@ -25,6 +25,7 @@
 #define SYS_WRITE_SERIAL 211
 #define SYS_KEYBOARD_RAW 212
 #define SYS_SHELL_CLEAR  213
+#define SYS_UPTIME       214
 
 /* open() flags */
 #define O_RDONLY    0
@@ -156,6 +157,14 @@ static inline void sys_keyboard_raw(int on)
 static inline void sys_shell_clear(void)
 {
     syscall1(SYS_SHELL_CLEAR, 0);
+}
+
+/* Kernel tick counter (100 Hz).  Use for wall-clock duration measurement
+ * — counting input events alone is unreliable because the rate depends
+ * on the PS/2 typematic configuration. */
+static inline unsigned int sys_uptime(void)
+{
+    return (unsigned int)syscall1(SYS_UPTIME, 0);
 }
 
 static inline int sys_open(const char *path, int flags)

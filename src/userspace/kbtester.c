@@ -665,12 +665,15 @@ int main(int argc, char **argv)
      *   just tapping it.  Any non-Escape byte resets the counter so a
      *   single tap still tests the Esc cell normally.
      */
-    /* PS/2 typematic defaults: ~500 ms delay, then ~30 Hz repeats.
-     * 4 s ⇒ 1 initial + (3500 ms / 33 ms) ≈ 106 events.  Round to 120 so
-     * a slightly slower repeat rate still hits 4 s rather than under. */
-    const unsigned int ESC_HOLD_EXIT = 120;
-    unsigned int esc_held = 0;
-    unsigned int count    = 0;
+    /* Hold-Escape exit, wall-clock measured.  The kernel tick counter
+     * runs at 100 Hz (per kernel/timer.c), so 4 s = 400 ticks.  We sample
+     * sys_uptime() on the first Escape we see, then check the elapsed
+     * delta on every subsequent Escape repeat.  Any other byte resets
+     * the timer so a single tap still tests the Esc cell normally. */
+    const unsigned int ESC_HOLD_TICKS = 400;   /* 100 Hz × 4 s */
+    int          esc_armed = 0;
+    unsigned int esc_t0    = 0;
+    unsigned int count     = 0;
 
     while (1) {
         int k = sys_getkey();
@@ -680,17 +683,19 @@ int main(int argc, char **argv)
         log_serial(count, b);
 
         if (b == 0x1B) {
-            esc_held++;
-            if (esc_held >= ESC_HOLD_EXIT) {
+            unsigned int now = sys_uptime();
+            if (!esc_armed) {
+                esc_armed = 1;
+                esc_t0    = now;
+            } else if ((unsigned int)(now - esc_t0) >= ESC_HOLD_TICKS) {
                 put_serial("KBTESTER_END (Esc-hold)\n", 24);
                 sys_keyboard_raw(0);
                 sys_shell_clear();
                 return 0;
             }
-            /* Still register the press visually on every repeat so the
-             * Esc cell stays sticky-lit while the operator holds it. */
+            /* Fall through so the Esc cell still lights up while held. */
         } else {
-            esc_held = 0;
+            esc_armed = 0;
         }
 
         update_echo(b);

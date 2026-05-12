@@ -36,6 +36,7 @@
 #define SYS_WRITE_SERIAL 211  /* ssize_t write_serial(const void *buf, size_t len)*/
 #define SYS_KEYBOARD_RAW 212  /* void keyboard_raw(int on)   — see keyboard.h     */
 #define SYS_SHELL_CLEAR  213  /* void shell_clear(void)     — same as `clear`     */
+#define SYS_UPTIME       214  /* uint32_t uptime_ticks(void) — 100 Hz timer ticks */
 
 /*
  * tty_cell_t — one screen cell passed to SYS_PUTCH_AT.

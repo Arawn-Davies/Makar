@@ -264,6 +264,16 @@ void syscall_dispatch(registers_t *regs)
         regs->eax = 0;
         break;
 
+    /* ------------------------------------------------------------------
+     * SYS_UPTIME(214): return the kernel tick counter (100 Hz).
+     * Apps that need wall-clock duration (kbtester's hold-Esc, future
+     * `clock` widget) can compute (uptime - t0) instead of counting
+     * input events whose rate depends on PS/2 typematic settings.
+     * ------------------------------------------------------------------ */
+    case SYS_UPTIME:
+        regs->eax = timer_get_ticks();
+        break;
+
     case SYS_WRITE_SERIAL: {
         const char *buf = (const char *)(uintptr_t)regs->ebx;
         uint32_t    len = regs->ecx;
