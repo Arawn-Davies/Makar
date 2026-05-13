@@ -15,8 +15,8 @@ Separate `makar-hdd-test.img` for CI testing.
       `grub-mkimage` (explicit `(hd0,msdos1)` prefix, no UUID probe)
 - [x] `generate-hdd.sh --test` - same image but grub.cfg passes `test`
       kernel arg (foundation for runtime test-mode switching)
-- [x] `docker-hdd-boot.sh` - clean-build + interactive QEMU HDD boot
-- [x] `docker-hdd-test.sh` - clean-build + GDB boot test with separate
+- [x] `./run.sh hdd-boot` - clean-build + interactive QEMU HDD boot
+- [x] `./run.sh hdd-test` - clean-build + GDB boot test with separate
       `makar-hdd-test.img` (never reuses interactive image)
 - [x] IDE SRST fix: software reset before probing so GRUB's transient
       channel state doesn't cause drive 0 to be silently skipped
@@ -31,5 +31,5 @@ Separate `makar-hdd-test.img` for CI testing.
 
 - [ ] Runtime test-mode via GRUB kernel arg (`multiboot2 /boot/makar.kernel test`)
       - `kernel.c` needs to parse `MULTIBOOT2_TAG_TYPE_CMDLINE` (type 1) and
-      set a `test_mode` flag, replacing `#ifdef TEST_MODE` guards with
-      `if (test_mode)` checks so ISO and HDD can share one binary
+      set a `test_mode` flag (replaced the old `#ifdef TEST_MODE` guards
+      so ISO and HDD share one binary)

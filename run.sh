@@ -5,12 +5,17 @@
 #
 # Modes:
 #   iso-boot       Clean, build interactive ISO, run in QEMU
-#   iso-test       Full ISO CI suite: ktest (TEST_MODE) + GDB boot-checkpoint
-#   iso-ktest-gui  Build TEST_MODE ISO + run ktest with a display window
+#   iso-test       Full ISO CI suite: ktest (test_mode boot) + GDB boot-checkpoint
+#   iso-ktest-gui  Build test_mode ISO + run ktest with a display window
 #   iso-release    Build optimised release ISO
+#   iso-build      Build kernel + makar.iso + makar-test.iso (no run)
 #   hdd-boot       Clean, build HDD image, run QEMU from disk
 #   hdd-test       Build fresh HDD test image + GDB boot test
 #   hdd-release    Build HDD image only
+#   hdd-build      Build kernel + makar-hdd-test.img (no run)
+#   ktest-run      Run ktest against an existing makar-test.iso
+#   gdb-iso-run    Run GDB ISO boot test against existing makar.iso
+#   gdb-hdd-run    Run GDB HDD boot test against existing makar-hdd-test.img
 #   clean          Remove all build artefacts
 #
 # Execution strategy (checked in order):
@@ -41,7 +46,11 @@
 set -e
 
 REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-DOCKER_IMAGE=${DOCKER_IMAGE:-arawn780/gcc-cross-i686-elf:fast}
+# makar-build:local layers ccache on top of the upstream toolchain image so
+# rebuilds hit the object cache instead of recompiling from scratch.  It is
+# auto-built on first use; set DOCKER_IMAGE explicitly to override.
+DOCKER_IMAGE=${DOCKER_IMAGE:-makar-build:local}
+DOCKER_UPSTREAM_IMAGE=${DOCKER_UPSTREAM_IMAGE:-arawn780/gcc-cross-i686-elf:fast}
 DOCKER_BIN=${DOCKER_BIN:-docker}
 DOCKER_PLATFORM=${DOCKER_PLATFORM:-linux/amd64}
 HDD_IMG=${HDD_IMG:-makar-hdd.img}
@@ -51,16 +60,23 @@ export DOCKER_PLATFORM
 MODE="${1:-}"
 if [ -z "$MODE" ]; then
     echo "Usage: $0 <mode>"
-    echo "Modes: iso-boot  iso-test  iso-ktest-gui  iso-release"
-    echo "       hdd-boot  hdd-test  hdd-release    clean"
+    echo "Modes: iso-boot  iso-test  iso-ktest-gui  iso-release  iso-build"
+    echo "       hdd-boot  hdd-test  hdd-release    hdd-build"
+    echo "       ktest-run gdb-iso-run gdb-hdd-run  clean"
     exit 1
 fi
 
 # ── context helpers ────────────────────────────────────────────────────────────
 
 # Build execution context: container | docker | native | none
+#
+# A "container" context only counts when the cross-compiler is actually
+# present.  This matters for tools like `act` that wrap every job in a
+# generic ubuntu image (which has /.dockerenv but no i686-elf-gcc): in
+# that case we fall through to the docker path and shell into the
+# toolchain image just as we would on a host runner.
 _build_ctx() {
-    if [ -f /.dockerenv ]; then
+    if [ -f /.dockerenv ] && command -v i686-elf-gcc >/dev/null 2>&1; then
         printf 'container'
     elif command -v "$DOCKER_BIN" >/dev/null 2>&1; then
         printf 'docker'
@@ -84,6 +100,20 @@ _host_gdb() {
     command -v gdb-multiarch >/dev/null 2>&1 && printf 'gdb-multiarch' || true
 }
 
+# Emit "-accel kvm" when /dev/kvm is usable AND MAKAR_USE_KVM=1.  Disabled
+# by default because (a) the QEMU GDB stub's software breakpoints fail to
+# insert reliably under KVM (early-boot _start breakpoint never catches),
+# and (b) a yet-to-be-fixed kernel race surfaces under KVM's true-CPU
+# timing, manifesting as a page fault during ktest with a corrupted SS
+# selector.  Both issues are tracked separately; until they're addressed,
+# stick with TCG so CI is deterministic.
+_qemu_accel() {
+    [ "${MAKAR_USE_KVM:-0}" = "1" ] || return 0
+    if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+        printf -- '-accel kvm'
+    fi
+}
+
 # ── _drun: run a build command in the right context ───────────────────────────
 #
 # Usage: _drun [--privileged] [--as-root] [--env K=V]... -- "cmd string"
@@ -94,6 +124,18 @@ _host_gdb() {
 #
 # In container / native context the flags are ignored; the command runs via
 # 'bash -lc' in the current working directory.
+
+_ensure_build_image() {
+    [ "$(_build_ctx)" = "docker" ] || return 0
+    if "$DOCKER_BIN" image inspect "$DOCKER_IMAGE" >/dev/null 2>&1; then
+        return 0
+    fi
+    echo "==> Building $DOCKER_IMAGE (one-time, layers ccache on $DOCKER_UPSTREAM_IMAGE)..."
+    "$DOCKER_BIN" build \
+        --platform "$DOCKER_PLATFORM" \
+        -t "$DOCKER_IMAGE" \
+        "$REPO_ROOT"
+}
 
 _drun() {
     local _priv="" _user="-u $(id -u):$(id -g)"
@@ -115,6 +157,7 @@ _drun() {
             bash -lc "$_cmd"
             ;;
         docker)
+            _ensure_build_image
             # shellcheck disable=SC2086
             "$DOCKER_BIN" run --rm \
                 --platform "$DOCKER_PLATFORM" \
@@ -162,30 +205,43 @@ _run_qemu_interactive() {
 }
 
 # Run the ktest suite (headless QEMU + serial capture).
-# QEMU exits via isa-debug-exit when the kernel finishes, or via -no-reboot
-# on panic/triple-fault.  No timeout needed.
+# Uses makar-test.iso (test_mode menuentry, zero GRUB timeout) so QEMU
+# boots straight into ktest_run_all().  Exits via isa-debug-exit when the
+# kernel finishes, or via -no-reboot on panic/triple-fault.
 _run_ktest() {
     echo "==> Running ktest suite (headless QEMU)..."
-    local _qemu
+    local _qemu _iso
     _qemu=$(_host_qemu)
+    _iso="${KTEST_ISO:-makar-test.iso}"
     rm -f "$REPO_ROOT/ktest.log"
 
+    local _accel _tmo
+    _accel=$(_qemu_accel)
+    # ktest exits QEMU via isa-debug-exit; if the kernel hangs we still want
+    # a bounded test run rather than waiting on the GitHub-Actions job
+    # timeout (6h default), so wrap QEMU in `timeout` (GNU coreutils).
+    # `timeout` is absent on macOS by default; only prepend it if present.
+    _tmo=""
+    command -v timeout >/dev/null 2>&1 && _tmo="timeout 120"
     if [ -n "$_qemu" ]; then
-        "$_qemu" \
-            -cdrom "$REPO_ROOT/makar.iso" \
+        # shellcheck disable=SC2086
+        $_tmo "$_qemu" \
+            -cdrom "$REPO_ROOT/$_iso" \
             -serial "file:$REPO_ROOT/ktest.log" \
             -display none \
             -no-reboot \
             -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+            $_accel \
             2>/dev/null || true
     else
-        _drun --as-root -- \
-            'qemu-system-i386 \
-                 -cdrom makar.iso \
+        _drun --as-root --env "QEMU_ACCEL=$_accel" --env "KTEST_ISO_NAME=$_iso" -- \
+            'timeout 120 qemu-system-i386 \
+                 -cdrom /work/$KTEST_ISO_NAME \
                  -serial file:/work/ktest.log \
                  -display none \
                  -no-reboot \
                  -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+                 $QEMU_ACCEL \
                  2>/dev/null || true'
     fi
     _check_ktest
@@ -221,16 +277,19 @@ _make_fat32_disk() {
 # CD-ROM filesystem content.
 _run_gdb_iso_test() {
     echo "==> Running GDB boot tests (ISO boot)..."
-    local _qemu _gdb
+    local _qemu _gdb _accel
     _qemu=$(_host_qemu)
     _gdb=$(_host_gdb)
+    _accel=$(_qemu_accel)
 
     if [ -n "$_qemu" ] && [ -n "$_gdb" ]; then
+        # shellcheck disable=SC2086
         "$_qemu" \
             -drive "file=$REPO_ROOT/makar.iso,if=ide,index=2,media=cdrom" \
             -boot order=d \
             -serial "file:$REPO_ROOT/gdb-serial.log" \
             -display none -no-reboot -no-shutdown \
+            $_accel \
             -s -S &
         QPID=$!
         sleep 2
@@ -243,12 +302,13 @@ _run_gdb_iso_test() {
         wait "$QPID" 2>/dev/null || true
         return $RC
     else
-        _drun --as-root -- \
+        _drun --as-root --env "QEMU_ACCEL=$_accel" -- \
             'qemu-system-i386 \
                  -drive file=/work/makar.iso,if=ide,index=2,media=cdrom \
                  -boot order=d \
                  -serial file:/work/gdb-serial.log \
                  -display none -no-reboot -no-shutdown \
+                 $QEMU_ACCEL \
                  -s -S &
              QPID=$!
              sleep 2
@@ -267,16 +327,19 @@ _run_gdb_iso_test() {
 _run_gdb_hdd_test() {
     local _img="$1"
     echo "==> Booting $_img under GDB..."
-    local _qemu _gdb
+    local _qemu _gdb _accel
     _qemu=$(_host_qemu)
     _gdb=$(_host_gdb)
+    _accel=$(_qemu_accel)
 
     if [ -n "$_qemu" ] && [ -n "$_gdb" ]; then
+        # shellcheck disable=SC2086
         "$_qemu" \
             -drive "file=$REPO_ROOT/$_img,format=raw,if=ide,index=0" \
             -boot c \
             -serial "file:$REPO_ROOT/hdd-test-serial.log" \
             -display none -no-reboot -no-shutdown \
+            $_accel \
             -s -S &
         QPID=$!
         sleep 2
@@ -289,23 +352,24 @@ _run_gdb_hdd_test() {
         wait "$QPID" 2>/dev/null || true
         return $RC
     else
-        _drun --as-root -- \
-            "qemu-system-i386 \
-                 -drive file=/work/$_img,format=raw,if=ide,index=0 \
+        _drun --as-root --env "QEMU_ACCEL=$_accel" --env "HDD_IMG_NAME=$_img" -- \
+            'qemu-system-i386 \
+                 -drive file=/work/$HDD_IMG_NAME,format=raw,if=ide,index=0 \
                  -boot c \
                  -serial file:/work/hdd-test-serial.log \
                  -display none -no-reboot -no-shutdown \
+                 $QEMU_ACCEL \
                  -s -S &
-             QPID=\$!
+             QPID=$!
              sleep 2
              timeout 120 gdb-multiarch -batch \
-                 -ex 'source tests/gdb_hdd_test.py' \
+                 -ex "source tests/gdb_hdd_test.py" \
                  src/kernel/makar.kernel \
                  2>&1 | tee /work/hdd-test-gdb.log
-             RC=\${PIPESTATUS[0]}
-             kill \"\$QPID\" 2>/dev/null || true
-             wait \"\$QPID\" 2>/dev/null || true
-             exit \"\$RC\""
+             RC=${PIPESTATUS[0]}
+             kill "$QPID" 2>/dev/null || true
+             wait "$QPID" 2>/dev/null || true
+             exit "$RC"'
     fi
 }
 
@@ -334,6 +398,60 @@ _build_kernel() {
 
 case "$MODE" in
 
+# ── iso-build ────────────────────────────────────────────────────────────────
+# Produce makar.iso + makar-test.iso from a single kernel build, no run/test.
+# Used by CI's build job (artifacts feed the parallel ktest / gdb-iso jobs).
+iso-build)
+    _clean
+    _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
+    echo "==> Artifacts: makar.iso, makar-test.iso, src/kernel/makar.kernel"
+    ;;
+
+# ── hdd-build ────────────────────────────────────────────────────────────────
+# Build kernel + generate makar-hdd-test.img.  No run.  HDD_SIZE_MB defaults
+# to generate-hdd.sh's value (512); CI overrides to 64 for faster artifact
+# upload.
+hdd-build)
+    _clean
+    _build_kernel "CFLAGS='-O0 -g3'"
+    rm -f "$REPO_ROOT/$HDD_TEST_IMG"
+    HDD_IMG="$HDD_TEST_IMG" DOCKER_BIN="$DOCKER_BIN" DOCKER_PLATFORM="$DOCKER_PLATFORM" \
+        "$REPO_ROOT/generate-hdd.sh"
+    echo "==> Artifacts: $HDD_TEST_IMG, src/kernel/makar.kernel"
+    ;;
+
+# ── ktest-run ────────────────────────────────────────────────────────────────
+# Run the ktest suite against an existing makar-test.iso.  Used by CI.
+ktest-run)
+    if [ ! -f "$REPO_ROOT/makar-test.iso" ]; then
+        echo "ERROR: makar-test.iso not found.  Run iso-build first." >&2
+        exit 1
+    fi
+    _run_ktest
+    ;;
+
+# ── gdb-iso-run ──────────────────────────────────────────────────────────────
+# Run the GDB ISO boot-checkpoint test against an existing makar.iso +
+# makar.kernel.  Used by CI.
+gdb-iso-run)
+    if [ ! -f "$REPO_ROOT/makar.iso" ] || [ ! -f "$REPO_ROOT/src/kernel/makar.kernel" ]; then
+        echo "ERROR: makar.iso or src/kernel/makar.kernel missing.  Run iso-build first." >&2
+        exit 1
+    fi
+    _run_gdb_iso_test
+    ;;
+
+# ── gdb-hdd-run ──────────────────────────────────────────────────────────────
+# Run the GDB HDD boot test against an existing makar-hdd-test.img.  CI uses
+# this on artifacts uploaded by hdd-build.
+gdb-hdd-run)
+    if [ ! -f "$REPO_ROOT/$HDD_TEST_IMG" ] || [ ! -f "$REPO_ROOT/src/kernel/makar.kernel" ]; then
+        echo "ERROR: $HDD_TEST_IMG or src/kernel/makar.kernel missing.  Run hdd-build first." >&2
+        exit 1
+    fi
+    _run_gdb_hdd_test "$HDD_TEST_IMG"
+    ;;
+
 # ── iso-boot ──────────────────────────────────────────────────────────────────
 iso-boot)
     _clean
@@ -348,11 +466,13 @@ iso-boot)
     ;;
 
 # ── iso-test ──────────────────────────────────────────────────────────────────
+# One kernel build, two ISO variants packaged from the same staged isodir:
+#   makar.iso       - interactive menu (also exercised by gdb_boot_test)
+#   makar-test.iso  - single auto-boot entry with test_mode cmdline
 iso-test)
     _clean
-    _build_iso "CFLAGS='-O0 -g3' KERNEL_ARGS=test_mode"
+    _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
     _run_ktest
-    _build_iso "CFLAGS='-O0 -g3'"
     _run_gdb_iso_test
     echo "==> All ISO tests PASSED."
     ;;
@@ -367,11 +487,11 @@ iso-ktest-gui)
         exit 1
     fi
     _clean
-    _build_iso "CFLAGS='-O0 -g3' KERNEL_ARGS=test_mode"
+    _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
     echo "==> Running ktest suite (graphical QEMU - window closes on completion)..."
     rm -f "$REPO_ROOT/ktest.log"
     "$QEMU_BIN" \
-        -cdrom "$REPO_ROOT/makar.iso" \
+        -cdrom "$REPO_ROOT/makar-test.iso" \
         -serial "file:$REPO_ROOT/ktest.log" \
         ${QEMU_DISPLAY:+-display "$QEMU_DISPLAY"} \
         -no-reboot \
@@ -441,8 +561,9 @@ clean)
 
 *)
     echo "ERROR: unknown mode '$MODE'" >&2
-    echo "Modes: iso-boot  iso-test  iso-ktest-gui  iso-release" >&2
-    echo "       hdd-boot  hdd-test  hdd-release    clean" >&2
+    echo "Modes: iso-boot  iso-test  iso-ktest-gui  iso-release  iso-build" >&2
+    echo "       hdd-boot  hdd-test  hdd-release    hdd-build" >&2
+    echo "       ktest-run gdb-iso-run gdb-hdd-run  clean" >&2
     exit 1
     ;;
 esac

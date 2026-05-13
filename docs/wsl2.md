@@ -35,10 +35,11 @@ docker compose run --rm build          # → makar.iso (release)
 docker compose run --rm build-debug    # → makar.iso (debug, -O0 -g3)
 ```
 
-Or use the helper script directly:
+Or use the unified entrypoint:
 
 ```sh
-bash docker-iso.sh                     # same result, single command
+./run.sh iso-release                   # release ISO
+./run.sh iso-boot                      # debug ISO + interactive QEMU
 ```
 
 Build output (`makar.iso`, `sysroot/`, `isodir/`) appears in your checkout
@@ -80,7 +81,7 @@ system supports it, GUI apps run inside WSL2 automatically.
 
    ```sh
    # Build in Docker, run on host WSL2 QEMU
-   bash docker-qemu.sh
+   ./run.sh iso-boot
    ```
 
    A QEMU window should appear on your Windows desktop.
@@ -109,7 +110,7 @@ skip the GUI entirely:
 
 ```sh
 # Build in Docker, then run headless with serial on stdio
-bash docker-iso.sh
+./run.sh iso-release
 qemu-system-i386 \
     -cdrom makar.iso \
     -serial stdio \

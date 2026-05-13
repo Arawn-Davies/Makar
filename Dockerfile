@@ -1,31 +1,35 @@
 # Dockerfile – Makar OS build environment
 #
-# Inherits the pre-built i686-elf cross-compiler image used by CI so that the
-# local container matches the CI environment exactly.  The image ships:
-#   • i686-elf-gcc / binutils cross-toolchain
+# Layers ccache on top of the pre-built i686-elf cross-compiler image used by
+# CI so that local builds and CI runs share the same toolchain version while
+# benefiting from object caching.
+#
+# The image ships:
+#   • i686-elf-gcc / binutils cross-toolchain (from upstream image)
 #   • grub-mkrescue, grub-mkimage, grub-file, xorriso
-#   • qemu-system-i386
-#   • gdb-multiarch, make
+#   • qemu-system-i386, gdb-multiarch, make
+#   • ccache (added by this Dockerfile)
 #
-# Build the image:
-#   docker build -t makar .
+# Tag the local build as makar-build:local — run.sh and the helper scripts
+# pick it up automatically when present, falling back to the upstream image:
 #
-# Build the ISO (output appears in the bind-mounted source directory):
-#   docker run --rm -v "$PWD":/work -w /work makar bash iso.sh
+#   docker build -t makar-build:local .
 #
-# Or use the helper scripts directly:
-#   ./docker-iso.sh      – build makar.iso
-#   ./docker-qemu.sh     – build then launch QEMU on the host
-#   ./docker-test.sh     – build (debug) then run GDB test suite on the host
+# CCACHE_DIR is set to /work/.ccache so the cache lives inside the bind-
+# mounted source tree and persists across container invocations.  .ccache/
+# is gitignored.
 
 FROM arawn780/gcc-cross-i686-elf:fast
 
-WORKDIR /work
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ccache \
+ && rm -rf /var/lib/apt/lists/*
 
-# Copy the entire source tree into the image.
-# When using docker-compose or the docker run -v approach the bind mount will
-# overlay this copy, but having a copy baked in allows stand-alone use.
-COPY . .
+ENV CCACHE_DIR=/work/.ccache \
+    CCACHE_COMPRESS=1 \
+    CCACHE_MAXSIZE=500M
+
+WORKDIR /work
 
 # Default command: build the bootable ISO.
 CMD ["bash", "iso.sh"]

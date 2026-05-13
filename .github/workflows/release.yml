@@ -4,7 +4,8 @@ name: Release
 #   1. Push to main (PR merge) - auto-release tagged v<date>-<sha>, marked pre-release.
 #   2. Version tag push (e.g. v0.1.0) - proper versioned release.
 #
-# Both paths run the full CI suite (iso-test + hdd-test) before building artifacts.
+# Both paths run the full CI suite (build + ktest + gdb-iso + gdb-hdd) before
+# building artifacts.
 #
 # Release artifacts (interactive kernel, no TEST_MODE):
 #   makar.iso      – bootable CD-ROM image

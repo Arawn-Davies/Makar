@@ -5,6 +5,9 @@
 isodir
 sysroot
 
+# ccache directory (mounted into the build container)
+.ccache/
+
 # Compiled kernel binary
 *.kernel
 
