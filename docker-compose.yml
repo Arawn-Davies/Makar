@@ -33,7 +33,7 @@ services:
       - CFLAGS=-O0 -g3
     command: bash iso.sh
 
-  # ── ISO test suite (ktest + GDB) ───────────────────────────────────────────
+  # ── ISO test suite (ktest test_mode + GDB) ────────────────────────────────
   # Equivalent to ./run.sh iso-test but runs inside Compose.
   test:
     build: .

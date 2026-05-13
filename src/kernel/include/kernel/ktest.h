@@ -46,7 +46,8 @@ void ktest_assert(int cond, const char *expr, const char *file, uint32_t line);
 /*
  * ktest_run_all – run every registered test suite and print a summary.
  * Returns the total number of failed assertions (0 = all passed).
- * Called by the shell's `ktest` command and by TEST_MODE kernel_main.
+ * Called by the shell's `ktest` command and by kernel_main when the
+ * multiboot2 command line contains "test_mode".
  */
 int ktest_run_all(void);
 

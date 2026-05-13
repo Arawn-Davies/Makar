@@ -44,7 +44,7 @@ All build, test, and boot operations go through a single script:
 |---|---|---|
 | `iso-boot` | Clean → debug ISO → interactive QEMU | Docker; host QEMU preferred (Docker fallback) |
 | `iso-test` | Full CI suite: ktest + GDB boot tests | Docker |
-| `iso-ktest-gui` | TEST_MODE ISO → ktest with display window | Docker, host QEMU + display server |
+| `iso-ktest-gui` | test_mode ISO → ktest with display window | Docker, host QEMU + display server |
 | `iso-release` | Optimised release ISO | Docker |
 | `hdd-boot` | Clean → build kernel → HDD image → interactive QEMU | Docker; host QEMU preferred (Docker fallback) |
 | `hdd-test` | Clean → build kernel → HDD image → GDB boot test | Docker |

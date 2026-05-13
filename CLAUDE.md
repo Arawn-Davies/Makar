@@ -13,7 +13,7 @@ All build, test, and boot operations go through a single entrypoint:
 ```sh
 ./run.sh iso-boot       # clean → debug ISO → interactive QEMU
 ./run.sh iso-test       # full CI suite: ktest + GDB boot-checkpoint tests
-./run.sh iso-ktest-gui  # TEST_MODE ISO → ktest with display window (needs host QEMU)
+./run.sh iso-ktest-gui  # test_mode ISO → ktest with display window (needs host QEMU)
 ./run.sh iso-release    # optimised release ISO
 
 ./run.sh hdd-boot       # clean → build kernel → HDD image → interactive QEMU
@@ -35,7 +35,7 @@ docker compose run --rm test           # full iso-test suite
 ```
 
 Debug builds use `-O0 -g3`; release uses `-O2 -g`. Override via `CFLAGS`.
-Test mode uses `-DTEST_MODE`: kernel runs `ktest_run_all()` then exits QEMU via `isa-debug-exit`.
+Test mode is selected at boot via the multiboot2 `test_mode` cmdline arg (parsed by `kernel.c` from the CMDLINE tag); the kernel runs `ktest_run_all()` then exits QEMU via `isa-debug-exit`. No compile-time flag - ISO and HDD share one kernel binary.
 `build.sh` uses `-j$(nproc)` for parallel compilation automatically.
 
 `run.sh` execution context (checked in order):
@@ -51,7 +51,7 @@ QEMU steps prefer host `qemu-system-i386` when Docker is the build context; fall
 **Full CI suite** (`iso-test`: ktest + GDB boot checkpoints):
 ```sh
 ./run.sh iso-test
-# Phase 1: TEST_MODE ISO → ktest_run_all() → QEMU exits.  Output: ktest.log
+# Phase 1: test_mode ISO → ktest_run_all() → QEMU exits.  Output: ktest.log
 # Phase 2: debug ISO + FAT32 test disk → full GDB test suite.  Output: gdb-test.log
 # exits 0 on pass, 1 on any failure
 ```
@@ -84,13 +84,9 @@ docker run --rm -it -v "$PWD:/work" -w /work arawn780/gcc-cross-i686-elf:fast \
 `generate-hdd.sh` uses `grub-mkimage` (not `grub-install`) to avoid the UUID-search failure that `grub-install` produces when probing loop devices inside Docker. The FAT32 partition receives the kernel at `/boot/makar.kernel` and userspace binaries from `isodir/apps/` at `/apps/`.
 
 **In-kernel test suite (interactive)**: shell command `ktest` runs all suites from the kernel shell.
-At boot (non-TEST_MODE), `ktest_bg_task` runs all suites silently in the background - only prints to VGA on failure; always writes `KTEST_BG: PASS/FAIL` to serial.
+At boot (when `test_mode` is *not* in the cmdline), `ktest_bg_task` runs all suites silently in the background - only prints to VGA on failure; always writes `KTEST_BG: PASS/FAIL` to serial.
 
 **TODO:** 
-
-HDD test/interactive should use the same kernel binary - mode controlled by a GRUB kernel argument rather than a separate `-DTEST_MODE` build.
-- `kernel.c` needs to parse `MULTIBOOT2_TAG_TYPE_CMDLINE` (type 1) and set a runtime `test_mode` flag, replacing `#ifdef TEST_MODE` guards with `if (test_mode)`.
-- `multiboot.h` needs `#define MULTIBOOT2_TAG_TYPE_CMDLINE 1`.
 
 Startup ktests: On startup, before we start the shell task we need to run background ktests that test capabilities without affecting the loading screen output. 
 Only once all ktests silently pass may the loading screen progress and we start the shell. 

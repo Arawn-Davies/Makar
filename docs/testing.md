@@ -17,9 +17,10 @@ Runs two phases; build steps use Docker, QEMU/GDB prefer the host if available:
 
 **Phase 1 - in-kernel ktest suite**
 
-Builds a `TEST_MODE` ISO. The kernel boots, runs `ktest_run_all()` (all
-subsystem unit tests including a live ring-3 userspace execution), then exits
-QEMU cleanly via `isa-debug-exit`. Output: `ktest.log`.
+Builds an ISO whose grub.cfg passes the `test_mode` kernel argument. The
+kernel parses the multiboot2 cmdline, runs `ktest_run_all()` (all subsystem
+unit tests including a live ring-3 userspace execution), then exits QEMU
+cleanly via `isa-debug-exit`. Output: `ktest.log`.
 
 **Phase 2 - GDB boot-checkpoint tests**
 

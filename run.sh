@@ -5,8 +5,8 @@
 #
 # Modes:
 #   iso-boot       Clean, build interactive ISO, run in QEMU
-#   iso-test       Full ISO CI suite: ktest (TEST_MODE) + GDB boot-checkpoint
-#   iso-ktest-gui  Build TEST_MODE ISO + run ktest with a display window
+#   iso-test       Full ISO CI suite: ktest (test_mode boot) + GDB boot-checkpoint
+#   iso-ktest-gui  Build test_mode ISO + run ktest with a display window
 #   iso-release    Build optimised release ISO
 #   hdd-boot       Clean, build HDD image, run QEMU from disk
 #   hdd-test       Build fresh HDD test image + GDB boot test

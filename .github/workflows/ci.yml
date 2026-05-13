@@ -31,7 +31,7 @@ jobs:
   # ── ISO CI ─────────────────────────────────────────────────────────────────
   # Runs entirely inside the compiler container (/.dockerenv is present so
   # run.sh executes steps directly without an inner docker run).
-  # Phase 1: TEST_MODE ktest suite.  Phase 2: GDB boot-checkpoint test.
+  # Phase 1: test_mode ktest suite.  Phase 2: GDB boot-checkpoint test.
   iso-test:
     name: ISO test (ktest + GDB boot)
     runs-on: ubuntu-latest

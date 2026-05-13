@@ -66,18 +66,11 @@ sub-structure.
 
 | Script | Purpose |
 |---|---|
-| `build.sh` | Build all projects into the sysroot |
+| `run.sh <mode>` | Single entrypoint for all build, run, and test operations. See `./run.sh` for the mode list. |
+| `build.sh` | Build all projects into the sysroot (invoked by `iso.sh`) |
 | `iso.sh` | Build `makar.iso` via `grub-mkrescue` |
-| `qemu.sh` | Build and run in QEMU (CD-ROM + HDD) |
-| `qemu-hdd.sh` | Boot directly from `hdd.img` (no CD-ROM) |
-| `docker-iso.sh` | Build `makar.iso` in the CI Docker image |
-| `docker-ktest.sh` | Build TEST_MODE ISO, run ktest suite, QEMU exits when done |
-| `docker-test.sh` | Build in Docker, run ktest suite + GDB boot test suite |
-| `docker-qemu.sh` | Build in Docker, run interactively in host QEMU |
-| `gdb.sh` | Build and launch with GDB stub on `:1234` |
-| `test-gdb.sh` | Local (non-Docker) GDB boot test suite |
+| `generate-hdd.sh` | Create raw MBR + FAT32 HDD image with GRUB 2 |
 | `clean.sh` | Remove build artefacts |
-| `mkhdd.sh` | Create a raw hard-disk image |
 
 ---
 
