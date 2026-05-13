@@ -1,4 +1,4 @@
-name: CI
+name: Build & Test
 
 # Trigger policy:
 #   - push to main only            (validates merge integrity, no double-run)
@@ -19,7 +19,7 @@ on:
       - '*.sh'
       - 'Dockerfile*'
       - 'docker-compose.yml'
-      - '.github/workflows/ci.yml'
+      - '.github/workflows/build-test.yml'
   pull_request:
     paths:
       - 'src/**'
@@ -27,7 +27,7 @@ on:
       - '*.sh'
       - 'Dockerfile*'
       - 'docker-compose.yml'
-      - '.github/workflows/ci.yml'
+      - '.github/workflows/build-test.yml'
 
 # Cancel superseded runs on the same ref so a rebased push doesn't keep CI
 # burning cycles for the older commit.

@@ -11,20 +11,28 @@ Makar is a hobby x86 (i386) bare-metal OS kernel written in C and AT&T assembly,
 All build, test, and boot operations go through a single entrypoint:
 
 ```sh
+# Day-to-day (build + run in one shot)
 ./run.sh iso-boot       # clean → debug ISO → interactive QEMU
 ./run.sh iso-test       # full CI suite: ktest + GDB boot-checkpoint tests
-./run.sh iso-ktest-gui  # test_mode ISO → ktest with display window (needs host QEMU)
+./run.sh iso-ktest-gui  # test ISO → ktest with display window (needs host QEMU)
 ./run.sh iso-release    # optimised release ISO
 
 ./run.sh hdd-boot       # clean → build kernel → HDD image → interactive QEMU
 ./run.sh hdd-test       # clean → build kernel → HDD image → GDB boot test
 ./run.sh hdd-release    # HDD image only
 
+# CI-style split modes (build once, run many — used by .github/workflows/build-test.yml)
+./run.sh iso-build      # kernel + makar.iso + makar-test.iso, no run
+./run.sh hdd-build      # kernel + makar-hdd-test.img, no run
+./run.sh ktest-run      # ktest against existing makar-test.iso
+./run.sh gdb-iso-run    # GDB ISO boot test against existing makar.iso
+./run.sh gdb-hdd-run    # GDB HDD boot test against existing makar-hdd-test.img
+
 ./run.sh clean          # remove all build artefacts
 
 # Internal scripts (called inside the Docker container - do not invoke directly):
-./build.sh              # compile kernel + libc (parallel via -j$(nproc))
-./iso.sh                # build + package into makar.iso
+./build.sh              # compile kernel + libc (parallel via -j$(nproc), ccache-wrapped)
+./iso.sh                # build + package: emits makar.iso always, makar-test.iso when TEST_ISO=1
 ./clean.sh              # remove build artefacts
 ./generate-hdd.sh       # create raw MBR + FAT32 HDD image with GRUB 2
 
@@ -35,8 +43,12 @@ docker compose run --rm test           # full iso-test suite
 ```
 
 Debug builds use `-O0 -g3`; release uses `-O2 -g`. Override via `CFLAGS`.
-Test mode is selected at boot via the multiboot2 `test_mode` cmdline arg (parsed by `kernel.c` from the CMDLINE tag); the kernel runs `ktest_run_all()` then exits QEMU via `isa-debug-exit`. No compile-time flag - ISO and HDD share one kernel binary.
-`build.sh` uses `-j$(nproc)` for parallel compilation automatically.
+
+**Single-kernel, two-ISO model** (post PR #125): one kernel binary is built once; `iso.sh` packages `makar.iso` (interactive GRUB menu, default to live shell) and `makar-test.iso` (single menuentry, `timeout=0`, `multiboot2 /boot/makar.kernel test_mode`). The `test_mode` flag is still a runtime cmdline arg parsed from the multiboot2 CMDLINE tag — there is no compile-time test flag, and the ISO/HDD images share the exact same `makar.kernel`. `build.sh` uses `-j$(nproc)` and wraps `i686-elf-gcc` in `ccache` automatically (set `CCACHE=0` to disable).
+
+**ccache toolchain image** (`makar-build:local`): `Dockerfile` layers `ccache` on top of `arawn780/gcc-cross-i686-elf:fast`, mounts `.ccache/` from the workspace, and is auto-built by `run.sh` on first use. Warm rebuilds are ~3× faster (16.9 s cold → 5.6 s warm, ~47 % cache hit rate). The upstream image is still used directly inside the GitHub Actions `container:` jobs (ktest, gdb-iso, gdb-hdd) where ccache is unnecessary because the build is consumed as an artifact.
+
+**KVM acceleration** is gated behind `MAKAR_USE_KVM=1` (off by default). KVM was attempted for CI speedup but produced reproducible failures: software breakpoints under the GDB stub never catch, and the ktest path-fault was masked by KVM's CPU timing differing from TCG. Leave off unless you are explicitly debugging KVM compatibility.
 
 `run.sh` execution context (checked in order):
 1. `/.dockerenv` present (container / CI) → run steps directly
@@ -100,7 +112,7 @@ Make sure it's a bit of a delay between each test so the startup screen is visib
 1. `terminal_initialize` → `init_serial(COM1)` → `init_descriptor_tables` (GDT+IDT)
 2. Exception handlers, PMM, paging (256 MiB identity map, 4 MiB pages), heap
 3. VESA init + display mode selection: 720p if Bochs VBE available, else 80×50 VGA text
-4. Timer (50 Hz PIT), keyboard, IDE/VFS
+4. Timer (100 Hz PIT), keyboard (layered PS/2 driver), IDE/VFS
 5. `tasking_init` + `task_create("shell", shell_run)` + `task_create("ktest", ktest_bg_task)`
 6. `syscall_init` (registers `int 0x80` handler at IDT gate DPL=3)
 7. Idle loop: `task_yield` + `hlt`
@@ -116,7 +128,7 @@ The `setmode` shell command can switch freely between any supported resolution a
 - `0xBFFF0000` (`USER_STACK_TOP`): ring-3 stack top (one 4 KiB page below)
 
 ### Tasking
-Round-robin scheduler with timer-driven preemption (PIT IRQ 0 yields every `SCHED_QUANTUM=4` ticks ≈ 80 ms at 50 Hz). Cooperative `task_yield()` is also available for explicit yields. Context switch via `task_asm.S` (callee-saved + EFLAGS). `task_exit()` marks the task DEAD and yields; the scheduler reaps the dead task's user page directory after switching CR3 away from it (`schedule()` reaper, `task.c`). Pool is fixed-size (`MAX_TASKS=8`).
+Round-robin scheduler with timer-driven preemption (PIT 100 Hz; IRQ 0 yields every `SCHED_QUANTUM=4` ticks ≈ 40 ms). Cooperative `task_yield()` is also available for explicit yields. Context switch via `task_asm.S` (callee-saved + EFLAGS). `task_exit()` marks the task DEAD and yields; the scheduler reaps the dead task's user page directory after switching CR3 away from it (`schedule()` reaper, `task.c`). Pool is fixed-size (`MAX_TASKS=8`).
 
 Per-task state (`task_t` in `kernel/task.h`):
 - `pid` - monotonically assigned (idle = 1, others from 2)
@@ -127,23 +139,40 @@ Per-task state (`task_t` in `kernel/task.h`):
 - `user_brk`, `page_dir`, `state`, `name`, `esp`, `stack`, `next`
 
 ### Syscall ABI (`int 0x80`, Linux i386 convention)
+Authoritative table in `src/kernel/include/kernel/syscall.h`. Selected entries:
+
 | EAX | Syscall          | Args |
 |-----|------------------|------|
 | 1   | SYS_EXIT         | EBX = status |
-| 3   | SYS_READ         | EBX = fd (0=stdin), ECX = buf ptr, EDX = count |
-| 4   | SYS_WRITE        | EBX = fd, ECX = buf ptr, EDX = count.  fd 1 = stdout (VGA only); fd 2 = stderr (VGA + COM1 serial) |
-| 100 | SYS_DEBUG        | EBX = uint32 checkpoint value (prints to VGA + serial) |
+| 3   | SYS_READ         | EBX = fd (0=stdin keyboard, ≥3=VFS), ECX = buf, EDX = count |
+| 4   | SYS_WRITE        | EBX = fd, ECX = buf, EDX = count. fd 1 = VGA, fd 2 = VGA + COM1, ≥3 = VFS |
+| 5   | SYS_OPEN         | EBX = path, ECX = flags (returns fd) |
+| 6   | SYS_CLOSE        | EBX = fd |
+| 19  | SYS_LSEEK        | EBX = fd, ECX = offset, EDX = whence |
+| 45  | SYS_BRK          | EBX = new break (returns current/new break) |
+| 100 | SYS_DEBUG        | EBX = uint32 checkpoint (prints to VGA + serial) |
 | 158 | SYS_YIELD        | - |
-| 211 | SYS_WRITE_SERIAL | EBX = buf ptr, ECX = count.  COM1-only (no framebuffer) |
+| 200 | SYS_GETKEY       | raw single-char keyboard read |
+| 201–204 | SYS_PUTCH_AT / SET_CURSOR / TTY_CLEAR / TERM_SIZE | direct TTY ops for full-screen apps (vics) |
+| 205 | SYS_WRITE_FILE   | path, buf, len |
+| 206 | SYS_LS_DIR       | path, buf, bufsz |
+| 207 | SYS_DISK_INFO    | buf, bufsz |
+| 208–210 | SYS_DELETE_FILE / RENAME_FILE / DELETE_DIR | FAT32 mutations |
+| 211 | SYS_WRITE_SERIAL | buf, len — COM1-only (no framebuffer) |
+| 212 | SYS_KEYBOARD_RAW | enable/disable raw mode (1 = raw bytes, no sentinel translation) |
+| 213 | SYS_SHELL_CLEAR  | same as `clear` shell builtin |
+| 214 | SYS_UPTIME       | returns 100 Hz PIT tick counter |
 
-### Keyboard (Phase 2)
-- Arrow-key sentinels at `0x80`–`0x83` (no longer collide with Ctrl codes).
-- Per-task 64-byte ring buffers (up to `KB_TASK_SLOTS=4` tasks).
-- `keyboard_getchar()` registers the calling task and dequeues from its slot.
-- `keyboard_poll()` non-blocking version; falls back to global ring if no slot.
-- Ctrl+A prefix arms the pane-switch dispatcher (Ctrl-A,U / Ctrl-A,J).
-- Ctrl+C: sets `g_sigint=1` AND routes `\x03` to the focused task's queue.
-- `keyboard_sigint_consume()` atomically reads and clears `g_sigint`.
+### Keyboard (layered driver, PR #124)
+Stack: PS/2 IRQ → scancode (set-1 + 0xE0 prefix) → keycode (HID-style abstract code) → ASCII/sentinel → per-TTY ring → consumer (shell, kbtester).
+
+- **Sentinels** (non-ASCII control codes) at `0x80`–`0x83` for arrow keys, `0x84`–`0x8F` for F-keys, `0x90`+ for modifier events. Every cast on the dispatch path must be `unsigned char` to avoid sign-extension hazards — see slice 5b in the roadmap for the regression caught by `kbtester.elf`.
+- **IRQ-driven SPSC ring per task** (up to `KB_TASK_SLOTS=4`); `keyboard_getchar()` registers the caller and blocks-yields on its slot; `keyboard_poll()` is non-blocking.
+- **Make/break separation** is strict; modifier state is held at the decoder layer, not by consumers. Caps Lock toggle currently lacks a typematic-repeat filter (slice 5b).
+- **Ctrl+A** arms the pane-switch dispatcher (Ctrl-A,U / Ctrl-A,J).
+- **Ctrl+C** sets `g_sigint=1` AND routes `\x03` to the focused task's ring. `keyboard_sigint_consume()` atomically reads and clears `g_sigint`.
+- **LED sync** is unimplemented — kernel never writes `0xED <bitmap>` to the PS/2 controller and does not read physical LED state at boot (slice 5b).
+- `kbtester.elf` is the live diagnostic — dumps every scancode/keycode/sentinel and the modifier state vector to serial.
 
 ### Shell features
 - Inline editing (cursor movement, insert at point).
@@ -168,6 +197,13 @@ Freestanding ELF binaries built with the cross-compiler. Link against `crt0.S` +
 |--------|-------------|
 | `hello.elf` | Hello-world smoke test |
 | `calc.elf` | bc-style expression calculator - `+`, `-`, `*`, `/`, `%`, parentheses, recursive-descent parser |
+| `echo.elf` | echo argv to stdout |
+| `ls.elf` | directory listing via `SYS_LS_DIR` |
+| `rm.elf` / `mv.elf` / `cp.elf` | FAT32 file ops (also available as shell builtins) |
+| `diskinfo.elf` | partition table + FAT32 BPB dump via `SYS_DISK_INFO` |
+| `vics.elf` | pane-aware vi-style text editor; uses `SYS_PUTCH_AT` / `SYS_SET_CURSOR` / `SYS_TERM_SIZE` |
+| `kbtester.elf` | keyboard diagnostic — logs every event (scancode/keycode/sentinel/modifier) to serial via `SYS_WRITE_SERIAL` |
+| `help.elf` | replaced by `lsman` / `man <cmd>` shell builtins; kept for compatibility |
 
 ### ktest harness
 `KTEST_ASSERT(expr)` - records pass/fail to VGA + serial.
@@ -233,22 +269,14 @@ directory. Major subsystems:
 - **Shell**: Inline editing, history, tab completion, Ctrl+C sigint. `lsman` / `man <cmd>` replace `help`. Built-in file ops: `rm`, `rmdir`, `mv`. `uptime` shows humanised h/m/s.
 - **GRUB**: Two-entry menu (Makar OS + Next available device), 5-second timeout.
 
-## Active branches
+## Recently merged
 
-### `feat/tty-multitasking` (current)
-
-Slice 1 of the FUZIX-meets-ELKS roadmap. Lands on top of `feat/userspace-fileops`:
-
-- Reaper for exited-task user page directories (`fcb8771`)
-- Per-task plumbing: `pid`, `cwd`, `tty`, `fd_table`, `sig_pending` / `sig_mask` (`3a0ef78`)
-- Ring-3 lifecycle ktest with full serial-log proof in the GDB test runner (`f48d730`, `1a34c20`)
-- 100 Hz timer, humanised `uptime`, stderr→serial routing, new `SYS_WRITE_SERIAL` (`5e40001`)
-- GDB-test wrapper timeout bumped to 120 s for 100 Hz headroom under CI load (`f9c67b3`)
-
-PR: [#123](https://github.com/Arawn-Davies/Makar/pull/123)
-
-### `feat/userspace-fileops` (merged → main as #120)
-FAT32 delete/rename APIs, VFS wrappers, syscalls 208–210, shell built-ins `rm`/`rmdir`/`mv`, and standalone ELFs `rm.elf`, `mv.elf`, `cp.elf`.
+| PR | Branch | Summary |
+|---|---|---|
+| #120 | `feat/userspace-fileops` | FAT32 delete/rename APIs, VFS wrappers, syscalls 208–210, shell builtins `rm`/`rmdir`/`mv`, ELFs `rm.elf`/`mv.elf`/`cp.elf` |
+| #123 | `feat/tty-multitasking` | Preemptive 100 Hz scheduler, per-task `task_t` plumbing (pid/cwd/tty/sig/fd), user-PD reaper, ring-3 lifecycle ktest, `SYS_WRITE_SERIAL`, humanised `uptime` |
+| #124 | `feat/keyboard-layered` | Layered PS/2 driver rewrite (scancode → keycode → sentinel → router), IRQ-driven per-TTY rings, `kbtester.elf` ring-3 diagnostic |
+| #125 | `feat/test-infra-cleanup` | ccache toolchain image, single-kernel/two-ISO emit, build-once fan-out CI (4 parallel jobs), KVM auto-detect (off by default), `act` local validation, new split `*-build`/`*-run` modes in `run.sh` |
 
 ## Future roadmap
 
@@ -262,8 +290,9 @@ Tracked here, pulled into branches one at a time so each PR stays focused.
 | 2 | **Per-task `task_t` plumbing** (pid/cwd/tty/fds/signals fields, no consumer migration) | ✅ shipped (`3a0ef78`) |
 | 3 | **Ring-3 lifecycle ktest** with serial proof | ✅ shipped (`f48d730`, `1a34c20`) |
 | 4 | **100 Hz timer + humanised uptime** + stderr→serial + `SYS_WRITE_SERIAL` | ✅ shipped (`5e40001`) |
-| 5 | **Keyboard rewrite** - full PS/2 set-1 + e0, layered decoder (scancode→keycode→ASCII/sentinel→router), IRQ-driven per-TTY rings with proper SPSC memory ordering, strict make/break separation, modifier state at decoder, key repeat / rollover / lost-IRQ recovery, `unsigned char` end-to-end (no sign-extension hazard for sentinel compares), escape-clean sentinels | 🔥 **NEXT - urgent** |
-| 6 | **Test-infra cleanup** - drop `test_mode`, single ISO, split CI into smoke + GDB | ⏭ |
+| 5 | **Keyboard rewrite** - full PS/2 set-1 + e0, layered decoder (scancode→keycode→ASCII/sentinel→router), IRQ-driven per-TTY rings with proper SPSC memory ordering, strict make/break separation, modifier state at decoder, key repeat / rollover / lost-IRQ recovery, `unsigned char` end-to-end (no sign-extension hazard for sentinel compares), escape-clean sentinels | ✅ shipped (#124) |
+| 5b | **Keyboard hardening** - finish the `unsigned char` audit (sign-extension hazard regressed: kbtester panic with EIP=0xFFFFFF83 ≡ sign-extended 0x83 sentinel); typematic-repeat filter for Caps/Shift/Ctrl/Alt/Super so holding the key doesn't re-toggle/re-fire at 30 Hz (visible in kbtester log as bursts of sentinel 0x94 making `mod_caps` oscillate); LED sync (`0xED <CNS bitmap>` to PS/2 after every Caps/Num/Scroll state change); boot-time read of physical LED state. | 🔥 **NEXT - urgent** |
+| 6 | **Test-infra cleanup** - ccache, single-kernel/two-ISO, build-once fan-out CI, KVM gate | ✅ shipped (#125) |
 | 7 | **Per-task consumer migration** - VFS `task->cwd`, vtty `task->tty`, real per-task FD table replaces keyboard owner ad-hoc | ⏭ |
 | 8 | **Linux-style signal subsystem** - full sigaction table, `kill()` syscall, htop-style picker | ⏭ |
 | 9 | **Preemption hardening** - interrupt-safe `schedule()`, per-task tick accounting, runtime-tunable quantum, busy-loop ktest | ⏭ |
@@ -272,9 +301,11 @@ Tracked here, pulled into branches one at a time so each PR stays focused.
 | 12 | **fork() readiness** - PD clone (CoW), fd dup, PID alloc, return-value split | ⏭ |
 | 13 | **UTF-8 terminal** with ASCII fallback / runtime mode switch | ⏭ deferred |
 
-**Keyboard rewrite - observed symptoms** (May 2026 user report, screenshot in PR #123 thread):
-- Sporadic single-character noise in shell input, **not correlated to user keystrokes** (arrow-key sentinel leak ruled out - bug appears with no arrows pressed).
-- Likely root causes (in order of suspicion): (a) `kb_slots` SPSC ring producer/consumer race - IRQ context vs task context without explicit memory ordering on i386; (b) e0 prefix state not robustly cleared on edge cases (spurious IRQs, context switches mid-decode); (c) break-code path missing `(sc & 0x80) return;` filter on some code path. Treat the rewrite as a full driver replacement, not a targeted patch.
+**Keyboard hardening - observed symptoms** (2026-05-13, kbtester session under PR #125's debug build):
+
+1. **Page fault with EIP=0xFFFFFF83 ≡ `(int32_t)(int8_t)0x83`** — sentinel byte 0x83 (KEY_ARROW_RIGHT) sign-extended through a `char` somewhere on the dispatch path, then the resulting negative value was treated as an address / function-pointer-derived value and the CPU faulted on the instruction fetch. The bit pattern is the smoking gun. Slice 5 explicitly called out `unsigned char` end-to-end; the audit needs to be redone post-merge — every cast, ring-buffer element type, table index, and compare on the keyboard path must be `unsigned char` (or `uint8_t`). Fault error code `[NP|READ|KERNEL]` from EIP=fault-addr confirms it was an instruction-fetch fault, not a data access.
+2. **Caps Lock oscillates under hold** — `apply_modifier()` does `if (down) mod_caps = !mod_caps` with no typematic-repeat filter. PS/2 hardware repeats Caps make codes at ~30 Hz; each repeat re-toggles. kbtester log shows bursts of sentinel 0x94 (e.g. entries 0049–0051 = 3 repeats, 0035–0036 = 2 repeats) confirming the hardware behaviour reaches the decoder unfiltered. Apply the same fix to Shift/Ctrl/Alt/Super and any other modifier that the decoder treats as edge-triggered. Standard approach: track `prev_make_kc`; ignore a make code that matches `prev_make_kc` without an intervening break.
+3. **No LED feedback / no boot-time sync** — kernel never writes `0xED <bitmap>` to the PS/2 controller, so the physical Caps/Num/Scroll LEDs never reflect kernel state, and at boot the kernel assumes all three are off regardless of BIOS state.
 
 ### Userspace / libc porting
 

@@ -1,6 +1,6 @@
 # Makar
 
-[![CI](https://github.com/Arawn-Davies/Makar/actions/workflows/ci.yml/badge.svg)](https://github.com/Arawn-Davies/Makar/actions/workflows/ci.yml)
+[![Build & Test](https://github.com/Arawn-Davies/Makar/actions/workflows/build-test.yml/badge.svg)](https://github.com/Arawn-Davies/Makar/actions/workflows/build-test.yml)
 [![Release](https://github.com/Arawn-Davies/Makar/actions/workflows/release.yml/badge.svg)](https://github.com/Arawn-Davies/Makar/actions/workflows/release.yml)
 
 > *We're standing on the shoulders of giants, and none of this would be

@@ -17,10 +17,9 @@ Runs two phases; build steps use Docker, QEMU/GDB prefer the host if available:
 
 **Phase 1 - in-kernel ktest suite**
 
-Builds an ISO whose grub.cfg passes the `test_mode` kernel argument. The
-kernel parses the multiboot2 cmdline, runs `ktest_run_all()` (all subsystem
-unit tests including a live ring-3 userspace execution), then exits QEMU
-cleanly via `isa-debug-exit`. Output: `ktest.log`.
+Boots `makar-test.iso` (single grub menuentry with `timeout=0`, `multiboot2 /boot/makar.kernel test_mode`). The kernel parses the multiboot2 cmdline, runs `ktest_run_all()` (all subsystem unit tests including a live ring-3 userspace execution), then exits QEMU cleanly via `isa-debug-exit`. Output: `ktest.log`.
+
+`makar-test.iso` and `makar.iso` are emitted from the **same** kernel binary; there is no test-only build flag.
 
 **Phase 2 - GDB boot-checkpoint tests**
 
@@ -116,11 +115,20 @@ Runs `ktest_run_all()` and prints pass/fail for each subsystem suite
 
 ## CI
 
-GitHub Actions runs both test jobs on every push and PR:
+`.github/workflows/build-test.yml` runs a **build-once, fan-out** topology on every push to `main` and every PR. Docs-only changes are skipped via path filter.
 
 | Job | Runner | What runs |
 |---|---|---|
-| `iso-test` | `ubuntu-latest` + container `arawn780/gcc-cross-i686-elf:fast` | `./run.sh iso-test` |
-| `hdd-test` | `ubuntu-latest` (bare metal, Docker available) | `./run.sh hdd-test` |
+| `build` | `ubuntu-latest` (host, Docker available) | `./run.sh iso-build` + `./run.sh hdd-build` → uploads `makar.kernel`, `makar.iso`, `makar-test.iso`, `makar-hdd-test.img` as artifact `makar-build` |
+| `ktest` | `ubuntu-latest` + container `arawn780/gcc-cross-i686-elf:fast` | downloads artifact → `./run.sh ktest-run` |
+| `gdb-iso` | `ubuntu-latest` + container | downloads artifact → `./run.sh gdb-iso-run` |
+| `gdb-hdd` | `ubuntu-latest` + container | downloads artifact → `./run.sh gdb-hdd-run` |
 
-The `release.yml` workflow gates artifact publication on both jobs passing.
+Why this shape:
+- One compile → three parallel test runs. The compile is the expensive step; the test jobs are I/O-bound on QEMU boot.
+- The `build` job runs on the host (not in a container) because `generate-hdd.sh` spawns its own privileged Docker container for loop-device work, which is awkward to nest.
+- The test jobs run inside the toolchain container so they get `qemu-system-i386` and `gdb-multiarch` without further setup.
+- KVM acceleration is deliberately disabled (see `run.sh _qemu_accel`); software breakpoints under the GDB stub never catch on KVM, and ktest hit a path-fault masked by KVM's CPU timing.
+- ccache is cached across runs via `actions/cache@v4` with the cascade `ccache-${{ runner.os }}-${{ github.sha }}` → `ccache-${{ runner.os }}-${{ github.ref_name }}-` → `ccache-${{ runner.os }}-main-` → `ccache-${{ runner.os }}-`. Warm rebuilds hit ~47 % cache.
+
+The `release.yml` workflow gates artifact publication on `build-test.yml` succeeding via `workflow_call`.
