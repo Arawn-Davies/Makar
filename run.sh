@@ -179,17 +179,19 @@ _run_qemu_interactive() {
 }
 
 # Run the ktest suite (headless QEMU + serial capture).
-# QEMU exits via isa-debug-exit when the kernel finishes, or via -no-reboot
-# on panic/triple-fault.  No timeout needed.
+# Uses makar-test.iso (test_mode menuentry, zero GRUB timeout) so QEMU
+# boots straight into ktest_run_all().  Exits via isa-debug-exit when the
+# kernel finishes, or via -no-reboot on panic/triple-fault.
 _run_ktest() {
     echo "==> Running ktest suite (headless QEMU)..."
-    local _qemu
+    local _qemu _iso
     _qemu=$(_host_qemu)
+    _iso="${KTEST_ISO:-makar-test.iso}"
     rm -f "$REPO_ROOT/ktest.log"
 
     if [ -n "$_qemu" ]; then
         "$_qemu" \
-            -cdrom "$REPO_ROOT/makar.iso" \
+            -cdrom "$REPO_ROOT/$_iso" \
             -serial "file:$REPO_ROOT/ktest.log" \
             -display none \
             -no-reboot \
@@ -197,13 +199,13 @@ _run_ktest() {
             2>/dev/null || true
     else
         _drun --as-root -- \
-            'qemu-system-i386 \
-                 -cdrom makar.iso \
+            "qemu-system-i386 \
+                 -cdrom /work/$_iso \
                  -serial file:/work/ktest.log \
                  -display none \
                  -no-reboot \
                  -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-                 2>/dev/null || true'
+                 2>/dev/null || true"
     fi
     _check_ktest
 }
@@ -365,11 +367,13 @@ iso-boot)
     ;;
 
 # ── iso-test ──────────────────────────────────────────────────────────────────
+# One kernel build, two ISO variants packaged from the same staged isodir:
+#   makar.iso       - interactive menu (also exercised by gdb_boot_test)
+#   makar-test.iso  - single auto-boot entry with test_mode cmdline
 iso-test)
     _clean
-    _build_iso "CFLAGS='-O0 -g3' KERNEL_ARGS=test_mode"
+    _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
     _run_ktest
-    _build_iso "CFLAGS='-O0 -g3'"
     _run_gdb_iso_test
     echo "==> All ISO tests PASSED."
     ;;
@@ -384,11 +388,11 @@ iso-ktest-gui)
         exit 1
     fi
     _clean
-    _build_iso "CFLAGS='-O0 -g3' KERNEL_ARGS=test_mode"
+    _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
     echo "==> Running ktest suite (graphical QEMU - window closes on completion)..."
     rm -f "$REPO_ROOT/ktest.log"
     "$QEMU_BIN" \
-        -cdrom "$REPO_ROOT/makar.iso" \
+        -cdrom "$REPO_ROOT/makar-test.iso" \
         -serial "file:$REPO_ROOT/ktest.log" \
         ${QEMU_DISPLAY:+-display "$QEMU_DISPLAY"} \
         -no-reboot \
