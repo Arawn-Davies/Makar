@@ -19,6 +19,7 @@ on:
       - '*.sh'
       - 'Dockerfile*'
       - 'docker-compose.yml'
+      - '.github/workflows/ci.yml'
   pull_request:
     paths:
       - 'src/**'
@@ -26,17 +27,81 @@ on:
       - '*.sh'
       - 'Dockerfile*'
       - 'docker-compose.yml'
+      - '.github/workflows/ci.yml'
+
+# Cancel superseded runs on the same ref so a rebased push doesn't keep CI
+# burning cycles for the older commit.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  # ── ISO CI ─────────────────────────────────────────────────────────────────
-  # Runs entirely inside the compiler container (/.dockerenv is present so
-  # run.sh executes steps directly without an inner docker run).
-  # Phase 1: test_mode ktest suite.  Phase 2: GDB boot-checkpoint test.
-  iso-test:
-    name: ISO test (ktest + GDB boot)
+  # ── Build kernel + ISOs + HDD test image once, fan out tests as artifacts ──
+  # Runs on the host runner (not in a container) because generate-hdd.sh
+  # spawns its own privileged docker container for loop-device work, which
+  # is awkward to nest.  Subsequent test jobs run inside the container with
+  # --device /dev/kvm for ~10x QEMU speedup over TCG.
+  build:
+    name: Build (kernel + ISOs + HDD test image)
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_COMPRESS: '1'
+      CCACHE_MAXSIZE: 500M
+      HDD_SIZE_MB: 64    # smaller test image -> faster artifact upload
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ github.ref_name }}-
+            ccache-${{ runner.os }}-main-
+            ccache-${{ runner.os }}-
+
+      - name: Build ISOs (kernel + makar.iso + makar-test.iso)
+        run: ./run.sh iso-build
+
+      - name: Build HDD test image (kernel cached from ISO build)
+        run: ./run.sh hdd-build
+
+      - name: ccache stats
+        if: always()
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" -w /work \
+            -e CCACHE_DIR=/work/.ccache \
+            makar-build:local ccache -s || echo "(ccache stats unavailable)"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: makar-build
+          path: |
+            src/kernel/makar.kernel
+            makar.iso
+            makar-test.iso
+            makar-hdd-test.img
+          retention-days: 1
+          if-no-files-found: error
+
+  # ── ktest suite (in-kernel unit tests + ring-3 lifecycle) ──────────────────
+  # The fastest test job: ~30s on KVM.  Boots makar-test.iso whose grub.cfg
+  # autoselects the test_mode entry; the kernel runs ktest_run_all() then
+  # exits QEMU via isa-debug-exit.  PASS/FAIL is grepped from serial.
+  ktest:
+    name: ktest
+    needs: build
     runs-on: ubuntu-latest
     container:
       image: arawn780/gcc-cross-i686-elf:fast
+      options: --device /dev/kvm
     defaults:
       run:
         shell: bash
@@ -45,40 +110,89 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run ISO test suite
-        run: ./run.sh iso-test
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: makar-build
 
-      - name: Upload ISO test logs
+      - name: Run ktest
+        run: ./run.sh ktest-run
+
+      - name: Upload ktest log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: iso-test-logs
-          path: |
-            ktest.log
-            gdb-test.log
-            gdb-serial.log
+          name: ktest-log
+          path: ktest.log
 
-  # ── HDD CI ─────────────────────────────────────────────────────────────────
-  # Runs on the host runner so Docker (with --privileged for loop devices)
-  # is available for the disk-image creation step.
-  # Produces makar-hdd-test.img (separate from the interactive image).
-  # GDB checks: Multiboot2 magic, all boot checkpoints, fat32_mounted() != 0.
-  hdd-test:
-    name: HDD test (GDB boot + FAT32 mount)
+  # ── GDB ISO boot-checkpoint test ───────────────────────────────────────────
+  # Boots makar.iso (interactive grub.cfg, default entry 0) under the QEMU
+  # GDB stub and verifies Multiboot 2 magic, boot checkpoints, hardware
+  # state, VESA TTY init, background ktest result, and CD-ROM content.
+  gdb-iso:
+    name: GDB ISO boot
+    needs: build
     runs-on: ubuntu-latest
+    container:
+      image: arawn780/gcc-cross-i686-elf:fast
+      options: --device /dev/kvm
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run HDD boot test
-        run: ./run.sh hdd-test
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: makar-build
 
-      - name: Upload HDD test logs
+      - name: Run GDB ISO boot test
+        run: ./run.sh gdb-iso-run
+
+      - name: Upload GDB logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hdd-test-logs
+          name: gdb-iso-logs
+          path: |
+            gdb-test.log
+            gdb-serial.log
+
+  # ── GDB HDD boot test ──────────────────────────────────────────────────────
+  # Boots makar-hdd-test.img (no CD-ROM) and verifies the kernel reaches
+  # shell_run with fat32_mounted() non-zero -- proves GRUB-from-FAT32 boot
+  # and the IDE/FAT32 auto-mount path.
+  gdb-hdd:
+    name: GDB HDD boot
+    needs: build
+    runs-on: ubuntu-latest
+    container:
+      image: arawn780/gcc-cross-i686-elf:fast
+      options: --device /dev/kvm
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: makar-build
+
+      - name: Run GDB HDD boot test
+        run: ./run.sh gdb-hdd-run
+
+      - name: Upload GDB logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gdb-hdd-logs
           path: |
             hdd-test-gdb.log
             hdd-test-serial.log
