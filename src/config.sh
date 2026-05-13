@@ -8,6 +8,14 @@ export AR=${HOST}-ar
 export AS=${HOST}-as
 export CC=${HOST}-gcc
 
+# Transparently route the cross-compiler through ccache when it's available.
+# CCACHE=0 disables the wrap (e.g. for one-off measurements of cold builds).
+# The CCACHE_DIR / CCACHE_MAXSIZE env vars are inherited from the build
+# environment (Dockerfile sets them to /work/.ccache and 500M).
+if [ "${CCACHE:-1}" != "0" ] && command -v ccache >/dev/null 2>&1; then
+  export CC="ccache $CC"
+fi
+
 export PREFIX=/usr
 export EXEC_PREFIX=$PREFIX
 export BOOTDIR=/boot

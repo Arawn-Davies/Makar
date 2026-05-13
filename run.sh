@@ -41,7 +41,11 @@
 set -e
 
 REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-DOCKER_IMAGE=${DOCKER_IMAGE:-arawn780/gcc-cross-i686-elf:fast}
+# makar-build:local layers ccache on top of the upstream toolchain image so
+# rebuilds hit the object cache instead of recompiling from scratch.  It is
+# auto-built on first use; set DOCKER_IMAGE explicitly to override.
+DOCKER_IMAGE=${DOCKER_IMAGE:-makar-build:local}
+DOCKER_UPSTREAM_IMAGE=${DOCKER_UPSTREAM_IMAGE:-arawn780/gcc-cross-i686-elf:fast}
 DOCKER_BIN=${DOCKER_BIN:-docker}
 DOCKER_PLATFORM=${DOCKER_PLATFORM:-linux/amd64}
 HDD_IMG=${HDD_IMG:-makar-hdd.img}
@@ -95,6 +99,18 @@ _host_gdb() {
 # In container / native context the flags are ignored; the command runs via
 # 'bash -lc' in the current working directory.
 
+_ensure_build_image() {
+    [ "$(_build_ctx)" = "docker" ] || return 0
+    if "$DOCKER_BIN" image inspect "$DOCKER_IMAGE" >/dev/null 2>&1; then
+        return 0
+    fi
+    echo "==> Building $DOCKER_IMAGE (one-time, layers ccache on $DOCKER_UPSTREAM_IMAGE)..."
+    "$DOCKER_BIN" build \
+        --platform "$DOCKER_PLATFORM" \
+        -t "$DOCKER_IMAGE" \
+        "$REPO_ROOT"
+}
+
 _drun() {
     local _priv="" _user="-u $(id -u):$(id -g)"
     local -a _env=()
@@ -115,6 +131,7 @@ _drun() {
             bash -lc "$_cmd"
             ;;
         docker)
+            _ensure_build_image
             # shellcheck disable=SC2086
             "$DOCKER_BIN" run --rm \
                 --platform "$DOCKER_PLATFORM" \
