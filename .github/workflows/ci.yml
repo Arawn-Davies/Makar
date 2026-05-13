@@ -39,8 +39,8 @@ jobs:
   # ── Build kernel + ISOs + HDD test image once, fan out tests as artifacts ──
   # Runs on the host runner (not in a container) because generate-hdd.sh
   # spawns its own privileged docker container for loop-device work, which
-  # is awkward to nest.  Subsequent test jobs run inside the container with
-  # --device /dev/kvm for ~10x QEMU speedup over TCG.
+  # is awkward to nest.  Subsequent test jobs run inside the container.
+  # KVM acceleration is deliberately disabled (see run.sh _qemu_accel).
   build:
     name: Build (kernel + ISOs + HDD test image)
     runs-on: ubuntu-latest
@@ -101,7 +101,6 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: arawn780/gcc-cross-i686-elf:fast
-      options: --device /dev/kvm
     defaults:
       run:
         shell: bash
@@ -135,7 +134,6 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: arawn780/gcc-cross-i686-elf:fast
-      options: --device /dev/kvm
     defaults:
       run:
         shell: bash
@@ -171,7 +169,6 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: arawn780/gcc-cross-i686-elf:fast
-      options: --device /dev/kvm
     defaults:
       run:
         shell: bash

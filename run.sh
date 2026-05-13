@@ -69,8 +69,14 @@ fi
 # ── context helpers ────────────────────────────────────────────────────────────
 
 # Build execution context: container | docker | native | none
+#
+# A "container" context only counts when the cross-compiler is actually
+# present.  This matters for tools like `act` that wrap every job in a
+# generic ubuntu image (which has /.dockerenv but no i686-elf-gcc): in
+# that case we fall through to the docker path and shell into the
+# toolchain image just as we would on a host runner.
 _build_ctx() {
-    if [ -f /.dockerenv ]; then
+    if [ -f /.dockerenv ] && command -v i686-elf-gcc >/dev/null 2>&1; then
         printf 'container'
     elif command -v "$DOCKER_BIN" >/dev/null 2>&1; then
         printf 'docker'
@@ -94,10 +100,15 @@ _host_gdb() {
     command -v gdb-multiarch >/dev/null 2>&1 && printf 'gdb-multiarch' || true
 }
 
-# Emit "-accel kvm" when /dev/kvm is usable, otherwise empty.  QEMU falls
-# back to TCG without it; on Linux x86_64 runners (incl. GitHub Actions)
-# KVM gives roughly 10x speedup over TCG for the ktest / GDB jobs.
+# Emit "-accel kvm" when /dev/kvm is usable AND MAKAR_USE_KVM=1.  Disabled
+# by default because (a) the QEMU GDB stub's software breakpoints fail to
+# insert reliably under KVM (early-boot _start breakpoint never catches),
+# and (b) a yet-to-be-fixed kernel race surfaces under KVM's true-CPU
+# timing, manifesting as a page fault during ktest with a corrupted SS
+# selector.  Both issues are tracked separately; until they're addressed,
+# stick with TCG so CI is deterministic.
 _qemu_accel() {
+    [ "${MAKAR_USE_KVM:-0}" = "1" ] || return 0
     if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
         printf -- '-accel kvm'
     fi
@@ -204,11 +215,17 @@ _run_ktest() {
     _iso="${KTEST_ISO:-makar-test.iso}"
     rm -f "$REPO_ROOT/ktest.log"
 
-    local _accel
+    local _accel _tmo
     _accel=$(_qemu_accel)
+    # ktest exits QEMU via isa-debug-exit; if the kernel hangs we still want
+    # a bounded test run rather than waiting on the GitHub-Actions job
+    # timeout (6h default), so wrap QEMU in `timeout` (GNU coreutils).
+    # `timeout` is absent on macOS by default; only prepend it if present.
+    _tmo=""
+    command -v timeout >/dev/null 2>&1 && _tmo="timeout 120"
     if [ -n "$_qemu" ]; then
         # shellcheck disable=SC2086
-        "$_qemu" \
+        $_tmo "$_qemu" \
             -cdrom "$REPO_ROOT/$_iso" \
             -serial "file:$REPO_ROOT/ktest.log" \
             -display none \
@@ -218,7 +235,7 @@ _run_ktest() {
             2>/dev/null || true
     else
         _drun --as-root --env "QEMU_ACCEL=$_accel" --env "KTEST_ISO_NAME=$_iso" -- \
-            'qemu-system-i386 \
+            'timeout 120 qemu-system-i386 \
                  -cdrom /work/$KTEST_ISO_NAME \
                  -serial file:/work/ktest.log \
                  -display none \
