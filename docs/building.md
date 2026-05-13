@@ -40,16 +40,28 @@ All build, test, and boot operations go through a single script:
 
 ### Modes
 
+Day-to-day (build + run in one shot):
+
 | Mode | Description | Host requirements |
 |---|---|---|
 | `iso-boot` | Clean → debug ISO → interactive QEMU | Docker; host QEMU preferred (Docker fallback) |
 | `iso-test` | Full CI suite: ktest + GDB boot tests | Docker |
-| `iso-ktest-gui` | test_mode ISO → ktest with display window | Docker, host QEMU + display server |
+| `iso-ktest-gui` | Test ISO → ktest with display window | Docker, host QEMU + display server |
 | `iso-release` | Optimised release ISO | Docker |
 | `hdd-boot` | Clean → build kernel → HDD image → interactive QEMU | Docker; host QEMU preferred (Docker fallback) |
 | `hdd-test` | Clean → build kernel → HDD image → GDB boot test | Docker |
 | `hdd-release` | HDD image only | Docker |
 | `clean` | Remove all build artefacts | Docker |
+
+CI-style split modes (build once, fan out test runs — used by `.github/workflows/build-test.yml`):
+
+| Mode | Description |
+|---|---|
+| `iso-build` | Build kernel + `makar.iso` + `makar-test.iso`, no run |
+| `hdd-build` | Build kernel + `makar-hdd-test.img`, no run |
+| `ktest-run` | Run ktest against existing `makar-test.iso` |
+| `gdb-iso-run` | Run GDB ISO boot test against existing `makar.iso` |
+| `gdb-hdd-run` | Run GDB HDD boot test against existing `makar-hdd-test.img` |
 
 ### Execution context
 
@@ -77,11 +89,18 @@ All build, test, and boot operations go through a single script:
 |---|---|---|
 | `CFLAGS` | *(Makefile default)* | Compiler flags forwarded to the build step |
 | `CPPFLAGS` | *(empty)* | Preprocessor flags forwarded to the build step |
+| `CCACHE` | `1` | Set to `0` to disable the ccache wrapper around `i686-elf-gcc` |
+| `CCACHE_DIR` | `/work/.ccache` | ccache object cache directory (inside the container) |
+| `CCACHE_MAXSIZE` | `500M` | ccache eviction threshold |
 | `DOCKER_BIN` | `docker` | Docker CLI binary |
-| `DOCKER_IMAGE` | `arawn780/gcc-cross-i686-elf:fast` | Build container image |
+| `DOCKER_IMAGE` | `makar-build:local` | Build container image (auto-built from `Dockerfile`, layers ccache on the upstream toolchain) |
+| `DOCKER_UPSTREAM_IMAGE` | `arawn780/gcc-cross-i686-elf:fast` | Base image used by `Dockerfile` and pulled directly inside CI test jobs |
 | `DOCKER_PLATFORM` | `linux/amd64` | `--platform` flag passed to `docker run` |
 | `HDD_IMG` | `makar-hdd.img` | Output filename for interactive HDD builds |
 | `HDD_TEST_IMG` | `makar-hdd-test.img` | Output filename for CI HDD test builds |
+| `HDD_SIZE_MB` | `512` (interactive) / unset (test default) | Size of the generated HDD image; CI uses 64 MiB for faster artifact upload |
+| `TEST_ISO` | unset (1 in `iso-build`) | When set, `iso.sh` also emits `makar-test.iso` (auto-boots `test_mode`) alongside `makar.iso` |
+| `MAKAR_USE_KVM` | unset | Set to `1` to opt in to QEMU KVM acceleration; off by default (GDB stub + ktest reliability issues under KVM) |
 | `QEMU_DISPLAY` | *(empty)* | Passed to `-display` for `iso-ktest-gui` |
 
 ---
@@ -92,12 +111,12 @@ These run inside the container and are called by `run.sh` - do not invoke direct
 
 | Script | What it does |
 |---|---|
-| `build.sh` | Compiles the kernel and libc into `sysroot/` (parallel via `-j$(nproc)`) |
-| `iso.sh` | Calls `build.sh`, then packages into `makar.iso` via `grub-mkrescue` |
+| `build.sh` | Compiles the kernel and libc into `sysroot/` (parallel via `-j$(nproc)`, ccache-wrapped) |
+| `iso.sh` | Calls `build.sh`, then packages `makar.iso` via `grub-mkrescue`; with `TEST_ISO=1` also emits `makar-test.iso` (single menuentry, `timeout=0`, `multiboot2 /boot/makar.kernel test_mode`) |
 | `clean.sh` | Removes `sysroot/`, `isodir/`, and all build artefacts |
 | `generate-hdd.sh` | Creates a raw MBR + FAT32 + GRUB 2 HDD image; called by `hdd-boot` / `hdd-test` / `hdd-release` |
 
-Old per-task Docker wrappers are preserved in `scripts/` for reference.
+The legacy per-task `scripts/docker-*.sh` wrappers were removed in PR #125 — `run.sh` is the single entrypoint.
 
 ---
 
@@ -120,9 +139,14 @@ docker compose run --rm test           # full iso-test suite
 
 ---
 
-## What the Docker image provides
+## What the Docker images provide
 
-The `arawn780/gcc-cross-i686-elf:fast` image ships everything needed for building, testing, and HDD image creation:
+Two related images are used:
+
+- **`arawn780/gcc-cross-i686-elf:fast`** — upstream toolchain image (built from `Dockerfile.compiler` and pushed manually). Used directly inside the GitHub Actions `container:` test jobs.
+- **`makar-build:local`** — local image built on first use from the in-repo `Dockerfile`. Layers `ccache` on top of the upstream image and sets `CCACHE_DIR=/work/.ccache`. Auto-built by `run.sh` when needed.
+
+The upstream image ships everything needed for building, testing, and HDD image creation:
 
 | Tool / package | Purpose |
 |---|---|
