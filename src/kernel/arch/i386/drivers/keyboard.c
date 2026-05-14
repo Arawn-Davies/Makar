@@ -109,6 +109,7 @@
 #include <kernel/task.h>
 #include <kernel/timer.h>
 #include <kernel/vesa_tty.h>
+#include <kernel/serial.h>
 
 /* ===========================================================================
  * Memory-ordering primitives
@@ -237,7 +238,14 @@ static kb_spinlock_t kb_slots_lock = { 0 };  /* serialises slot table mutations 
 #define PS2_STATUS_PORT 0x64
 
 #define PS2_STAT_OBF    0x01    /* output buffer full -- byte ready in 0x60 */
+#define PS2_STAT_IBF    0x02    /* input buffer full -- host write pending */
 #define PS2_STAT_AUXB   0x20    /* byte is from the AUX channel (mouse) */
+
+/* PS/2 keyboard commands & response bytes. */
+#define PS2_KB_SET_LEDS 0xED
+#define PS2_LED_SCROLL  0x01
+#define PS2_LED_NUM     0x02
+#define PS2_LED_CAPS    0x04
 
 /* ===========================================================================
  * Internal keycodes (decoder output, translator input).
@@ -694,6 +702,67 @@ static int mod_ralt    = 0;
  */
 static uint8_t s_modkey_held[256] = { 0 };
 
+/* ===========================================================================
+ * LED sync
+ *
+ * The PS/2 keyboard owns its Caps/Num/Scroll Lock indicator LEDs; the host
+ * must explicitly tell it which to light by writing 0xED followed by a bitmap
+ * (bit 0 Scroll, bit 1 Num, bit 2 Caps).  The keyboard ACKs each byte with
+ * 0xFA on the data port; that ACK arrives via the regular IRQ path and is
+ * filtered out by decoder_feed's controller-response check, so kb_sync_leds
+ * is fire-and-forget.
+ *
+ * We do not poll for the ACK synchronously: kb_sync_leds is reached from
+ * apply_modifier which runs inside the IRQ handler with kb_io_lock held, so
+ * spinning on PS2_STAT_OBF would block the very IRQ that's supposed to drain
+ * it.  At boot (keyboard_init) we're outside IRQ context but tasking has not
+ * started so there's no contention either way.
+ *
+ * Software-shadowed state lets the ktest harness verify that LED updates
+ * fired with the expected bitmap without actually programming hardware.
+ */
+static int     s_caps_on   = 0;
+static int     s_num_on    = 0;
+static int     s_scroll_on = 0;
+static volatile uint8_t s_leds_last_sent  = 0xFF;  /* sentinel: never sent */
+static volatile uint32_t s_leds_send_count = 0;
+
+/* kb_send_byte_polled - write b to the keyboard data port, waiting briefly
+ * for the controller's input buffer to drain first.  Bounded poll so a
+ * wedged controller can't livelock us. */
+static void kb_send_byte_polled(uint8_t b)
+{
+    for (int i = 0; i < 1000; i++) {
+        if (!(inb(PS2_STATUS_PORT) & PS2_STAT_IBF)) break;
+        asm volatile("pause");
+    }
+    outb(PS2_DATA_PORT, b);
+}
+
+/* kb_sync_leds - compute the current LED bitmap and program the keyboard.
+ * Test mode: just update the software shadow so ktest can observe the
+ * effect without talking to the hardware. */
+static void kb_sync_leds(void)
+{
+    uint8_t bitmap = (s_caps_on   ? PS2_LED_CAPS   : 0)
+                   | (s_num_on    ? PS2_LED_NUM    : 0)
+                   | (s_scroll_on ? PS2_LED_SCROLL : 0);
+    s_leds_last_sent = bitmap;
+    __atomic_add_fetch(&s_leds_send_count, 1, __ATOMIC_RELEASE);
+
+    /* Serial log so iso-test can verify the LED update reached the wire,
+     * even without screendump access to the physical LED state. */
+    Serial_WriteString("KB_LED: ");
+    Serial_WriteHex((uint32_t)bitmap);  /* prints "0xNNNNNNNN" */
+    Serial_WriteString("\n");
+
+    if (__atomic_load_n(&kb_test_active, __ATOMIC_ACQUIRE))
+        return;
+
+    kb_send_byte_polled(PS2_KB_SET_LEDS);
+    kb_send_byte_polled(bitmap);
+}
+
 /* Raw mode: see keyboard_set_raw().  When set, on_make delivers modifier
  * presses, F-keys, Caps, and Super as sentinel bytes; cooked shortcuts
  * (Alt+F1..F4 vtty switch, Ctrl-A pane prefix) are suspended.  Ctrl+C
@@ -783,7 +852,13 @@ static void apply_modifier(kc_t kc, int is_break)
         case KC_RCTRL:    mod_rctrl  = down; break;
         case KC_LALT:     mod_lalt   = down; break;
         case KC_RALT:     mod_ralt   = down; break;
-        case KC_CAPSLOCK: if (down) mod_caps = !mod_caps; break;
+        case KC_CAPSLOCK:
+            if (down) {
+                mod_caps = !mod_caps;
+                s_caps_on = mod_caps;
+                kb_sync_leds();
+            }
+            break;
         default: return;
     }
     mod_shift = mod_lshift | mod_rshift;
@@ -1069,6 +1144,19 @@ static void keyboard_irq_handler(registers_t *regs)
  * Some controllers (or QEMU resets) leave a stray byte in the output buffer
  * before our handler is wired up; reading and discarding it ensures we
  * start with a clean slate and won't fire a spurious key on first IRQ.
+ *
+ * Boot-time LED state:
+ *   The PS/2 keyboard owns its indicator LEDs and the host has no command
+ *   to query their current state.  Conventionally the BIOS keeps the
+ *   Caps/Num/Scroll Lock state in the BIOS Data Area byte 0x417 (a region
+ *   that survives the transition to protected mode -- GRUB / Multiboot 2
+ *   don't touch low memory below 0x500).  We probe that byte to seed
+ *   mod_caps and friends, then send a single 0xED command so the LEDs
+ *   reflect what we believe the state to be.
+ *
+ *   The BDA bits at 0x417 are:
+ *     0x40 Caps Lock active, 0x20 Num Lock active, 0x10 Scroll Lock active
+ *   (See IBM/Intel BIOS reference; same layout on every PC since the AT.)
  */
 void keyboard_init(void)
 {
@@ -1077,6 +1165,16 @@ void keyboard_init(void)
         if (!(status & PS2_STAT_OBF)) break;
         (void)inb(PS2_DATA_PORT);
     }
+
+    /* Seed lock state from the BDA so we don't fight the BIOS on boot. */
+    volatile uint8_t *bda_kb_flags = (uint8_t *)0x417;
+    uint8_t flags  = *bda_kb_flags;
+    mod_caps       = (flags & 0x40) ? 1 : 0;
+    s_caps_on      = mod_caps;
+    s_num_on       = (flags & 0x20) ? 1 : 0;
+    s_scroll_on    = (flags & 0x10) ? 1 : 0;
+    kb_sync_leds();
+
     register_interrupt_handler(IRQ1, keyboard_irq_handler);
 }
 
@@ -1248,6 +1346,16 @@ int keyboard_test_drain(unsigned char *out)
     unsigned char c = buf_pop();
     if (out) *out = c;
     return 1;
+}
+
+uint8_t keyboard_test_leds(void)
+{
+    return s_leds_last_sent;
+}
+
+uint32_t keyboard_test_led_sends(void)
+{
+    return __atomic_load_n(&s_leds_send_count, __ATOMIC_ACQUIRE);
 }
 
 uint32_t keyboard_test_mod_state(void)

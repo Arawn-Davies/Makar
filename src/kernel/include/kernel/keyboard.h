@@ -122,4 +122,12 @@ int      keyboard_test_drain(unsigned char *out);
 void     keyboard_test_reset(void);
 uint32_t keyboard_test_mod_state(void);
 
+/* keyboard_test_leds - returns the most recent LED bitmap kb_sync_leds
+ * computed (bit 0 Scroll, bit 1 Num, bit 2 Caps -- same wire format as
+ * the 0xED data byte).  keyboard_test_led_sends counts how many times
+ * kb_sync_leds was invoked since boot, so a test can assert that a Caps
+ * press fired exactly one LED update. */
+uint8_t  keyboard_test_leds(void);
+uint32_t keyboard_test_led_sends(void);
+
 #endif /* _KERNEL_KEYBOARD_H */

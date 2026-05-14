@@ -1193,6 +1193,30 @@ static void test_keyboard(void)
         keyboard_set_raw(0);
     }
 
+    /* ---- LED sync: Caps press updates the bitmap exactly once ----------- */
+    /* kb_sync_leds is called from apply_modifier when mod_caps changes; the
+     * 0xED + bitmap is suppressed in test mode and only the software shadow
+     * updates.  We exercise:
+     *   - one Caps press cycle flips the Caps bit and increments send count;
+     *   - typematic repeats during the press DON'T trigger extra sends
+     *     (the typematic filter from f636920 squashes them upstream);
+     *   - a second press cycle clears the Caps bit. */
+    {
+        keyboard_test_reset();
+        uint32_t baseline = keyboard_test_led_sends();
+        for (int i = 0; i < 5; i++)
+            keyboard_test_feed(0x3A); /* Caps make x5 */
+        keyboard_test_feed(0xBA);     /* Caps break */
+        KTEST_ASSERT(keyboard_test_led_sends() == baseline + 1);
+        KTEST_ASSERT(keyboard_test_leds() & 0x04); /* PS2_LED_CAPS */
+
+        for (int i = 0; i < 5; i++)
+            keyboard_test_feed(0x3A);
+        keyboard_test_feed(0xBA);
+        KTEST_ASSERT(keyboard_test_led_sends() == baseline + 2);
+        KTEST_ASSERT((keyboard_test_leds() & 0x04) == 0);
+    }
+
     /* ---- torn-prefix recovery: repeated 0xE0 restarts the prefix -------- */
     /* DEC_AFTER_E0 + 0xE0 -> still DEC_AFTER_E0; one ARROW_LEFT emitted. */
     {
@@ -1385,9 +1409,12 @@ void ktest_bg_task(void)
         suite(); \
         total_pass += ktest_pass_count; \
         total_fail += ktest_fail_count; \
-        /* Pace tests so the loading screen stays visible (~300 ms at 100 Hz). */ \
+        /* Brief pacing keeps the loading screen visible while not pushing \
+         * iso-test's 120 s GDB budget into the failure regime under TCG. \
+         * 5 ticks @ 100 Hz = 50 ms; visible on real HW, ~700 ms total over \
+         * 14 suites in TCG. */ \
         { uint32_t t0 = timer_get_ticks(); \
-          while (timer_get_ticks() - t0 < 30) task_yield(); } \
+          while (timer_get_ticks() - t0 < 5) task_yield(); } \
     } while (0)
 
     RUN(test_acpi_checksum);
