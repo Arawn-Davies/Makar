@@ -1084,49 +1084,51 @@ static void test_keyboard(void)
         KTEST_ASSERT(n == 0);
     }
 
-    /* ---- make/break separation with shift ------------------------------- */
+    /* ---- make/break separation with both shifts ------------------------- */
     /* Hold RSHIFT, press 'a' -> 'A'.  Release RSHIFT, press 'a' -> 'a'.
-     *
-     * RSHIFT (make 0x36, break 0xB6) is used instead of LSHIFT here because
-     * LSHIFT's break code 0xAA collides with the PS/2 controller's BAT-pass
-     * response byte and is currently swallowed by decoder_feed's response
-     * filter. That collision is a real driver bug -- see KNOWN ISSUE below
-     * -- but it is out of scope for the unsigned-char audit and is fixed in
-     * a separate slice. RSHIFT exercises the same code path without the
-     * filter collision so we still get coverage. */
+     * Repeat with LSHIFT.  The LSHIFT half is the regression target for the
+     * 0xAA BAT-pass filter collision -- before decoder_feed's response-byte
+     * filter was narrowed, LSHIFT break (0xAA) was silently swallowed and
+     * the shift state stayed stuck at 1. */
     {
-        keyboard_test_reset();
-        keyboard_test_feed(0x36); /* RSHIFT make */
-        unsigned char buf[4];
-        uint32_t n = kb_test_drain_all(buf, sizeof(buf));
-        KTEST_ASSERT(n == 0); /* modifier silent in cooked mode */
-        KTEST_ASSERT((keyboard_test_mod_state() & 0x1u) == 0x1u); /* mod_shift */
+        struct { uint8_t make, brk; } shifts[] = {
+            { 0x36, 0xB6 }, /* RSHIFT */
+            { 0x2A, 0xAA }, /* LSHIFT - regression target */
+        };
+        for (uint32_t i = 0; i < sizeof(shifts)/sizeof(shifts[0]); i++) {
+            keyboard_test_reset();
+            keyboard_test_feed(shifts[i].make);
+            unsigned char buf[4];
+            uint32_t n = kb_test_drain_all(buf, sizeof(buf));
+            KTEST_ASSERT(n == 0); /* modifier silent in cooked mode */
+            KTEST_ASSERT((keyboard_test_mod_state() & 0x1u) == 0x1u);
 
-        keyboard_test_feed(0x1E); /* 'a' make */
-        n = kb_test_drain_all(buf, sizeof(buf));
-        KTEST_ASSERT(n == 1 && buf[0] == 'A');
+            keyboard_test_feed(0x1E); /* 'a' make */
+            n = kb_test_drain_all(buf, sizeof(buf));
+            KTEST_ASSERT(n == 1 && buf[0] == 'A');
 
-        keyboard_test_feed(0xB6); /* RSHIFT break */
-        KTEST_ASSERT((keyboard_test_mod_state() & 0x1u) == 0u);
+            keyboard_test_feed(shifts[i].brk);
+            KTEST_ASSERT((keyboard_test_mod_state() & 0x1u) == 0u);
 
-        keyboard_test_feed(0x1E);
-        n = kb_test_drain_all(buf, sizeof(buf));
-        KTEST_ASSERT(n == 1 && buf[0] == 'a');
+            keyboard_test_feed(0x1E);
+            n = kb_test_drain_all(buf, sizeof(buf));
+            KTEST_ASSERT(n == 1 && buf[0] == 'a');
+        }
     }
 
-    /* ---- paired-modifier release does not clear shift ------------------- */
-    /* Hold LSHIFT + RSHIFT; release RSHIFT; mod_shift stays set thanks to
-     * mod_lshift still being held.  We can't test the symmetric "release
-     * LSHIFT while RSHIFT held" path here because LSHIFT break (0xAA)
-     * collides with the controller's BAT-pass response byte (see KNOWN
-     * ISSUE below); the assertion would fail for unrelated reasons. */
+    /* ---- paired-modifier release: either side can be released first ----- */
+    /* Hold LSHIFT + RSHIFT; release either; mod_shift stays set thanks to
+     * the other side still being held. */
     {
-        keyboard_test_reset();
-        keyboard_test_feed(0x2A); /* LSHIFT make */
-        keyboard_test_feed(0x36); /* RSHIFT make */
-        KTEST_ASSERT((keyboard_test_mod_state() & 0x1u) == 0x1u);
-        keyboard_test_feed(0xB6); /* RSHIFT break */
-        KTEST_ASSERT((keyboard_test_mod_state() & 0x1u) == 0x1u);
+        struct { uint8_t first_brk; } cases[] = { { 0xB6 }, { 0xAA } };
+        for (uint32_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+            keyboard_test_reset();
+            keyboard_test_feed(0x2A); /* LSHIFT make */
+            keyboard_test_feed(0x36); /* RSHIFT make */
+            KTEST_ASSERT((keyboard_test_mod_state() & 0x1u) == 0x1u);
+            keyboard_test_feed(cases[i].first_brk);
+            KTEST_ASSERT((keyboard_test_mod_state() & 0x1u) == 0x1u);
+        }
     }
 
     /* ---- Ctrl+letter folds to ASCII control code ------------------------ */
@@ -1141,23 +1143,6 @@ static void test_keyboard(void)
         KTEST_ASSERT(n == 1 && buf[0] == 0x02);
         keyboard_test_feed(0x9D); /* LCTRL break */
     }
-
-    /*
-     * KNOWN ISSUE -- 0xAA / 0xFA / 0xFE / 0xFF collisions
-     *
-     * decoder_feed currently filters these bytes as PS/2 controller response
-     * codes (BAT pass / ack / resend / buffer-overflow) and resets state to
-     * DEC_NORMAL without emitting an event. That's correct *during init* but
-     * wrong during normal scanning, where 0xAA happens to equal the break
-     * code for LSHIFT (0x2A | 0x80). Result: pressing-then-releasing the
-     * left shift key leaves mod_lshift stuck at 1.
-     *
-     * The proper fix is to gate the response filter on an "expecting reply"
-     * window driven by a controller command queue (Linux's i8042 layer does
-     * this), so unsolicited scancodes are never confused with replies. That
-     * change is bigger than slice 5b and is tracked separately; until then
-     * we test LSHIFT via RSHIFT (which has no such collision) above.
-     */
 
     /* ---- torn-prefix recovery: repeated 0xE0 restarts the prefix -------- */
     /* DEC_AFTER_E0 + 0xE0 -> still DEC_AFTER_E0; one ARROW_LEFT emitted. */
@@ -1370,9 +1355,12 @@ void ktest_bg_task(void)
     RUN(test_ring3_execution);
     RUN(test_elf_exec);
     RUN(test_ring3_with_arg);
-    RUN(test_keyboard);
-    /* test_vesa_resolution and test_vesa_colour are skipped: they switch
-     * display modes with multi-second countdowns - run manually via `ktest`. */
+    /* test_keyboard, test_vesa_resolution, test_vesa_colour are skipped here:
+     * the first runs ~1500 decoder_feed + lock cycles which under TCG pushes
+     * past the shell's first keyboard_getchar, leaving ktest_bg_done=0 when
+     * the GDB test polls it; the latter two switch display modes with multi-
+     * second countdowns.  All three still run in foreground (test_mode ISO +
+     * shell `ktest`). */
 
     #undef RUN
 

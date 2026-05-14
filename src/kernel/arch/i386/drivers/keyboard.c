@@ -897,15 +897,29 @@ static void on_make(kc_t kc)
  *   DEC_AFTER_E1A + b            -> DEC_AFTER_E1B  (consume first half)
  *   DEC_AFTER_E1B + b            -> DEC_NORMAL     (consume second half)
  *
- * Controller-internal status bytes (0x00 buffer-error, 0xAA BAT pass,
- * 0xEE echo, 0xFA ack, 0xFE resend, 0xFF buffer-overflow) reset the state
- * machine to NORMAL without emitting an event -- they are responses to
- * controller commands and never represent keystrokes.
+ * Controller-internal status bytes that are never legitimate set-1
+ * scancodes (0x00 buffer-error, 0xEE echo, 0xFA ack, 0xFE resend, 0xFF
+ * buffer-overflow) reset the state machine to NORMAL without emitting
+ * an event -- they only ever arrive as replies to controller commands.
+ *
+ * Note: 0xAA is deliberately NOT in this filter even though it's the
+ * controller's BAT-pass byte, because 0xAA is also the legitimate break
+ * scancode for LSHIFT (make 0x2A | 0x80). The BAT-pass byte is only
+ * emitted at power-on/reset, before keyboard_init drains the buffer
+ * and registers the IRQ handler, so it never reaches decoder_feed.
+ * Filtering it unconditionally would silently swallow every LSHIFT
+ * release -- this was a real bug surfaced by the new ktest harness.
+ *
+ * Once the kernel starts sending controller commands (LED sync, scan-
+ * code-set selection) the right way to disambiguate replies from
+ * scancodes is a per-command "expecting reply" window driven by the
+ * command queue (Linux's i8042 layer does this); for now we have no
+ * commands in flight so the simpler "never filter 0xAA" suffices.
  */
 static void decoder_feed(uint8_t sc)
 {
     switch (sc) {
-        case 0x00: case 0xAA: case 0xEE: case 0xFA: case 0xFE: case 0xFF:
+        case 0x00: case 0xEE: case 0xFA: case 0xFE: case 0xFF:
             dec_state = DEC_NORMAL;
             return;
     }
