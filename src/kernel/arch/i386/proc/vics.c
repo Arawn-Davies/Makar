@@ -302,7 +302,7 @@ void vics_edit(const char *path, vesa_pane_t *pane)
         vics_redraw();
         v_save_msg = 0;
 
-        char c = keyboard_getchar();
+        unsigned char c = keyboard_getchar();
 
         if (c == CTRL_Q) {
             if (!v_dirty || v_quit_warn) break;

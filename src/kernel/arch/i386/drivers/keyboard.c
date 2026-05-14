@@ -610,8 +610,18 @@ void keyboard_release_task(task_t *t)
  * slot_register(), so we always see a fully-published owner pointer for
  * whatever task is currently focused.
  */
+/* Test-mode flag (set by keyboard_test_begin, cleared by keyboard_test_end).
+ * When non-zero, kb_route bypasses focus-based routing and pushes directly to
+ * the global fallback ring so keyboard_test_drain() can read deterministically
+ * without racing the live shell task's focus registration. */
+extern volatile int kb_test_active;
+
 static void kb_route(unsigned char c)
 {
+    if (__atomic_load_n(&kb_test_active, __ATOMIC_ACQUIRE)) {
+        buf_push(c);
+        return;
+    }
     task_t *f = __atomic_load_n(&kb_focused, __ATOMIC_ACQUIRE);
     if (f) {
         for (int i = 0; i < KB_TASK_SLOTS; i++) {
@@ -1058,16 +1068,16 @@ static int slot_for_current(void)
  * displaying the prompt, and by the exec wait loop to let SIGINT preempt
  * the busy-wait without blocking on input.
  */
-char keyboard_poll(void)
+unsigned char keyboard_poll(void)
 {
     int s = slot_for_current();
     if (s >= 0) {
         kb_slot_t *slot = &kb_slots[s];
         if (slot_empty_v(slot)) return 0;
-        return (char)slot_pop(slot);
+        return slot_pop(slot);
     }
     if (buf_count_v() == 0) return 0;
-    return (char)buf_pop();
+    return buf_pop();
 }
 
 /*
@@ -1078,11 +1088,11 @@ char keyboard_poll(void)
  * needed. Safe to call from task or IRQ context (slot_register and
  * slot_push are both irq-safe).
  */
-void keyboard_send_to(task_t *t, char c)
+void keyboard_send_to(task_t *t, unsigned char c)
 {
     if (!t) return;
     int s = slot_register(t);
-    if (s >= 0) slot_push(&kb_slots[s], (unsigned char)c);
+    if (s >= 0) slot_push(&kb_slots[s], c);
 }
 
 /*
@@ -1105,8 +1115,10 @@ void keyboard_send_to(task_t *t, char c)
  * starts from a clean slate. keyboard_test_end restores focus.
  * ======================================================================== */
 
-static task_t * volatile kb_test_saved_focus = NULL;
-static volatile int      kb_test_active      = 0;
+/* Set while a ktest is feeding scancodes; kb_route reads it via acquire load
+ * and bypasses focus routing in favour of the global ring. Volatile + atomic
+ * because the IRQ handler reads it from a context concurrent with the test. */
+volatile int kb_test_active = 0;
 
 void keyboard_test_reset(void)
 {
@@ -1121,20 +1133,24 @@ void keyboard_test_reset(void)
     kb_spin_unlock_irqrestore(&kb_io_lock, flags);
 }
 
+/* keyboard_test_begin / _end set/clear kb_test_active with release/acquire
+ * semantics so the IRQ-side load in kb_route observes the flip cleanly.
+ *
+ * We deliberately do NOT touch kb_focused: the live shell task may register
+ * itself as focused while the test runs, and clobbering kb_focused on
+ * test_end would strand the shell waiting on a ring that kb_route is no
+ * longer delivering to. Routing the test's output to the global ring via
+ * kb_test_active sidesteps this entirely. */
 void keyboard_test_begin(void)
 {
-    kb_test_saved_focus = __atomic_load_n(&kb_focused, __ATOMIC_ACQUIRE);
-    __atomic_store_n(&kb_focused, (task_t *)NULL, __ATOMIC_RELEASE);
     keyboard_test_reset();
-    kb_test_active = 1;
+    __atomic_store_n(&kb_test_active, 1, __ATOMIC_RELEASE);
 }
 
 void keyboard_test_end(void)
 {
-    kb_test_active = 0;
+    __atomic_store_n(&kb_test_active, 0, __ATOMIC_RELEASE);
     keyboard_test_reset();
-    __atomic_store_n(&kb_focused, kb_test_saved_focus, __ATOMIC_RELEASE);
-    kb_test_saved_focus = NULL;
 }
 
 void keyboard_test_feed(uint8_t sc)
@@ -1168,7 +1184,7 @@ uint32_t keyboard_test_mod_state(void)
     return v;
 }
 
-char keyboard_getchar(void)
+unsigned char keyboard_getchar(void)
 {
     int s = slot_for_current();
     if (s >= 0) {
@@ -1178,12 +1194,12 @@ char keyboard_getchar(void)
             task_yield();
             asm volatile("pause");
         }
-        return (char)slot_pop(slot);
+        return slot_pop(slot);
     }
     while (buf_count_v() == 0) {
         vesa_tty_caret_blink_tick(timer_get_ticks());
         task_yield();
         asm volatile("pause");
     }
-    return (char)buf_pop();
+    return buf_pop();
 }
