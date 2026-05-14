@@ -94,4 +94,25 @@ int keyboard_sigint_consume(void);
  */
 void keyboard_set_raw(int on);
 
+/* ===========================================================================
+ * Test hooks (in-kernel ktest harness).
+ *
+ * Drive the decoder synchronously from kernel context and read back what it
+ * would have routed.  keyboard_test_begin() saves and clears the focused task
+ * so routed bytes land in the global fallback ring where keyboard_test_drain()
+ * can read them deterministically; keyboard_test_end() restores focus.
+ *
+ * keyboard_test_mod_state() returns a packed snapshot of the modifier flags:
+ *   bit 0  mod_shift   bit 1  mod_ctrl   bit 2  mod_alt    bit 3  mod_caps
+ *   bit 4  mod_lshift  bit 5  mod_rshift bit 6  mod_lctrl  bit 7  mod_rctrl
+ *   bit 8  mod_lalt    bit 9  mod_ralt
+ * ======================================================================== */
+
+void     keyboard_test_begin(void);
+void     keyboard_test_end(void);
+void     keyboard_test_feed(uint8_t sc);
+int      keyboard_test_drain(unsigned char *out);
+void     keyboard_test_reset(void);
+uint32_t keyboard_test_mod_state(void);
+
 #endif /* _KERNEL_KEYBOARD_H */

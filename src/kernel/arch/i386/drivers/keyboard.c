@@ -1093,6 +1093,81 @@ void keyboard_send_to(task_t *t, char c)
  * task's slot ring, or from the global fallback ring if the task has no
  * registered slot (e.g. before tasking is up, or if the slot pool is full).
  */
+/* ===========================================================================
+ * Test hooks
+ *
+ * Used by the in-kernel ktest harness (ktest.c::test_keyboard) to drive the
+ * decoder synchronously and read back routed bytes. Not exposed by any public
+ * API caller; the entry points exist in keyboard.h so ktest.c can link.
+ *
+ * keyboard_test_begin saves and clears kb_focused so kb_route falls back to
+ * the global fallback ring, then resets decoder + modifier state so each test
+ * starts from a clean slate. keyboard_test_end restores focus.
+ * ======================================================================== */
+
+static task_t * volatile kb_test_saved_focus = NULL;
+static volatile int      kb_test_active      = 0;
+
+void keyboard_test_reset(void)
+{
+    uint32_t flags = kb_spin_lock_irqsave(&kb_io_lock);
+    dec_state = DEC_NORMAL;
+    mod_shift = mod_ctrl = mod_alt = mod_caps = 0;
+    mod_lshift = mod_rshift = 0;
+    mod_lctrl  = mod_rctrl  = 0;
+    mod_lalt   = mod_ralt   = 0;
+    kb_prefix  = 0;
+    kb_buf_head = kb_buf_tail = 0;
+    kb_spin_unlock_irqrestore(&kb_io_lock, flags);
+}
+
+void keyboard_test_begin(void)
+{
+    kb_test_saved_focus = __atomic_load_n(&kb_focused, __ATOMIC_ACQUIRE);
+    __atomic_store_n(&kb_focused, (task_t *)NULL, __ATOMIC_RELEASE);
+    keyboard_test_reset();
+    kb_test_active = 1;
+}
+
+void keyboard_test_end(void)
+{
+    kb_test_active = 0;
+    keyboard_test_reset();
+    __atomic_store_n(&kb_focused, kb_test_saved_focus, __ATOMIC_RELEASE);
+    kb_test_saved_focus = NULL;
+}
+
+void keyboard_test_feed(uint8_t sc)
+{
+    uint32_t flags = kb_spin_lock_irqsave(&kb_io_lock);
+    decoder_feed(sc);
+    kb_spin_unlock_irqrestore(&kb_io_lock, flags);
+}
+
+int keyboard_test_drain(unsigned char *out)
+{
+    if (buf_count_v() == 0) return 0;
+    unsigned char c = buf_pop();
+    if (out) *out = c;
+    return 1;
+}
+
+uint32_t keyboard_test_mod_state(void)
+{
+    uint32_t v = 0;
+    v |= (mod_shift  ? 1u : 0) << 0;
+    v |= (mod_ctrl   ? 1u : 0) << 1;
+    v |= (mod_alt    ? 1u : 0) << 2;
+    v |= (mod_caps   ? 1u : 0) << 3;
+    v |= (mod_lshift ? 1u : 0) << 4;
+    v |= (mod_rshift ? 1u : 0) << 5;
+    v |= (mod_lctrl  ? 1u : 0) << 6;
+    v |= (mod_rctrl  ? 1u : 0) << 7;
+    v |= (mod_lalt   ? 1u : 0) << 8;
+    v |= (mod_ralt   ? 1u : 0) << 9;
+    return v;
+}
+
 char keyboard_getchar(void)
 {
     int s = slot_for_current();
