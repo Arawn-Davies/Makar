@@ -2,11 +2,16 @@
 
 Verifies that the background ktest task completed successfully.
 
-Always advances to the first keyboard_getchar call (shell REPL entry) so that
-subsequent groups get a clean, consistent stopping point outside any ISR frame.
-This avoids "Cannot execute this command while the target is running" errors
-that occur when GDB is stopped inside a timer ISR (timer_callback) and the
-next group tries to install a new breakpoint.
+Breaks at ktest_bg_marker -- a noinline hook called immediately after
+ktest_bg_done is set to 1.  This decouples the assertion from the shell
+task's loading-screen wall-clock, which under TCG could race the GDB
+step timeout (the previous design broke at the shell's first
+keyboard_getchar call, which only ran AFTER bg ktest finished AND the
+shell drained poll AND printed the banner).
+
+Subsequent groups (Ring-3 task switching, CD-ROM content) only read
+variables; they don't `continue` the inferior, so it's fine to leave it
+stopped here instead of advancing into the shell.
 """
 
 import gdb
@@ -15,17 +20,12 @@ NAME = 'Background ktest'
 
 
 def run():
-    # Always advance to keyboard_getchar - this guarantees:
-    #   1. The shell has exited the ktest wait loop (ktest_bg_done == 1).
-    #   2. vfs_init() + vfs_auto_mount() have completed.
-    #   3. The inferior is stopped in normal task context (not an ISR frame),
-    #      so subsequent groups can safely install breakpoints.
-    bp = gdb.Breakpoint('keyboard_getchar', internal=True, temporary=True)
+    bp = gdb.Breakpoint('ktest_bg_marker', internal=True, temporary=True)
     bp.silent = True
     try:
         gdb.execute('continue')
     except gdb.error as exc:
-        print('FAIL: GDB error waiting for keyboard_getchar: ' + str(exc),
+        print('FAIL: GDB error waiting for ktest_bg_marker: ' + str(exc),
               flush=True)
         return False
 

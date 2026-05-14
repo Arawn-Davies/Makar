@@ -1452,4 +1452,28 @@ void ktest_bg_task(void)
     }
 
     ktest_bg_done = 1;
+    ktest_bg_marker();
+}
+
+/* ktest_bg_marker - empty hook called immediately after ktest_bg_done = 1.
+ *
+ * The GDB iso-test harness sets a breakpoint here so it can confirm bg
+ * ktest finished WITHOUT depending on the shell reaching its first
+ * keyboard_getchar.  Coupling the assertion to keyboard_getchar made
+ * iso-test flaky under TCG: shell0's loading-screen spinner spins on
+ * vesa_tty_spinner_tick() until ktest_bg_done flips, then must drain
+ * poll, print banner, and only THEN call keyboard_getchar -- the cumul-
+ * ative wall-clock occasionally raced the 120 s GDB-step budget.
+ *
+ * Putting the marker right after the flag write lets the assertion
+ * happen the moment the kernel guarantees the flag is set, regardless
+ * of the subsequent shell-render timing.
+ *
+ * noinline + externally visible so GDB sees the symbol.  The function
+ * body is intentionally a single memory-clobbering nop so the optimiser
+ * cannot fold it away. */
+__attribute__((noinline))
+void ktest_bg_marker(void)
+{
+    __asm__ volatile("" ::: "memory");
 }

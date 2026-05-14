@@ -64,4 +64,9 @@ extern int ktest_muted;
 /* Set to 1 by ktest_bg_task when the background run completes. */
 extern volatile int ktest_bg_done;
 
+/* Empty hook called immediately after ktest_bg_done is set to 1.  The
+ * iso-test GDB harness breakpoints here to confirm bg ktest finished,
+ * decoupling the assertion from shell0's loading-screen wall clock. */
+void ktest_bg_marker(void);
+
 #endif /* _KERNEL_KTEST_H */
