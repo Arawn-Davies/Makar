@@ -1144,6 +1144,55 @@ static void test_keyboard(void)
         keyboard_test_feed(0x9D); /* LCTRL break */
     }
 
+    /* ---- typematic-repeat filter for modifiers -------------------------- */
+    /* PS/2 hardware re-fires a held key's make at ~30 Hz.  For Caps Lock the
+     * previous decoder toggled mod_caps on every make, so holding Caps for a
+     * fraction of a second ping-ponged the toggle unpredictably.  Modifier
+     * make events without an intervening break must now be dropped entirely.
+     *
+     * Specifically:
+     *   - Caps make x5, then break: mod_caps must toggle EXACTLY once.
+     *   - Shift make x5: mod_shift stays 1 (idempotent) but routes no extra
+     *     KEY_SHIFT_DOWN sentinels in raw mode.  We test the state half here
+     *     (raw-mode sentinel coverage is covered by the kbtester smoke test).
+     *   - After break and re-press, the next make is honoured again. */
+    {
+        keyboard_test_reset();
+        for (int i = 0; i < 5; i++)
+            keyboard_test_feed(0x3A); /* Caps make */
+        KTEST_ASSERT((keyboard_test_mod_state() >> 3) & 1u); /* mod_caps == 1 */
+        keyboard_test_feed(0xBA);     /* Caps break */
+        KTEST_ASSERT((keyboard_test_mod_state() >> 3) & 1u); /* still 1 (Caps is sticky) */
+
+        /* Second press cycle: another 5x make should toggle exactly once. */
+        for (int i = 0; i < 5; i++)
+            keyboard_test_feed(0x3A);
+        KTEST_ASSERT(((keyboard_test_mod_state() >> 3) & 1u) == 0u);
+        keyboard_test_feed(0xBA);
+    }
+    {
+        /* LSHIFT held: subsequent makes don't redundantly fire on_make.  We
+         * can't directly observe on_make calls here, but raw-mode delivery
+         * surfaces them as routed bytes -- exercise that path. */
+        keyboard_test_reset();
+        keyboard_set_raw(1);
+        keyboard_test_feed(0x2A); /* LSHIFT make */
+        unsigned char buf[8];
+        uint32_t n = kb_test_drain_all(buf, sizeof(buf));
+        KTEST_ASSERT(n == 1 && buf[0] == (unsigned char)KEY_SHIFT_DOWN);
+        /* Typematic repeats should NOT re-emit the sentinel. */
+        for (int i = 0; i < 5; i++)
+            keyboard_test_feed(0x2A);
+        n = kb_test_drain_all(buf, sizeof(buf));
+        KTEST_ASSERT(n == 0);
+        /* Break, then re-press: a single sentinel again. */
+        keyboard_test_feed(0xAA);
+        keyboard_test_feed(0x2A);
+        n = kb_test_drain_all(buf, sizeof(buf));
+        KTEST_ASSERT(n == 1 && buf[0] == (unsigned char)KEY_SHIFT_DOWN);
+        keyboard_set_raw(0);
+    }
+
     /* ---- torn-prefix recovery: repeated 0xE0 restarts the prefix -------- */
     /* DEC_AFTER_E0 + 0xE0 -> still DEC_AFTER_E0; one ARROW_LEFT emitted. */
     {

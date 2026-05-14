@@ -672,6 +672,28 @@ static int mod_rctrl   = 0;
 static int mod_lalt    = 0;
 static int mod_ralt    = 0;
 
+/* Typematic-repeat filter for modifier keys.
+ *
+ * PS/2 hardware repeats a held key's *make* code at ~30 Hz with no
+ * intervening break.  For letter keys that's typematic auto-repeat (the
+ * shell wants it), but for modifiers it's pathological:
+ *
+ *   - Caps Lock toggles mod_caps on every make, so holding the key
+ *     ping-pongs the toggle 30x/sec.  Observed in kbtester PR #124.
+ *   - In raw mode, every Shift/Ctrl/Alt/Super/Menu make re-emits a
+ *     KEY_*_DOWN sentinel; held Shift floods kbtester's serial log
+ *     at 30 Hz.
+ *
+ * Linux's drivers/input/keyboard/atkbd.c handles auto-repeat in the
+ * input layer rather than the scancode decoder, but for our purposes
+ * the simplest correct thing is to drop modifier makes that arrive
+ * without an intervening break.  Indexed by kc so we naturally
+ * distinguish LSHIFT (0x2A) from RSHIFT (0x36) etc. -- 256 bytes is
+ * trivial.  Letter/symbol keys are left untouched so typematic repeat
+ * still works for typed text.
+ */
+static uint8_t s_modkey_held[256] = { 0 };
+
 /* Raw mode: see keyboard_set_raw().  When set, on_make delivers modifier
  * presses, F-keys, Caps, and Super as sentinel bytes; cooked shortcuts
  * (Alt+F1..F4 vtty switch, Ctrl-A pane prefix) are suspended.  Ctrl+C
@@ -879,6 +901,54 @@ static void on_make(kc_t kc)
 }
 
 /*
+ * is_modifier_kc - true iff kc names a modifier key whose typematic
+ * auto-repeat should be filtered.  Letter/digit/symbol keys are NOT
+ * included here: the shell relies on PS/2 typematic repeat for held
+ * letters and we don't want to interfere with that.
+ */
+static int is_modifier_kc(kc_t kc)
+{
+    switch (kc) {
+        case KC_LSHIFT: case KC_RSHIFT:
+        case KC_LCTRL:  case KC_RCTRL:
+        case KC_LALT:   case KC_RALT:
+        case KC_CAPSLOCK:
+        case KC_LSUPER: case KC_RSUPER:
+        case KC_MENU:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+/*
+ * deliver_kc - apply the modifier typematic-repeat filter, then update
+ * modifier state and dispatch to on_make if this is a make event.
+ *
+ * For a modifier key: if s_modkey_held[kc] is already 1 on a make event,
+ * the controller is re-firing the make at typematic rate -- drop the
+ * event entirely (no toggle, no sentinel re-emission).  On break, clear
+ * the held flag so the next genuine press can fire.
+ *
+ * For non-modifier keys: always propagate.  Held letter keys still get
+ * their make repeated at ~30 Hz, which is exactly the shell's typematic
+ * auto-repeat contract.
+ */
+static void deliver_kc(kc_t kc, int is_break)
+{
+    if (is_modifier_kc(kc)) {
+        if (!is_break) {
+            if (s_modkey_held[kc]) return;  /* drop typematic repeat */
+            s_modkey_held[kc] = 1;
+        } else {
+            s_modkey_held[kc] = 0;
+        }
+    }
+    apply_modifier(kc, is_break);
+    if (!is_break) on_make(kc);
+}
+
+/*
  * decoder_feed - feed one raw set-1 byte to the decoder state machine.
  *
  * Output is exactly one keycode event (via apply_modifier + on_make) or
@@ -944,9 +1014,7 @@ static void decoder_feed(uint8_t sc)
 
         if (low7 == KC_LSHIFT) return;   /* PrintScreen fake-shift padding */
 
-        kc_t kc = KC_EXT(low7);
-        apply_modifier(kc, is_break);
-        if (!is_break) on_make(kc);
+        deliver_kc(KC_EXT(low7), is_break);
         return;
     }
 
@@ -955,8 +1023,7 @@ static void decoder_feed(uint8_t sc)
         int  is_break = (sc & 0x80) != 0;
         kc_t kc       = (kc_t)(sc & 0x7F);
 
-        apply_modifier(kc, is_break);
-        if (!is_break) on_make(kc);
+        deliver_kc(kc, is_break);
         return;
     }
     }
@@ -1144,6 +1211,7 @@ void keyboard_test_reset(void)
     mod_lalt   = mod_ralt   = 0;
     kb_prefix  = 0;
     kb_buf_head = kb_buf_tail = 0;
+    for (int i = 0; i < 256; i++) s_modkey_held[i] = 0;
     kb_spin_unlock_irqrestore(&kb_io_lock, flags);
 }
 
