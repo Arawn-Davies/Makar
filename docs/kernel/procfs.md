@@ -15,7 +15,7 @@ caller's buffer. No on-disk storage; nothing is cached between reads.
 | `/proc/cpuinfo` | CPUID leaves 0 + 1 | `vendor_id`, `cpu family`, `model`, `stepping`, `flags` (fpu/tsc/msr/pae/apic/cmov/mmx/sse/sse2/sse3/sse4_1/sse4_2), `arch i386 (protected mode)` |
 | `/proc/meminfo` | `pmm_free_count()` + `heap_used/free()` | `MemFree`, `PageSize`, `FreeFrames`, `HeapTotal`, `HeapUsed`, `HeapFree` (all in kB where applicable) |
 | `/proc/tasks` | Walk `task_pool[]` | One row per task: `PID NAME STATE TTY CWD` |
-| `/proc/uname` | Build macros + `timer_get_ticks()` | `Makar 0.1.0 (i386) built <date> <time>` + uptime ticks |
+| `/proc/uname` | `MAKAR_VERSION` + build macros + `timer_get_ticks()` | `Makar 0.5.0 (i386) built <date> <time>` + uptime ticks |
 
 ## VFS integration
 

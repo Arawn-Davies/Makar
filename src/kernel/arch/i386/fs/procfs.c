@@ -8,6 +8,7 @@
 #include <kernel/heap.h>
 #include <kernel/task.h>
 #include <kernel/timer.h>
+#include <kernel/version.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -213,7 +214,7 @@ static void render_tasks(pf_writer_t *w)
 
 static void render_uname(pf_writer_t *w)
 {
-    pf_puts(w, "Makar 0.1.0 (i386) built " __DATE__ " " __TIME__ "\n");
+    pf_puts(w, "Makar " MAKAR_VERSION " (i386) built " __DATE__ " " __TIME__ "\n");
     pf_puts(w, "uptime ticks: ");
     pf_putu(w, timer_get_ticks());
     pf_puts(w, " (100 Hz)\n");

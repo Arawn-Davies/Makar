@@ -12,14 +12,16 @@
 #include <string.h>
 
 #define SHELL_MAX_INPUT  256
-#define SHELL_MAX_ARGS   8
+#define SHELL_MAX_ARGS   16   /* enough headroom for glob expansion */
 
 /* Medli-compatible identity: username and hostname shown in the prompt. */
 #define SHELL_USERNAME   "root"
 #define SHELL_HOSTNAME   "makar"
 
-/* Kernel version string (shared with cmd_version and the welcome banner). */
-#define SHELL_VERSION    "0.1.0"
+/* Shell version - independent of the kernel version (<kernel/version.h>).
+ * The shell is conceptually a separate component; bump this when shell
+ * features change, MAKAR_VERSION when the kernel itself changes. */
+#define SHELL_VERSION    "0.5.0"
 
 #define BUILD_DATE __DATE__
 #define BUILD_TIME __TIME__
