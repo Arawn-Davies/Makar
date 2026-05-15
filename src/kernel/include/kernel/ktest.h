@@ -64,6 +64,13 @@ extern int ktest_muted;
 /* Set to 1 by ktest_bg_task when the background run completes. */
 extern volatile int ktest_bg_done;
 
+/* Progress counters driven by ktest_bg_task: ktest_bg_completed advances
+ * as each background suite finishes; ktest_bg_total is the number of
+ * suites that will run in the bg pass.  Used by the shell loading screen
+ * to render a progress bar that fills as bg ktest makes progress. */
+extern volatile int ktest_bg_completed;
+extern const    int ktest_bg_total;
+
 /* Empty hook called immediately after ktest_bg_done is set to 1.  The
  * iso-test GDB harness breakpoints here to confirm bg ktest finished,
  * decoupling the assertion from shell0's loading-screen wall clock. */
