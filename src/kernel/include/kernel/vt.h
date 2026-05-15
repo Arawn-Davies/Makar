@@ -36,6 +36,15 @@ typedef struct vt_buf {
     vt_cell_t *cells;     /* row-major: cells[row * cols + col] */
 } vt_buf_t;
 
+/* Result of vt_putchar - lets the renderer know what to repaint without
+ * having to diff before/after state itself. */
+typedef struct vt_dirty {
+    int      scrolled;   /* 1 if the grid scrolled; full repaint needed */
+    int      has_cell;   /* 1 if a single cell was written (col,row valid) */
+    uint32_t col;
+    uint32_t row;
+} vt_dirty_t;
+
 /* Allocate the cell grid on the heap.  cols * rows cells, all set to
  * {' ', 0, fg, bg} so the buffer is paint-ready immediately.  Returns
  * true on success, false on allocation failure (caller may keep using
@@ -45,8 +54,14 @@ bool vt_init(vt_buf_t *vt, uint32_t cols, uint32_t rows,
 
 /* Write c into the grid at the current cursor, advancing it.  Honours
  * \n, \r, \b.  Scrolls the grid up by one row when the cursor walks off
- * the bottom (top row is discarded).  No-op if cells == NULL. */
-void vt_putchar(vt_buf_t *vt, char c);
+ * the bottom (top row is discarded).  No-op if cells == NULL.
+ *
+ * Returns a vt_dirty_t describing what changed so the renderer can
+ * paint exactly the affected cells:
+ *   - .scrolled == 1: the grid scrolled; renderer must repaint all rows.
+ *   - .has_cell == 1: the single cell at (col, row) was modified.
+ *   - both 0: control character with no visible effect (just cursor moved). */
+vt_dirty_t vt_putchar(vt_buf_t *vt, char c);
 
 /* Write c at (col, row) without moving the cursor.  Bounds-checked. */
 void vt_put_at(vt_buf_t *vt, char c, uint32_t col, uint32_t row);

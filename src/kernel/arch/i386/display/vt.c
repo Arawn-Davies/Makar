@@ -79,9 +79,10 @@ void vt_put_at(vt_buf_t *vt, char c, uint32_t col, uint32_t row)
                  (uint8_t)c, vt->fg, vt->bg);
 }
 
-void vt_putchar(vt_buf_t *vt, char c)
+vt_dirty_t vt_putchar(vt_buf_t *vt, char c)
 {
-    if (!vt->cells || vt->cols == 0 || vt->rows == 0) return;
+    vt_dirty_t d = { 0, 0, 0, 0 };
+    if (!vt->cells || vt->cols == 0 || vt->rows == 0) return d;
 
     /* Clamp transient out-of-range cursor (preemption between increment
      * and bounds check elsewhere). */
@@ -90,11 +91,13 @@ void vt_putchar(vt_buf_t *vt, char c)
         if (++vt->cur_row >= vt->rows) {
             vt_scroll_up(vt);
             vt->cur_row = vt->rows - 1;
+            d.scrolled = 1;
         }
     }
     if (vt->cur_row >= vt->rows) {
         vt_scroll_up(vt);
         vt->cur_row = vt->rows - 1;
+        d.scrolled = 1;
     }
 
     if (c == '\n') {
@@ -102,13 +105,14 @@ void vt_putchar(vt_buf_t *vt, char c)
         if (++vt->cur_row >= vt->rows) {
             vt_scroll_up(vt);
             vt->cur_row = vt->rows - 1;
+            d.scrolled = 1;
         }
-        return;
+        return d;
     }
 
     if (c == '\r') {
         vt->cur_col = 0;
-        return;
+        return d;
     }
 
     if (c == '\b') {
@@ -116,18 +120,29 @@ void vt_putchar(vt_buf_t *vt, char c)
             vt->cur_col--;
         vt_fill_cell(&vt->cells[(size_t)vt->cur_row * vt->cols + vt->cur_col],
                      ' ', vt->fg, vt->bg);
-        return;
+        d.has_cell = 1;
+        d.col = vt->cur_col;
+        d.row = vt->cur_row;
+        return d;
     }
 
-    vt_fill_cell(&vt->cells[(size_t)vt->cur_row * vt->cols + vt->cur_col],
+    uint32_t wrote_col = vt->cur_col;
+    uint32_t wrote_row = vt->cur_row;
+    vt_fill_cell(&vt->cells[(size_t)wrote_row * vt->cols + wrote_col],
                  (uint8_t)c, vt->fg, vt->bg);
+    d.has_cell = 1;
+    d.col = wrote_col;
+    d.row = wrote_row;
+
     if (++vt->cur_col >= vt->cols) {
         vt->cur_col = 0;
         if (++vt->cur_row >= vt->rows) {
             vt_scroll_up(vt);
             vt->cur_row = vt->rows - 1;
+            d.scrolled = 1;
         }
     }
+    return d;
 }
 
 vt_cell_t vt_get_cell(const vt_buf_t *vt, uint32_t col, uint32_t row)
