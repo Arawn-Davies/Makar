@@ -13,11 +13,12 @@
 > See [`LICENSES/THANKS.md`](LICENSES/THANKS.md) for the full
 > acknowledgements.
 
-A bare-metal **i686 hobby OS** written in C, booted via GRUB Multiboot 2.
-Makar is the **C / GCC sibling** of
-[Medli](https://github.com/Arawn-Davies/Medli) - two independent
-implementations of the same OS concept, sharing a command vocabulary,
-filesystem layout, and long-term binary format goals.
+A bare-metal **i686 hobby OS** written in C (strictly C — no C++, no
+managed runtime), booted via GRUB Multiboot 2. Makar is the
+**C / GCC sibling** of [Medli](https://github.com/Arawn-Davies/Medli) -
+two independent implementations of the same OS concept, sharing a
+command vocabulary, filesystem layout, and long-term binary format
+goals. Current version: **0.5.0** (see `include/kernel/version.h`).
 
 Self-contained: kernel, libc fragment, ring-3 userspace, ELF loader, **four
 independent TTYs (Alt+F1–F4 to switch)**, and an in-kernel `vi`-style
@@ -61,8 +62,10 @@ private kernel stack and (for ring-3 programs) its own page directory.
 
 ```sh
 ./run.sh iso-boot       # build & run interactively in QEMU (host or Docker)
-./run.sh iso-test       # full CI suite: ktest + GDB boot-checkpoint tests
+./run.sh iso-test       # full CI suite: ktest + GDB boot-checkpoint + UI sendkey tests
 ./run.sh hdd-boot       # build & run from a 512 MiB FAT32 HDD image
+./run.sh hdd-test       # HDD-only GDB boot test (no CD-ROM)
+./run.sh ui-test        # UI tests against an existing makar.iso (sendkey + serial grep)
 ./run.sh clean
 ```
 
@@ -83,10 +86,16 @@ used directly; otherwise Docker takes over transparently.
 
 ## Roadmap (near-term)
 
-Tracked in [`CLAUDE.md`](CLAUDE.md). Active branch:
-[`feat/tty-multitasking`](https://github.com/Arawn-Davies/Makar/tree/feat/tty-multitasking)
-- preemptive scheduler hardening, per-task refactor (CWD/TTY/FD migration
-from globals), Linux-style signals, fork() readiness, full PS/2 keyboard
-rewrite.
+Tracked in [`CLAUDE.md`](CLAUDE.md) under "Slice queue". Next on deck:
+
+- **Slice 14 (NEXT)** — Per-task FD table. Replaces the global keyboard
+  owner + placeholder `fd_table` with a real per-task array. Pipe(2) /
+  dup(2) and any libc port depend on it.
+- **Slice 8** — Linux-style signal subsystem (sigaction, `kill()`, htop
+  picker).
+- **Slice 9** — Preemption hardening (interrupt-safe `schedule()`, per-task
+  tick accounting, runtime-tunable quantum).
+- **Slice 15** — VFS `task->cwd` authoritative; drop the `s_cwd` global.
+- **Slice 16** — VGA-text fallback per-TTY backing buffers.
 
 <!-- ci-trigger-test: this comment is intentionally docs-only to verify the workflow path filter skips this commit. -->

@@ -22,6 +22,7 @@
 #include <kernel/vtty.h>
 #include <kernel/keyboard.h>
 #include <kernel/vesa_tty.h>
+#include <kernel/heap.h>
 
 static int      vtty_nslots  = 0;
 static int      vtty_current = 0;
@@ -64,6 +65,16 @@ void vtty_init(void)
     if (cols == 0 || rows == 0) {
         cols = 80;
         rows = 50;
+    }
+
+    /* Idempotent: free any pre-existing cell allocations so re-running
+     * vtty_init after a setmode (which changes tty geometry) resizes
+     * the buffers rather than leaking the old grids. */
+    for (int i = 0; i < VTTY_MAX; i++) {
+        if (vtty_bufs[i].cells) {
+            kfree(vtty_bufs[i].cells);
+            vtty_bufs[i].cells = NULL;
+        }
     }
 
     vtty_bufs_ready = true;

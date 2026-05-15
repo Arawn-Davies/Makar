@@ -18,8 +18,13 @@ splitting it into tokens, and dispatching to a command handler.
 
 Handles inline editing: cursor movement, insert-at-point, Backspace, Enter,
 Ctrl+C (aborts line, prints `^C`), history navigation (↑/↓ up to 16 entries),
-and Tab completion (first token: command names; subsequent tokens: VFS paths
-via `vfs_complete()`).
+and Tab completion. First token completes against the union of built-in
+command names and `*.elf` basenames found in `s_app_path`. Subsequent
+tokens complete VFS paths via `vfs_complete()` - cross-filesystem, so
+`cd /<TAB>` enumerates mount points (`hd`, `cdrom`, `proc`),
+`cat /proc/c<TAB>` matches `cpuinfo`, and `ls /hd/<TAB>` walks the FAT32
+root. Globbing (`*`, `?`) on argv is expanded via `shell_glob.c`
+before dispatch using the same `vfs_complete()` enumerator.
 
 ### Parsing
 
@@ -38,8 +43,19 @@ static const shell_cmd_entry_t * const cmd_modules[] = {
 };
 ```
 
-If no built-in matches, the shell searches `/cdrom/apps/` then `/hd/apps/`
-for a matching ELF and runs it via `elf_exec`.
+Each entry is `{ name, fn, fullscreen }`. The `fullscreen` bit marks
+handlers that paint directly to the framebuffer (vix, install, exec) -
+after such a handler returns, `shell_dispatch` calls
+`shell_restore_screen()` which repaints the focused VT's backing grid
+plus the status bar. That puts the shell's history back without
+waiting for the next keystroke and removes the need for each
+"fullscreen" command to clean up after itself.
+
+If no built-in matches, the shell tries `try_exec_path()` on the
+literal argv[0] (if it's a path-style `/abs` or `./rel`), then walks
+the PATH list (`/cdrom/apps/`, `/hd/apps/`) appending `[.elf]`.
+Successful ELF execution is also followed by `shell_restore_screen()` -
+any ring-3 binary is treated as potentially-fullscreen.
 
 ---
 
@@ -80,12 +96,13 @@ for a matching ELF and runs it via `elf_exec`.
 |---|---|
 | `echo [args…]` | Print arguments to terminal |
 | `meminfo` | Heap used/free in bytes |
-| `uptime` | Ticks since boot |
-| `tasks` | List kernel tasks and their states |
+| `uptime` | Humanised h/m/s + raw 100 Hz tick count |
+| `tasks` | List kernel tasks and their states (`cat /proc/tasks` is the richer variant) |
 | `shutdown` | ACPI S5 power-off |
 | `reboot` | ACPI reboot |
 | `panic [msg]` | Trigger kernel panic |
 | `ktest` | Run all in-kernel unit tests interactively |
+| `verbose [on\|off]` | Toggle the `t_putchar` → COM1 mirror at runtime. Equivalent to flipping `console=ttyS0` on the kernel cmdline. Used by `tests/ui_test.sh` to grep shell output from serial. |
 
 ### Application (`shell_cmd_apps.c`)
 

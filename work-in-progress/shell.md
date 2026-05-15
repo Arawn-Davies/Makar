@@ -1,27 +1,23 @@
-# Shell - interactive kernel command loop
+# Shell — historical WIP note (archived)
 
-> **Status:** complete (ongoing: new commands added with each feature)
-> **Branch:** landed on `main`
+> **Status:** ✅ Shipped on main. This note is kept for git-blame
+> context only; the live reference is [`docs/kernel/shell.md`](../docs/kernel/shell.md).
 
-## Summary
+The shell described here landed long before the multi-TTY refactor.
+Everything in the original checklist is now implemented and surpassed:
 
-Minimal interactive shell reading PS/2 keyboard input, dispatching built-in
-commands, and executing ELF userspace apps from the VFS.
+- Inline editing, history (↑/↓ + `!!`), Ctrl+C sigint
+- Module-table dispatch with a `fullscreen` flag for FB-restoring builtins
+- VFS-aware tab completion across `/hd`, `/cdrom`, `/proc`, and the
+  virtual root
+- Glob expansion (`*`, `?`) on argv via `shell_glob.c`
+- PATH lookup for ELFs (`/cdrom/apps/`, `/hd/apps/`)
+- `exec <path>` plus 5 builtins that paint over the framebuffer
+- Per-TTY shells (`shell0`–`shell3`) running as preemptive kernel tasks
 
-## Implemented
+The renamed VIX editor (was VICS — see `docs/makar-medli.md`) is
+launched via the `vix` builtin.
 
-- [x] Line editor with echo, backspace, arrow-key history, Ctrl+C cancel
-- [x] Command dispatch via registry table (`shell_cmds.c` modules)
-- [x] Welcome banner and version string at boot
-- [x] Prompt matching Medli UX: `user@makar /path> `
-- [x] VFS-aware commands: `ls`, `cd`, `cat`, `mount`, `lspart`, `mkpart`
-- [x] Disk commands: `lsdisks`, `readsector`
-- [x] System commands: `help`, `clear`, `echo`, `meminfo`, `uptime`, `shutdown`
-- [x] Debug/test commands: `ktest`, `ring3test`, `vicstest`, `splitscreen`
-- [x] ELF userspace execution: `exec <path>` launches ring-3 ELF binaries
-- [x] Userspace apps: `hello`, `calc` (bc-style expression evaluator)
-
-## Source
-
-- `src/kernel/arch/i386/shell/`
-- `docs/kernel/shell.md`
+See [`docs/kernel/shell.md`](../docs/kernel/shell.md) for the current
+implementation reference and [`SURVEY.md`](../SURVEY.md) for the full
+command inventory.

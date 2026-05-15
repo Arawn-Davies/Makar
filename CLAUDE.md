@@ -262,7 +262,7 @@ background TTY's accumulated output survives a focus switch — Linux VT
 behaviour), and (for ring-3 programs) its own page directory. Major
 subsystems:
 
-- **Display**: VESA framebuffer (Bochs VBE, defaults to 720p), VGA text fallback (80×50). Pane abstraction (`vesa_pane_t`) used by VIX. Per-TTY logical character grid (`vt_buf_t` in `display/vt.c`) backs every shell — writes go to the grid first; the framebuffer is only painted when that TTY is focused.
+- **Display**: VESA framebuffer (Bochs VBE, defaults to 720p), VGA text fallback (80×50). Pane abstraction (`vesa_pane_t`) used by VIX. Per-TTY logical character grid (`vt_buf_t` in `display/vt.c`) backs every shell — writes go to the grid first; the framebuffer is only painted when that TTY is focused. After any "fullscreen" shell command returns (vix, install, any ELF launched via `exec` or PATH), `shell_dispatch` calls `shell_restore_screen()` which repaints the focused VT's grid to the FB — so post-exit screen is never blank.
 - **Multi-TTY**: 4 shell tasks (`shell0`–`shell3`). `vtty.c` routes keyboard input via `task_t.tty` (authoritative) and tracks the focused slot. `vtty_switch()` defers the framebuffer repaint out of IRQ context to `vtty_drain_pending()`, which runs from the destination shell's `keyboard_getchar` poll loop. A tmux-style status bar lives in the reserved bottom row showing `Makar  VT0  VT1  VT2  VT3  ...  Alt+F1-F4` with the active slot highlighted.
 - **VIX**: Pane-aware text editor. Derives column/row counts from the active `vesa_pane_t` at runtime - works correctly at any VESA resolution. Modelled on ELKS/FUZIX vi: lightweight, stable, no heap after startup.
 - **Storage**: FAT32 (HDD/USB) + ISO 9660 (CD-ROM) via IDE PIO. VFS layer with CWD, auto-mount. Full read/write/delete/rename support on FAT32. Synthetic `/proc` mount exposes `cpuinfo`, `meminfo`, `tasks`, `uname` as read-only files generated on demand.
@@ -281,6 +281,8 @@ subsystems:
 | #125 | `feat/test-infra-cleanup` | ccache toolchain image, single-kernel/two-ISO emit, build-once fan-out CI (4 parallel jobs), KVM auto-detect (off by default), `act` local validation, new split `*-build`/`*-run` modes in `run.sh` |
 | #127 | `feat/keyboard-hygiene` | Keyboard hardening - `unsigned char` audit complete, typematic-repeat filter for modifiers, PS/2 LED sync (`0xED <bitmap>`), boot-time LED state read |
 | #128 | `fix/reaper-uaf` | Reaper UAF (deferred PD free), keyboard IRQ-init order fix, loading-bar progress on startup, isolate ring-3 lifecycle suites from bg ktest |
+| #129 | `feat/per-tty-buffers` | Per-TTY `vt_buf_t` backing grids, deferred FB repaint on Alt+Fn switch, tmux-style status bar at bottom row, synthetic `/proc` filesystem, glob + tab completion across VFS, MAKAR_VERSION single-source, v0.5.0 |
+| #130 | `feat/vics-vim-polish` | VIX rename (was VICS, C-Sharp acronym is dead), vim-style gutter + word wrap + flashing block caret, root `/` enumeration in `vfs_complete`, linux-like serial (`g_serial_verbose`, `console=ttyS0`, `verbose` builtin), UI-test framework (`tests/ui_test.sh`) wired into CI as a 4th parallel job, shell-side FB restore after fullscreen commands |
 
 ## Future roadmap
 

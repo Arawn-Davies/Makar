@@ -135,6 +135,13 @@ static void vix_draw_text(int screen_row, int line_idx, int seg_start)
         char ch = (s && idx < len) ? s[idx] : ' ';
         vix_put(VIX_GUTTER_W + c, screen_row, ch, VIX_CLR_TEXT);
     }
+
+    /* Right-margin "dead zone": columns past v_text_cols up to v_cols.
+     * On wide displays (1080p → 120 cols, with VIX_LINE_CAP=80 capping
+     * v_text_cols) this region is unused but must be painted with the
+     * editor background or the shell's prior pixels show through. */
+    for (int c = VIX_GUTTER_W + v_text_cols; c < v_cols; c++)
+        vix_put(c, screen_row, ' ', VIX_CLR_TEXT);
 }
 
 static void vix_uitoa(unsigned int v, char *buf)
