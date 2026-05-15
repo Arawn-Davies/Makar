@@ -647,6 +647,18 @@ int vfs_complete(const char *dir, const char *prefix,
 
     const char *drv;
     switch (vfs_route(abs, &drv)) {
+    case VFS_FS_ROOT: {
+        /* Enumerate present mount points so cd /<TAB>, ls /, glob /* all
+         * see the virtual root.  Mirrors ls_root()'s rules: hd and cdrom
+         * only when their backing devices are live; /proc is synthetic
+         * and always present. */
+        if (cb) {
+            if (fat32_mounted())    cb("hd",    1, ctx);
+            if (s_cdrom_drive >= 0) cb("cdrom", 1, ctx);
+            cb("proc",  1, ctx);
+        }
+        return 0;
+    }
     case VFS_FS_HD:
         if (!fat32_mounted()) return -1;
         return fat32_complete(drv, prefix, cb, ctx);
