@@ -26,6 +26,8 @@ roadmap.
 | [heap](kernel/heap.md) | Kernel heap allocator (`kmalloc` / `kfree`) |
 | [vesa](kernel/vesa.md) | VESA linear framebuffer driver |
 | [vesa_tty](kernel/vesa_tty.md) | VESA bitmap-font text renderer |
+| [vt](kernel/vt.md) | Per-TTY logical character grid (Linux `vc_data`-style backing buffer) |
+| [vtty](kernel/vtty.md) | Virtual TTY manager (focus, Alt+Fn switch, deferred repaint, status bar) |
 | [debug](kernel/debug.md) | INT 1 / INT 3 debug-exception handlers |
 | [multiboot](kernel/multiboot.md) | Multiboot 2 structure definitions |
 | [keyboard](kernel/keyboard.md) | PS/2 keyboard driver (IRQ 1, scan-code set 1, ring buffer) |
@@ -35,6 +37,7 @@ roadmap.
 
 | [fat32](kernel/fat32.md) | FAT32 filesystem driver (read, write, delete, rename) |
 | [vfs](kernel/vfs.md) | Virtual filesystem layer (unified path namespace) |
+| [procfs](kernel/procfs.md) | Synthetic `/proc` filesystem (`cpuinfo`, `meminfo`, `tasks`, `uname`) |
 | [syscall](kernel/syscall.md) | int 0x80 syscall dispatcher and userspace ABI |
 | [vmm](kernel/vmm.md) | Per-task page directory and ring-3 memory management |
 | [task](kernel/task.md) | Cooperative round-robin task scheduler |

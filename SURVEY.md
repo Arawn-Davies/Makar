@@ -144,6 +144,7 @@ All apps in `/Users/arawn/Makar/src/userspace/` compile to `.elf` files and are 
 - `/` - virtual root; lists mount-points
 - `/hd/…` - FAT32 hard disk (mounted via `mount` command)
 - `/cdrom/…` - ISO9660 CD-ROM (auto-detected at init)
+- `/proc/…` - synthetic, always-present read-only view of kernel state (`cpuinfo`, `meminfo`, `tasks`, `uname`)
 
 ### Lifecycle
 - `vfs_init()` - probe IDE for ISO9660; reset CWD to `/`
