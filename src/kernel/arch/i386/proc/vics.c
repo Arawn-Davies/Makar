@@ -373,6 +373,12 @@ void vics_edit(const char *path, vesa_pane_t *pane)
 {
     v_pane = pane ? pane : (vesa_tty_is_ready() ? vesa_tty_default_pane() : NULL);
 
+    /* Vim-style block caret while editing.  The default underscore is a
+     * 2-px sliver that disappears against the dark text background. */
+    uint32_t saved_caret = vesa_tty_is_ready() ? vesa_tty_get_caret_style() : 0;
+    if (vesa_tty_is_ready())
+        vesa_tty_set_caret_style(1);
+
     if (v_pane && vesa_tty_is_ready()) {
         v_cols       = (int)v_pane->cols;
         v_text_rows  = (int)v_pane->rows - 1;
@@ -459,5 +465,6 @@ void vics_edit(const char *path, vesa_pane_t *pane)
          * default pane.  Doing it here means the user sees the bar
          * the moment we return to the shell, not on the next Alt+Fn. */
         vesa_tty_paint_status(vtty_active(), vtty_count());
+        vesa_tty_set_caret_style(saved_caret);
     }
 }
