@@ -193,3 +193,44 @@ jobs:
           path: |
             hdd-test-gdb.log
             hdd-test-serial.log
+
+  # ── UI test suite (sendkey + serial grep) ──────────────────────────────────
+  # Boots makar.iso headless, drives the shell through QEMU's HMP monitor
+  # via `sendkey`, and asserts on substrings in the serial log.  Verifies
+  # interactive surfaces (tab completion, globbing, virtual-root listing)
+  # that the GDB tests can't reach because they don't simulate keystrokes.
+  ui-test:
+    name: UI test (sendkey)
+    needs: build
+    runs-on: ubuntu-latest
+    container:
+      image: arawn780/gcc-cross-i686-elf:fast
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install netcat (QEMU HMP socket client)
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends netcat-openbsd
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: makar-build
+
+      - name: Run UI tests
+        env:
+          UI_TEST_LOGDIR: ${{ github.workspace }}/ui-test-logs
+        run: ./run.sh ui-test
+
+      - name: Upload UI test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-test-logs
+          path: ui-test-logs/

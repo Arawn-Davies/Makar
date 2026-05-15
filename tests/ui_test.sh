@@ -28,8 +28,15 @@ if ! command -v "$QEMU" >/dev/null 2>&1; then
     exit 2
 fi
 
-LOGDIR=$(mktemp -d -t makar-ui)
-trap 'rm -rf "$LOGDIR"' EXIT
+# Allow CI to capture logs by passing $UI_TEST_LOGDIR; otherwise use a
+# scratch dir and clean up on exit.
+if [ -n "${UI_TEST_LOGDIR:-}" ]; then
+    LOGDIR=$UI_TEST_LOGDIR
+    mkdir -p "$LOGDIR"
+else
+    LOGDIR=$(mktemp -d -t makar-ui)
+    trap 'rm -rf "$LOGDIR"' EXIT
+fi
 
 run_scenario() {
     local name=$1
