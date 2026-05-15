@@ -235,7 +235,13 @@ static void vics_redraw(void)
 
     vics_draw_status();
 
-    /* Position the cursor at the wrap-adjusted visible row + column. */
+    /* Position the cursor at the wrap-adjusted visible row + column.
+     * Restore a bright fg first: vics_draw_status leaves p->fg at the
+     * status-bar text colour (black on the grey bar), and caret_paint
+     * draws using p->fg - black-on-black would be invisible. */
+    if (vesa_tty_is_ready())
+        vesa_tty_setcolor(VICS_TEXT_FG, VICS_TEXT_BG);
+
     int cur_vrow  = vics_cursor_vrow();
     int cur_inseg = v_cur_col % (v_text_cols > 0 ? v_text_cols : 1);
     int abs_row   = (v_pane ? (int)v_pane->top_row : 0) + cur_vrow;
@@ -373,11 +379,14 @@ void vics_edit(const char *path, vesa_pane_t *pane)
 {
     v_pane = pane ? pane : (vesa_tty_is_ready() ? vesa_tty_default_pane() : NULL);
 
-    /* Vim-style block caret while editing.  The default underscore is a
-     * 2-px sliver that disappears against the dark text background. */
+    /* Flashing block caret while editing.  The default underscore is a
+     * 2-px sliver that disappears against the dark text background; a
+     * static block can also get lost across redraws after arrow-key
+     * movement.  Flash mode (driven by vesa_tty_caret_blink_tick from
+     * the keyboard wait loop) makes the cursor unmistakable. */
     uint32_t saved_caret = vesa_tty_is_ready() ? vesa_tty_get_caret_style() : 0;
     if (vesa_tty_is_ready())
-        vesa_tty_set_caret_style(1);
+        vesa_tty_set_caret_style(2);
 
     if (v_pane && vesa_tty_is_ready()) {
         v_cols       = (int)v_pane->cols;
@@ -457,14 +466,10 @@ void vics_edit(const char *path, vesa_pane_t *pane)
     terminal_set_colorscheme(VICS_SHELL_VGA);
     if (vesa_tty_is_ready()) {
         vesa_tty_setcolor(VICS_SHELL_FG, VICS_SHELL_BG);
-        if (v_pane) vesa_tty_pane_clear(v_pane);
-        else        vesa_tty_clear();
-        /* Repaint the global status bar immediately - the pane clear
-         * above only covers the text area, but VICS may have written
-         * stale ink to the status row before this commit shrunk the
-         * default pane.  Doing it here means the user sees the bar
-         * the moment we return to the shell, not on the next Alt+Fn. */
-        vesa_tty_paint_status(vtty_active(), vtty_count());
         vesa_tty_set_caret_style(saved_caret);
+        /* No pane_clear / paint_buf / paint_status here - shell_dispatch
+         * calls shell_restore_screen() after any fullscreen command
+         * returns, which repaints the focused VT's backing grid and the
+         * status bar in one place. */
     }
 }

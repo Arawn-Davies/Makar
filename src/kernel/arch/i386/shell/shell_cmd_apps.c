@@ -189,10 +189,10 @@ static void cmd_eject(int argc, char **argv)
  * --------------------------------------------------------------------------- */
 
 const shell_cmd_entry_t apps_cmds[] = {
-    { "vics",      cmd_vics      },
-    { "install",   cmd_install   },
-    { "exec",      cmd_exec      },
-    { "eject",     cmd_eject     },
-    { "ring3test", cmd_ring3test },
-    { NULL, NULL }
+    { "vics",      cmd_vics,      1 },  /* paints FB directly */
+    { "install",   cmd_install,   1 },  /* installer TUI paints FB */
+    { "exec",      cmd_exec,      1 },  /* ELF child may paint FB */
+    { "eject",     cmd_eject,     0 },
+    { "ring3test", cmd_ring3test, 0 },
+    { NULL, NULL, 0 }
 };

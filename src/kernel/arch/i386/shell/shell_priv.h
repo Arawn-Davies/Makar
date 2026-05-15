@@ -43,10 +43,16 @@
 /*
  * Command entry: all handlers share the same (int argc, char **argv) signature
  * for uniform dispatch.  A NULL name field terminates each module's table.
+ *
+ * fullscreen: set on handlers that paint over the framebuffer directly
+ * (VICS, future curses-style apps).  shell_dispatch repaints the focused
+ * VT's backing grid after such commands return so the shell's history
+ * comes back without waiting for the next keystroke.
  */
 typedef struct {
     const char *name;
     void (*fn)(int argc, char **argv);
+    unsigned char fullscreen;
 } shell_cmd_entry_t;
 
 /* Command module tables (NULL-name terminated). */

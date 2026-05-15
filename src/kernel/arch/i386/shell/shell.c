@@ -562,12 +562,27 @@ static int try_exec_path(const char *path, int argc, char **argv)
     return 0;
 }
 
+/* Repaint the focused VT's backing grid to the framebuffer.  Called
+ * after any command that may have painted directly to the FB (vics, any
+ * ELF launched via exec) so the shell's accumulated output comes back
+ * immediately instead of staying blank until the next keystroke. */
+static void shell_restore_screen(void)
+{
+    if (!vesa_tty_is_ready())
+        return;
+    vt_buf_t *vt = vtty_buf_current();
+    if (vt) vesa_tty_paint_buf(vt);
+    vesa_tty_paint_status(vtty_active(), vtty_count());
+}
+
 static int shell_dispatch(int argc, char **argv)
 {
     for (int m = 0; cmd_modules[m]; m++) {
         for (int i = 0; cmd_modules[m][i].name; i++) {
             if (strcmp(cmd_modules[m][i].name, argv[0]) == 0) {
                 cmd_modules[m][i].fn(argc, argv);
+                if (cmd_modules[m][i].fullscreen)
+                    shell_restore_screen();
                 return 1;
             }
         }
@@ -577,8 +592,11 @@ static int shell_dispatch(int argc, char **argv)
      * Resolved by the VFS so `./foo` is interpreted relative to the CWD. */
     const char *cmd = argv[0];
     if (cmd[0] == '/' || (cmd[0] == '.' && cmd[1] == '/')) {
-        if (try_exec_path(cmd, argc, argv))
+        if (try_exec_path(cmd, argc, argv)) {
+            /* Any ELF could have painted to the FB; restore unconditionally. */
+            shell_restore_screen();
             return 1;
+        }
         /* Fall through to "Unknown command" - the user explicitly named a
          * path; PATH lookup wouldn't make sense as a fallback. */
         return 0;
@@ -594,8 +612,10 @@ static int shell_dispatch(int argc, char **argv)
         strncpy(path_buf, s_app_path[p], VFS_PATH_MAX - 1);
         strncpy(path_buf + dlen, argv[0], VFS_PATH_MAX - 1 - dlen);
         path_buf[dlen + nlen] = '\0';
-        if (try_exec_path(path_buf, argc, argv))
+        if (try_exec_path(path_buf, argc, argv)) {
+            shell_restore_screen();
             return 1;
+        }
     }
 
     return 0;
