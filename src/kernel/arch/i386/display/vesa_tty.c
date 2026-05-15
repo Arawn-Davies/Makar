@@ -458,9 +458,13 @@ void vesa_tty_spinner_tick(uint32_t tick)
 	if (!tty_ready)
 		return;
 	static const char frames[] = {'|', '/', '-', '\\'};
-	char c = frames[(tick / 12) % 4];
+	static uint32_t last_frame_idx = 0xFFFFFFFFu;  /* never-drawn sentinel */
+	uint32_t idx = (tick / 12) % 4;
+	if (idx == last_frame_idx)
+		return;   /* same frame as last draw -- skip the ~500 pixel writes */
+	last_frame_idx = idx;
 	/* Always top-right of the physical screen, regardless of pane carve-up. */
-	draw_char(&default_pane, c, tty_cols - 1, 0);
+	draw_char(&default_pane, frames[idx], tty_cols - 1, 0);
 }
 
 void vesa_tty_set_scale(uint32_t scale)

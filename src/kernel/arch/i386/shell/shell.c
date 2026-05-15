@@ -188,7 +188,7 @@ void shell_readline(char *buf, size_t max)
     uint32_t vesa_rl_row = vesa_tty_is_ready() ? vesa_tty_get_row() : (uint32_t)t_row;
 
     while (1) {
-        char c = keyboard_getchar();
+        unsigned char c = keyboard_getchar();
 
         if (c == '\n' || c == '\r') {
             /* Sync VGA tty state to end of line, then emit newline. */

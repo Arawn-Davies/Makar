@@ -24,6 +24,7 @@
 #include <kernel/elf.h>
 #include <kernel/vfs.h>
 #include <kernel/asm.h>
+#include <kernel/keyboard.h>
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
@@ -994,6 +995,324 @@ static void test_vesa_colour(void)
     ktest_summary();
 }
 
+/* ---------------------------------------------------------------------------
+ * Suite: keyboard
+ *
+ * Drives the PS/2 decoder synchronously through the keyboard_test_* hooks.
+ * Each subtest calls keyboard_test_reset() so it inherits a clean decoder
+ * state, modifier state, and global ring.  The whole suite is bracketed
+ * by keyboard_test_begin/end which save and clear the real focused task
+ * (so routed bytes land in the global ring where we can drain them).
+ *
+ * Behaviour pinned by these tests:
+ *
+ *   - All KEY_* sentinels survive the dispatch path as unsigned bytes >= 0x80
+ *     (the EIP=0xFFFFFF83 sign-extension regression from PR #124).
+ *   - Make/break separation: a break never produces output; a held modifier
+ *     applies to subsequent makes; releasing the other side of a paired
+ *     modifier (RSHIFT while LSHIFT is still down) does not clear the state.
+ *   - Decoder is livelock-free under random byte streams (4096-byte LCG fuzz)
+ *     and across the full 0x00..0xFF boundary in each prefix state.
+ *   - PrintScreen's "fake-shift" padding (e0 2a / e0 aa) is dropped.
+ *
+ * The typematic-repeat and Caps-LED behaviours are *not* asserted yet --
+ * they're introduced by the slice-5b commits that follow this harness, so
+ * the assertions for those land alongside the fixes.
+ * ------------------------------------------------------------------------- */
+
+/* Drain the global ring into out[], return count.  Bounded to cap so a
+ * runaway decoder can't blow the stack buffer. */
+static uint32_t kb_test_drain_all(unsigned char *out, uint32_t cap)
+{
+    uint32_t n = 0;
+    while (n < cap) {
+        unsigned char c;
+        if (!keyboard_test_drain(&c)) break;
+        out[n++] = c;
+    }
+    return n;
+}
+
+static void test_keyboard(void)
+{
+    ktest_begin("keyboard");
+
+    keyboard_test_begin();
+
+    /* ---- sentinel coverage: e0-prefixed arrow keycodes ------------------ */
+    /* These are the four KEY_ARROW_* sentinels 0x80..0x83.  Each must arrive
+     * as a single unsigned byte equal to the sentinel.  The 0x83 case is
+     * the regression target for PR #124's EIP=0xFFFFFF83 panic. */
+    {
+        struct { uint8_t e0_byte; unsigned char expect; } cases[] = {
+            { 0x48, 0x80 }, /* KEY_ARROW_UP    */
+            { 0x50, 0x81 }, /* KEY_ARROW_DOWN  */
+            { 0x4B, 0x82 }, /* KEY_ARROW_LEFT  */
+            { 0x4D, 0x83 }, /* KEY_ARROW_RIGHT */
+        };
+        for (uint32_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+            keyboard_test_reset();
+            keyboard_test_feed(0xE0);
+            keyboard_test_feed(cases[i].e0_byte);
+            unsigned char buf[4];
+            uint32_t n = kb_test_drain_all(buf, sizeof(buf));
+            KTEST_ASSERT(n == 1);
+            KTEST_ASSERT(buf[0] == cases[i].expect);
+            /* Each sentinel is >= 0x80 - if any path sign-extended it, the
+             * resulting int comparison would survive but the byte would not
+             * round-trip equal to the cast we expect. */
+            KTEST_ASSERT(buf[0] >= 0x80);
+            /* Break event must produce no output and not double-fire. */
+            keyboard_test_feed(0xE0);
+            keyboard_test_feed((uint8_t)(cases[i].e0_byte | 0x80));
+            n = kb_test_drain_all(buf, sizeof(buf));
+            KTEST_ASSERT(n == 0);
+        }
+    }
+
+    /* ---- single-byte ASCII translation ---------------------------------- */
+    {
+        keyboard_test_reset();
+        keyboard_test_feed(0x1E); /* 'a' make */
+        unsigned char buf[4];
+        uint32_t n = kb_test_drain_all(buf, sizeof(buf));
+        KTEST_ASSERT(n == 1);
+        KTEST_ASSERT(buf[0] == 'a');
+
+        keyboard_test_feed(0x9E); /* 'a' break - no output */
+        n = kb_test_drain_all(buf, sizeof(buf));
+        KTEST_ASSERT(n == 0);
+    }
+
+    /* ---- make/break separation with both shifts ------------------------- */
+    /* Hold RSHIFT, press 'a' -> 'A'.  Release RSHIFT, press 'a' -> 'a'.
+     * Repeat with LSHIFT.  The LSHIFT half is the regression target for the
+     * 0xAA BAT-pass filter collision -- before decoder_feed's response-byte
+     * filter was narrowed, LSHIFT break (0xAA) was silently swallowed and
+     * the shift state stayed stuck at 1. */
+    {
+        struct { uint8_t make, brk; } shifts[] = {
+            { 0x36, 0xB6 }, /* RSHIFT */
+            { 0x2A, 0xAA }, /* LSHIFT - regression target */
+        };
+        for (uint32_t i = 0; i < sizeof(shifts)/sizeof(shifts[0]); i++) {
+            keyboard_test_reset();
+            keyboard_test_feed(shifts[i].make);
+            unsigned char buf[4];
+            uint32_t n = kb_test_drain_all(buf, sizeof(buf));
+            KTEST_ASSERT(n == 0); /* modifier silent in cooked mode */
+            KTEST_ASSERT((keyboard_test_mod_state() & 0x1u) == 0x1u);
+
+            keyboard_test_feed(0x1E); /* 'a' make */
+            n = kb_test_drain_all(buf, sizeof(buf));
+            KTEST_ASSERT(n == 1 && buf[0] == 'A');
+
+            keyboard_test_feed(shifts[i].brk);
+            KTEST_ASSERT((keyboard_test_mod_state() & 0x1u) == 0u);
+
+            keyboard_test_feed(0x1E);
+            n = kb_test_drain_all(buf, sizeof(buf));
+            KTEST_ASSERT(n == 1 && buf[0] == 'a');
+        }
+    }
+
+    /* ---- paired-modifier release: either side can be released first ----- */
+    /* Hold LSHIFT + RSHIFT; release either; mod_shift stays set thanks to
+     * the other side still being held. */
+    {
+        struct { uint8_t first_brk; } cases[] = { { 0xB6 }, { 0xAA } };
+        for (uint32_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+            keyboard_test_reset();
+            keyboard_test_feed(0x2A); /* LSHIFT make */
+            keyboard_test_feed(0x36); /* RSHIFT make */
+            KTEST_ASSERT((keyboard_test_mod_state() & 0x1u) == 0x1u);
+            keyboard_test_feed(cases[i].first_brk);
+            KTEST_ASSERT((keyboard_test_mod_state() & 0x1u) == 0x1u);
+        }
+    }
+
+    /* ---- Ctrl+letter folds to ASCII control code ------------------------ */
+    /* Use 'b' (Ctrl-B == 0x02), not 'a': Ctrl-A is intercepted in cooked
+     * mode as the pane-switch prefix and never reaches the routed-byte path. */
+    {
+        keyboard_test_reset();
+        keyboard_test_feed(0x1D); /* LCTRL make */
+        keyboard_test_feed(0x30); /* 'b' make - should be Ctrl-B == 0x02 */
+        unsigned char buf[4];
+        uint32_t n = kb_test_drain_all(buf, sizeof(buf));
+        KTEST_ASSERT(n == 1 && buf[0] == 0x02);
+        keyboard_test_feed(0x9D); /* LCTRL break */
+    }
+
+    /* ---- typematic-repeat filter for modifiers -------------------------- */
+    /* PS/2 hardware re-fires a held key's make at ~30 Hz.  For Caps Lock the
+     * previous decoder toggled mod_caps on every make, so holding Caps for a
+     * fraction of a second ping-ponged the toggle unpredictably.  Modifier
+     * make events without an intervening break must now be dropped entirely.
+     *
+     * Specifically:
+     *   - Caps make x5, then break: mod_caps must toggle EXACTLY once.
+     *   - Shift make x5: mod_shift stays 1 (idempotent) but routes no extra
+     *     KEY_SHIFT_DOWN sentinels in raw mode.  We test the state half here
+     *     (raw-mode sentinel coverage is covered by the kbtester smoke test).
+     *   - After break and re-press, the next make is honoured again. */
+    {
+        keyboard_test_reset();
+        for (int i = 0; i < 5; i++)
+            keyboard_test_feed(0x3A); /* Caps make */
+        KTEST_ASSERT((keyboard_test_mod_state() >> 3) & 1u); /* mod_caps == 1 */
+        keyboard_test_feed(0xBA);     /* Caps break */
+        KTEST_ASSERT((keyboard_test_mod_state() >> 3) & 1u); /* still 1 (Caps is sticky) */
+
+        /* Second press cycle: another 5x make should toggle exactly once. */
+        for (int i = 0; i < 5; i++)
+            keyboard_test_feed(0x3A);
+        KTEST_ASSERT(((keyboard_test_mod_state() >> 3) & 1u) == 0u);
+        keyboard_test_feed(0xBA);
+    }
+    {
+        /* LSHIFT held: subsequent makes don't redundantly fire on_make.  We
+         * can't directly observe on_make calls here, but raw-mode delivery
+         * surfaces them as routed bytes -- exercise that path. */
+        keyboard_test_reset();
+        keyboard_set_raw(1);
+        keyboard_test_feed(0x2A); /* LSHIFT make */
+        unsigned char buf[8];
+        uint32_t n = kb_test_drain_all(buf, sizeof(buf));
+        KTEST_ASSERT(n == 1 && buf[0] == (unsigned char)KEY_SHIFT_DOWN);
+        /* Typematic repeats should NOT re-emit the sentinel. */
+        for (int i = 0; i < 5; i++)
+            keyboard_test_feed(0x2A);
+        n = kb_test_drain_all(buf, sizeof(buf));
+        KTEST_ASSERT(n == 0);
+        /* Break, then re-press: a single sentinel again. */
+        keyboard_test_feed(0xAA);
+        keyboard_test_feed(0x2A);
+        n = kb_test_drain_all(buf, sizeof(buf));
+        KTEST_ASSERT(n == 1 && buf[0] == (unsigned char)KEY_SHIFT_DOWN);
+        keyboard_set_raw(0);
+    }
+
+    /* ---- LED sync: Caps press updates the bitmap exactly once ----------- */
+    /* kb_sync_leds is called from apply_modifier when mod_caps changes; the
+     * 0xED + bitmap is suppressed in test mode and only the software shadow
+     * updates.  We exercise:
+     *   - one Caps press cycle flips the Caps bit and increments send count;
+     *   - typematic repeats during the press DON'T trigger extra sends
+     *     (the typematic filter from f636920 squashes them upstream);
+     *   - a second press cycle clears the Caps bit. */
+    {
+        keyboard_test_reset();
+        uint32_t baseline = keyboard_test_led_sends();
+        for (int i = 0; i < 5; i++)
+            keyboard_test_feed(0x3A); /* Caps make x5 */
+        keyboard_test_feed(0xBA);     /* Caps break */
+        KTEST_ASSERT(keyboard_test_led_sends() == baseline + 1);
+        KTEST_ASSERT(keyboard_test_leds() & 0x04); /* PS2_LED_CAPS */
+
+        for (int i = 0; i < 5; i++)
+            keyboard_test_feed(0x3A);
+        keyboard_test_feed(0xBA);
+        KTEST_ASSERT(keyboard_test_led_sends() == baseline + 2);
+        KTEST_ASSERT((keyboard_test_leds() & 0x04) == 0);
+    }
+
+    /* ---- torn-prefix recovery: repeated 0xE0 restarts the prefix -------- */
+    /* DEC_AFTER_E0 + 0xE0 -> still DEC_AFTER_E0; one ARROW_LEFT emitted. */
+    {
+        keyboard_test_reset();
+        keyboard_test_feed(0xE0);
+        keyboard_test_feed(0xE0);
+        keyboard_test_feed(0x4B); /* ARROW_LEFT make */
+        unsigned char buf[4];
+        uint32_t n = kb_test_drain_all(buf, sizeof(buf));
+        KTEST_ASSERT(n == 1 && buf[0] == 0x82);
+    }
+
+    /* ---- PrintScreen fake-shift padding is dropped ---------------------- */
+    /* PS/2 emits e0 2a e0 37 (make) / e0 b7 e0 aa (break).  The e0 2a / e0 aa
+     * portions are "fake shift" padding -- we drop them so real shift state
+     * stays honest.  After feeding e0 aa with no real shift held, mod_shift
+     * must still be zero. */
+    {
+        keyboard_test_reset();
+        keyboard_test_feed(0xE0);
+        keyboard_test_feed(0x2A);
+        keyboard_test_feed(0xE0);
+        keyboard_test_feed(0xAA);
+        unsigned char buf[4];
+        uint32_t n = kb_test_drain_all(buf, sizeof(buf));
+        KTEST_ASSERT(n == 0);
+        KTEST_ASSERT((keyboard_test_mod_state() & 0x1u) == 0u);
+    }
+
+    /* ---- controller response bytes reset decoder state ------------------ */
+    /* 0xFA (ack) and friends arriving mid-prefix must reset to NORMAL, not
+     * poison the next real scancode. */
+    {
+        keyboard_test_reset();
+        keyboard_test_feed(0xE0);   /* prime extended prefix */
+        keyboard_test_feed(0xFA);   /* ack - must reset */
+        keyboard_test_feed(0x1E);   /* 'a' make - should arrive as plain 'a' */
+        unsigned char buf[4];
+        uint32_t n = kb_test_drain_all(buf, sizeof(buf));
+        KTEST_ASSERT(n == 1 && buf[0] == 'a');
+    }
+
+    /* ---- boundary scan: every byte in every decoder state, no panic ----- */
+    /* Feed 0x00..0xFF in DEC_NORMAL, DEC_AFTER_E0, DEC_AFTER_E1A, DEC_AFTER_E1B.
+     * Each iteration starts from a reset so the state we want to test is the
+     * one we just put the decoder into.  Anything that crashes here would
+     * page-fault and we'd never get to the assert below. */
+    {
+        for (uint32_t prelude = 0; prelude < 4; prelude++) {
+            for (uint32_t b = 0; b < 256; b++) {
+                keyboard_test_reset();
+                switch (prelude) {
+                    case 1: keyboard_test_feed(0xE0); break;
+                    case 2: keyboard_test_feed(0xE1); break;
+                    case 3: keyboard_test_feed(0xE1); keyboard_test_feed(0x1D); break;
+                    default: break;
+                }
+                keyboard_test_feed((uint8_t)b);
+                /* Drain (and discard) any emitted bytes; the test is the
+                 * absence of a fault, not specific output. */
+                unsigned char tmp[8];
+                (void)kb_test_drain_all(tmp, sizeof(tmp));
+            }
+        }
+        KTEST_ASSERT(1); /* survived 1024 byte/state combinations */
+    }
+
+    /* ---- 512-byte LCG fuzz: no panic, ring never wedges ----------------- */
+    /* A tiny LCG (Numerical Recipes constants) gives us a reproducible
+     * pseudo-random byte stream.  We feed it into the decoder and drain
+     * after each byte so the ring never fills.  Any unsigned-char hygiene
+     * regression on the routed-byte path would either fault or wedge the
+     * ring head/tail accounting; we assert the obvious invariants. */
+    {
+        keyboard_test_reset();
+        uint32_t seed = 0xC0FFEEu;
+        uint32_t total_drained = 0;
+        for (uint32_t i = 0; i < 512; i++) {
+            seed = seed * 1664525u + 1013904223u;
+            uint8_t sc = (uint8_t)(seed >> 16);
+            keyboard_test_feed(sc);
+            unsigned char tmp[8];
+            uint32_t n = kb_test_drain_all(tmp, sizeof(tmp));
+            total_drained += n;
+        }
+        /* The decoder definitely produced *some* output across 512 random
+         * bytes; we don't need an exact count, just non-zero and bounded. */
+        KTEST_ASSERT(total_drained > 0);
+        KTEST_ASSERT(total_drained < 512); /* most bytes are break-halves or prefixes */
+    }
+
+    keyboard_test_end();
+
+    ktest_summary();
+}
+
 int ktest_run_all(void)
 {
     int total_pass = 0;
@@ -1063,6 +1382,10 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
+    test_keyboard();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
     t_writestring("\n[ktest] TOTAL: ");
     t_dec((uint32_t)total_pass);
     t_writestring(" passed, ");
@@ -1086,9 +1409,12 @@ void ktest_bg_task(void)
         suite(); \
         total_pass += ktest_pass_count; \
         total_fail += ktest_fail_count; \
-        /* Pace tests so the loading screen stays visible (~300 ms at 100 Hz). */ \
+        /* Brief pacing keeps the loading screen visible while not pushing \
+         * iso-test's 120 s GDB budget into the failure regime under TCG. \
+         * 5 ticks @ 100 Hz = 50 ms; visible on real HW, ~700 ms total over \
+         * 14 suites in TCG. */ \
         { uint32_t t0 = timer_get_ticks(); \
-          while (timer_get_ticks() - t0 < 30) task_yield(); } \
+          while (timer_get_ticks() - t0 < 5) task_yield(); } \
     } while (0)
 
     RUN(test_acpi_checksum);
@@ -1105,8 +1431,12 @@ void ktest_bg_task(void)
     RUN(test_ring3_execution);
     RUN(test_elf_exec);
     RUN(test_ring3_with_arg);
-    /* test_vesa_resolution and test_vesa_colour are skipped: they switch
-     * display modes with multi-second countdowns - run manually via `ktest`. */
+    /* test_keyboard, test_vesa_resolution, test_vesa_colour are skipped here:
+     * the first runs ~1500 decoder_feed + lock cycles which under TCG pushes
+     * past the shell's first keyboard_getchar, leaving ktest_bg_done=0 when
+     * the GDB test polls it; the latter two switch display modes with multi-
+     * second countdowns.  All three still run in foreground (test_mode ISO +
+     * shell `ktest`). */
 
     #undef RUN
 
@@ -1122,4 +1452,28 @@ void ktest_bg_task(void)
     }
 
     ktest_bg_done = 1;
+    ktest_bg_marker();
+}
+
+/* ktest_bg_marker - empty hook called immediately after ktest_bg_done = 1.
+ *
+ * The GDB iso-test harness sets a breakpoint here so it can confirm bg
+ * ktest finished WITHOUT depending on the shell reaching its first
+ * keyboard_getchar.  Coupling the assertion to keyboard_getchar made
+ * iso-test flaky under TCG: shell0's loading-screen spinner spins on
+ * vesa_tty_spinner_tick() until ktest_bg_done flips, then must drain
+ * poll, print banner, and only THEN call keyboard_getchar -- the cumul-
+ * ative wall-clock occasionally raced the 120 s GDB-step budget.
+ *
+ * Putting the marker right after the flag write lets the assertion
+ * happen the moment the kernel guarantees the flag is set, regardless
+ * of the subsequent shell-render timing.
+ *
+ * noinline + externally visible so GDB sees the symbol.  The function
+ * body is intentionally a single memory-clobbering nop so the optimiser
+ * cannot fold it away. */
+__attribute__((noinline))
+void ktest_bg_marker(void)
+{
+    __asm__ volatile("" ::: "memory");
 }

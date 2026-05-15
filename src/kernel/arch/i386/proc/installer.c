@@ -55,7 +55,7 @@ static void inst_readline(char *buf, size_t max)
     size_t len = 0;
 
     while (1) {
-        char c = keyboard_getchar();
+        unsigned char c = keyboard_getchar();
 
         if (c == '\n' || c == '\r') {
             t_putchar('\n');
@@ -71,8 +71,8 @@ static void inst_readline(char *buf, size_t max)
         if (c < 0x20 || c > 0x7E)
             continue;
         if (len < max - 1) {
-            buf[len++] = c;
-            t_putchar(c);
+            buf[len++] = (char)c;
+            t_putchar((char)c);
         }
     }
 

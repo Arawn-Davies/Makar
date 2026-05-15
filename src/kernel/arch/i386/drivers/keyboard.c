@@ -109,6 +109,7 @@
 #include <kernel/task.h>
 #include <kernel/timer.h>
 #include <kernel/vesa_tty.h>
+#include <kernel/serial.h>
 
 /* ===========================================================================
  * Memory-ordering primitives
@@ -237,7 +238,14 @@ static kb_spinlock_t kb_slots_lock = { 0 };  /* serialises slot table mutations 
 #define PS2_STATUS_PORT 0x64
 
 #define PS2_STAT_OBF    0x01    /* output buffer full -- byte ready in 0x60 */
+#define PS2_STAT_IBF    0x02    /* input buffer full -- host write pending */
 #define PS2_STAT_AUXB   0x20    /* byte is from the AUX channel (mouse) */
+
+/* PS/2 keyboard commands & response bytes. */
+#define PS2_KB_SET_LEDS 0xED
+#define PS2_LED_SCROLL  0x01
+#define PS2_LED_NUM     0x02
+#define PS2_LED_CAPS    0x04
 
 /* ===========================================================================
  * Internal keycodes (decoder output, translator input).
@@ -610,8 +618,18 @@ void keyboard_release_task(task_t *t)
  * slot_register(), so we always see a fully-published owner pointer for
  * whatever task is currently focused.
  */
+/* Test-mode flag (set by keyboard_test_begin, cleared by keyboard_test_end).
+ * When non-zero, kb_route bypasses focus-based routing and pushes directly to
+ * the global fallback ring so keyboard_test_drain() can read deterministically
+ * without racing the live shell task's focus registration. */
+extern volatile int kb_test_active;
+
 static void kb_route(unsigned char c)
 {
+    if (__atomic_load_n(&kb_test_active, __ATOMIC_ACQUIRE)) {
+        buf_push(c);
+        return;
+    }
     task_t *f = __atomic_load_n(&kb_focused, __ATOMIC_ACQUIRE);
     if (f) {
         for (int i = 0; i < KB_TASK_SLOTS; i++) {
@@ -661,6 +679,89 @@ static int mod_lctrl   = 0;
 static int mod_rctrl   = 0;
 static int mod_lalt    = 0;
 static int mod_ralt    = 0;
+
+/* Typematic-repeat filter for modifier keys.
+ *
+ * PS/2 hardware repeats a held key's *make* code at ~30 Hz with no
+ * intervening break.  For letter keys that's typematic auto-repeat (the
+ * shell wants it), but for modifiers it's pathological:
+ *
+ *   - Caps Lock toggles mod_caps on every make, so holding the key
+ *     ping-pongs the toggle 30x/sec.  Observed in kbtester PR #124.
+ *   - In raw mode, every Shift/Ctrl/Alt/Super/Menu make re-emits a
+ *     KEY_*_DOWN sentinel; held Shift floods kbtester's serial log
+ *     at 30 Hz.
+ *
+ * Linux's drivers/input/keyboard/atkbd.c handles auto-repeat in the
+ * input layer rather than the scancode decoder, but for our purposes
+ * the simplest correct thing is to drop modifier makes that arrive
+ * without an intervening break.  Indexed by kc so we naturally
+ * distinguish LSHIFT (0x2A) from RSHIFT (0x36) etc. -- 256 bytes is
+ * trivial.  Letter/symbol keys are left untouched so typematic repeat
+ * still works for typed text.
+ */
+static uint8_t s_modkey_held[256] = { 0 };
+
+/* ===========================================================================
+ * LED sync
+ *
+ * The PS/2 keyboard owns its Caps/Num/Scroll Lock indicator LEDs; the host
+ * must explicitly tell it which to light by writing 0xED followed by a bitmap
+ * (bit 0 Scroll, bit 1 Num, bit 2 Caps).  The keyboard ACKs each byte with
+ * 0xFA on the data port; that ACK arrives via the regular IRQ path and is
+ * filtered out by decoder_feed's controller-response check, so kb_sync_leds
+ * is fire-and-forget.
+ *
+ * We do not poll for the ACK synchronously: kb_sync_leds is reached from
+ * apply_modifier which runs inside the IRQ handler with kb_io_lock held, so
+ * spinning on PS2_STAT_OBF would block the very IRQ that's supposed to drain
+ * it.  At boot (keyboard_init) we're outside IRQ context but tasking has not
+ * started so there's no contention either way.
+ *
+ * Software-shadowed state lets the ktest harness verify that LED updates
+ * fired with the expected bitmap without actually programming hardware.
+ */
+static int     s_caps_on   = 0;
+static int     s_num_on    = 0;
+static int     s_scroll_on = 0;
+static volatile uint8_t s_leds_last_sent  = 0xFF;  /* sentinel: never sent */
+static volatile uint32_t s_leds_send_count = 0;
+
+/* kb_send_byte_polled - write b to the keyboard data port, waiting briefly
+ * for the controller's input buffer to drain first.  Bounded poll so a
+ * wedged controller can't livelock us. */
+static void kb_send_byte_polled(uint8_t b)
+{
+    for (int i = 0; i < 1000; i++) {
+        if (!(inb(PS2_STATUS_PORT) & PS2_STAT_IBF)) break;
+        asm volatile("pause");
+    }
+    outb(PS2_DATA_PORT, b);
+}
+
+/* kb_sync_leds - compute the current LED bitmap and program the keyboard.
+ * Test mode: just update the software shadow so ktest can observe the
+ * effect without talking to the hardware. */
+static void kb_sync_leds(void)
+{
+    uint8_t bitmap = (s_caps_on   ? PS2_LED_CAPS   : 0)
+                   | (s_num_on    ? PS2_LED_NUM    : 0)
+                   | (s_scroll_on ? PS2_LED_SCROLL : 0);
+    s_leds_last_sent = bitmap;
+    __atomic_add_fetch(&s_leds_send_count, 1, __ATOMIC_RELEASE);
+
+    /* Serial log so iso-test can verify the LED update reached the wire,
+     * even without screendump access to the physical LED state. */
+    Serial_WriteString("KB_LED: ");
+    Serial_WriteHex((uint32_t)bitmap);  /* prints "0xNNNNNNNN" */
+    Serial_WriteString("\n");
+
+    if (__atomic_load_n(&kb_test_active, __ATOMIC_ACQUIRE))
+        return;
+
+    kb_send_byte_polled(PS2_KB_SET_LEDS);
+    kb_send_byte_polled(bitmap);
+}
 
 /* Raw mode: see keyboard_set_raw().  When set, on_make delivers modifier
  * presses, F-keys, Caps, and Super as sentinel bytes; cooked shortcuts
@@ -751,7 +852,13 @@ static void apply_modifier(kc_t kc, int is_break)
         case KC_RCTRL:    mod_rctrl  = down; break;
         case KC_LALT:     mod_lalt   = down; break;
         case KC_RALT:     mod_ralt   = down; break;
-        case KC_CAPSLOCK: if (down) mod_caps = !mod_caps; break;
+        case KC_CAPSLOCK:
+            if (down) {
+                mod_caps = !mod_caps;
+                s_caps_on = mod_caps;
+                kb_sync_leds();
+            }
+            break;
         default: return;
     }
     mod_shift = mod_lshift | mod_rshift;
@@ -869,6 +976,54 @@ static void on_make(kc_t kc)
 }
 
 /*
+ * is_modifier_kc - true iff kc names a modifier key whose typematic
+ * auto-repeat should be filtered.  Letter/digit/symbol keys are NOT
+ * included here: the shell relies on PS/2 typematic repeat for held
+ * letters and we don't want to interfere with that.
+ */
+static int is_modifier_kc(kc_t kc)
+{
+    switch (kc) {
+        case KC_LSHIFT: case KC_RSHIFT:
+        case KC_LCTRL:  case KC_RCTRL:
+        case KC_LALT:   case KC_RALT:
+        case KC_CAPSLOCK:
+        case KC_LSUPER: case KC_RSUPER:
+        case KC_MENU:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+/*
+ * deliver_kc - apply the modifier typematic-repeat filter, then update
+ * modifier state and dispatch to on_make if this is a make event.
+ *
+ * For a modifier key: if s_modkey_held[kc] is already 1 on a make event,
+ * the controller is re-firing the make at typematic rate -- drop the
+ * event entirely (no toggle, no sentinel re-emission).  On break, clear
+ * the held flag so the next genuine press can fire.
+ *
+ * For non-modifier keys: always propagate.  Held letter keys still get
+ * their make repeated at ~30 Hz, which is exactly the shell's typematic
+ * auto-repeat contract.
+ */
+static void deliver_kc(kc_t kc, int is_break)
+{
+    if (is_modifier_kc(kc)) {
+        if (!is_break) {
+            if (s_modkey_held[kc]) return;  /* drop typematic repeat */
+            s_modkey_held[kc] = 1;
+        } else {
+            s_modkey_held[kc] = 0;
+        }
+    }
+    apply_modifier(kc, is_break);
+    if (!is_break) on_make(kc);
+}
+
+/*
  * decoder_feed - feed one raw set-1 byte to the decoder state machine.
  *
  * Output is exactly one keycode event (via apply_modifier + on_make) or
@@ -887,15 +1042,29 @@ static void on_make(kc_t kc)
  *   DEC_AFTER_E1A + b            -> DEC_AFTER_E1B  (consume first half)
  *   DEC_AFTER_E1B + b            -> DEC_NORMAL     (consume second half)
  *
- * Controller-internal status bytes (0x00 buffer-error, 0xAA BAT pass,
- * 0xEE echo, 0xFA ack, 0xFE resend, 0xFF buffer-overflow) reset the state
- * machine to NORMAL without emitting an event -- they are responses to
- * controller commands and never represent keystrokes.
+ * Controller-internal status bytes that are never legitimate set-1
+ * scancodes (0x00 buffer-error, 0xEE echo, 0xFA ack, 0xFE resend, 0xFF
+ * buffer-overflow) reset the state machine to NORMAL without emitting
+ * an event -- they only ever arrive as replies to controller commands.
+ *
+ * Note: 0xAA is deliberately NOT in this filter even though it's the
+ * controller's BAT-pass byte, because 0xAA is also the legitimate break
+ * scancode for LSHIFT (make 0x2A | 0x80). The BAT-pass byte is only
+ * emitted at power-on/reset, before keyboard_init drains the buffer
+ * and registers the IRQ handler, so it never reaches decoder_feed.
+ * Filtering it unconditionally would silently swallow every LSHIFT
+ * release -- this was a real bug surfaced by the new ktest harness.
+ *
+ * Once the kernel starts sending controller commands (LED sync, scan-
+ * code-set selection) the right way to disambiguate replies from
+ * scancodes is a per-command "expecting reply" window driven by the
+ * command queue (Linux's i8042 layer does this); for now we have no
+ * commands in flight so the simpler "never filter 0xAA" suffices.
  */
 static void decoder_feed(uint8_t sc)
 {
     switch (sc) {
-        case 0x00: case 0xAA: case 0xEE: case 0xFA: case 0xFE: case 0xFF:
+        case 0x00: case 0xEE: case 0xFA: case 0xFE: case 0xFF:
             dec_state = DEC_NORMAL;
             return;
     }
@@ -920,9 +1089,7 @@ static void decoder_feed(uint8_t sc)
 
         if (low7 == KC_LSHIFT) return;   /* PrintScreen fake-shift padding */
 
-        kc_t kc = KC_EXT(low7);
-        apply_modifier(kc, is_break);
-        if (!is_break) on_make(kc);
+        deliver_kc(KC_EXT(low7), is_break);
         return;
     }
 
@@ -931,8 +1098,7 @@ static void decoder_feed(uint8_t sc)
         int  is_break = (sc & 0x80) != 0;
         kc_t kc       = (kc_t)(sc & 0x7F);
 
-        apply_modifier(kc, is_break);
-        if (!is_break) on_make(kc);
+        deliver_kc(kc, is_break);
         return;
     }
     }
@@ -978,6 +1144,19 @@ static void keyboard_irq_handler(registers_t *regs)
  * Some controllers (or QEMU resets) leave a stray byte in the output buffer
  * before our handler is wired up; reading and discarding it ensures we
  * start with a clean slate and won't fire a spurious key on first IRQ.
+ *
+ * Boot-time LED state:
+ *   The PS/2 keyboard owns its indicator LEDs and the host has no command
+ *   to query their current state.  Conventionally the BIOS keeps the
+ *   Caps/Num/Scroll Lock state in the BIOS Data Area byte 0x417 (a region
+ *   that survives the transition to protected mode -- GRUB / Multiboot 2
+ *   don't touch low memory below 0x500).  We probe that byte to seed
+ *   mod_caps and friends, then send a single 0xED command so the LEDs
+ *   reflect what we believe the state to be.
+ *
+ *   The BDA bits at 0x417 are:
+ *     0x40 Caps Lock active, 0x20 Num Lock active, 0x10 Scroll Lock active
+ *   (See IBM/Intel BIOS reference; same layout on every PC since the AT.)
  */
 void keyboard_init(void)
 {
@@ -986,6 +1165,16 @@ void keyboard_init(void)
         if (!(status & PS2_STAT_OBF)) break;
         (void)inb(PS2_DATA_PORT);
     }
+
+    /* Seed lock state from the BDA so we don't fight the BIOS on boot. */
+    volatile uint8_t *bda_kb_flags = (uint8_t *)0x417;
+    uint8_t flags  = *bda_kb_flags;
+    mod_caps       = (flags & 0x40) ? 1 : 0;
+    s_caps_on      = mod_caps;
+    s_num_on       = (flags & 0x20) ? 1 : 0;
+    s_scroll_on    = (flags & 0x10) ? 1 : 0;
+    kb_sync_leds();
+
     register_interrupt_handler(IRQ1, keyboard_irq_handler);
 }
 
@@ -1058,16 +1247,16 @@ static int slot_for_current(void)
  * displaying the prompt, and by the exec wait loop to let SIGINT preempt
  * the busy-wait without blocking on input.
  */
-char keyboard_poll(void)
+unsigned char keyboard_poll(void)
 {
     int s = slot_for_current();
     if (s >= 0) {
         kb_slot_t *slot = &kb_slots[s];
         if (slot_empty_v(slot)) return 0;
-        return (char)slot_pop(slot);
+        return slot_pop(slot);
     }
     if (buf_count_v() == 0) return 0;
-    return (char)buf_pop();
+    return buf_pop();
 }
 
 /*
@@ -1078,11 +1267,11 @@ char keyboard_poll(void)
  * needed. Safe to call from task or IRQ context (slot_register and
  * slot_push are both irq-safe).
  */
-void keyboard_send_to(task_t *t, char c)
+void keyboard_send_to(task_t *t, unsigned char c)
 {
     if (!t) return;
     int s = slot_register(t);
-    if (s >= 0) slot_push(&kb_slots[s], (unsigned char)c);
+    if (s >= 0) slot_push(&kb_slots[s], c);
 }
 
 /*
@@ -1093,7 +1282,99 @@ void keyboard_send_to(task_t *t, char c)
  * task's slot ring, or from the global fallback ring if the task has no
  * registered slot (e.g. before tasking is up, or if the slot pool is full).
  */
-char keyboard_getchar(void)
+/* ===========================================================================
+ * Test hooks
+ *
+ * Used by the in-kernel ktest harness (ktest.c::test_keyboard) to drive the
+ * decoder synchronously and read back routed bytes. Not exposed by any public
+ * API caller; the entry points exist in keyboard.h so ktest.c can link.
+ *
+ * keyboard_test_begin saves and clears kb_focused so kb_route falls back to
+ * the global fallback ring, then resets decoder + modifier state so each test
+ * starts from a clean slate. keyboard_test_end restores focus.
+ * ======================================================================== */
+
+/* Set while a ktest is feeding scancodes; kb_route reads it via acquire load
+ * and bypasses focus routing in favour of the global ring. Volatile + atomic
+ * because the IRQ handler reads it from a context concurrent with the test. */
+volatile int kb_test_active = 0;
+
+void keyboard_test_reset(void)
+{
+    uint32_t flags = kb_spin_lock_irqsave(&kb_io_lock);
+    dec_state = DEC_NORMAL;
+    mod_shift = mod_ctrl = mod_alt = mod_caps = 0;
+    mod_lshift = mod_rshift = 0;
+    mod_lctrl  = mod_rctrl  = 0;
+    mod_lalt   = mod_ralt   = 0;
+    kb_prefix  = 0;
+    kb_buf_head = kb_buf_tail = 0;
+    for (int i = 0; i < 256; i++) s_modkey_held[i] = 0;
+    kb_spin_unlock_irqrestore(&kb_io_lock, flags);
+}
+
+/* keyboard_test_begin / _end set/clear kb_test_active with release/acquire
+ * semantics so the IRQ-side load in kb_route observes the flip cleanly.
+ *
+ * We deliberately do NOT touch kb_focused: the live shell task may register
+ * itself as focused while the test runs, and clobbering kb_focused on
+ * test_end would strand the shell waiting on a ring that kb_route is no
+ * longer delivering to. Routing the test's output to the global ring via
+ * kb_test_active sidesteps this entirely. */
+void keyboard_test_begin(void)
+{
+    keyboard_test_reset();
+    __atomic_store_n(&kb_test_active, 1, __ATOMIC_RELEASE);
+}
+
+void keyboard_test_end(void)
+{
+    __atomic_store_n(&kb_test_active, 0, __ATOMIC_RELEASE);
+    keyboard_test_reset();
+}
+
+void keyboard_test_feed(uint8_t sc)
+{
+    uint32_t flags = kb_spin_lock_irqsave(&kb_io_lock);
+    decoder_feed(sc);
+    kb_spin_unlock_irqrestore(&kb_io_lock, flags);
+}
+
+int keyboard_test_drain(unsigned char *out)
+{
+    if (buf_count_v() == 0) return 0;
+    unsigned char c = buf_pop();
+    if (out) *out = c;
+    return 1;
+}
+
+uint8_t keyboard_test_leds(void)
+{
+    return s_leds_last_sent;
+}
+
+uint32_t keyboard_test_led_sends(void)
+{
+    return __atomic_load_n(&s_leds_send_count, __ATOMIC_ACQUIRE);
+}
+
+uint32_t keyboard_test_mod_state(void)
+{
+    uint32_t v = 0;
+    v |= (mod_shift  ? 1u : 0) << 0;
+    v |= (mod_ctrl   ? 1u : 0) << 1;
+    v |= (mod_alt    ? 1u : 0) << 2;
+    v |= (mod_caps   ? 1u : 0) << 3;
+    v |= (mod_lshift ? 1u : 0) << 4;
+    v |= (mod_rshift ? 1u : 0) << 5;
+    v |= (mod_lctrl  ? 1u : 0) << 6;
+    v |= (mod_rctrl  ? 1u : 0) << 7;
+    v |= (mod_lalt   ? 1u : 0) << 8;
+    v |= (mod_ralt   ? 1u : 0) << 9;
+    return v;
+}
+
+unsigned char keyboard_getchar(void)
 {
     int s = slot_for_current();
     if (s >= 0) {
@@ -1103,12 +1384,12 @@ char keyboard_getchar(void)
             task_yield();
             asm volatile("pause");
         }
-        return (char)slot_pop(slot);
+        return slot_pop(slot);
     }
     while (buf_count_v() == 0) {
         vesa_tty_caret_blink_tick(timer_get_ticks());
         task_yield();
         asm volatile("pause");
     }
-    return (char)buf_pop();
+    return buf_pop();
 }
