@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+struct vt_buf;
+
 /*
  * vesa_tty - text renderer over the VESA framebuffer.
  *
@@ -105,6 +107,32 @@ void vesa_tty_clear(void);
 /* Animate a spinning cursor at the top-right corner of the screen.
  * Always renders into the default pane regardless of focus. */
 void vesa_tty_spinner_tick(uint32_t tick);
+
+/* ------------------------------------------------------------------ */
+/* Backing-grid integration                                            */
+/* ------------------------------------------------------------------ */
+
+/* Paint a single cell at (col, row) using explicit framebuffer-pixel
+ * fg/bg.  Bypasses cursor / scrolling logic; used by vtty_switch when
+ * replaying a VT's backing grid. */
+void vesa_tty_paint_cell(uint32_t col, uint32_t row, char ch,
+                         uint32_t fg, uint32_t bg);
+
+/* Repaint the entire framebuffer from a backing vt_buf.  Used by
+ * vtty_switch to surface a background TTY's accumulated state. */
+void vesa_tty_paint_buf(const struct vt_buf *vt);
+
+/* Paint a string starting at cell (col, row) using explicit RGB colours.
+ * Bypasses cursor / scrolling / vt_buf routing - direct FB write.  Used
+ * for status-bar overlay rows that live outside any TTY's grid. */
+void vesa_tty_paint_string_at(uint32_t col, uint32_t row,
+                              const char *s,
+                              uint32_t fg_rgb, uint32_t bg_rgb);
+
+/* Paint the tmux-style status bar at the bottom row of the screen.
+ * Active TTY is highlighted with inverse video.  active=current VT,
+ * count=number of registered slots.  No-op if vesa_tty isn't ready. */
+void vesa_tty_paint_status(int active, int count);
 
 /* ------------------------------------------------------------------ */
 /* Visible caret on the default pane                                   */

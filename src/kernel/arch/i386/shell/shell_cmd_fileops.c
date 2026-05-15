@@ -12,31 +12,36 @@
 static void cmd_rm(int argc, char **argv)
 {
     if (argc < 2) {
-        t_writestring("Usage: rm <file>\n");
+        t_writestring("Usage: rm <file>...\n");
         return;
     }
-    if (vfs_delete_file(argv[1]) != 0) {
-        t_writestring("rm: cannot delete '");
-        t_writestring(argv[1]);
-        t_writestring("'\n");
+    /* Iterate so wildcards (`rm *.tmp`) and explicit multi-arg both work. */
+    for (int i = 1; i < argc; i++) {
+        if (vfs_delete_file(argv[i]) != 0) {
+            t_writestring("rm: cannot delete '");
+            t_writestring(argv[i]);
+            t_writestring("'\n");
+        }
     }
 }
 
 static void cmd_rmdir(int argc, char **argv)
 {
     if (argc < 2) {
-        t_writestring("Usage: rmdir <directory>\n");
+        t_writestring("Usage: rmdir <directory>...\n");
         return;
     }
-    int r = vfs_delete_dir(argv[1]);
-    if (r == -5) {
-        t_writestring("rmdir: directory not empty: '");
-        t_writestring(argv[1]);
-        t_writestring("'\n");
-    } else if (r != 0) {
-        t_writestring("rmdir: cannot remove '");
-        t_writestring(argv[1]);
-        t_writestring("'\n");
+    for (int i = 1; i < argc; i++) {
+        int r = vfs_delete_dir(argv[i]);
+        if (r == -5) {
+            t_writestring("rmdir: directory not empty: '");
+            t_writestring(argv[i]);
+            t_writestring("'\n");
+        } else if (r != 0) {
+            t_writestring("rmdir: cannot remove '");
+            t_writestring(argv[i]);
+            t_writestring("'\n");
+        }
     }
 }
 

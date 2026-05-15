@@ -1398,12 +1398,18 @@ uint32_t keyboard_test_mod_state(void)
 
 unsigned char keyboard_getchar(void)
 {
+    /* Apply any pending vtty_switch repaint deferred from IRQ context.
+     * Cheap when nothing is pending; the cost only lands here, in task
+     * context, so the keyboard IRQ stays short. */
+    vtty_drain_pending();
+
     int s = slot_for_current();
     if (s >= 0) {
         kb_slot_t *slot = &kb_slots[s];
         while (slot_empty_v(slot)) {
             vesa_tty_caret_blink_tick(timer_get_ticks());
             task_yield();
+            vtty_drain_pending();
             asm volatile("pause");
         }
         return slot_pop(slot);
@@ -1411,6 +1417,7 @@ unsigned char keyboard_getchar(void)
     while (buf_count_v() == 0) {
         vesa_tty_caret_blink_tick(timer_get_ticks());
         task_yield();
+        vtty_drain_pending();
         asm volatile("pause");
     }
     return buf_pop();

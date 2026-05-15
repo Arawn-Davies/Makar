@@ -18,6 +18,7 @@
 #include <kernel/vfs.h>
 #include <kernel/fat32.h>
 #include <kernel/iso9660.h>
+#include <kernel/procfs.h>
 #include <kernel/ide.h>
 #include <kernel/partition.h>
 #include <kernel/tty.h>
@@ -39,6 +40,7 @@ static uint32_t s_boot_biosdev = 0xFFu; /* BIOS drive we booted from (0xFF = unk
 #define VFS_FS_ROOT    0
 #define VFS_FS_HD      1
 #define VFS_FS_CDROM   2
+#define VFS_FS_PROC    3
 #define VFS_FS_UNKNOWN (-1)
 
 /* -------------------------------------------------------------------------
@@ -167,6 +169,15 @@ static int vfs_route(const char *abs, const char **drv_path)
         return VFS_FS_CDROM;
     }
 
+    /* /proc (mount prefix is the single source of truth in procfs.h). */
+    if (memcmp(abs, PROCFS_MOUNT, PROCFS_MOUNT_LEN) == 0 &&
+        (abs[PROCFS_MOUNT_LEN] == '/' || abs[PROCFS_MOUNT_LEN] == '\0')) {
+        *drv_path = (abs[PROCFS_MOUNT_LEN] == '/')
+                        ? (abs + PROCFS_MOUNT_LEN)
+                        : "/";
+        return VFS_FS_PROC;
+    }
+
     *drv_path = abs;
     return VFS_FS_UNKNOWN;
 }
@@ -178,8 +189,9 @@ static void ls_root(void)
 {
     if (fat32_mounted())    t_writestring("[hd]\n");
     if (s_cdrom_drive >= 0) t_writestring("[cdrom]\n");
+    t_writestring("[proc]\n");   /* always present - synthesised */
     if (!fat32_mounted() && s_cdrom_drive < 0)
-        t_writestring("(no filesystems mounted - use 'mount' to mount FAT32)\n");
+        t_writestring("(no disk filesystems mounted - use 'mount' to mount FAT32)\n");
 }
 
 /* =========================================================================
@@ -370,6 +382,9 @@ int vfs_ls(const char *path)
         }
         return iso9660_ls((uint8_t)s_cdrom_drive, drv);
 
+    case VFS_FS_PROC:
+        return procfs_ls(drv);
+
     default:
         t_writestring("ls: path not found\n");
         return -1;
@@ -417,6 +432,17 @@ int vfs_cd(const char *path)
         s_cwd[VFS_PATH_MAX - 1] = '\0';
         return 0;
 
+    case VFS_FS_PROC:
+        /* /proc is flat: only "/proc" itself is a directory.  Reject
+         * any deeper cd. */
+        if (drv[0] == '/' && drv[1] == '\0') {
+            strncpy(s_cwd, abs, VFS_PATH_MAX - 1);
+            s_cwd[VFS_PATH_MAX - 1] = '\0';
+            return 0;
+        }
+        t_writestring("cd: not a directory\n");
+        return -1;
+
     default:
         t_writestring("cd: path not found\n");
         return -1;
@@ -461,6 +487,10 @@ int vfs_cat(const char *path)
             return -1;
         }
         err = iso9660_read_file((uint8_t)s_cdrom_drive, drv, buf, CAT_MAX, &got);
+        break;
+
+    case VFS_FS_PROC:
+        err = procfs_read_file(drv, buf, CAT_MAX, &got);
         break;
 
     default:
@@ -520,6 +550,9 @@ int vfs_read_file(const char *path, void *buf, uint32_t bufsz, uint32_t *out_sz)
     case VFS_FS_CDROM:
         if (s_cdrom_drive < 0) return -1;
         return iso9660_read_file((uint8_t)s_cdrom_drive, drv, buf, bufsz, out_sz);
+
+    case VFS_FS_PROC:
+        return procfs_read_file(drv, buf, bufsz, out_sz);
 
     default:
         return -1;
@@ -589,6 +622,8 @@ int vfs_file_exists(const char *path)
     case VFS_FS_CDROM:
         if (s_cdrom_drive < 0) return 0;
         return iso9660_file_exists((uint8_t)s_cdrom_drive, drv);
+    case VFS_FS_PROC:
+        return procfs_file_exists(drv);
     default:
         return 0;
     }
@@ -618,6 +653,8 @@ int vfs_complete(const char *dir, const char *prefix,
     case VFS_FS_CDROM:
         if (s_cdrom_drive < 0) return -1;
         return iso9660_complete((uint8_t)s_cdrom_drive, drv, prefix, cb, ctx);
+    case VFS_FS_PROC:
+        return procfs_complete(drv, prefix, cb, ctx);
     default:
         return -1;
     }

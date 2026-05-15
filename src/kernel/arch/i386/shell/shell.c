@@ -294,23 +294,11 @@ void shell_readline(char *buf, size_t max)
             return;
         }
 
-        /* TTY focus gained: clear screen, reprint prompt, redraw pending input. */
+        /* TTY focus gained: vtty_switch has already repainted the framebuffer
+         * from this TTY's backing grid (vt_buf), which already contains the
+         * full prompt + accumulated input.  Just drop the sentinel byte and
+         * keep reading - no clear, no reprint, no redraw.  Linux VT behaviour. */
         if (c == KEY_FOCUS_GAIN) {
-            terminal_set_colorscheme(SHELL_COLOR_VGA);
-            if (vesa_tty_is_ready()) {
-                vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
-                vesa_tty_clear();
-            }
-            shell_print_prompt();
-            rl_col = t_column;
-            rl_row = t_row;
-            if (vesa_tty_is_ready()) {
-                vesa_rl_col = vesa_tty_get_col();
-                vesa_rl_row = vesa_tty_get_row();
-            }
-            if (len > 0)
-                readline_redraw(buf, len, cur, len,
-                                rl_col, rl_row, vesa_rl_col, vesa_rl_row);
             continue;
         }
 
@@ -341,6 +329,12 @@ void shell_readline(char *buf, size_t max)
             vctx.pfxlen = wlen;
             vctx.n      = 0;
             int nmatches = 0;
+            /* Length of the prefix the match should *extend*: equals wlen for
+             * first-token (command) completion, but only the basename portion
+             * of word for path-style completion - matches contain basenames
+             * only, so we must skip the dir part of word when figuring out
+             * how many chars of the match are already typed. */
+            size_t match_prefix_len = wlen;
 
             if (is_cmd && !is_path) {
                 /* Bash-style first-token completion: built-ins + every ELF
@@ -401,21 +395,43 @@ void shell_readline(char *buf, size_t max)
                 vctx.pfxlen = strlen(file_prefix);
                 vfs_complete(dir_part, file_prefix, tab_complete_cb, &vctx);
                 nmatches = vctx.n;
+                /* User has typed only the basename portion of the match;
+                 * insertion below extends from there. */
+                match_prefix_len = vctx.pfxlen;
             }
 
             if (nmatches == 1) {
                 /* Insert remainder of the single match. */
                 size_t mlen = strlen(vctx.matches[0]);
-                for (size_t i = wlen; i < mlen && len < max - 1; i++) {
+                int    inserted_any = 0;
+                for (size_t i = match_prefix_len; i < mlen && len < max - 1; i++) {
                     for (size_t j = len; j > cur; j--)
                         buf[j] = buf[j - 1];
                     buf[cur++] = vctx.matches[0][i];
                     len++;
+                    inserted_any = 1;
                 }
+                /* Trailing affix: '/' for directories so the next TAB drills
+                 * into the dir; ' ' for finished tokens (commands or files)
+                 * so the user can immediately type the next argument.  Match
+                 * bash's behaviour: only append when the cursor is at the
+                 * end and nothing's already there.  Skip the space when we
+                 * inserted nothing AND the next char is already a space - no
+                 * point typing one twice. */
                 if (vctx.is_dir[0] && len < max - 1) {
                     for (size_t j = len; j > cur; j--)
                         buf[j] = buf[j - 1];
                     buf[cur++] = '/';
+                    len++;
+                } else if (!vctx.is_dir[0] && len < max - 1 &&
+                           (cur == len || buf[cur] != ' ')) {
+                    /* Append space - even if no chars were inserted, so users
+                     * of unique-prefix names (cat, cd) get visible feedback
+                     * that the match succeeded. */
+                    (void)inserted_any;
+                    for (size_t j = len; j > cur; j--)
+                        buf[j] = buf[j - 1];
+                    buf[cur++] = ' ';
                     len++;
                 }
                 buf[len] = '\0';
@@ -684,13 +700,17 @@ void shell_run(void)
             task_yield();
         while (!vtty_is_focused())
             task_yield();
-        /* Drain the KEY_FOCUS_GAIN byte vtty_switch queued for us. */
-        while (keyboard_poll()) {}
         terminal_set_colorscheme(SHELL_COLOR_VGA);
         if (vesa_tty_is_ready()) {
             vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
             vesa_tty_clear();
         }
+        /* Do NOT drain the input ring here.  The user may have typed a key
+         * the same instant they hit Alt+Fn (single QEMU sendkey burst or a
+         * fast typist on real hardware) - draining would swallow that first
+         * keystroke.  shell_readline's KEY_FOCUS_GAIN handler drops the
+         * sentinel byte cleanly; any real chars that arrived alongside it
+         * stay queued for the readline loop. */
     }
 
     while (1) {
@@ -717,6 +737,13 @@ void shell_run(void)
         int argc = shell_parse(buf, argv, SHELL_MAX_ARGS);
         if (argc == 0)
             continue;
+
+        /* Expand wildcards (*, ?) against the VFS.  Storage arena lives on
+         * this stack frame so expanded tokens are valid until the next
+         * REPL iteration.  Large enough for ~32 typical-length paths. */
+        static char glob_buf[1024];
+        argc = shell_expand_globs(argc, argv, SHELL_MAX_ARGS,
+                                  glob_buf, sizeof(glob_buf));
 
         if (!shell_dispatch(argc, argv)) {
             t_setcolor(SHELL_ERROR_COLOR_VGA);

@@ -3,6 +3,8 @@
 #include <kernel/vesa_font.h>
 #include <kernel/paging.h>
 #include <kernel/serial.h>
+#include <kernel/vt.h>
+#include <kernel/vtty.h>
 #include <string.h>
 
 /* Scale factor applied to every glyph pixel.  2 makes each 8×8 glyph appear
@@ -411,29 +413,193 @@ uint32_t vesa_tty_pane_get_col(const vesa_pane_t *p) { return p->cur_col; }
 uint32_t vesa_tty_pane_get_row(const vesa_pane_t *p) { return p->cur_row; }
 
 /* ------------------------------------------------------------------ */
-/* Legacy global API - delegates to the default pane                  */
+/* Cell paint primitives - take explicit fg/bg, used by both the      */
+/* global API and by vtty_switch when repainting a full buffer.       */
 /* ------------------------------------------------------------------ */
 
-uint32_t vesa_tty_get_col(void) { return default_pane.cur_col; }
-uint32_t vesa_tty_get_row(void) { return default_pane.cur_row; }
+/* Render glyph ch at absolute cell (col, row) with explicit fg/bg.
+ * Caller pre-clipped; we still bounds-check defensively. */
+static void paint_cell(char ch, uint32_t fg, uint32_t bg,
+                       uint32_t col, uint32_t row)
+{
+	if (!tty_ready) return;
+	if (col >= tty_cols || row >= tty_rows) return;
+	caret_invalidate_at(col, row);
+
+	uint8_t idx = (uint8_t)ch;
+	if (idx >= 128) idx = 0;
+	const uint8_t *glyph = FONT8x8[idx];
+	uint32_t px = col * FONT_CELL_W;
+	uint32_t py = row * FONT_CELL_H;
+	for (uint32_t y = 0; y < FONT8x8_CHAR_H; y++) {
+		uint8_t bits = glyph[y];
+		for (uint32_t x = 0; x < FONT8x8_CHAR_W; x++) {
+			uint32_t colour = (bits & (1u << x)) ? fg : bg;
+			for (uint32_t sy = 0; sy < font_scale; sy++)
+				for (uint32_t sx = 0; sx < font_scale; sx++)
+					vesa_put_pixel(px + x * font_scale + sx,
+					               py + y * font_scale + sy, colour);
+		}
+	}
+}
+
+void vesa_tty_paint_cell(uint32_t col, uint32_t row, char ch,
+                         uint32_t fg, uint32_t bg)
+{
+	paint_cell(ch, fg, bg, col, row);
+}
+
+void vesa_tty_paint_string_at(uint32_t col, uint32_t row, const char *s,
+                              uint32_t fg_rgb, uint32_t bg_rgb)
+{
+	if (!tty_ready || !s) return;
+	uint32_t fg = compose_rgb(fg_rgb);
+	uint32_t bg = compose_rgb(bg_rgb);
+	while (*s && col < tty_cols) {
+		paint_cell(*s++, fg, bg, col++, row);
+	}
+}
+
+void vesa_tty_paint_status(int active, int count)
+{
+	if (!tty_ready) return;
+	uint32_t row = tty_rows - 1;     /* bottom row reserved for status */
+	uint32_t bar_fg = 0xC0C0C0;      /* light grey on dark             */
+	uint32_t bar_bg = 0x202020;
+	uint32_t act_fg = 0x000000;      /* black-on-yellow active marker  */
+	uint32_t act_bg = 0xFFC800;
+
+	/* Wipe the row first. */
+	for (uint32_t c = 0; c < tty_cols; c++)
+		paint_cell(' ', compose_rgb(bar_fg), compose_rgb(bar_bg), c, row);
+
+	/* Left-aligned "Makar" label. */
+	vesa_tty_paint_string_at(1, row, "Makar", bar_fg, bar_bg);
+
+	/* TTY indicators starting at column 8. */
+	uint32_t col = 8;
+	for (int i = 0; i < count && col + 5 < tty_cols; i++) {
+		char label[6] = { ' ', 'V', 'T', (char)('0' + i), ' ', '\0' };
+		if (i == active)
+			vesa_tty_paint_string_at(col, row, label, act_fg, act_bg);
+		else
+			vesa_tty_paint_string_at(col, row, label, bar_fg, bar_bg);
+		col += 6;
+	}
+
+	/* Right-aligned hint. */
+	const char *hint = "Alt+F1-F4";
+	uint32_t hlen = 9;
+	if (tty_cols > hlen + 2)
+		vesa_tty_paint_string_at(tty_cols - hlen - 1, row, hint,
+		                         bar_fg, bar_bg);
+}
+
+void vesa_tty_paint_buf(const vt_buf_t *vt)
+{
+	if (!tty_ready || !vt || !vt->cells) return;
+	/* Hide the caret first - the strip stash holds pixels from the OLD VT;
+	 * those would smear back over the new VT's content on the next move. */
+	caret_drawn = false;
+	for (uint32_t r = 0; r < vt->rows && r < tty_rows; r++) {
+		for (uint32_t c = 0; c < vt->cols && c < tty_cols; c++) {
+			vt_cell_t cell = vt->cells[r * vt->cols + c];
+			paint_cell((char)cell.ch, cell.fg, cell.bg, c, r);
+		}
+	}
+	/* Sync the default pane's cursor + colours to the buffer we just
+	 * painted, so subsequent caret rendering lands at the right spot. */
+	default_pane.cur_col = (vt->cur_col < default_pane.cols)
+	                     ? vt->cur_col : (default_pane.cols - 1);
+	default_pane.cur_row = (vt->cur_row < default_pane.rows)
+	                     ? vt->cur_row : (default_pane.rows - 1);
+	default_pane.fg = vt->fg;
+	default_pane.bg = vt->bg;
+	vesa_tty_pane_set_cursor(&default_pane,
+	                         default_pane.cur_col, default_pane.cur_row);
+}
+
+/* ------------------------------------------------------------------ */
+/* Legacy global API - now routes through the calling task's vt_buf.  */
+/*                                                                     */
+/* Resolution:                                                          */
+/*   - If task_current() has a TTY index (->tty >= 0), writes update    */
+/*     vtty_buf(tty); only the cell that changed is mirrored to the FB  */
+/*     when that buffer matches vtty_buf_focused().                     */
+/*   - If no current task or task->tty == TASK_TTY_NONE (boot CPU,      */
+/*     idle, ktest_bg), writes fall through to the default_pane path    */
+/*     directly so kernel boot output still hits the framebuffer.       */
+/* ------------------------------------------------------------------ */
+
+uint32_t vesa_tty_get_col(void)
+{
+	vt_buf_t *vt = vtty_buf_current();
+	if (vt) return vt->cur_col;
+	return default_pane.cur_col;
+}
+
+uint32_t vesa_tty_get_row(void)
+{
+	vt_buf_t *vt = vtty_buf_current();
+	if (vt) return vt->cur_row;
+	return default_pane.cur_row;
+}
 
 void vesa_tty_putchar(char c)
 {
-	vesa_tty_pane_putchar(&default_pane, c);
+	vt_buf_t *vt = vtty_buf_current();
+	if (!vt) {
+		vesa_tty_pane_putchar(&default_pane, c);
+		return;
+	}
+
+	bool   focused = (vt == vtty_buf_focused());
+	vt_dirty_t d   = vt_putchar(vt, c);
+
+	if (!focused) return;
+
+	if (d.scrolled) {
+		vesa_tty_paint_buf(vt);
+		return;
+	}
+	if (d.has_cell) {
+		vt_cell_t cell = vt_get_cell(vt, d.col, d.row);
+		paint_cell((char)cell.ch, cell.fg, cell.bg, d.col, d.row);
+	}
+	/* Sync the FB cursor (caret) to vt's new cursor.  Even pure control
+	 * chars like \\r move the cursor visibly. */
+	vesa_tty_pane_set_cursor(&default_pane, vt->cur_col, vt->cur_row);
 }
 
 void vesa_tty_setcolor(uint32_t fg_rgb, uint32_t bg_rgb)
 {
+	/* Compose to framebuffer pixel format once; both default_pane and the
+	 * backing vt_buf store the composed value. */
 	vesa_tty_pane_setcolor(&default_pane, fg_rgb, bg_rgb);
+	vt_buf_t *vt = vtty_buf_current();
+	if (vt) vt_set_color(vt, default_pane.fg, default_pane.bg);
 }
 
 void vesa_tty_put_at(char c, uint32_t col, uint32_t row)
 {
-	vesa_tty_pane_put_at(&default_pane, c, col, row);
+	vt_buf_t *vt = vtty_buf_current();
+	if (!vt) {
+		vesa_tty_pane_put_at(&default_pane, c, col, row);
+		return;
+	}
+	vt_put_at(vt, c, col, row);
+	if (vt == vtty_buf_focused())
+		paint_cell(c, vt->fg, vt->bg, col, row);
 }
 
 void vesa_tty_set_cursor(uint32_t col, uint32_t row)
 {
+	vt_buf_t *vt = vtty_buf_current();
+	if (vt) {
+		vt_set_cursor(vt, col, row);
+		if (vt != vtty_buf_focused())
+			return;
+	}
 	vesa_tty_pane_set_cursor(&default_pane, col, row);
 }
 
@@ -441,8 +607,15 @@ void vesa_tty_clear(void)
 {
 	if (!tty_ready)
 		return;
-	/* Match legacy behaviour: clear the whole screen, including any sub-pane
-	 * regions that may have been carved out by phase-3 callers. */
+
+	vt_buf_t *vt = vtty_buf_current();
+	if (vt) {
+		vt_clear(vt);
+		if (vt != vtty_buf_focused())
+			return;
+	}
+
+	/* Focused-buffer (or no-task) clear: paint the framebuffer too. */
 	vesa_clear(default_pane.bg);
 	default_pane.cur_col = 0;
 	default_pane.cur_row = 0;
@@ -451,6 +624,10 @@ void vesa_tty_clear(void)
 	 * next set_cursor saves fresh pixels instead of restoring stale
 	 * ones over the now-blank cell. */
 	caret_drawn = false;
+	/* Restore the status bar - vesa_clear blew it away.  Only relevant
+	 * when called from a vtty-bound task; the no-task / boot path runs
+	 * before vtty_init so paint_status is a no-op then anyway. */
+	if (vt) vesa_tty_paint_status(vtty_active(), vtty_count());
 }
 
 void vesa_tty_spinner_tick(uint32_t tick)

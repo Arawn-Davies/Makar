@@ -224,8 +224,8 @@ src/kernel/arch/i386/
   core/       GDT/IDT (descr_tbl.c), ISR stub (isr_asm.S), interrupt dispatch (isr.c)
   mm/         pmm.c (frame allocator), paging.c, vmm.c (per-task page dirs), heap.c
   drivers/    serial, keyboard, timer, IDE, ACPI, partition
-  fs/         fat32.c, iso9660.c, vfs.c
-  display/    tty.c (VGA text), vesa.c + vesa_tty.c (VESA framebuffer)
+  fs/         fat32.c, iso9660.c, procfs.c (synthetic /proc), vfs.c
+  display/    tty.c (VGA text), vesa.c + vesa_tty.c (VESA framebuffer), vt.c (per-TTY backing grid)
   proc/       task.c + task_asm.S (scheduler), syscall.c, ring3.S, usertest.c, ktest.c, vtty.c
   shell/      shell.c, shell_cmd_{display,disk,fs,apps,system,man}.c, shell_help.c
   debug/      exception handlers (INT 1/3/8/13/14, serial-first output)
@@ -257,16 +257,18 @@ relevant source file and in `docs/userland-libc.md`.
 
 Makar boots to an interactive VESA shell with 4 independent TTYs.
 Alt+F1–F4 switches between them; each is a separate **preemptive** kernel
-task with its own kernel stack and (for ring-3 programs) its own page
-directory. Major subsystems:
+task with its own kernel stack, its own backing screen buffer (so a
+background TTY's accumulated output survives a focus switch — Linux VT
+behaviour), and (for ring-3 programs) its own page directory. Major
+subsystems:
 
-- **Display**: VESA framebuffer (Bochs VBE, defaults to 720p), VGA text fallback (80×50). Pane abstraction (`vesa_pane_t`) used by VICS and the TTY manager.
-- **Multi-TTY**: 4 shell tasks (`shell0`–`shell3`). Alt+F1–F4 switches focus; `vtty.c` routes keyboard input and sends `KEY_FOCUS_GAIN` to the newly active task. Each task redraws on focus gain.
+- **Display**: VESA framebuffer (Bochs VBE, defaults to 720p), VGA text fallback (80×50). Pane abstraction (`vesa_pane_t`) used by VICS. Per-TTY logical character grid (`vt_buf_t` in `display/vt.c`) backs every shell — writes go to the grid first; the framebuffer is only painted when that TTY is focused.
+- **Multi-TTY**: 4 shell tasks (`shell0`–`shell3`). `vtty.c` routes keyboard input via `task_t.tty` (authoritative) and tracks the focused slot. `vtty_switch()` defers the framebuffer repaint out of IRQ context to `vtty_drain_pending()`, which runs from the destination shell's `keyboard_getchar` poll loop. A tmux-style status bar lives in the reserved bottom row showing `Makar  VT0  VT1  VT2  VT3  ...  Alt+F1-F4` with the active slot highlighted.
 - **VICS**: Pane-aware text editor. Derives column/row counts from the active `vesa_pane_t` at runtime - works correctly at any VESA resolution. Modelled on ELKS/FUZIX vi: lightweight, stable, no heap after startup.
-- **Storage**: FAT32 (HDD/USB) + ISO 9660 (CD-ROM) via IDE PIO. VFS layer with CWD, auto-mount. Full read/write/delete/rename support on FAT32.
+- **Storage**: FAT32 (HDD/USB) + ISO 9660 (CD-ROM) via IDE PIO. VFS layer with CWD, auto-mount. Full read/write/delete/rename support on FAT32. Synthetic `/proc` mount exposes `cpuinfo`, `meminfo`, `tasks`, `uname` as read-only files generated on demand.
 - **Tasking**: Round-robin scheduler with timer-driven preemption (PIT 100 Hz, `SCHED_QUANTUM = 4` ticks → 40 ms slice). Per-task `pid`, `cwd`, `tty`, signal bitmasks, fd-table placeholder. User PD reaped on task exit. Background ktest harness runs before the shell prompt appears.
-- **Userspace**: Ring-3 protected mode via `iret`. ELF loader (`elf_exec`) with argc/argv. Syscalls: `SYS_EXIT`, `SYS_READ`, `SYS_WRITE` (fd 1 = VGA, fd 2 = VGA + COM1 serial), `SYS_OPEN`, `SYS_CLOSE`, `SYS_LSEEK`, `SYS_BRK`, `SYS_DEBUG`, `SYS_YIELD`, plus Makar extensions (200–211 - terminal/file ops + `SYS_WRITE_SERIAL`). Apps: `calc.elf`, `hello.elf`, `ls.elf`, `echo.elf`, `vics.elf`, `diskinfo.elf`, `rm.elf`, `mv.elf`, `cp.elf`, `kbtester.elf`.
-- **Shell**: Inline editing, history, tab completion, Ctrl+C sigint. `lsman` / `man <cmd>` replace `help`. Built-in file ops: `rm`, `rmdir`, `mv`. `uptime` shows humanised h/m/s.
+- **Userspace**: Ring-3 protected mode via `iret`. ELF loader (`elf_exec`) with argc/argv. Syscalls: `SYS_EXIT`, `SYS_READ`, `SYS_WRITE` (fd 1 = VGA, fd 2 = VGA + COM1 serial), `SYS_OPEN`, `SYS_CLOSE`, `SYS_LSEEK`, `SYS_BRK`, `SYS_DEBUG`, `SYS_YIELD`, plus Makar extensions (200–214 - terminal/file ops + `SYS_WRITE_SERIAL`). Apps: `calc.elf`, `hello.elf`, `ls.elf`, `echo.elf`, `vics.elf`, `diskinfo.elf`, `rm.elf`, `mv.elf`, `cp.elf`, `kbtester.elf`.
+- **Shell**: Inline editing, history, tab completion, Ctrl+C sigint. `lsman` / `man <cmd>` replace `help`. Built-in file ops: `rm`, `rmdir`, `mv`. `uptime` shows humanised h/m/s. `cat /proc/<entry>` for system introspection.
 - **GRUB**: Two-entry menu (Makar OS + Next available device), 5-second timeout.
 
 ## Recently merged
@@ -277,6 +279,8 @@ directory. Major subsystems:
 | #123 | `feat/tty-multitasking` | Preemptive 100 Hz scheduler, per-task `task_t` plumbing (pid/cwd/tty/sig/fd), user-PD reaper, ring-3 lifecycle ktest, `SYS_WRITE_SERIAL`, humanised `uptime` |
 | #124 | `feat/keyboard-layered` | Layered PS/2 driver rewrite (scancode → keycode → sentinel → router), IRQ-driven per-TTY rings, `kbtester.elf` ring-3 diagnostic |
 | #125 | `feat/test-infra-cleanup` | ccache toolchain image, single-kernel/two-ISO emit, build-once fan-out CI (4 parallel jobs), KVM auto-detect (off by default), `act` local validation, new split `*-build`/`*-run` modes in `run.sh` |
+| #127 | `feat/keyboard-hygiene` | Keyboard hardening - `unsigned char` audit complete, typematic-repeat filter for modifiers, PS/2 LED sync (`0xED <bitmap>`), boot-time LED state read |
+| #128 | `fix/reaper-uaf` | Reaper UAF (deferred PD free), keyboard IRQ-init order fix, loading-bar progress on startup, isolate ring-3 lifecycle suites from bg ktest |
 
 ## Future roadmap
 
@@ -291,21 +295,18 @@ Tracked here, pulled into branches one at a time so each PR stays focused.
 | 3 | **Ring-3 lifecycle ktest** with serial proof | ✅ shipped (`f48d730`, `1a34c20`) |
 | 4 | **100 Hz timer + humanised uptime** + stderr→serial + `SYS_WRITE_SERIAL` | ✅ shipped (`5e40001`) |
 | 5 | **Keyboard rewrite** - full PS/2 set-1 + e0, layered decoder (scancode→keycode→ASCII/sentinel→router), IRQ-driven per-TTY rings with proper SPSC memory ordering, strict make/break separation, modifier state at decoder, key repeat / rollover / lost-IRQ recovery, `unsigned char` end-to-end (no sign-extension hazard for sentinel compares), escape-clean sentinels | ✅ shipped (#124) |
-| 5b | **Keyboard hardening** - finish the `unsigned char` audit (sign-extension hazard regressed: kbtester panic with EIP=0xFFFFFF83 ≡ sign-extended 0x83 sentinel); typematic-repeat filter for Caps/Shift/Ctrl/Alt/Super so holding the key doesn't re-toggle/re-fire at 30 Hz (visible in kbtester log as bursts of sentinel 0x94 making `mod_caps` oscillate); LED sync (`0xED <CNS bitmap>` to PS/2 after every Caps/Num/Scroll state change); boot-time read of physical LED state. | 🔥 **NEXT - urgent** |
+| 5b | **Keyboard hardening** - `unsigned char` audit, typematic-repeat filter for modifiers, PS/2 LED sync, boot-time LED state read | ✅ shipped (#127) |
 | 6 | **Test-infra cleanup** - ccache, single-kernel/two-ISO, build-once fan-out CI, KVM gate | ✅ shipped (#125) |
-| 7 | **Per-task consumer migration** - VFS `task->cwd`, vtty `task->tty`, real per-task FD table replaces keyboard owner ad-hoc | ⏭ |
+| 7 | **Per-task consumer migration** - vtty `task->tty` authoritative (drop `vtty_tasks[]` parallel array). VFS `task->cwd` and real per-task FD table remain on the queue. | ✅ partial (vtty done) |
 | 8 | **Linux-style signal subsystem** - full sigaction table, `kill()` syscall, htop-style picker | ⏭ |
 | 9 | **Preemption hardening** - interrupt-safe `schedule()`, per-task tick accounting, runtime-tunable quantum, busy-loop ktest | ⏭ |
-| 10 | **Per-TTY screen buffers** + task pausing in background TTYs | ⏭ |
-| 11 | **`ps`-style task listing** with privilege/state/CWD/TTY columns | ⏭ |
+| 10 | **Per-TTY screen buffers** - `vt_buf_t` backing grid per TTY, write-through to FB only when focused, repaint on Alt+Fn (deferred out of IRQ). tmux-style status bar at bottom row. `/proc` synthetic FS with `cpuinfo/meminfo/tasks/uname`. VGA-text fallback path stays on shared buffer (deferred). | ✅ shipped (this PR) |
+| 11 | **`ps`-style task listing** with privilege/state/CWD/TTY columns | ⏭ (covered by `cat /proc/tasks` for now) |
 | 12 | **fork() readiness** - PD clone (CoW), fd dup, PID alloc, return-value split | ⏭ |
 | 13 | **UTF-8 terminal** with ASCII fallback / runtime mode switch | ⏭ deferred |
-
-**Keyboard hardening - observed symptoms** (2026-05-13, kbtester session under PR #125's debug build):
-
-1. **Page fault with EIP=0xFFFFFF83 ≡ `(int32_t)(int8_t)0x83`** — sentinel byte 0x83 (KEY_ARROW_RIGHT) sign-extended through a `char` somewhere on the dispatch path, then the resulting negative value was treated as an address / function-pointer-derived value and the CPU faulted on the instruction fetch. The bit pattern is the smoking gun. Slice 5 explicitly called out `unsigned char` end-to-end; the audit needs to be redone post-merge — every cast, ring-buffer element type, table index, and compare on the keyboard path must be `unsigned char` (or `uint8_t`). Fault error code `[NP|READ|KERNEL]` from EIP=fault-addr confirms it was an instruction-fetch fault, not a data access.
-2. **Caps Lock oscillates under hold** — `apply_modifier()` does `if (down) mod_caps = !mod_caps` with no typematic-repeat filter. PS/2 hardware repeats Caps make codes at ~30 Hz; each repeat re-toggles. kbtester log shows bursts of sentinel 0x94 (e.g. entries 0049–0051 = 3 repeats, 0035–0036 = 2 repeats) confirming the hardware behaviour reaches the decoder unfiltered. Apply the same fix to Shift/Ctrl/Alt/Super and any other modifier that the decoder treats as edge-triggered. Standard approach: track `prev_make_kc`; ignore a make code that matches `prev_make_kc` without an intervening break.
-3. **No LED feedback / no boot-time sync** — kernel never writes `0xED <bitmap>` to the PS/2 controller, so the physical Caps/Num/Scroll LEDs never reflect kernel state, and at boot the kernel assumes all three are off regardless of BIOS state.
+| 14 | **Per-task FD table** - replace global keyboard owner + opaque `fd_table` placeholder with a real array; pipe(2) / dup(2) fall out naturally | 🔥 **NEXT** |
+| 15 | **VFS `task->cwd` authoritative** - drop the `s_cwd` global in `vfs.c`; resolve relative paths against the calling task's cwd | ⏭ |
+| 16 | **VGA-fallback per-TTY** - route `tty.c` writes through `vt_buf` so VGA-text mode gets the same per-TTY isolation that VESA already has | ⏭ |
 
 ### Userspace / libc porting
 
