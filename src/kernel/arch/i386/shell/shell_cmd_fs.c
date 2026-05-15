@@ -86,19 +86,38 @@ static void cmd_umount(int argc, char **argv)
 
 static void cmd_ls(int argc, char **argv)
 {
-    const char *path = (argc >= 2) ? argv[1] : NULL;
-    t_writestring(path ? path : vfs_getcwd());
-    t_writestring(":\n");
-    vfs_ls(path);
+    if (argc < 2) {
+        t_writestring(vfs_getcwd());
+        t_writestring(":\n");
+        vfs_ls(NULL);
+        return;
+    }
+    /* Iterate every path argument so wildcard expansions like `ls /proc/*`
+     * list every match instead of only the first.  Header line per target
+     * mirrors GNU ls when multiple operands are given. */
+    for (int i = 1; i < argc; i++) {
+        if (argc > 2) {
+            if (i > 1) t_putchar('\n');
+            t_writestring(argv[i]);
+            t_writestring(":\n");
+        } else {
+            t_writestring(argv[1]);
+            t_writestring(":\n");
+        }
+        vfs_ls(argv[i]);
+    }
 }
 
 static void cmd_cat(int argc, char **argv)
 {
     if (argc < 2) {
-        t_writestring("Usage: cat <file>\n");
+        t_writestring("Usage: cat <file>...\n");
         return;
     }
-    vfs_cat(argv[1]);
+    /* Concatenate every file given - lets wildcards (`cat /proc/*`) emit
+     * the whole set in one shot, matching bash/cat semantics. */
+    for (int i = 1; i < argc; i++)
+        vfs_cat(argv[i]);
 }
 
 static void cmd_cd(int argc, char **argv)

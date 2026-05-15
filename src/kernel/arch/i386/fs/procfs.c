@@ -264,12 +264,12 @@ int procfs_ls(const char *path)
     }
 
     if (classify(path) != PROC_NONE) {
-        t_writestring("ls: ");
+        t_writestring("ls: " PROCFS_MOUNT);
         t_writestring(path);
         t_writestring(": Not a directory\n");
         return -1;
     }
-    t_writestring("ls: ");
+    t_writestring("ls: " PROCFS_MOUNT);
     t_writestring(path);
     t_writestring(": No such entry\n");
     return -1;

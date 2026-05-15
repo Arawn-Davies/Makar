@@ -169,10 +169,12 @@ static int vfs_route(const char *abs, const char **drv_path)
         return VFS_FS_CDROM;
     }
 
-    /* "/proc" or "/proc/…" */
-    if (abs[1] == 'p' && abs[2] == 'r' && abs[3] == 'o' && abs[4] == 'c' &&
-        (abs[5] == '/' || abs[5] == '\0')) {
-        *drv_path = (abs[5] == '/') ? (abs + 5) : "/";
+    /* /proc (mount prefix is the single source of truth in procfs.h). */
+    if (memcmp(abs, PROCFS_MOUNT, PROCFS_MOUNT_LEN) == 0 &&
+        (abs[PROCFS_MOUNT_LEN] == '/' || abs[PROCFS_MOUNT_LEN] == '\0')) {
+        *drv_path = (abs[PROCFS_MOUNT_LEN] == '/')
+                        ? (abs + PROCFS_MOUNT_LEN)
+                        : "/";
         return VFS_FS_PROC;
     }
 

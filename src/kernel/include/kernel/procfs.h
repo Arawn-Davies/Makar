@@ -20,6 +20,12 @@
 
 #include <kernel/fat32.h>   /* fat32_complete_cb_t */
 
+/* Mount-point prefix.  Single source of truth: procfs error messages
+ * and any other consumer that needs to format absolute /proc paths
+ * should derive them from this string rather than hardcoding "/proc". */
+#define PROCFS_MOUNT      "/proc"
+#define PROCFS_MOUNT_LEN  5
+
 /* List the /proc directory (or report 'not a dir' for entry paths) to
  * the current terminal.  Returns 0. */
 int procfs_ls(const char *path);
