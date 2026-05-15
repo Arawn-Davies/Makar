@@ -241,16 +241,29 @@ static void schedule(void)
 
     /* Reap the outgoing task's user PD if it exited. The kernel stack we are
        still running on lives in shared kernel PDEs (mirrored into every PD
-       by vmm_create_pd), so freeing prev's PD after switching CR3 is safe. */
+       by vmm_create_pd), so freeing prev's PD after switching CR3 is safe.
+       Must run with interrupts disabled and prev->page_dir cleared up-front:
+       a timer IRQ landing inside vmm_free_pd re-enters schedule(), and a
+       subsequent reap attempt finding state==DEAD && page_dir!=kernel would
+       double-walk a partially-freed PD whose frames have been re-allocated.
+       Saw the symptom as a #PF in vmm_free_pd reading a PT pointer that
+       still contained ELF magic bytes from a reused user-code frame. */
     if (prev->state == TASK_DEAD &&
         prev->page_dir &&
         prev->page_dir != paging_kernel_pd() &&
         prev->page_dir != current_task->page_dir) {
+        uint32_t *dead_pd = prev->page_dir;
+        prev->page_dir = paging_kernel_pd();   /* mark BEFORE free */
         Serial_WriteString("[reaper] freeing user PD of dead pid=");
         Serial_WriteDec((uint32_t)prev->pid);
         Serial_WriteString("\n");
-        vmm_free_pd(prev->page_dir);
-        prev->page_dir = paging_kernel_pd();
+        /* Save EFLAGS and cli; schedule() can be called both from task
+         * context (IF=1) and from inside the timer ISR (IF=0), so we mustn't
+         * unconditionally sti at the end. */
+        uint32_t saved_flags;
+        asm volatile("pushfl; popl %0; cli" : "=r"(saved_flags) :: "memory");
+        vmm_free_pd(dead_pd);
+        asm volatile("pushl %0; popfl" :: "r"(saved_flags) : "memory", "cc");
     }
 
     task_switch(&prev->esp, current_task->esp);
