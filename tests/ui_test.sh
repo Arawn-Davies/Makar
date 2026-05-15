@@ -50,29 +50,37 @@ run_scenario() {
 
     rm -f "$serial" "$mon" "$dump"
 
+    # -no-reboot + -no-shutdown keep a triple fault or kernel panic from
+    # turning into an infinite reboot loop that hangs CI.
     "$QEMU" \
         -cdrom "$ISO" \
         -m 256 \
         -vga std \
         -display none \
+        -no-reboot -no-shutdown \
         -serial "file:$serial" \
         -monitor "unix:$mon,server,nowait" \
         &
     local pid=$!
 
-    # Wait up to 30s for "kernel: boot complete" - emitted by kernel.c
-    # right before it switches to Linux-style quiet serial.  Reliable
-    # whether or not g_serial_verbose is on; reaches serial via direct
-    # Serial_WriteString, not the t_putchar mirror.
+    # Wait up to ${BOOT_TIMEOUT:-90}s for "kernel: boot complete".  TCG
+    # under CI containers can take 30-60s to reach this marker on its
+    # own; bump UI_BOOT_TIMEOUT in the workflow if you see false fails.
+    local boot_timeout=${UI_BOOT_TIMEOUT:-90}
     local waited=0
-    while [ $waited -lt 60 ]; do
+    local max_ticks=$((boot_timeout * 2))   # 0.5s ticks
+    while [ $waited -lt $max_ticks ]; do
         if grep -q "kernel: boot complete" "$serial" 2>/dev/null; then break; fi
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "FAIL [$name]: QEMU exited before boot-complete" >&2
+            return 1
+        fi
         sleep 0.5
         waited=$((waited + 1))
     done
-    if [ $waited -ge 60 ]; then
-        echo "FAIL [$name]: boot-complete marker never appeared" >&2
-        kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if [ $waited -ge $max_ticks ]; then
+        echo "FAIL [$name]: boot-complete marker never appeared (waited ${boot_timeout}s)" >&2
+        kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
         return 1
     fi
     # Small grace period for the shell tasks (created after the marker)
@@ -116,6 +124,19 @@ sendkey ret'
     echo "screendump $dump" | nc -U "$mon" >/dev/null
     sleep 0.3
     echo "quit" | nc -U "$mon" >/dev/null
+
+    # Bounded shutdown.  If QEMU doesn't honour the HMP `quit` within
+    # 5s (monitor socket lost, kernel wedged, etc.) escalate to SIGKILL
+    # so a single hang can't burn the whole CI minute budget.
+    local exit_waited=0
+    while [ $exit_waited -lt 50 ] && kill -0 "$pid" 2>/dev/null; do
+        sleep 0.1
+        exit_waited=$((exit_waited + 1))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        echo "WARN [$name]: QEMU did not exit on quit; killing" >&2
+        kill -9 "$pid" 2>/dev/null
+    fi
     wait "$pid" 2>/dev/null
 
     # Assert every expected substring appears in serial.
