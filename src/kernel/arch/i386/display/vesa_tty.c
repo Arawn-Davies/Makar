@@ -198,7 +198,7 @@ bool vesa_tty_init(void)
 
 	/* Default pane reserves the bottom row for the tmux-style status bar
 	 * painted by vesa_tty_paint_status().  Any pane-aware renderer
-	 * (shell vt_buf, vics) therefore stays out of that row by default.
+	 * (shell vt_buf, vix) therefore stays out of that row by default.
 	 * Direct framebuffer writes (vesa_clear, paint_cell etc) are
 	 * unaffected - the status painter itself bypasses the pane. */
 	default_pane.top_row = 0;
@@ -325,7 +325,7 @@ void vesa_tty_pane_set_cursor(vesa_pane_t *p, uint32_t col, uint32_t row)
 	if (row < p->rows) p->cur_row = row;
 
 	/* Visible caret only on the screen-spanning default pane (the active
-	 * shell input).  Other panes (vics editor, future tmux splitters) own
+	 * shell input).  Other panes (vix editor, future tmux splitters) own
 	 * their own caret rendering if/when they need one. */
 	if (!tty_ready || p != &default_pane)
 		return;

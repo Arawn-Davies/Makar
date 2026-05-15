@@ -92,7 +92,7 @@ for a matching ELF and runs it via `elf_exec`.
 | Command | Description |
 |---|---|
 | `exec <path>` | Load and run a userspace ELF (Ctrl+C kills it) |
-| `vics <path>` | Launch VICS text editor |
+| `vix <path>` | Launch VIX text editor |
 | `install` | Run OS installer from CD-ROM to HDD |
 | `eject` | Eject HDD or CD-ROM |
 | `ring3test` | Ring-3 test harness |

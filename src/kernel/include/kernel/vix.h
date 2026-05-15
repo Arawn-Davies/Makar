@@ -1,10 +1,10 @@
-#ifndef _KERNEL_VICS_H
-#define _KERNEL_VICS_H
+#ifndef _KERNEL_VIX_H
+#define _KERNEL_VIX_H
 
 #include <kernel/vesa_tty.h>
 
 /*
- * vics.h - VICS interactive text editor for Makar.
+ * vix.h - VIX interactive text editor for Makar.
  *
  * Key bindings:
  *   Arrow keys  - navigate
@@ -17,6 +17,6 @@
  *
  * Pass pane=NULL to use the default full-screen pane.
  */
-void vics_edit(const char *path, vesa_pane_t *pane);
+void vix_edit(const char *path, vesa_pane_t *pane);
 
-#endif /* _KERNEL_VICS_H */
+#endif /* _KERNEL_VIX_H */

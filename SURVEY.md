@@ -36,7 +36,7 @@
 - **ktest** - Run all in-kernel unit tests
 
 ### Application Commands (`shell_cmd_apps.c`, lines 26–192)
-- **vics** - Launch VICS interactive text editor on a file
+- **vix** - Launch VIX interactive text editor on a file
 - **install** - Run OS installer from CD-ROM to HDD
 - **exec** - Execute userspace ELF from `/cdrom/apps/` or `/hd/apps/` (line 79)
 - **eject** - Eject HDD or CD-ROM
@@ -105,8 +105,8 @@ All apps in `/Users/arawn/Makar/src/userspace/` compile to `.elf` files and are 
 - Groups: Display, System, Disk, Filesystem, Apps, Editor
 - Syscalls: `sys_write()` only
 
-### **vics.elf** (vics.c, lines 1–80)
-- VICS text editor (ported from kernel `proc/vics.c`)
+### **vix.elf** (vix.c, lines 1–80)
+- VIX text editor (ported from kernel `proc/vix.c`)
 - All kernel calls replaced with syscalls
 - Features: line editing, navigation, Ctrl+S save, Ctrl+Q quit
 - Supports: 256 lines × 80 chars, 64 KiB file max
@@ -225,7 +225,7 @@ Builds bootable ISO. Steps:
 
 1. Create `isodir/` structure with subdirs: `boot/grub/i386-pc`, `apps`, `src`, `docs`
 2. Copy kernel: `sysroot/boot/makar.kernel` → `isodir/boot/makar.kernel`
-3. **Copy source tree**: `src/. → isodir/src/` (readable via VICS on ISO)
+3. **Copy source tree**: `src/. → isodir/src/` (readable via VIX on ISO)
 4. **Copy docs**: `docs/. → isodir/docs/`
 5. Write GRUB config: `isodir/boot/grub/grub.cfg`
    - Sets `timeout=5` (5-second user prompt on CD-ROM boot)
@@ -249,8 +249,8 @@ Builds bootable ISO. Steps:
 | Shell filesystem commands | 14 | ✅ Complete (mount, umount, ls, cat, cd, mkdir, mkfs, isols, write, touch, cp, rm, rmdir, mv) |
 | Shell disk commands | 5 | ✅ Complete (lsdisks, lspart, mkpart, readsector, chainload) |
 | Shell system commands | 8 | ✅ Complete (echo, meminfo, uptime, tasks, shutdown, reboot, panic, ktest) |
-| Shell app commands | 5 | ✅ Complete (vics, install, exec, eject, ring3test) |
-| Userspace ELF apps | 10 | ✅ Complete (hello, diskinfo, ls, echo, calc, help, vics, rm, mv, cp) |
+| Shell app commands | 5 | ✅ Complete (vix, install, exec, eject, ring3test) |
+| Userspace ELF apps | 10 | ✅ Complete (hello, diskinfo, ls, echo, calc, help, vix, rm, mv, cp) |
 | VFS operations | 13 | ✅ Complete (init, mount, ls, cd, cat, mkdir, read, write, exists, complete, delete_file, delete_dir, rename) |
 | FAT32 read/write APIs | 12 | ✅ Complete (mount, umount, ls, cd, mkdir, read, write, mkfs, delete_file, delete_dir, rename_file, rename_dir) |
 | Userspace syscalls | 14 | ✅ Complete I/O + 6 Makar extensions (write_file, ls_dir, disk_info, delete_file, rename_file, delete_dir) |

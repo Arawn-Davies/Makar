@@ -23,7 +23,7 @@ present in this repository.
 **URL:** https://github.com/ghaerr/elks
 
 ELKS's approach to a minimal `crt0.S` + static freestanding libc on real
-hardware directly shaped `src/userspace/`.  VICS's philosophy of a
+hardware directly shaped `src/userspace/`.  VIX's philosophy of a
 lightweight, heap-free editor that owns the terminal is modelled on ELKS's
 `vi`.  No ELKS source code is present in this repository.
 
@@ -32,7 +32,7 @@ lightweight, heap-free editor that owns the terminal is modelled on ELKS's
 **URL:** https://github.com/EtchedPixels/FUZIX
 
 Alan Cox's Unix-like OS for small systems.  FUZIX's vi design and its
-approach to portable libc stubs across diverse hardware influenced the VICS
+approach to portable libc stubs across diverse hardware influenced the VIX
 editor and the userspace syscall stub layout.  No FUZIX source code is
 present in this repository.
 

@@ -47,13 +47,13 @@ private kernel stack and (for ring-3 programs) its own page directory.
 | **Boot** | GRUB Multiboot 2 + 5-second menu (Makar OS / chainload next device). Multiboot 2 cmdline parsed for runtime flags. |
 | **Display** | VESA framebuffer (Bochs VBE, 720p default), VGA 80×50 fallback. Pane API (`vesa_pane_t`) for split-screen. |
 | **Multi-TTY** | 4 independent shell tasks (`shell0`–`shell3`), **Alt+F1–F4** to switch focus, per-pane redraws on `KEY_FOCUS_GAIN`. |
-| **VICS editor** | Pane-aware vi-style editor (FUZIX/ELKS-inspired). Resolution-agnostic. |
+| **VIX editor** | Pane-aware vi-style editor (FUZIX/ELKS-inspired). Resolution-agnostic. |
 | **Storage** | FAT32 (HDD/USB) + ISO 9660 (CD-ROM) via IDE PIO. Auto-mount at `/hd` and `/cdrom`. Read+write+delete+rename on FAT32. |
 | **Memory** | PMM bitmap allocator, paging (256 MiB identity + per-task 4 KiB user pages), kernel heap (`kmalloc`/`kfree`/`krealloc`). |
 | **Tasking** | **Preemptive** round-robin scheduler. PIT at **100 Hz**, `SCHED_QUANTUM = 4` ticks → 40 ms time slice. Per-task `pid`, `cwd`, `tty`, fd-table placeholder, signal bitmasks. |
-| **Userspace** | Ring-3 via `iret`. ELF loader with argc/argv. Apps: `hello`, `echo`, `calc`, `ls`, `vics`, `diskinfo`, `rm`, `mv`, `cp`. |
+| **Userspace** | Ring-3 via `iret`. ELF loader with argc/argv. Apps: `hello`, `echo`, `calc`, `ls`, `vix`, `diskinfo`, `rm`, `mv`, `cp`. |
 | **Syscalls** | Linux i386 ABI subset over `int 0x80` - `SYS_EXIT`, `SYS_READ`, `SYS_WRITE` (fd 1 = VGA, fd 2 = VGA + COM1 serial), `SYS_OPEN`, `SYS_CLOSE`, `SYS_LSEEK`, `SYS_BRK`, `SYS_DEBUG`, `SYS_YIELD`, plus Makar extensions for terminal/file ops and `SYS_WRITE_SERIAL` (211). |
-| **Shell** | Inline editing, history (16 entries), tab completion, Ctrl+C. Built-ins: `ls`, `cd`, `cat`, `cp`, `mv`, `mkdir`, `rm`, `rmdir`, `mount`, `meminfo`, `uptime` (humanised h/m/s), `lsdisks`, `lspart`, `mkpart`, `readsector`, `exec`, `ktest`, `ring3test`, `vicstest`. `lsman` / `man <cmd>` for help. |
+| **Shell** | Inline editing, history (16 entries), tab completion, Ctrl+C. Built-ins: `ls`, `cd`, `cat`, `cp`, `mv`, `mkdir`, `rm`, `rmdir`, `mount`, `meminfo`, `uptime` (humanised h/m/s), `lsdisks`, `lspart`, `mkpart`, `readsector`, `exec`, `ktest`, `ring3test`, `vixtest`. `lsman` / `man <cmd>` for help. |
 | **Drivers** | Serial (16550 UART, 38400 baud), PIT, PS/2 keyboard (set 1 + e0 extended), ATA/IDE PIO (28-bit LBA, 4 drives), MBR + GPT partition tables. |
 | **Debug** | INT 1 / INT 3 GDB-friendly handlers, kernel panic screen, ktest harness with VESA + serial output. |
 

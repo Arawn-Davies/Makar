@@ -563,7 +563,7 @@ static int try_exec_path(const char *path, int argc, char **argv)
 }
 
 /* Repaint the focused VT's backing grid to the framebuffer.  Called
- * after any command that may have painted directly to the FB (vics, any
+ * after any command that may have painted directly to the FB (vix, any
  * ELF launched via exec) so the shell's accumulated output comes back
  * immediately instead of staying blank until the next keystroke. */
 static void shell_restore_screen(void)

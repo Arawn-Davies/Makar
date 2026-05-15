@@ -45,7 +45,7 @@
  * for uniform dispatch.  A NULL name field terminates each module's table.
  *
  * fullscreen: set on handlers that paint over the framebuffer directly
- * (VICS, future curses-style apps).  shell_dispatch repaints the focused
+ * (VIX, future curses-style apps).  shell_dispatch repaints the focused
  * VT's backing grid after such commands return so the shell's history
  * comes back without waiting for the next keystroke.
  */

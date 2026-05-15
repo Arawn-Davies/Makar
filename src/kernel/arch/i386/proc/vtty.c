@@ -44,7 +44,7 @@ static volatile int vtty_pending = -1;
 
 /* Bottom-row status bar reservation lives in <kernel/vesa_tty.h> as
  * VESA_TTY_STATUS_ROWS - one source of truth shared with the framebuffer
- * renderer and with VICS. */
+ * renderer and with VIX. */
 
 void vtty_init(void)
 {
