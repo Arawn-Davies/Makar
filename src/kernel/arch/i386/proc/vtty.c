@@ -42,15 +42,26 @@ static volatile int vtty_pending = -1;
 #define VTTY_DEFAULT_FG  0xFFFFFFFFu
 #define VTTY_DEFAULT_BG  0x00000000u
 
+/* Bottom-row status bar reservation.  When VESA is active we steal the
+ * last character row so the tmux-style indicator can live there without
+ * being scrolled away by shell output.  In VGA-text fallback the bar
+ * isn't drawn (yet); the full 80x50 grid stays available. */
+#define VTTY_STATUS_ROWS 1
+
 void vtty_init(void)
 {
     vtty_nslots  = 0;
     vtty_current = 0;
 
     uint32_t cols = 0, rows = 0;
+    bool reserve_status = false;
     if (vesa_tty_is_ready()) {
         cols = vesa_tty_get_cols();
         rows = vesa_tty_get_rows();
+        if (rows > VTTY_STATUS_ROWS) {
+            rows -= VTTY_STATUS_ROWS;
+            reserve_status = true;
+        }
     }
     if (cols == 0 || rows == 0) {
         cols = 80;
@@ -66,6 +77,11 @@ void vtty_init(void)
             vtty_bufs[i].cells = NULL;
         }
     }
+
+    /* Initial status bar.  count=0 - no slots registered yet, but draw
+     * the row so the dark band is visible during boot. */
+    if (reserve_status)
+        vesa_tty_paint_status(0, 0);
 }
 
 /*
@@ -97,6 +113,8 @@ int vtty_register(void)
     if (me) me->tty = slot;
     if (slot == 0)
         keyboard_set_focus(me);
+    /* Refresh the status bar so the new slot lights up. */
+    vesa_tty_paint_status(vtty_current, vtty_nslots);
     return slot;
 }
 
@@ -174,4 +192,8 @@ void vtty_drain_pending(void)
 
     vt_buf_t *vt = vtty_buf(n);
     if (vt) vesa_tty_paint_buf(vt);
+    /* paint_buf only walks vt->rows, which excludes the status row, so
+     * the bar survives a focus switch.  Repaint it anyway to update the
+     * "active" highlight. */
+    vesa_tty_paint_status(vtty_current, vtty_nslots);
 }

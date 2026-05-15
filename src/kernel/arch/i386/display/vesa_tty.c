@@ -449,6 +449,52 @@ void vesa_tty_paint_cell(uint32_t col, uint32_t row, char ch,
 	paint_cell(ch, fg, bg, col, row);
 }
 
+void vesa_tty_paint_string_at(uint32_t col, uint32_t row, const char *s,
+                              uint32_t fg_rgb, uint32_t bg_rgb)
+{
+	if (!tty_ready || !s) return;
+	uint32_t fg = compose_rgb(fg_rgb);
+	uint32_t bg = compose_rgb(bg_rgb);
+	while (*s && col < tty_cols) {
+		paint_cell(*s++, fg, bg, col++, row);
+	}
+}
+
+void vesa_tty_paint_status(int active, int count)
+{
+	if (!tty_ready) return;
+	uint32_t row = tty_rows - 1;     /* bottom row reserved for status */
+	uint32_t bar_fg = 0xC0C0C0;      /* light grey on dark             */
+	uint32_t bar_bg = 0x202020;
+	uint32_t act_fg = 0x000000;      /* black-on-yellow active marker  */
+	uint32_t act_bg = 0xFFC800;
+
+	/* Wipe the row first. */
+	for (uint32_t c = 0; c < tty_cols; c++)
+		paint_cell(' ', compose_rgb(bar_fg), compose_rgb(bar_bg), c, row);
+
+	/* Left-aligned "Makar" label. */
+	vesa_tty_paint_string_at(1, row, "Makar", bar_fg, bar_bg);
+
+	/* TTY indicators starting at column 8. */
+	uint32_t col = 8;
+	for (int i = 0; i < count && col + 5 < tty_cols; i++) {
+		char label[6] = { ' ', 'V', 'T', (char)('0' + i), ' ', '\0' };
+		if (i == active)
+			vesa_tty_paint_string_at(col, row, label, act_fg, act_bg);
+		else
+			vesa_tty_paint_string_at(col, row, label, bar_fg, bar_bg);
+		col += 6;
+	}
+
+	/* Right-aligned hint. */
+	const char *hint = "Alt+F1-F4";
+	uint32_t hlen = 9;
+	if (tty_cols > hlen + 2)
+		vesa_tty_paint_string_at(tty_cols - hlen - 1, row, hint,
+		                         bar_fg, bar_bg);
+}
+
 void vesa_tty_paint_buf(const vt_buf_t *vt)
 {
 	if (!tty_ready || !vt || !vt->cells) return;
@@ -578,6 +624,10 @@ void vesa_tty_clear(void)
 	 * next set_cursor saves fresh pixels instead of restoring stale
 	 * ones over the now-blank cell. */
 	caret_drawn = false;
+	/* Restore the status bar - vesa_clear blew it away.  Only relevant
+	 * when called from a vtty-bound task; the no-task / boot path runs
+	 * before vtty_init so paint_status is a no-op then anyway. */
+	if (vt) vesa_tty_paint_status(vtty_active(), vtty_count());
 }
 
 void vesa_tty_spinner_tick(uint32_t tick)

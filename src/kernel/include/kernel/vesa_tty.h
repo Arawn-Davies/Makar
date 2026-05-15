@@ -122,6 +122,18 @@ void vesa_tty_paint_cell(uint32_t col, uint32_t row, char ch,
  * vtty_switch to surface a background TTY's accumulated state. */
 void vesa_tty_paint_buf(const struct vt_buf *vt);
 
+/* Paint a string starting at cell (col, row) using explicit RGB colours.
+ * Bypasses cursor / scrolling / vt_buf routing - direct FB write.  Used
+ * for status-bar overlay rows that live outside any TTY's grid. */
+void vesa_tty_paint_string_at(uint32_t col, uint32_t row,
+                              const char *s,
+                              uint32_t fg_rgb, uint32_t bg_rgb);
+
+/* Paint the tmux-style status bar at the bottom row of the screen.
+ * Active TTY is highlighted with inverse video.  active=current VT,
+ * count=number of registered slots.  No-op if vesa_tty isn't ready. */
+void vesa_tty_paint_status(int active, int count);
+
 /* ------------------------------------------------------------------ */
 /* Visible caret on the default pane                                   */
 /* ------------------------------------------------------------------ */
