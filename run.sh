@@ -60,7 +60,7 @@ export DOCKER_PLATFORM
 MODE="${1:-}"
 if [ -z "$MODE" ]; then
     echo "Usage: $0 <mode>"
-    echo "Modes: iso-boot  iso-test  iso-ktest-gui  iso-release  iso-build"
+    echo "Modes: iso-boot  iso-test  iso-ktest-gui  iso-release  iso-build  ui-test"
     echo "       hdd-boot  hdd-test  hdd-release    hdd-build"
     echo "       ktest-run gdb-iso-run gdb-hdd-run  clean"
     exit 1
@@ -272,6 +272,26 @@ _make_fat32_disk() {
          echo '  FAT32 test disk ready.'"
 }
 
+# Run the black-box UI tests via QEMU HMP monitor (sendkey + screendump,
+# assert on serial output).  Needs host qemu-system-i386 + nc; if either
+# is missing we skip rather than fail so the wider CI suite is portable.
+_run_ui_test() {
+    if ! command -v qemu-system-i386 >/dev/null 2>&1; then
+        echo "==> UI tests skipped (no host qemu-system-i386)"
+        return 0
+    fi
+    if ! command -v nc >/dev/null 2>&1; then
+        echo "==> UI tests skipped (no nc on PATH)"
+        return 0
+    fi
+    if [ ! -f "$REPO_ROOT/makar.iso" ]; then
+        echo "==> UI tests skipped (no makar.iso)"
+        return 0
+    fi
+    echo "==> Running UI tests (sendkey + serial grep)..."
+    ( cd "$REPO_ROOT" && bash tests/ui_test.sh )
+}
+
 # Run the GDB ISO boot-checkpoint test.
 # Boots from CD-ROM only - verifies boot sequence, background ktest, and
 # CD-ROM filesystem content.
@@ -467,14 +487,25 @@ iso-boot)
 
 # ── iso-test ──────────────────────────────────────────────────────────────────
 # One kernel build, two ISO variants packaged from the same staged isodir:
-#   makar.iso       - interactive menu (also exercised by gdb_boot_test)
+#   makar.iso       - interactive menu (also exercised by gdb_boot_test, ui-test)
 #   makar-test.iso  - single auto-boot entry with test_mode cmdline
 iso-test)
     _clean
     _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
     _run_ktest
     _run_gdb_iso_test
+    _run_ui_test
     echo "==> All ISO tests PASSED."
+    ;;
+
+# ── ui-test ───────────────────────────────────────────────────────────────────
+# Black-box UI tests driven through QEMU's HMP monitor (sendkey + serial grep).
+# Requires host QEMU + nc.  See tests/ui_test.sh for the scenarios.
+ui-test)
+    if [ ! -f "$REPO_ROOT/makar.iso" ]; then
+        _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
+    fi
+    _run_ui_test
     ;;
 
 # ── iso-ktest-gui ─────────────────────────────────────────────────────────────
@@ -561,7 +592,7 @@ clean)
 
 *)
     echo "ERROR: unknown mode '$MODE'" >&2
-    echo "Modes: iso-boot  iso-test  iso-ktest-gui  iso-release  iso-build" >&2
+    echo "Modes: iso-boot  iso-test  iso-ktest-gui  iso-release  iso-build  ui-test" >&2
     echo "       hdd-boot  hdd-test  hdd-release    hdd-build" >&2
     echo "       ktest-run gdb-iso-run gdb-hdd-run  clean" >&2
     exit 1

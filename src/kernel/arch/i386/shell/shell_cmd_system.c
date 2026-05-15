@@ -13,6 +13,7 @@
 #include <kernel/acpi.h>
 #include <kernel/debug.h>
 #include <kernel/ktest.h>
+#include <kernel/serial.h>
 
 static void cmd_echo(int argc, char **argv)
 {
@@ -109,6 +110,22 @@ static void cmd_ktest(int argc, char **argv)
     ktest_run_all();
 }
 
+/* `verbose [on|off]` - toggle the tty-to-serial mirror.  Linux-equivalent
+ * to flipping `console=ttyS0` on the kernel cmdline at runtime.  Without
+ * an argument, just reports the current state.  Used both interactively
+ * (debugging a remote system over COM1) and by ui_test scenarios that
+ * need to grep shell output from the serial log. */
+static void cmd_verbose(int argc, char **argv)
+{
+    if (argc >= 2) {
+        if (strcmp(argv[1], "on") == 0)       g_serial_verbose = 1;
+        else if (strcmp(argv[1], "off") == 0) g_serial_verbose = 0;
+        else { t_writestring("Usage: verbose [on|off]\n"); return; }
+    }
+    t_writestring("serial verbose: ");
+    t_writestring(g_serial_verbose ? "on\n" : "off\n");
+}
+
 /* ---------------------------------------------------------------------------
  * Module table
  * --------------------------------------------------------------------------- */
@@ -122,5 +139,6 @@ const shell_cmd_entry_t system_cmds[] = {
     { "reboot",   cmd_reboot   },
     { "panic",    cmd_panic    },
     { "ktest",    cmd_ktest    },
+    { "verbose",  cmd_verbose  },
     { NULL, NULL }
 };

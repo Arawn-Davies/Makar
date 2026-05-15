@@ -15,6 +15,11 @@
 
 int PORT;
 
+/* See kernel/serial.h.  Defaults on so init/driver banners print to
+ * COM1 during boot; kernel_main flips it off (unless test_mode) right
+ * before the shell launches. */
+int g_serial_verbose = 1;
+
 enum ComPorts
 {
 	COMPort1 = 0x3f8,

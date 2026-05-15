@@ -132,6 +132,10 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 
 	/* Parse Multiboot 2 tags: boot device and kernel command line. */
 	int test_mode = 0;
+	int console_serial = 0;     /* "console=ttyS0" - keep g_serial_verbose
+	                             * on after boot so the shell mirrors to
+	                             * COM1.  Linux-style: dmesg + tty over
+	                             * serial.  Used by ui_test scenarios. */
 	{
 		uint32_t biosdev = 0xFFu;
 
@@ -153,6 +157,8 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 						(multiboot2_tag_cmdline_t *)tag;
 					if (strstr(cmd->string, "test_mode"))
 						test_mode = 1;
+					if (strstr(cmd->string, "console=ttyS0"))
+						console_serial = 1;
 				}
 				tag_ptr += (tag->size + 7u) & ~7u;
 			}
@@ -171,6 +177,19 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	tasking_init();
 	vtty_init();
 	if (!test_mode) {
+		/* Switch to Linux-style serial behaviour: from here on COM1
+		 * only carries explicit kernel diagnostics (KLOG, panic,
+		 * driver banners that use Serial_*).  Shell/user TTY output
+		 * goes to the framebuffer only, mirroring dmesg semantics.
+		 * `console=ttyS0` on the kernel cmdline opts back in so the
+		 * shell mirrors to COM1 - used by ui_test scenarios.
+		 *
+		 * Emit a final boot marker before the flip so external
+		 * tooling (CI, debugging shells) can detect "boot complete"
+		 * regardless of the mirror policy. */
+		Serial_WriteString("kernel: boot complete\n");
+		if (!console_serial)
+			g_serial_verbose = 0;
 		task_create("shell0", shell_run);
 		task_create("shell1", shell_run);
 		task_create("shell2", shell_run);

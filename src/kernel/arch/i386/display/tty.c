@@ -67,7 +67,8 @@ void t_putentryat(char c, uint8_t color, size_t x, size_t y)
 
 void t_putchar(char c)
 {
-	Serial_WriteChar(c);
+	if (g_serial_verbose)
+		Serial_WriteChar(c);
 	vesa_tty_putchar(c);
 
 	if (c != '\n')
