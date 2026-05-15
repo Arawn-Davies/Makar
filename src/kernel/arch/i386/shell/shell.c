@@ -710,6 +710,13 @@ void shell_run(void)
         if (argc == 0)
             continue;
 
+        /* Expand wildcards (*, ?) against the VFS.  Storage arena lives on
+         * this stack frame so expanded tokens are valid until the next
+         * REPL iteration.  Large enough for ~32 typical-length paths. */
+        static char glob_buf[1024];
+        argc = shell_expand_globs(argc, argv, SHELL_MAX_ARGS,
+                                  glob_buf, sizeof(glob_buf));
+
         if (!shell_dispatch(argc, argv)) {
             t_setcolor(SHELL_ERROR_COLOR_VGA);
             t_writestring("Unknown command '");

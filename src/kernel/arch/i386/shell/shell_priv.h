@@ -62,6 +62,10 @@ extern const shell_cmd_entry_t fileops_cmds[];
 /* shell.c – REPL core */
 void shell_readline(char *buf, size_t max);
 
+/* shell_glob.c – wildcard (* and ?) expansion of argv tokens via VFS. */
+int  shell_expand_globs(int argc, char **argv, int argv_cap,
+                        char *storage, size_t storage_size);
+
 /* shell_cmd_apps.c – shared ELF launcher used by exec and PATH lookup */
 void shell_exec_elf(const char *path, int argc, char **argv);
 
