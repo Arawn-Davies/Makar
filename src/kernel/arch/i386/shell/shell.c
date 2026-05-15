@@ -394,16 +394,35 @@ void shell_readline(char *buf, size_t max)
             if (nmatches == 1) {
                 /* Insert remainder of the single match. */
                 size_t mlen = strlen(vctx.matches[0]);
+                int    inserted_any = 0;
                 for (size_t i = wlen; i < mlen && len < max - 1; i++) {
                     for (size_t j = len; j > cur; j--)
                         buf[j] = buf[j - 1];
                     buf[cur++] = vctx.matches[0][i];
                     len++;
+                    inserted_any = 1;
                 }
+                /* Trailing affix: '/' for directories so the next TAB drills
+                 * into the dir; ' ' for finished tokens (commands or files)
+                 * so the user can immediately type the next argument.  Match
+                 * bash's behaviour: only append when the cursor is at the
+                 * end and nothing's already there.  Skip the space when we
+                 * inserted nothing AND the next char is already a space - no
+                 * point typing one twice. */
                 if (vctx.is_dir[0] && len < max - 1) {
                     for (size_t j = len; j > cur; j--)
                         buf[j] = buf[j - 1];
                     buf[cur++] = '/';
+                    len++;
+                } else if (!vctx.is_dir[0] && len < max - 1 &&
+                           (cur == len || buf[cur] != ' ')) {
+                    /* Append space - even if no chars were inserted, so users
+                     * of unique-prefix names (cat, cd) get visible feedback
+                     * that the match succeeded. */
+                    (void)inserted_any;
+                    for (size_t j = len; j > cur; j--)
+                        buf[j] = buf[j - 1];
+                    buf[cur++] = ' ';
                     len++;
                 }
                 buf[len] = '\0';

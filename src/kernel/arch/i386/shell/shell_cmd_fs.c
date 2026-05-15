@@ -136,24 +136,27 @@ static void cmd_cd(int argc, char **argv)
 static void cmd_mkdir(int argc, char **argv)
 {
     if (argc < 2) {
-        t_writestring("Usage: mkdir <path>\n");
+        t_writestring("Usage: mkdir <path>...\n");
         return;
     }
-
-    int err = vfs_mkdir(argv[1]);
-    switch (err) {
-    case  0: t_writestring("Directory created.\n");    break;
-    case -1: t_writestring("mkdir: path error\n");     break;
-    case -2: t_writestring("mkdir: I/O error\n");      break;
-    case -4: t_writestring("mkdir: disk full\n");      break;
-    case -6: t_writestring("mkdir: already exists\n"); break;
-    default:
-        if (err < 0) {
-            t_writestring("mkdir: error ");
-            t_dec((uint32_t)(-err));
-            t_putchar('\n');
+    for (int i = 1; i < argc; i++) {
+        int err = vfs_mkdir(argv[i]);
+        switch (err) {
+        case  0: break;  /* silent on success when batching, like coreutils */
+        case -1: t_writestring("mkdir: path error: ");   t_writestring(argv[i]); t_putchar('\n'); break;
+        case -2: t_writestring("mkdir: I/O error: ");    t_writestring(argv[i]); t_putchar('\n'); break;
+        case -4: t_writestring("mkdir: disk full: ");    t_writestring(argv[i]); t_putchar('\n'); break;
+        case -6: t_writestring("mkdir: already exists: ");t_writestring(argv[i]); t_putchar('\n'); break;
+        default:
+            if (err < 0) {
+                t_writestring("mkdir: error ");
+                t_dec((uint32_t)(-err));
+                t_writestring(": ");
+                t_writestring(argv[i]);
+                t_putchar('\n');
+            }
+            break;
         }
-        break;
     }
 }
 
@@ -289,30 +292,40 @@ static void cmd_write(int argc, char **argv)
 static void cmd_touch(int argc, char **argv)
 {
     if (argc < 2) {
-        t_writestring("Usage: touch <file>\n");
+        t_writestring("Usage: touch <file>...\n");
         return;
     }
 
     static char s_touch_path[VFS_PATH_MAX];
-    const char *arg = argv[1];
     const char *cwd = vfs_getcwd();
-    if (arg[0] == '/') {
-        strncpy(s_touch_path, arg, VFS_PATH_MAX - 1);
-        s_touch_path[VFS_PATH_MAX - 1] = '\0';
-    } else {
-        size_t cl = strlen(cwd), al = strlen(arg);
-        if (cl + 1 + al >= VFS_PATH_MAX) { t_writestring("touch: path too long\n"); return; }
-        size_t p = 0;
-        memcpy(s_touch_path, cwd, cl); p += cl;
-        if (cwd[cl - 1] != '/') s_touch_path[p++] = '/';
-        memcpy(s_touch_path + p, arg, al + 1);
-    }
 
-    int err = vfs_write_file(s_touch_path, "", 0);
-    if (err) {
-        t_writestring("touch: error ");
-        t_dec((uint32_t)(-err));
-        t_putchar('\n');
+    for (int i = 1; i < argc; i++) {
+        const char *arg = argv[i];
+        if (arg[0] == '/') {
+            strncpy(s_touch_path, arg, VFS_PATH_MAX - 1);
+            s_touch_path[VFS_PATH_MAX - 1] = '\0';
+        } else {
+            size_t cl = strlen(cwd), al = strlen(arg);
+            if (cl + 1 + al >= VFS_PATH_MAX) {
+                t_writestring("touch: path too long: ");
+                t_writestring(arg);
+                t_putchar('\n');
+                continue;
+            }
+            size_t p = 0;
+            memcpy(s_touch_path, cwd, cl); p += cl;
+            if (cwd[cl - 1] != '/') s_touch_path[p++] = '/';
+            memcpy(s_touch_path + p, arg, al + 1);
+        }
+
+        int err = vfs_write_file(s_touch_path, "", 0);
+        if (err) {
+            t_writestring("touch: error ");
+            t_dec((uint32_t)(-err));
+            t_writestring(": ");
+            t_writestring(arg);
+            t_putchar('\n');
+        }
     }
 }
 
