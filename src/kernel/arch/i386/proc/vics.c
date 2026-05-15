@@ -13,6 +13,7 @@
 #include <kernel/keyboard.h>
 #include <kernel/heap.h>
 #include <kernel/vesa_tty.h>
+#include <kernel/vtty.h>
 #include <string.h>
 
 #define VICS_MAX_LINES   256
@@ -340,5 +341,11 @@ void vics_edit(const char *path, vesa_pane_t *pane)
         vesa_tty_setcolor(VICS_SHELL_FG, VICS_SHELL_BG);
         if (v_pane) vesa_tty_pane_clear(v_pane);
         else        vesa_tty_clear();
+        /* Repaint the global status bar immediately - the pane clear
+         * above only covers the text area, but VICS may have written
+         * stale ink to the status row before this commit shrunk the
+         * default pane.  Doing it here means the user sees the bar
+         * the moment we return to the shell, not on the next Alt+Fn. */
+        vesa_tty_paint_status(vtty_active(), vtty_count());
     }
 }

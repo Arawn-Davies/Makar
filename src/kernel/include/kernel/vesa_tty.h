@@ -6,6 +6,11 @@
 
 struct vt_buf;
 
+/* Rows reserved at the bottom of the framebuffer for the tmux-style status
+ * bar painted by vesa_tty_paint_status().  Default pane (and any pane-aware
+ * renderer like VICS) sizes itself to leave these rows untouched. */
+#define VESA_TTY_STATUS_ROWS 1
+
 /*
  * vesa_tty - text renderer over the VESA framebuffer.
  *

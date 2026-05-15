@@ -196,9 +196,15 @@ bool vesa_tty_init(void)
 	tty_cols = fb->width  / FONT_CELL_W;
 	tty_rows = fb->height / FONT_CELL_H;
 
+	/* Default pane reserves the bottom row for the tmux-style status bar
+	 * painted by vesa_tty_paint_status().  Any pane-aware renderer
+	 * (shell vt_buf, vics) therefore stays out of that row by default.
+	 * Direct framebuffer writes (vesa_clear, paint_cell etc) are
+	 * unaffected - the status painter itself bypasses the pane. */
 	default_pane.top_row = 0;
 	default_pane.cols    = tty_cols;
-	default_pane.rows    = tty_rows;
+	default_pane.rows    = (tty_rows > VESA_TTY_STATUS_ROWS)
+	                     ? (tty_rows - VESA_TTY_STATUS_ROWS) : tty_rows;
 	default_pane.cur_col = 0;
 	default_pane.cur_row = 0;
 	default_pane.fg = compose_colour(0xFF, 0xFF, 0xFF); /* white */

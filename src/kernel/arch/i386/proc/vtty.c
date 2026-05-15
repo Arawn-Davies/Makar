@@ -42,11 +42,9 @@ static volatile int vtty_pending = -1;
 #define VTTY_DEFAULT_FG  0xFFFFFFFFu
 #define VTTY_DEFAULT_BG  0x00000000u
 
-/* Bottom-row status bar reservation.  When VESA is active we steal the
- * last character row so the tmux-style indicator can live there without
- * being scrolled away by shell output.  In VGA-text fallback the bar
- * isn't drawn (yet); the full 80x50 grid stays available. */
-#define VTTY_STATUS_ROWS 1
+/* Bottom-row status bar reservation lives in <kernel/vesa_tty.h> as
+ * VESA_TTY_STATUS_ROWS - one source of truth shared with the framebuffer
+ * renderer and with VICS. */
 
 void vtty_init(void)
 {
@@ -58,8 +56,8 @@ void vtty_init(void)
     if (vesa_tty_is_ready()) {
         cols = vesa_tty_get_cols();
         rows = vesa_tty_get_rows();
-        if (rows > VTTY_STATUS_ROWS) {
-            rows -= VTTY_STATUS_ROWS;
+        if (rows > VESA_TTY_STATUS_ROWS) {
+            rows -= VESA_TTY_STATUS_ROWS;
             reserve_status = true;
         }
     }
