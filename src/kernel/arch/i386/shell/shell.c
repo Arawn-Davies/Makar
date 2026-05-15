@@ -329,6 +329,12 @@ void shell_readline(char *buf, size_t max)
             vctx.pfxlen = wlen;
             vctx.n      = 0;
             int nmatches = 0;
+            /* Length of the prefix the match should *extend*: equals wlen for
+             * first-token (command) completion, but only the basename portion
+             * of word for path-style completion - matches contain basenames
+             * only, so we must skip the dir part of word when figuring out
+             * how many chars of the match are already typed. */
+            size_t match_prefix_len = wlen;
 
             if (is_cmd && !is_path) {
                 /* Bash-style first-token completion: built-ins + every ELF
@@ -389,13 +395,16 @@ void shell_readline(char *buf, size_t max)
                 vctx.pfxlen = strlen(file_prefix);
                 vfs_complete(dir_part, file_prefix, tab_complete_cb, &vctx);
                 nmatches = vctx.n;
+                /* User has typed only the basename portion of the match;
+                 * insertion below extends from there. */
+                match_prefix_len = vctx.pfxlen;
             }
 
             if (nmatches == 1) {
                 /* Insert remainder of the single match. */
                 size_t mlen = strlen(vctx.matches[0]);
                 int    inserted_any = 0;
-                for (size_t i = wlen; i < mlen && len < max - 1; i++) {
+                for (size_t i = match_prefix_len; i < mlen && len < max - 1; i++) {
                     for (size_t j = len; j > cur; j--)
                         buf[j] = buf[j - 1];
                     buf[cur++] = vctx.matches[0][i];
