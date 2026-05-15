@@ -53,4 +53,9 @@ vt_buf_t *vtty_buf_current(void);
  * buffers are not yet allocated. */
 vt_buf_t *vtty_buf_focused(void);
 
+/* Apply any pending vtty_switch repaint deferred from IRQ context.
+ * Safe to call from task context (yields, REPL polling); cheap when
+ * no switch is pending. */
+void vtty_drain_pending(void);
+
 #endif /* _KERNEL_VTTY_H */

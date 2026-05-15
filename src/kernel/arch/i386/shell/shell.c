@@ -294,23 +294,11 @@ void shell_readline(char *buf, size_t max)
             return;
         }
 
-        /* TTY focus gained: clear screen, reprint prompt, redraw pending input. */
+        /* TTY focus gained: vtty_switch has already repainted the framebuffer
+         * from this TTY's backing grid (vt_buf), which already contains the
+         * full prompt + accumulated input.  Just drop the sentinel byte and
+         * keep reading - no clear, no reprint, no redraw.  Linux VT behaviour. */
         if (c == KEY_FOCUS_GAIN) {
-            terminal_set_colorscheme(SHELL_COLOR_VGA);
-            if (vesa_tty_is_ready()) {
-                vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
-                vesa_tty_clear();
-            }
-            shell_print_prompt();
-            rl_col = t_column;
-            rl_row = t_row;
-            if (vesa_tty_is_ready()) {
-                vesa_rl_col = vesa_tty_get_col();
-                vesa_rl_row = vesa_tty_get_row();
-            }
-            if (len > 0)
-                readline_redraw(buf, len, cur, len,
-                                rl_col, rl_row, vesa_rl_col, vesa_rl_row);
             continue;
         }
 
@@ -684,13 +672,17 @@ void shell_run(void)
             task_yield();
         while (!vtty_is_focused())
             task_yield();
-        /* Drain the KEY_FOCUS_GAIN byte vtty_switch queued for us. */
-        while (keyboard_poll()) {}
         terminal_set_colorscheme(SHELL_COLOR_VGA);
         if (vesa_tty_is_ready()) {
             vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
             vesa_tty_clear();
         }
+        /* Do NOT drain the input ring here.  The user may have typed a key
+         * the same instant they hit Alt+Fn (single QEMU sendkey burst or a
+         * fast typist on real hardware) - draining would swallow that first
+         * keystroke.  shell_readline's KEY_FOCUS_GAIN handler drops the
+         * sentinel byte cleanly; any real chars that arrived alongside it
+         * stay queued for the readline loop. */
     }
 
     while (1) {

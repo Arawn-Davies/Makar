@@ -28,6 +28,14 @@ static int      vtty_current = 0;
 static vt_buf_t vtty_bufs[VTTY_MAX];
 static bool     vtty_bufs_ready = false;
 
+/* Pending repaint target.  vtty_switch runs in the keyboard IRQ; doing a
+ * full framebuffer repaint there would block subsequent keyboard IRQs
+ * long enough that the i8042's 1-byte OBF stays full and the edge-
+ * triggered PIC misses key events (the same failure mode as PR #127).
+ * Mark the target instead; vtty_drain_pending() flushes the paint from
+ * task context the next time the new owner's REPL yields. */
+static volatile int vtty_pending = -1;
+
 /* Default attribute values used when no display renderer has set colours
  * yet.  Renderer interprets - VESA uses these as composed FB pixels,
  * VGA uses only the low byte as a VGA attribute. */
@@ -137,4 +145,33 @@ void vtty_switch(int n)
     vtty_current = n;
     keyboard_set_focus(owner);
     keyboard_send_to(owner, KEY_FOCUS_GAIN);
+    /* Defer the FB repaint to task context - see vtty_pending comment. */
+    __atomic_store_n(&vtty_pending, n, __ATOMIC_RELEASE);
+}
+
+void vtty_drain_pending(void)
+{
+    int n = __atomic_load_n(&vtty_pending, __ATOMIC_ACQUIRE);
+    if (n < 0) return;
+
+    /* Only the task that owns the destination TTY repaints.  Otherwise
+     * a non-focused shell calling keyboard_getchar (sitting idle on its
+     * own slot) would race with the destination shell writing the
+     * prompt / accumulated content to vt_buf[n] AND directly to the FB
+     * via the focused-write path.  That race produced visible artefacts
+     * (stray caret glyphs in the middle of the screen) in interactive
+     * Alt+Fn switches. */
+    task_t *me = task_current();
+    if (!me || me->tty != n) return;
+
+    /* Compare-exchange so concurrent owners (parent shell + exec child
+     * sharing the same TTY) don't double-paint. */
+    int expected = n;
+    if (!__atomic_compare_exchange_n(&vtty_pending, &expected, -1,
+                                     /*weak=*/0,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        return;
+
+    vt_buf_t *vt = vtty_buf(n);
+    if (vt) vesa_tty_paint_buf(vt);
 }
