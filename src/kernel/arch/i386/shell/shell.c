@@ -609,16 +609,61 @@ void shell_run(void)
 
     if (slot == 0) {
         terminal_set_colorscheme(SHELL_COLOR_VGA);
+
+        /* Loading screen: render a progress bar that fills as bg ktest
+         * completes each suite.  The wait is OUTSIDE the VESA conditional so
+         * the VGA fallback also blocks the REPL until ktest_bg_done = 1.
+         * On VESA we draw a 30-cell ASCII bar two rows below the logo; on
+         * VGA we just yield silently (progress prints already go to serial
+         * via ktest_bg_task's RUN macro). */
         if (vesa_tty_is_ready()) {
             vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
             vesa_tty_clear();
             vesa_blit_logo(SHELL_FG_RGB, SHELL_BG_RGB);
+
+            const uint32_t bar_width = 30;
+            const uint32_t bar_row   = vesa_tty_get_rows() - 3;
+            uint32_t cols     = vesa_tty_get_cols();
+            uint32_t bar_col  = (cols > bar_width + 2) ?
+                                 (cols - bar_width - 2) / 2 : 0;
+
+            /* Draw the empty frame once. */
+            vesa_tty_put_at('[', bar_col, bar_row);
+            for (uint32_t i = 0; i < bar_width; i++)
+                vesa_tty_put_at('.', bar_col + 1 + i, bar_row);
+            vesa_tty_put_at(']', bar_col + 1 + bar_width, bar_row);
+
+            uint32_t last_filled = 0;
+            uint32_t spinner_tick = 0;
             while (!ktest_bg_done) {
-                vesa_tty_spinner_tick(timer_get_ticks());
+                int done  = ktest_bg_completed;
+                int total = ktest_bg_total > 0 ? ktest_bg_total : 1;
+                if (done > total) done = total;
+                uint32_t filled = (uint32_t)((done * (int)bar_width) / total);
+                while (last_filled < filled) {
+                    vesa_tty_put_at('#',
+                                    bar_col + 1 + last_filled, bar_row);
+                    last_filled++;
+                }
+                /* Tiny spinner inside the right bracket so the screen looks
+                 * alive even between suites. */
+                static const char frames[] = { '|', '/', '-', '\\' };
+                vesa_tty_put_at(frames[(spinner_tick / 6) & 3],
+                                bar_col + 1 + bar_width + 2, bar_row);
+                spinner_tick++;
                 task_yield();
             }
+            /* Fill the bar completely on success. */
+            while (last_filled < bar_width) {
+                vesa_tty_put_at('#', bar_col + 1 + last_filled, bar_row);
+                last_filled++;
+            }
+            vesa_tty_put_at(' ', bar_col + 1 + bar_width + 2, bar_row);
             vesa_tty_clear();
         }
+
+        /* Belt-and-braces wait for the VGA fallback path (and to cover the
+         * fallthrough from the VESA branch above without re-checking). */
         while (!ktest_bg_done)
             task_yield();
         while (keyboard_poll()) {}

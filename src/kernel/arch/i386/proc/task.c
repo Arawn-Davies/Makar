@@ -239,18 +239,30 @@ static void schedule(void)
     if (current_task->page_dir != prev->page_dir)
         vmm_switch(current_task->page_dir);
 
-    /* Reap the outgoing task's user PD if it exited. The kernel stack we are
-       still running on lives in shared kernel PDEs (mirrored into every PD
-       by vmm_create_pd), so freeing prev's PD after switching CR3 is safe. */
+    /* Detach the outgoing task's user PD if it exited.  We deliberately do
+     * NOT free the PD here; freeing it inline in schedule() was the source
+     * of two distinct regressions:
+     *   1. Pre-#128: a UAF caused by a timer IRQ landing inside vmm_free_pd
+     *      and re-entering schedule() with state==DEAD.
+     *   2. Post-#128 (with cli around the free): test runs would either
+     *      enter a TF=1 single-step storm after the reap or hang silently
+     *      with no panic and no further serial output.
+     * Both regressions occur after a ring-3 child task exits.  The PD is
+     * instead freed by task_create's slot-reuse path (below), which runs
+     * in stable kernel context with no impending CR3/stack swap.  Up to
+     * MAX_TASKS - live_count dead PDs may be held briefly; with MAX_TASKS=8
+     * and ~5 boot tasks that is at most ~12 KiB and is bounded. */
     if (prev->state == TASK_DEAD &&
         prev->page_dir &&
         prev->page_dir != paging_kernel_pd() &&
         prev->page_dir != current_task->page_dir) {
-        Serial_WriteString("[reaper] freeing user PD of dead pid=");
+        Serial_WriteString("[reaper] deferring PD free for dead pid=");
         Serial_WriteDec((uint32_t)prev->pid);
-        Serial_WriteString("\n");
-        vmm_free_pd(prev->page_dir);
-        prev->page_dir = paging_kernel_pd();
+        Serial_WriteString(" (reclaimed on slot reuse)\n");
+        /* Leave prev->page_dir pointing at the dead PD so task_create's
+         * defensive free-on-reuse picks it up.  CR3 is already on
+         * current_task->page_dir from the vmm_switch above, so the
+         * dead PD is not the active address space. */
     }
 
     task_switch(&prev->esp, current_task->esp);

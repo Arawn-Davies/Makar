@@ -1173,9 +1173,31 @@ void keyboard_init(void)
     s_caps_on      = mod_caps;
     s_num_on       = (flags & 0x20) ? 1 : 0;
     s_scroll_on    = (flags & 0x10) ? 1 : 0;
+
+    /* Hook the IRQ *before* sending the LED command.  Each 0xED/<bitmap>
+     * byte we write causes the keyboard to reply with 0xFA (ACK).  If we
+     * register the handler after, those ACK bytes land in the controller's
+     * 1-byte OBF before anyone reads them, leaving the IRQ 1 line stuck
+     * asserted with no edge to retrigger.  The PIC is edge-triggered
+     * (pic0.elcr=0), so no future key press can wake the CPU until
+     * something reads 0x60 and clears OBF -- which never happens because
+     * the IRQ never fires.  Result: keyboard appears dead at boot.
+     *
+     * Registering first lets the handler drain each ACK as it arrives.
+     * The post-sync drain loop is a belt-and-braces guard against the
+     * very small window where an IRQ could land between handler
+     * registration and our drain, leaving OBF still set with no edge. */
+    register_interrupt_handler(IRQ1, keyboard_irq_handler);
+
     kb_sync_leds();
 
-    register_interrupt_handler(IRQ1, keyboard_irq_handler);
+    /* Drain any ACK bytes (and any stray scancodes) that arrived during
+     * LED sync; this guarantees OBF is clear by the time we return. */
+    for (int i = 0; i < 16; i++) {
+        uint8_t status = inb(PS2_STATUS_PORT);
+        if (!(status & PS2_STAT_OBF)) break;
+        (void)inb(PS2_DATA_PORT);
+    }
 }
 
 /*

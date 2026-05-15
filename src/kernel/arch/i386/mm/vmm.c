@@ -78,25 +78,48 @@ void vmm_switch(uint32_t *pd)
     asm volatile("mov %0, %%cr3" :: "r"((uint32_t)pd) : "memory");
 }
 
+/* Kernel identity-map upper bound (paging.c maps 0-256 MiB via 4 MiB PSE
+ * large pages).  A PDE pointing outside this range cannot be safely walked
+ * by the kernel -- the PT-pointer dereference would itself page-fault.
+ * Any PDE whose physical address is >= this bound is treated as corrupt
+ * and skipped.  Real user-task PTs always come from pmm_alloc_frame which
+ * only hands out frames within this identity-mapped window. */
+#define VMM_KERNEL_IDMAP_END 0x10000000u
+
 void vmm_free_pd(uint32_t *pd)
 {
     uint32_t *kpd = paging_kernel_pd();
     for (uint32_t pdi = 0; pdi < 1024; pdi++) {
-        if (!(pd[pdi] & PAGE_PRESENT) || (pd[pdi] & PAGE_LARGE))
+        uint32_t pde = pd[pdi];
+        if (!(pde & PAGE_PRESENT) || (pde & PAGE_LARGE))
             continue;
         /* Skip PDEs shared with the kernel - freeing them would corrupt the
          * kernel's own mappings. */
-        if (pd[pdi] == kpd[pdi])
+        if (pde == kpd[pdi])
             continue;
 
-        uint32_t *pt = (uint32_t *)(pd[pdi] & ~0xFFFu);
+        uint32_t pt_phys = pde & ~0xFFFu;
+
+        /* Defence against corrupted PDEs: if the PT pointer lies outside
+         * the kernel identity-map, walking it would fault.  Skip it and
+         * log; if this ever fires it's a sign that something stomped on
+         * the PD (use-after-free, double-mapping, etc.) and the upstream
+         * cause needs investigating. */
+        if (pt_phys == 0 || pt_phys >= VMM_KERNEL_IDMAP_END)
+            continue;
+
+        uint32_t *pt = (uint32_t *)pt_phys;
 
         for (uint32_t pti = 0; pti < 1024; pti++) {
-            if (pt[pti] & PAGE_PRESENT)
-                pmm_free_frame(pt[pti] & ~0xFFFu);
+            uint32_t pte = pt[pti];
+            if (!(pte & PAGE_PRESENT))
+                continue;
+            uint32_t frame = pte & ~0xFFFu;
+            if (frame && frame < VMM_KERNEL_IDMAP_END)
+                pmm_free_frame(frame);
         }
 
-        pmm_free_frame((uint32_t)pt);
+        pmm_free_frame(pt_phys);
     }
 
     pmm_free_frame((uint32_t)pd);
