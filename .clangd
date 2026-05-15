@@ -1,0 +1,14 @@
+CompileFlags:
+  Add:
+    - -m32
+    - -ffreestanding
+    - -nostdinc
+    - -fno-builtin
+    - -isystem
+    - src/kernel/include
+    - -isystem
+    - src/libc/include
+    - -DDEV_BUILD
+  Remove:
+    - -mfpmath=*
+    - -m64
