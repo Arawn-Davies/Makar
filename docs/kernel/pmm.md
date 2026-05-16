@@ -1,3 +1,8 @@
+---
+title: pmm
+parent: Kernel subsystems
+---
+
 # pmm - Physical memory manager
 
 **Header:** `kernel/include/kernel/pmm.h`  

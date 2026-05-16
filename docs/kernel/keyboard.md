@@ -1,3 +1,8 @@
+---
+title: keyboard
+parent: Kernel subsystems
+---
+
 # keyboard - PS/2 keyboard driver
 
 **Header:** `src/kernel/include/kernel/keyboard.h`

@@ -1,3 +1,8 @@
+---
+title: partition
+parent: Kernel subsystems
+---
+
 # Partition Driver (`partition.c` / `partition.h`)
 
 ## Overview

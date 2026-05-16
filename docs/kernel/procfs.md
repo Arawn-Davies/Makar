@@ -1,3 +1,8 @@
+---
+title: procfs
+parent: Kernel subsystems
+---
+
 # procfs - synthetic /proc filesystem
 
 `src/kernel/include/kernel/procfs.h` + `src/kernel/arch/i386/fs/procfs.c`.

@@ -1,3 +1,8 @@
+---
+title: debug
+parent: Kernel subsystems
+---
+
 # debug - INT 1 / INT 3 debug-exception handlers
 
 **Header:** `kernel/include/kernel/debug.h`  

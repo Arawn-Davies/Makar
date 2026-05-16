@@ -1,3 +1,8 @@
+---
+title: heap
+parent: Kernel subsystems
+---
+
 # heap - Kernel heap allocator
 
 **Header:** `kernel/include/kernel/heap.h`  

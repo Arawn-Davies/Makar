@@ -1,3 +1,8 @@
+---
+title: WSL2
+nav_order: 6
+---
+
 # Building Makar on WSL2
 
 This guide explains how to build (and optionally run) Makar from a WSL2

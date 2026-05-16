@@ -1,3 +1,10 @@
+---
+title: libc
+nav_order: 11
+has_children: true
+permalink: /libc/
+---
+
 # libc - Freestanding standard library
 
 Makar ships a minimal freestanding C library (`libc/`) that provides just

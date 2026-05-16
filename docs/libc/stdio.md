@@ -1,3 +1,8 @@
+---
+title: stdio
+parent: libc
+---
+
 # stdio - Standard I/O
 
 **Header:** `libc/include/stdio.h`  

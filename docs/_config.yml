@@ -1,0 +1,54 @@
+title: Makar
+description: >-
+  A bare-metal i686 hobby OS in C — preemptive 100 Hz scheduler, 4-TTY
+  multitasking shell, FAT32 + ISO9660 + synthetic /proc, ring-3 ELF
+  userspace, VIX editor.  Sibling project of Medli (C# / Cosmos).
+
+# Remote theme so we're not pinned to GitHub Pages' bundled-themes
+# list.  just-the-docs is a documentation-shaped theme with a sidebar,
+# search, and a light/dark/auto colour-scheme toggle.
+remote_theme: just-the-docs/just-the-docs@v0.10.0
+
+# Auto follows the visitor's OS preference; "light" / "dark" overrides
+# are exposed via the toggle button in the top right.
+color_scheme: auto
+
+# Search across every rendered page.
+search_enabled: true
+
+# Per-page edit link (handy for hobby docs).
+gh_edit_link: true
+gh_edit_link_text: "Edit this page on GitHub"
+gh_edit_repository: "https://github.com/Arawn-Davies/Makar"
+gh_edit_branch: "main"
+gh_edit_source: docs
+gh_edit_view_mode: "tree"
+
+# Top-right header link to the source repo.
+aux_links:
+  "GitHub":
+    - "https://github.com/Arawn-Davies/Makar"
+  "Sibling: Medli":
+    - "https://github.com/Arawn-Davies/Medli"
+
+aux_links_new_tab: true
+
+# Footer.
+footer_content: >-
+  Makar - © Arawn Davies.  BSD-3-Clause Clear.  Built with Jekyll +
+  just-the-docs.  Sibling project: <a href="https://github.com/Arawn-Davies/Medli">Medli</a>.
+
+# Convert .md links to .html so the existing relative links keep working.
+plugins:
+  - jekyll-relative-links
+  - jekyll-seo-tag
+  - jekyll-sitemap
+relative_links:
+  enabled: true
+  collections: true
+
+# Anything in /docs is fair game; nothing to exclude from /docs itself.
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - vendor

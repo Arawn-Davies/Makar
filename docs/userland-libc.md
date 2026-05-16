@@ -1,3 +1,8 @@
+---
+title: Userland libc
+nav_order: 4
+---
+
 # Userland libc for Makar
 
 This document covers how to build a freestanding libc for Makar userspace and

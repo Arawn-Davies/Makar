@@ -1,3 +1,8 @@
+---
+title: vesa
+parent: Kernel subsystems
+---
+
 # vesa - VESA linear framebuffer driver
 
 **Header:** `kernel/include/kernel/vesa.h`  

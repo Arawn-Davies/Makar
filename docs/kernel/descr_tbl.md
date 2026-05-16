@@ -1,3 +1,8 @@
+---
+title: descr_tbl
+parent: Kernel subsystems
+---
+
 # descr_tbl - GDT and IDT initialisation
 
 **Header:** `kernel/include/kernel/descr_tbl.h`  

@@ -1,3 +1,8 @@
+---
+title: paging
+parent: Kernel subsystems
+---
+
 # paging - Paging and virtual memory
 
 **Header:** `kernel/include/kernel/paging.h`  

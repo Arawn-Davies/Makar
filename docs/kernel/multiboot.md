@@ -1,3 +1,8 @@
+---
+title: multiboot
+parent: Kernel subsystems
+---
+
 # multiboot - Multiboot 2 structure definitions
 
 **Header:** `kernel/include/kernel/multiboot.h`
