@@ -14,9 +14,7 @@ shipped each milestone.
 **August 2019.** First commit, display driver newline fix, libc
 stubs. By the end of the week: IDT, GDT, basic IRQ handling, a serial
 debug interface. The project was unnamed and the build was driven by
-a hand-rolled QEMU shell script.
-
-> Then the project sat dormant for almost five years.
+a hand-rolled QEMU shell script. Repo went quiet after about a week.
 
 ## 2020 — A brief return
 
@@ -24,6 +22,8 @@ a hand-rolled QEMU shell script.
 from GAS-style inline assembly to standalone NASM files. Nothing
 shipped beyond the existing scaffold. Repo went quiet again after
 about a week.
+
+> Then the project sat dormant for almost five years.
 
 ## 2025 — Single-commit hiatus
 
