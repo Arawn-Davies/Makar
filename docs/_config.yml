@@ -9,9 +9,11 @@ description: >-
 # search, and a light/dark/auto colour-scheme toggle.
 remote_theme: just-the-docs/just-the-docs@v0.10.0
 
-# Auto follows the visitor's OS preference; "light" / "dark" overrides
-# are exposed via the toggle button in the top right.
-color_scheme: auto
+# Default colour scheme.  just-the-docs accepts only "light" or "dark"
+# in _config.yml (there is no "auto"); we pick dark as the baseline
+# because that's what looks best on a hobby-kernel docs site.  A
+# runtime toggle is enabled below.
+color_scheme: dark
 
 # Search across every rendered page.
 search_enabled: true
@@ -24,14 +26,29 @@ gh_edit_branch: "main"
 gh_edit_source: docs
 gh_edit_view_mode: "tree"
 
-# Top-right header link to the source repo.
+# Top-right header links.  In just-the-docs aux_links render as the
+# horizontal nav bar across the top of every page.
 aux_links:
+  "Home":
+    - "/Makar/"
+  "Building":
+    - "/Makar/building.html"
+  "Testing":
+    - "/Makar/testing.html"
+  "History":
+    - "/Makar/history.html"
+  "Kernel":
+    - "/Makar/kernel/"
   "GitHub":
     - "https://github.com/Arawn-Davies/Makar"
-  "Sibling: Medli":
+  "Medli":
     - "https://github.com/Arawn-Davies/Medli"
 
-aux_links_new_tab: true
+# Internal links stay in-tab; external (GitHub / Medli) open new tab.
+aux_links_new_tab: false
+
+# Code-copy button on every fenced block.
+enable_copy_code_button: true
 
 # Footer.
 footer_content: >-
