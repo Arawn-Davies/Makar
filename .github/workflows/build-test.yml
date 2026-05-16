@@ -193,3 +193,11 @@ jobs:
           path: |
             hdd-test-gdb.log
             hdd-test-serial.log
+
+  # NOTE: UI tests (sendkey + serial grep) live in tests/ui_test.sh and
+  # are runnable locally via `./run.sh ui-test`.  They are intentionally
+  # NOT wired into this CI workflow: under TCG (no KVM in GHA runners)
+  # boot to shell takes 30-60s per scenario, so the suite is slow and
+  # historically prone to hanging when QEMU misbehaves on shared
+  # infrastructure.  Keep them as a local pre-merge check; revisit if
+  # GHA grows KVM support or we move to self-hosted runners.

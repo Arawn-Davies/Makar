@@ -52,7 +52,7 @@ static const man_entry_t man_table[] = {
       "Usage: setmode <WxH>\n\n"
       "Valid resolutions: 320x240  640x480  1280x720  1920x1080\n\n"
       "Switches the Bochs VBE framebuffer to the requested resolution and\n"
-      "re-initialises the VESA TTY.  VICS uses the new geometry automatically.\n"
+      "re-initialises the VESA TTY.  VIX uses the new geometry automatically.\n"
     },
     { "fgcol",
       "set foreground colour (hex RRGGBB)",
@@ -153,10 +153,10 @@ static const man_entry_t man_table[] = {
       "create a directory",
       "Usage: mkdir <path>\n\nCreates a directory on the FAT32 volume.\n"
     },
-    { "vics",
-      "open a file in the VICS editor",
-      "Usage: vics <file>\n\n"
-      "Opens the file in VICS (Visual Interactive Character Shell), a lightweight\n"
+    { "vix",
+      "open a file in the VIX editor",
+      "Usage: vix <file>\n\n"
+      "Opens the file in VIX (Visual Interactive Character Shell), a lightweight\n"
       "full-screen editor modelled on ELKS/FUZIX vi.  Adapts to the current VESA\n"
       "resolution automatically via the pane abstraction.\n\n"
       "Key bindings:\n"

@@ -44,13 +44,17 @@ const    int ktest_bg_total     = 11;   /* keep in sync with RUN() calls below *
 /* When set, suppress VGA output for pass lines and suite headers. */
 int ktest_muted = 0;
 
-void ktest_begin(const char *suite)
+void ktest_begin(const char *suite, const char *desc)
 {
     ktest_pass_count = 0;
     ktest_fail_count = 0;
     if (!ktest_muted) {
         t_writestring("\n[ktest] suite: ");
         t_writestring(suite);
+        if (desc && *desc) {
+            t_writestring(" -- ");
+            t_writestring(desc);
+        }
         t_putchar('\n');
     }
 }
@@ -96,7 +100,7 @@ void ktest_summary(void)
 
 static void test_acpi_checksum(void)
 {
-    ktest_begin("acpi_checksum");
+    ktest_begin("acpi_checksum", "ACPI table byte-sum checksum invariants");
 
     /* A buffer whose byte sum is 0 - valid. */
     uint8_t good[4] = {0x01, 0x02, 0x03, 0xFA}; /* 1+2+3+250 = 256 → 0 mod 256 */
@@ -126,7 +130,7 @@ static void test_acpi_checksum(void)
 
 static void test_string(void)
 {
-    ktest_begin("string");
+    ktest_begin("string", "freestanding libc string ops (strlen/strcmp/strncmp/memset/strcpy)");
 
     KTEST_ASSERT(strlen("hello") == 5);
     KTEST_ASSERT(strlen("") == 0);
@@ -158,7 +162,7 @@ static void test_string(void)
 
 static void test_partition(void)
 {
-    ktest_begin("partition");
+    ktest_begin("partition", "MBR + GPT partition-type name lookups");
 
     /* MBR type name lookup */
     KTEST_ASSERT(strcmp(part_type_name(PART_MBR_EMPTY),     "Empty")          == 0);
@@ -203,7 +207,7 @@ static void test_partition(void)
 
 static void test_pmm(void)
 {
-    ktest_begin("pmm");
+    ktest_begin("pmm", "physical-memory allocator: 4 KiB frame alloc/free + free-count accounting");
 
     /* Alloc must return a 4 KiB-aligned non-error address. */
     uint32_t f1 = pmm_alloc_frame();
@@ -242,7 +246,7 @@ static void test_pmm(void)
 
 static void test_heap(void)
 {
-    ktest_begin("heap");
+    ktest_begin("heap", "kernel heap: kmalloc/kfree, bytes-written sanity, exhaustion path");
 
     /* kmalloc(0) must return NULL. */
     KTEST_ASSERT(kmalloc(0) == NULL);
@@ -310,7 +314,7 @@ static void test_heap(void)
 
 static void test_vmm(void)
 {
-    ktest_begin("vmm");
+    ktest_begin("vmm", "per-task page directory: create, map, switch, lookup, teardown");
 
     uint32_t *kpd = paging_kernel_pd();
 
@@ -386,7 +390,7 @@ static void noop_task(void) { noop_ran = 1; task_exit(); }
 
 static void test_task(void)
 {
-    ktest_begin("task");
+    ktest_begin("task", "scheduler primitives: task pool, state transitions, yield semantics");
 
     /* Disable interrupts across both creates so the timer cannot preempt
      * noop1 before noop2 exists - otherwise noop1 runs, dies, and its slot
@@ -420,7 +424,7 @@ static void test_task(void)
 
 static void test_syscall(void)
 {
-    ktest_begin("syscall");
+    ktest_begin("syscall", "int 0x80 syscall dispatcher: arg passing, return value, unknown-syscall guard");
 
     registers_t regs;
     memset(&regs, 0, sizeof(regs));
@@ -488,7 +492,7 @@ static void test_gdt(void)
 {
     extern gdt_entry_t gdt_entries[6];
 
-    ktest_begin("gdt");
+    ktest_begin("gdt", "GDT layout: kernel/user code+data, TSS selector, ring 3 DPLs");
 
     /* User code segment (index 3): DPL field (bits [6:5] of access) must be 3. */
     KTEST_ASSERT(((gdt_entries[3].access >> 5) & 0x3u) == 3u);
@@ -528,7 +532,7 @@ static void test_gdt(void)
 
 static void test_ring3_prereqs(void)
 {
-    ktest_begin("ring3_prereqs");
+    ktest_begin("ring3_prereqs", "ring-3 transition prerequisites: TSS, user PD, kernel stack");
 
     /* VMM flag constants must match the x86 PTE bit positions the CPU checks. */
     KTEST_ASSERT(VMM_FLAG_USER     == 0x4u);
@@ -583,7 +587,7 @@ static void test_ring3_prereqs(void)
 static void test_idt(void)
 {
     extern idt_entry_t idt_entries[256];
-    ktest_begin("idt");
+    ktest_begin("idt", "IDT: gate types, DPLs, syscall gate present with DPL=3");
 
     /* Exception gates: present, DPL=0, 32-bit interrupt gate (0x8E). */
     KTEST_ASSERT(idt_entries[0].flags  == 0x8E);  /* #DE divide error    */
@@ -627,7 +631,7 @@ extern void ring3_usertest_task(void);
 
 static void test_ring3_execution(void)
 {
-    ktest_begin("ring3_execution");
+    ktest_begin("ring3_execution", "ring-3 lifecycle end-to-end: iret to user, syscall back, exit");
 
     /* Reset the checkpoint so stale values from a prior run don't give a
      * false positive. */
@@ -678,7 +682,7 @@ static void elf_exec_task_entry(void)
 
 static void test_elf_exec(void)
 {
-    ktest_begin("elf_exec");
+    ktest_begin("elf_exec", "ELF32 loader: header parse, segment mapping, entry-point dispatch");
 
     static const char *candidates[] = {
         "/cdrom/apps/echo.elf",
@@ -761,7 +765,7 @@ static void hello_arg_entry(void)
 
 static void test_ring3_with_arg(void)
 {
-    ktest_begin("ring3_with_arg");
+    ktest_begin("ring3_with_arg", "argc/argv plumbing into a ring-3 binary; ESP-relative arg layout");
 
     Serial_WriteString("\n");
     Serial_WriteString("[ktest] ============================================================\n");
@@ -874,7 +878,7 @@ static void res_countdown(const char *name)
 
 static void test_vesa_resolution(void)
 {
-    ktest_begin("vesa_resolution");
+    ktest_begin("vesa_resolution", "VESA mode switching across 320x240 / 640x480 / 720p / 1080p");
 
     /* Save current fb geometry so we can restore it afterwards. */
     const vesa_fb_t *orig = vesa_get_fb();
@@ -969,7 +973,7 @@ static const ktest_colour_t ktest_palette[] = {
 
 static void test_vesa_colour(void)
 {
-    ktest_begin("vesa_colour");
+    ktest_begin("vesa_colour", "VESA fg/bg colour state, glyph rendering, framebuffer pixel layout");
 
     KTEST_ASSERT(vesa_tty_is_ready());
 
@@ -1041,7 +1045,7 @@ static uint32_t kb_test_drain_all(unsigned char *out, uint32_t cap)
 
 static void test_keyboard(void)
 {
-    ktest_begin("keyboard");
+    ktest_begin("keyboard", "PS/2 layered driver: decoder state machine, modifier tracking, SPSC ring");
 
     keyboard_test_begin();
 

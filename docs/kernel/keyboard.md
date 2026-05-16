@@ -279,7 +279,7 @@ Three classes of latent bug in the previous driver:
 | `src/kernel/arch/i386/drivers/keyboard.c` | Driver implementation (this document) |
 | `src/kernel/arch/i386/proc/vtty.c` | Calls `keyboard_set_focus` / `keyboard_send_to` for TTY switching |
 | `src/kernel/arch/i386/shell/shell.c` | Consumes `keyboard_getchar`; observes arrow / focus / Ctrl-C sentinels |
-| `src/kernel/arch/i386/proc/vics.c` | Editor; consumes arrow sentinels |
+| `src/kernel/arch/i386/proc/vix.c` | Editor; consumes arrow sentinels |
 | `src/kernel/arch/i386/shell/shell_cmd_apps.c` | Uses `keyboard_sigint_consume` to force-kill children during `exec` |
 
 ---

@@ -1,5 +1,22 @@
 # Makar Shell & Userspace Survey
 
+> Exhaustive inventory of what's wired up today. Sourced by reading the
+> actual code, not aspirational. Last refreshed for v0.5.0 + VIX-polish
+> PR (May 2026).
+
+## Testing harness
+
+Three test paths fan out from `./run.sh iso-test`:
+
+| Phase | Source | What it verifies |
+|---|---|---|
+| **ktest** | `src/kernel/arch/i386/proc/ktest.c` + `usertest.c` | In-kernel unit suites: PMM/paging invariants, ring-3 lifecycle, keyboard sentinel widths, VFS lookup, etc. Runs under `test_mode` cmdline; exits QEMU via isa-debug-exit. Output: `ktest.log` (with PASS/FAIL per assert). |
+| **GDB ISO** | `tests/gdb_boot_test.py` | Boot-checkpoint + hardware-state probe under the QEMU GDB stub. Verifies Multiboot 2 magic, every `kernel_main` checkpoint, CR0.PG / CR3, PIT ticking, background ktest result, CD-ROM and `/hd` content. Output: `gdb-test.log`, `gdb-serial.log`. |
+| **GDB HDD** | `tests/gdb_hdd_test.py` | Same shape as GDB ISO but boots from `makar-hdd-test.img` (no CD-ROM) to prove FAT32-from-MBR boot + auto-mount. |
+| **UI** | `tests/ui_test.sh` | Black-box scenarios driven through QEMU's HMP `sendkey`, asserting on substrings in serial. Scenarios: `glob-proc`, `tab-complete-path`, `cd-root-listing`. CI uploads serial + screendump per scenario. Boot sync on the `kernel: boot complete` serial marker. |
+
+All four phases run in parallel CI jobs (`.github/workflows/build-test.yml`).
+
 ## Shell Commands (Kernel Builtins)
 
 ### Filesystem Commands (`shell_cmd_fs.c`, `shell_cmd_fileops.c`)
@@ -25,18 +42,19 @@
 - **readsector** - Hex-dump a sector by LBA
 - **chainload** - Load and execute a bootloader from a sector (never returns)
 
-### System Commands (`shell_cmd_system.c`, lines 17–108)
+### System Commands (`shell_cmd_system.c`)
 - **echo** - Print arguments to terminal
 - **meminfo** - Show heap used/free bytes
-- **uptime** - Print ticks since boot
-- **tasks** - List kernel tasks (state: ready/running/dead)
+- **uptime** - Humanised h/m/s + raw 100 Hz tick count
+- **tasks** - List kernel tasks (state: ready/running/dead). See also `cat /proc/tasks`.
 - **shutdown** - Power off via ACPI S5 (never returns)
 - **reboot** - Reboot via ACPI (never returns)
 - **panic** - Trigger kernel panic with optional message
 - **ktest** - Run all in-kernel unit tests
+- **verbose [on|off]** - Toggle `t_putchar` → COM1 mirror at runtime. Reports current state with no args.
 
 ### Application Commands (`shell_cmd_apps.c`, lines 26–192)
-- **vics** - Launch VICS interactive text editor on a file
+- **vix** - Launch VIX interactive text editor on a file
 - **install** - Run OS installer from CD-ROM to HDD
 - **exec** - Execute userspace ELF from `/cdrom/apps/` or `/hd/apps/` (line 79)
 - **eject** - Eject HDD or CD-ROM
@@ -105,12 +123,18 @@ All apps in `/Users/arawn/Makar/src/userspace/` compile to `.elf` files and are 
 - Groups: Display, System, Disk, Filesystem, Apps, Editor
 - Syscalls: `sys_write()` only
 
-### **vics.elf** (vics.c, lines 1–80)
-- VICS text editor (ported from kernel `proc/vics.c`)
+### **vix.elf** (vix.c)
+- VIX text editor (ring-3 port of kernel `proc/vix.c`; renamed from VICS in May 2026 — see `docs/makar-medli.md`)
 - All kernel calls replaced with syscalls
-- Features: line editing, navigation, Ctrl+S save, Ctrl+Q quit
+- Features: line numbers, word wrap, flashing block caret, status bar, Ctrl+S save, Ctrl+Q quit
 - Supports: 256 lines × 80 chars, 64 KiB file max
 - Syscalls: `sys_putch_at()`, `sys_getkey()`, `sys_set_cursor()`, `sys_tty_clear()`, `sys_term_size()`, `sys_write_file()`, `sys_write()`, `sys_read()`
+
+### **kbtester.elf** (kbtester.c)
+- Visual press-all-keys keyboard diagnostic (ring-3)
+- Renders a QWERTY layout, lights up cells on key make, logs every scancode/keycode/sentinel + modifier vector to serial via `sys_write_serial()`
+- Exit: hold ESC for 4 s, or Ctrl+C (shell observes sigint and force-kills the child)
+- Used by the keyboard-rewrite verification work (PR #124, slice 5b)
 
 ## Userspace Syscall API (`src/userspace/syscall.h`)
 
@@ -137,14 +161,23 @@ All apps in `/Users/arawn/Makar/src/userspace/` compile to `.elf` files and are 
 - `sys_write_file(path, buf, len)` → `SYS_WRITE_FILE (205)` - create/overwrite file
 - `sys_ls_dir(path, buf, bufsz)` → `SYS_LS_DIR (206)` - enumerate directory
 - `sys_disk_info(buf, bufsz)` → `SYS_DISK_INFO (207)` - list drives
+- `sys_delete_file(path)` → `SYS_DELETE_FILE (208)`
+- `sys_rename_file(old, new)` → `SYS_RENAME_FILE (209)` (also handles directory rename)
+- `sys_delete_dir(path)` → `SYS_DELETE_DIR (210)` (errors if non-empty)
+
+### Makar extensions (211–214)
+- `sys_write_serial(buf, len)` → `SYS_WRITE_SERIAL (211)` - COM1-only write; no framebuffer mirror. Used by `kbtester.elf`.
+- `sys_keyboard_raw(enable)` → `SYS_KEYBOARD_RAW (212)` - enable/disable raw keyboard mode (1 = raw bytes, no sentinel translation)
+- `sys_shell_clear()` → `SYS_SHELL_CLEAR (213)` - same as the shell's `clear` builtin
+- `sys_uptime()` → `SYS_UPTIME (214)` - returns the 100 Hz PIT tick counter
 
 ## VFS API (`src/kernel/include/kernel/vfs.h`)
 
 **Unified namespace:**
-- `/` - virtual root; lists mount-points
+- `/` - virtual root; `vfs_complete()` enumerates the mount points so `cd /<TAB>`, `cat /*`, and `ls /p*` all work
 - `/hd/…` - FAT32 hard disk (mounted via `mount` command)
 - `/cdrom/…` - ISO9660 CD-ROM (auto-detected at init)
-- `/proc/…` - synthetic, always-present read-only view of kernel state (`cpuinfo`, `meminfo`, `tasks`, `uname`)
+- `/proc/…` - synthetic, always-present read-only view of kernel state. Backed by `arch/i386/fs/procfs.c`; mount path is the `PROCFS_MOUNT` constant in `include/kernel/procfs.h`. Entries: `cpuinfo`, `meminfo`, `tasks`, `uname` (content generated on each read; no caching)
 
 ### Lifecycle
 - `vfs_init()` - probe IDE for ISO9660; reset CWD to `/`
@@ -225,7 +258,7 @@ Builds bootable ISO. Steps:
 
 1. Create `isodir/` structure with subdirs: `boot/grub/i386-pc`, `apps`, `src`, `docs`
 2. Copy kernel: `sysroot/boot/makar.kernel` → `isodir/boot/makar.kernel`
-3. **Copy source tree**: `src/. → isodir/src/` (readable via VICS on ISO)
+3. **Copy source tree**: `src/. → isodir/src/` (readable via VIX on ISO)
 4. **Copy docs**: `docs/. → isodir/docs/`
 5. Write GRUB config: `isodir/boot/grub/grub.cfg`
    - Sets `timeout=5` (5-second user prompt on CD-ROM boot)
@@ -249,8 +282,8 @@ Builds bootable ISO. Steps:
 | Shell filesystem commands | 14 | ✅ Complete (mount, umount, ls, cat, cd, mkdir, mkfs, isols, write, touch, cp, rm, rmdir, mv) |
 | Shell disk commands | 5 | ✅ Complete (lsdisks, lspart, mkpart, readsector, chainload) |
 | Shell system commands | 8 | ✅ Complete (echo, meminfo, uptime, tasks, shutdown, reboot, panic, ktest) |
-| Shell app commands | 5 | ✅ Complete (vics, install, exec, eject, ring3test) |
-| Userspace ELF apps | 10 | ✅ Complete (hello, diskinfo, ls, echo, calc, help, vics, rm, mv, cp) |
+| Shell app commands | 5 | ✅ Complete (vix, install, exec, eject, ring3test) |
+| Userspace ELF apps | 10 | ✅ Complete (hello, diskinfo, ls, echo, calc, help, vix, rm, mv, cp) |
 | VFS operations | 13 | ✅ Complete (init, mount, ls, cd, cat, mkdir, read, write, exists, complete, delete_file, delete_dir, rename) |
 | FAT32 read/write APIs | 12 | ✅ Complete (mount, umount, ls, cd, mkdir, read, write, mkfs, delete_file, delete_dir, rename_file, rename_dir) |
 | Userspace syscalls | 14 | ✅ Complete I/O + 6 Makar extensions (write_file, ls_dir, disk_info, delete_file, rename_file, delete_dir) |

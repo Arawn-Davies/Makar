@@ -1,14 +1,14 @@
 /*
  * shell_cmd_apps.c -- application launcher shell commands.
  *
- * Commands: vics  install  exec  eject  ring3test
+ * Commands: vix  install  exec  eject  ring3test
  */
 
 #include "shell_priv.h"
 
 #include <kernel/tty.h>
 #include <kernel/vfs.h>
-#include <kernel/vics.h>
+#include <kernel/vix.h>
 #include <kernel/installer.h>
 #include <kernel/elf.h>
 #include <kernel/task.h>
@@ -23,10 +23,10 @@ void cmd_ring3test(int argc, char **argv);
  * Command handlers
  * --------------------------------------------------------------------------- */
 
-static void cmd_vics(int argc, char **argv)
+static void cmd_vix(int argc, char **argv)
 {
     if (argc < 2) {
-        t_writestring("Usage: vics <filename>\n");
+        t_writestring("Usage: vix <filename>\n");
         t_writestring("  Opens <filename> for editing. Creates the file on save if it does not exist.\n");
         t_writestring("  Key bindings: Arrow keys navigate | Ctrl+S save | Ctrl+Q quit\n");
         return;
@@ -43,7 +43,7 @@ static void cmd_vics(int argc, char **argv)
         size_t cwd_len = strlen(cwd);
         size_t arg_len = strlen(arg);
         if (cwd_len + 1 + arg_len >= VFS_PATH_MAX) {
-            t_writestring("vics: path too long\n");
+            t_writestring("vix: path too long\n");
             return;
         }
         size_t off = 0;
@@ -53,7 +53,7 @@ static void cmd_vics(int argc, char **argv)
         memcpy(full_path + off, arg, arg_len + 1);
     }
 
-    vics_edit(full_path, NULL);
+    vix_edit(full_path, NULL);
 }
 
 static void cmd_install(int argc, char **argv)
@@ -189,10 +189,10 @@ static void cmd_eject(int argc, char **argv)
  * --------------------------------------------------------------------------- */
 
 const shell_cmd_entry_t apps_cmds[] = {
-    { "vics",      cmd_vics      },
-    { "install",   cmd_install   },
-    { "exec",      cmd_exec      },
-    { "eject",     cmd_eject     },
-    { "ring3test", cmd_ring3test },
-    { NULL, NULL }
+    { "vix",      cmd_vix,      1 },  /* paints FB directly */
+    { "install",   cmd_install,   1 },  /* installer TUI paints FB */
+    { "exec",      cmd_exec,      1 },  /* ELF child may paint FB */
+    { "eject",     cmd_eject,     0 },
+    { "ring3test", cmd_ring3test, 0 },
+    { NULL, NULL, 0 }
 };

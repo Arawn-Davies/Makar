@@ -1,7 +1,7 @@
 /*
- * vics.c - VICS interactive text editor (userland port).
+ * vix.c - VIX interactive text editor (userland port).
  *
- * Ported from src/kernel/arch/i386/proc/vics.c.
+ * Ported from src/kernel/arch/i386/proc/vix.c.
  * All kernel calls replaced with int 0x80 syscalls.
  */
 
@@ -10,21 +10,21 @@
 #define VFS_PATH_MAX   128
 #define VGA_WIDTH       80
 
-#define VICS_TEXT_ROWS  24
-#define VICS_STATUS_ROW 24
-#define VICS_MAX_LINES  256
-#define VICS_LINE_CAP    80
-#define VICS_FILE_MAX   (64u * 1024u)
+#define VIX_TEXT_ROWS  24
+#define VIX_STATUS_ROW 24
+#define VIX_MAX_LINES  256
+#define VIX_LINE_CAP    80
+#define VIX_FILE_MAX   (64u * 1024u)
 
 /* VGA colour attributes */
-#define VICS_CLR_TEXT    VGA_CLR(VGA_LGREY,    VGA_BLACK)
-#define VICS_CLR_STATUS  VGA_CLR(VGA_BLACK,    VGA_LGREY)
-#define VICS_CLR_WARN    VGA_CLR(VGA_LRED,     VGA_BLACK)
-#define VICS_SHELL_CLR   VGA_CLR(VGA_WHITE,    VGA_BLUE)
+#define VIX_CLR_TEXT    VGA_CLR(VGA_LGREY,    VGA_BLACK)
+#define VIX_CLR_STATUS  VGA_CLR(VGA_BLACK,    VGA_LGREY)
+#define VIX_CLR_WARN    VGA_CLR(VGA_LRED,     VGA_BLACK)
+#define VIX_SHELL_CLR   VGA_CLR(VGA_WHITE,    VGA_BLUE)
 
 /* Editor state */
-static char v_lines[VICS_MAX_LINES][VICS_LINE_CAP + 1];
-static int  v_len  [VICS_MAX_LINES];
+static char v_lines[VIX_MAX_LINES][VIX_LINE_CAP + 1];
+static int  v_len  [VIX_MAX_LINES];
 static int  v_nlines;
 static int  v_cur_row;
 static int  v_cur_col;
@@ -34,10 +34,10 @@ static int  v_quit_warn;
 static char v_path[VFS_PATH_MAX];
 
 /* Cell batch buffer - flushed once per redraw. */
-static tty_cell_t g_cells[VGA_WIDTH * (VICS_TEXT_ROWS + 1)];
+static tty_cell_t g_cells[VGA_WIDTH * (VIX_TEXT_ROWS + 1)];
 static int        g_ncells;
 
-static inline void vics_put(int col, int row, char c, unsigned char clr)
+static inline void vix_put(int col, int row, char c, unsigned char clr)
 {
     if (g_ncells < (int)(sizeof(g_cells) / sizeof(g_cells[0]))) {
         g_cells[g_ncells].col = (unsigned char)col;
@@ -48,7 +48,7 @@ static inline void vics_put(int col, int row, char c, unsigned char clr)
     }
 }
 
-static void vics_flush(void)
+static void vix_flush(void)
 {
     if (g_ncells > 0) {
         sys_putch_at(g_cells, (unsigned int)g_ncells);
@@ -57,7 +57,7 @@ static void vics_flush(void)
 }
 
 /* Simple unsigned-integer → decimal string (buf must be ≥ 12 bytes). */
-static void vics_uitoa(unsigned int v, char *buf)
+static void vix_uitoa(unsigned int v, char *buf)
 {
     if (v == 0) { buf[0] = '0'; buf[1] = '\0'; return; }
     char tmp[12]; int i = 0;
@@ -67,92 +67,92 @@ static void vics_uitoa(unsigned int v, char *buf)
     buf[j] = '\0';
 }
 
-static unsigned int vics_strlen(const char *s)
+static unsigned int vix_strlen(const char *s)
 {
     unsigned int n = 0;
     while (s[n]) n++;
     return n;
 }
 
-static void vics_append(char *buf, int cap, int *off, const char *s)
+static void vix_append(char *buf, int cap, int *off, const char *s)
 {
     while (*s && *off < cap - 1) buf[(*off)++] = *s++;
     buf[*off] = '\0';
 }
 
-static void vics_draw_line(int screen_row, int line_idx)
+static void vix_draw_line(int screen_row, int line_idx)
 {
     const char *s   = (line_idx < v_nlines) ? v_lines[line_idx] : 0;
     int         len = s ? v_len[line_idx] : 0;
 
     for (int col = 0; col < VGA_WIDTH; col++) {
         char ch = (col < len) ? s[col] : ' ';
-        vics_put(col, screen_row, ch, VICS_CLR_TEXT);
+        vix_put(col, screen_row, ch, VIX_CLR_TEXT);
     }
 }
 
-static void vics_draw_status(void)
+static void vix_draw_status(void)
 {
     char bar[VGA_WIDTH + 1];
     int  off = 0;
 
     if (v_quit_warn) {
-        vics_append(bar, (int)sizeof(bar), &off,
+        vix_append(bar, (int)sizeof(bar), &off,
                     " Unsaved! Press ^Q again to quit, or ^S to save. ");
     } else {
-        vics_append(bar, (int)sizeof(bar), &off, " VICS | ");
+        vix_append(bar, (int)sizeof(bar), &off, " VIX | ");
         if (v_path[0])
-            vics_append(bar, (int)sizeof(bar), &off, v_path);
+            vix_append(bar, (int)sizeof(bar), &off, v_path);
         else
-            vics_append(bar, (int)sizeof(bar), &off, "[new]");
-        if (v_dirty) vics_append(bar, (int)sizeof(bar), &off, " *");
-        vics_append(bar, (int)sizeof(bar), &off, " | Ln ");
+            vix_append(bar, (int)sizeof(bar), &off, "[new]");
+        if (v_dirty) vix_append(bar, (int)sizeof(bar), &off, " *");
+        vix_append(bar, (int)sizeof(bar), &off, " | Ln ");
         char num[12];
-        vics_uitoa((unsigned int)(v_cur_row + 1), num);
-        vics_append(bar, (int)sizeof(bar), &off, num);
-        vics_append(bar, (int)sizeof(bar), &off, " Col ");
-        vics_uitoa((unsigned int)(v_cur_col + 1), num);
-        vics_append(bar, (int)sizeof(bar), &off, num);
-        vics_append(bar, (int)sizeof(bar), &off, " | ^S save  ^Q quit");
+        vix_uitoa((unsigned int)(v_cur_row + 1), num);
+        vix_append(bar, (int)sizeof(bar), &off, num);
+        vix_append(bar, (int)sizeof(bar), &off, " Col ");
+        vix_uitoa((unsigned int)(v_cur_col + 1), num);
+        vix_append(bar, (int)sizeof(bar), &off, num);
+        vix_append(bar, (int)sizeof(bar), &off, " | ^S save  ^Q quit");
     }
 
-    unsigned int blen = vics_strlen(bar);
+    unsigned int blen = vix_strlen(bar);
     while (blen < VGA_WIDTH) { bar[blen++] = ' '; }
     bar[VGA_WIDTH] = '\0';
 
-    unsigned char clr = v_quit_warn ? VICS_CLR_WARN : VICS_CLR_STATUS;
+    unsigned char clr = v_quit_warn ? VIX_CLR_WARN : VIX_CLR_STATUS;
     for (int col = 0; col < VGA_WIDTH; col++)
-        vics_put(col, VICS_STATUS_ROW, bar[col], clr);
+        vix_put(col, VIX_STATUS_ROW, bar[col], clr);
 }
 
-static void vics_redraw(void)
+static void vix_redraw(void)
 {
     g_ncells = 0;
-    for (int r = 0; r < VICS_TEXT_ROWS; r++)
-        vics_draw_line(r, v_view_top + r);
-    vics_draw_status();
-    vics_flush();
+    for (int r = 0; r < VIX_TEXT_ROWS; r++)
+        vix_draw_line(r, v_view_top + r);
+    vix_draw_status();
+    vix_flush();
     sys_set_cursor((unsigned int)v_cur_col,
                    (unsigned int)(v_cur_row - v_view_top));
 }
 
-static void vics_clamp_col(void)
+static void vix_clamp_col(void)
 {
     int max = (v_cur_row < v_nlines) ? v_len[v_cur_row] : 0;
     if (v_cur_col > max) v_cur_col = max;
 }
 
-static void vics_scroll(void)
+static void vix_scroll(void)
 {
     if (v_cur_row < v_view_top)
         v_view_top = v_cur_row;
-    else if (v_cur_row >= v_view_top + VICS_TEXT_ROWS)
-        v_view_top = v_cur_row - VICS_TEXT_ROWS + 1;
+    else if (v_cur_row >= v_view_top + VIX_TEXT_ROWS)
+        v_view_top = v_cur_row - VIX_TEXT_ROWS + 1;
 }
 
-static void vics_insert_char(char c)
+static void vix_insert_char(char c)
 {
-    if (v_cur_row >= VICS_MAX_LINES) return;
+    if (v_cur_row >= VIX_MAX_LINES) return;
     while (v_nlines <= v_cur_row) {
         v_lines[v_nlines][0] = '\0';
         v_len[v_nlines]       = 0;
@@ -160,7 +160,7 @@ static void vics_insert_char(char c)
     }
     char *line = v_lines[v_cur_row];
     int   len  = v_len[v_cur_row];
-    if (len >= VICS_LINE_CAP) return;
+    if (len >= VIX_LINE_CAP) return;
     for (int i = len; i > v_cur_col; i--)
         line[i] = line[i - 1];
     line[v_cur_col]  = c;
@@ -170,7 +170,7 @@ static void vics_insert_char(char c)
     v_dirty = 1;
 }
 
-static void vics_backspace(void)
+static void vix_backspace(void)
 {
     if (v_cur_row == 0 && v_cur_col == 0) return;
     if (v_cur_col > 0) {
@@ -185,7 +185,7 @@ static void vics_backspace(void)
         int prev     = v_cur_row - 1;
         int prev_len = v_len[prev];
         int cur_len  = v_len[v_cur_row];
-        if (prev_len + cur_len > VICS_LINE_CAP) return;
+        if (prev_len + cur_len > VIX_LINE_CAP) return;
         /* Manual memcpy */
         for (int i = 0; i <= cur_len; i++)
             v_lines[prev][prev_len + i] = v_lines[v_cur_row][i];
@@ -202,9 +202,9 @@ static void vics_backspace(void)
     v_dirty = 1;
 }
 
-static void vics_newline(void)
+static void vix_newline(void)
 {
-    if (v_nlines >= VICS_MAX_LINES) return;
+    if (v_nlines >= VIX_MAX_LINES) return;
     while (v_nlines <= v_cur_row) {
         v_lines[v_nlines][0] = '\0';
         v_len[v_nlines]       = 0;
@@ -228,19 +228,19 @@ static void vics_newline(void)
     v_dirty   = 1;
 }
 
-static void vics_parse(const char *buf, unsigned int size)
+static void vix_parse(const char *buf, unsigned int size)
 {
     v_nlines = 0; v_cur_row = 0; v_cur_col = 0;
     v_view_top = 0; v_dirty = 0; v_quit_warn = 0;
     unsigned int pos = 0;
-    while (v_nlines < VICS_MAX_LINES) {
+    while (v_nlines < VIX_MAX_LINES) {
         int out = 0;
         while (pos < size && buf[pos] != '\n') {
             if (buf[pos] == '\t') {
                 int spaces = 4 - (out % 4);
-                while (spaces-- > 0 && out < VICS_LINE_CAP)
+                while (spaces-- > 0 && out < VIX_LINE_CAP)
                     v_lines[v_nlines][out++] = ' ';
-            } else if (out < VICS_LINE_CAP) {
+            } else if (out < VIX_LINE_CAP) {
                 v_lines[v_nlines][out++] = buf[pos];
             }
             pos++;
@@ -255,16 +255,16 @@ static void vics_parse(const char *buf, unsigned int size)
 }
 
 /* Flat file buffer for load/save (64 KiB static). */
-static char v_filebuf[VICS_FILE_MAX];
+static char v_filebuf[VIX_FILE_MAX];
 
-static int vics_save(void)
+static int vix_save(void)
 {
     if (!v_path[0]) return -1;
     unsigned int off = 0;
     for (int i = 0; i < v_nlines; i++) {
-        for (int j = 0; j < v_len[i] && off < VICS_FILE_MAX - 2; j++)
+        for (int j = 0; j < v_len[i] && off < VIX_FILE_MAX - 2; j++)
             v_filebuf[off++] = v_lines[i][j];
-        if (i < v_nlines - 1 && off < VICS_FILE_MAX - 1)
+        if (i < v_nlines - 1 && off < VIX_FILE_MAX - 1)
             v_filebuf[off++] = '\n';
     }
     v_filebuf[off] = '\0';
@@ -276,7 +276,7 @@ static int vics_save(void)
 int main(int argc, char **argv)
 {
     if (argc < 2) {
-        const char *msg = "Usage: vics <filename>\n";
+        const char *msg = "Usage: vix <filename>\n";
         sys_write(1, msg, 23);
         sys_exit(1);
     }
@@ -290,24 +290,24 @@ int main(int argc, char **argv)
     /* Load file. */
     int fd = sys_open(v_path, O_RDONLY);
     if (fd >= 0) {
-        long got = sys_read(fd, v_filebuf, VICS_FILE_MAX - 1);
+        long got = sys_read(fd, v_filebuf, VIX_FILE_MAX - 1);
         sys_close(fd);
         if (got > 0) {
             v_filebuf[got] = '\0';
-            vics_parse(v_filebuf, (unsigned int)got);
+            vix_parse(v_filebuf, (unsigned int)got);
         } else {
-            vics_parse("", 0);
+            vix_parse("", 0);
         }
     } else {
-        vics_parse("", 0);
+        vix_parse("", 0);
     }
 
     /* Clear to editor background. */
-    sys_tty_clear(VICS_CLR_TEXT);
+    sys_tty_clear(VIX_CLR_TEXT);
 
     for (;;) {
-        vics_scroll();
-        vics_redraw();
+        vix_scroll();
+        vix_redraw();
 
         int c = sys_getkey();
 
@@ -319,16 +319,16 @@ int main(int argc, char **argv)
         v_quit_warn = 0;
 
         if (c == KEY_CTRL_S) {
-            if (v_path[0]) vics_save();
+            if (v_path[0]) vix_save();
             continue;
         }
 
         if (c == KEY_ARROW_UP) {
-            if (v_cur_row > 0) { v_cur_row--; vics_clamp_col(); }
+            if (v_cur_row > 0) { v_cur_row--; vix_clamp_col(); }
             continue;
         }
         if (c == KEY_ARROW_DOWN) {
-            if (v_cur_row < v_nlines - 1) { v_cur_row++; vics_clamp_col(); }
+            if (v_cur_row < v_nlines - 1) { v_cur_row++; vix_clamp_col(); }
             continue;
         }
         if (c == KEY_ARROW_LEFT) {
@@ -350,16 +350,16 @@ int main(int argc, char **argv)
             continue;
         }
 
-        if (c == '\b')              { vics_backspace(); continue; }
-        if (c == '\n' || c == '\r') { vics_newline();   continue; }
+        if (c == '\b')              { vix_backspace(); continue; }
+        if (c == '\n' || c == '\r') { vix_newline();   continue; }
         if (c == '\t') {
-            for (int s = 0; s < 4; s++) vics_insert_char(' ');
+            for (int s = 0; s < 4; s++) vix_insert_char(' ');
             continue;
         }
-        if (c >= ' ' && c <= '~') { vics_insert_char((char)c); continue; }
+        if (c >= ' ' && c <= '~') { vix_insert_char((char)c); continue; }
     }
 
     /* Restore shell colour scheme. */
-    sys_tty_clear(VICS_SHELL_CLR);
+    sys_tty_clear(VIX_SHELL_CLR);
     return 0;
 }

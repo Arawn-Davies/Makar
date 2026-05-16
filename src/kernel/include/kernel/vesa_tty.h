@@ -6,6 +6,11 @@
 
 struct vt_buf;
 
+/* Rows reserved at the bottom of the framebuffer for the tmux-style status
+ * bar painted by vesa_tty_paint_status().  Default pane (and any pane-aware
+ * renderer like VIX) sizes itself to leave these rows untouched. */
+#define VESA_TTY_STATUS_ROWS 1
+
 /*
  * vesa_tty - text renderer over the VESA framebuffer.
  *
@@ -15,7 +20,7 @@ struct vt_buf;
  * (vesa_tty_putchar etc.) delegates to a screen-spanning default pane so
  * existing callers are unaffected.
  *
- * Future phases will allow the shell, VICS, and a tmux-style splitter to
+ * Future phases will allow the shell, VIX, and a tmux-style splitter to
  * each hold their own pane.  Side-by-side (column-split) panes are out of
  * scope; only horizontal stacking (top/bottom) is supported.
  */

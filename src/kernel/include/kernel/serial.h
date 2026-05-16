@@ -17,6 +17,17 @@ void Serial_WriteDec(uint32_t n);
 void Serial_WriteHex(uint32_t n);
 
 /*
+ * g_serial_verbose - when nonzero, t_putchar mirrors every user-tty
+ * character to COM1.  Defaults to 1 so boot diagnostics are visible on
+ * serial.  kernel_main flips it to 0 just before launching the shell
+ * (Linux-style: dmesg shows boot+drivers+errors, not tty output) unless
+ * test_mode is set on the cmdline, in which case it stays 1 so CI can
+ * grep the mirror.  Explicit Serial_*, KLOG, kpanic etc. bypass this
+ * flag - they are kernel diagnostics, not tty output.
+ */
+extern int g_serial_verbose;
+
+/*
  * Lightweight serial-logging macros for development/debug builds.
  *
  * Include this header and compile with -DDEV_BUILD to enable verbose serial

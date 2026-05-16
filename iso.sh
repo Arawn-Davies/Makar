@@ -17,7 +17,7 @@ mkdir -p isodir/boot/grub/i386-pc isodir/apps isodir/src isodir/docs
 
 cp sysroot/boot/makar.kernel isodir/boot/makar.kernel
 
-# Copy source tree and docs onto the ISO so they're readable via VICS.
+# Copy source tree and docs onto the ISO so they're readable via VIX.
 cp -r src/. isodir/src/
 cp -r docs/. isodir/docs/
 

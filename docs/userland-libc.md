@@ -19,7 +19,7 @@ Makar's userspace design is informed by the work of several FOSS projects:
   Makar's `src/userspace/` layout.
 - **FUZIX** (GPLv2, https://github.com/EtchedPixels/FUZIX) - Alan Cox's
   Unix-like OS for small systems.  FUZIX's vi implementation and its approach
-  to portable libc stubs across wildly different hardware influenced VICS.
+  to portable libc stubs across wildly different hardware influenced VIX.
 - **musl libc** (MIT, https://musl.libc.org) - the preferred libc target for
   Makar once the fd table and fork() are in place.  Clean, auditable, and does
   not pull in glibc's dynamic-linker complexity.

@@ -58,7 +58,7 @@ int main(int argc, char **argv)
     PUTS("\n");
     PUTS("Apps:\n");
     PUTS("  exec <path> [args..]         run an ELF32 executable\n");
-    PUTS("  vics <file>                  interactive text editor\n");
+    PUTS("  vix <file>                  interactive text editor\n");
     PUTS("  eject hdd|cdrom              unmount and eject\n");
     PUTS("\n");
     PUTS("Userland apps (exec /apps/<name>):\n");

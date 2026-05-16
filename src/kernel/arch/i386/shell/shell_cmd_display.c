@@ -9,6 +9,7 @@
 #include <kernel/tty.h>
 #include <kernel/vesa.h>
 #include <kernel/vesa_tty.h>
+#include <kernel/vtty.h>
 #include <kernel/bochs_vbe.h>
 
 /* ---------------------------------------------------------------------------
@@ -165,9 +166,25 @@ static const vesa_mode_t vesa_modes[] = {
 static void cmd_setmode(int argc, char **argv)
 {
     if (argc < 2) {
-        t_writestring("Usage: setmode <mode>\n");
-        t_writestring("  Text : 80x25  80x50\n");
-        t_writestring("  VESA : 320x240  640x480  480p  720p  1080p\n");
+        /* No arg: report the current mode. */
+        t_writestring("Mode: ");
+        if (vesa_tty_is_ready()) {
+            const vesa_fb_t *fb = vesa_get_fb();
+            if (fb) {
+                t_dec(fb->width);  t_writestring("x");
+                t_dec(fb->height); t_writestring("x");
+                t_dec(fb->bpp);    t_writestring(" (VESA, ");
+                t_dec(vesa_tty_get_cols()); t_writestring("x");
+                t_dec(vesa_tty_get_rows()); t_writestring(" cells)\n");
+            } else {
+                t_writestring("VESA (geometry unknown)\n");
+            }
+        } else {
+            t_writestring("VGA text 80x");
+            t_dec((uint32_t)t_get_rows());
+            t_writestring("\n");
+        }
+        t_writestring("Usage: setmode <80x25|80x50|320x240|640x480|480p|720p|1080p>\n");
         return;
     }
 
@@ -216,6 +233,12 @@ static void cmd_setmode(int argc, char **argv)
         bochs_vbe_set_mode(w, h, 32);
         vesa_update_geometry(w, h, 32);
         vesa_tty_init();
+        /* Resize per-TTY backing grids to match the new tty geometry.
+         * Without this the buffers stay at the boot-time size; after a
+         * shell launches a fullscreen command, paint_buf only repaints
+         * the original-sized region and leaves stale pixels visible
+         * outside it. */
+        vtty_init();
         vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
         vesa_tty_clear();
 

@@ -153,7 +153,7 @@ Authoritative table in `src/kernel/include/kernel/syscall.h`. Selected entries:
 | 100 | SYS_DEBUG        | EBX = uint32 checkpoint (prints to VGA + serial) |
 | 158 | SYS_YIELD        | - |
 | 200 | SYS_GETKEY       | raw single-char keyboard read |
-| 201–204 | SYS_PUTCH_AT / SET_CURSOR / TTY_CLEAR / TERM_SIZE | direct TTY ops for full-screen apps (vics) |
+| 201–204 | SYS_PUTCH_AT / SET_CURSOR / TTY_CLEAR / TERM_SIZE | direct TTY ops for full-screen apps (vix) |
 | 205 | SYS_WRITE_FILE   | path, buf, len |
 | 206 | SYS_LS_DIR       | path, buf, bufsz |
 | 207 | SYS_DISK_INFO    | buf, bufsz |
@@ -201,7 +201,7 @@ Freestanding ELF binaries built with the cross-compiler. Link against `crt0.S` +
 | `ls.elf` | directory listing via `SYS_LS_DIR` |
 | `rm.elf` / `mv.elf` / `cp.elf` | FAT32 file ops (also available as shell builtins) |
 | `diskinfo.elf` | partition table + FAT32 BPB dump via `SYS_DISK_INFO` |
-| `vics.elf` | pane-aware vi-style text editor; uses `SYS_PUTCH_AT` / `SYS_SET_CURSOR` / `SYS_TERM_SIZE` |
+| `vix.elf` | pane-aware vi-style text editor; uses `SYS_PUTCH_AT` / `SYS_SET_CURSOR` / `SYS_TERM_SIZE` |
 | `kbtester.elf` | keyboard diagnostic — logs every event (scancode/keycode/sentinel/modifier) to serial via `SYS_WRITE_SERIAL` |
 | `help.elf` | replaced by `lsman` / `man <cmd>` shell builtins; kept for compatibility |
 
@@ -245,7 +245,7 @@ relevant source file and in `docs/userland-libc.md`.
 | Project | Licence | Influence |
 |---------|---------|-----------|
 | **Linux kernel** | GPLv2 | Syscall ABI (i386 int 0x80), ELF loading model, process memory layout |
-| **ELKS** | GPLv2 | Minimal libc / crt0 model; `vics` editor philosophy |
+| **ELKS** | GPLv2 | Minimal libc / crt0 model; `vix` editor philosophy |
 | **FUZIX** | GPLv2 | vi-style editor design; libc porting approach for small systems |
 | **CP/M** | Historic | Terminal-owns-screen philosophy; self-contained program model |
 | **musl libc** | MIT | Target libc for future userspace; syscall stub conventions |
@@ -262,12 +262,12 @@ background TTY's accumulated output survives a focus switch — Linux VT
 behaviour), and (for ring-3 programs) its own page directory. Major
 subsystems:
 
-- **Display**: VESA framebuffer (Bochs VBE, defaults to 720p), VGA text fallback (80×50). Pane abstraction (`vesa_pane_t`) used by VICS. Per-TTY logical character grid (`vt_buf_t` in `display/vt.c`) backs every shell — writes go to the grid first; the framebuffer is only painted when that TTY is focused.
+- **Display**: VESA framebuffer (Bochs VBE, defaults to 720p), VGA text fallback (80×50). Pane abstraction (`vesa_pane_t`) used by VIX. Per-TTY logical character grid (`vt_buf_t` in `display/vt.c`) backs every shell — writes go to the grid first; the framebuffer is only painted when that TTY is focused. After any "fullscreen" shell command returns (vix, install, any ELF launched via `exec` or PATH), `shell_dispatch` calls `shell_restore_screen()` which repaints the focused VT's grid to the FB — so post-exit screen is never blank.
 - **Multi-TTY**: 4 shell tasks (`shell0`–`shell3`). `vtty.c` routes keyboard input via `task_t.tty` (authoritative) and tracks the focused slot. `vtty_switch()` defers the framebuffer repaint out of IRQ context to `vtty_drain_pending()`, which runs from the destination shell's `keyboard_getchar` poll loop. A tmux-style status bar lives in the reserved bottom row showing `Makar  VT0  VT1  VT2  VT3  ...  Alt+F1-F4` with the active slot highlighted.
-- **VICS**: Pane-aware text editor. Derives column/row counts from the active `vesa_pane_t` at runtime - works correctly at any VESA resolution. Modelled on ELKS/FUZIX vi: lightweight, stable, no heap after startup.
+- **VIX**: Pane-aware text editor. Derives column/row counts from the active `vesa_pane_t` at runtime - works correctly at any VESA resolution. Modelled on ELKS/FUZIX vi: lightweight, stable, no heap after startup.
 - **Storage**: FAT32 (HDD/USB) + ISO 9660 (CD-ROM) via IDE PIO. VFS layer with CWD, auto-mount. Full read/write/delete/rename support on FAT32. Synthetic `/proc` mount exposes `cpuinfo`, `meminfo`, `tasks`, `uname` as read-only files generated on demand.
 - **Tasking**: Round-robin scheduler with timer-driven preemption (PIT 100 Hz, `SCHED_QUANTUM = 4` ticks → 40 ms slice). Per-task `pid`, `cwd`, `tty`, signal bitmasks, fd-table placeholder. User PD reaped on task exit. Background ktest harness runs before the shell prompt appears.
-- **Userspace**: Ring-3 protected mode via `iret`. ELF loader (`elf_exec`) with argc/argv. Syscalls: `SYS_EXIT`, `SYS_READ`, `SYS_WRITE` (fd 1 = VGA, fd 2 = VGA + COM1 serial), `SYS_OPEN`, `SYS_CLOSE`, `SYS_LSEEK`, `SYS_BRK`, `SYS_DEBUG`, `SYS_YIELD`, plus Makar extensions (200–214 - terminal/file ops + `SYS_WRITE_SERIAL`). Apps: `calc.elf`, `hello.elf`, `ls.elf`, `echo.elf`, `vics.elf`, `diskinfo.elf`, `rm.elf`, `mv.elf`, `cp.elf`, `kbtester.elf`.
+- **Userspace**: Ring-3 protected mode via `iret`. ELF loader (`elf_exec`) with argc/argv. Syscalls: `SYS_EXIT`, `SYS_READ`, `SYS_WRITE` (fd 1 = VGA, fd 2 = VGA + COM1 serial), `SYS_OPEN`, `SYS_CLOSE`, `SYS_LSEEK`, `SYS_BRK`, `SYS_DEBUG`, `SYS_YIELD`, plus Makar extensions (200–214 - terminal/file ops + `SYS_WRITE_SERIAL`). Apps: `calc.elf`, `hello.elf`, `ls.elf`, `echo.elf`, `vix.elf`, `diskinfo.elf`, `rm.elf`, `mv.elf`, `cp.elf`, `kbtester.elf`.
 - **Shell**: Inline editing, history, tab completion, Ctrl+C sigint. `lsman` / `man <cmd>` replace `help`. Built-in file ops: `rm`, `rmdir`, `mv`. `uptime` shows humanised h/m/s. `cat /proc/<entry>` for system introspection.
 - **GRUB**: Two-entry menu (Makar OS + Next available device), 5-second timeout.
 
@@ -281,6 +281,8 @@ subsystems:
 | #125 | `feat/test-infra-cleanup` | ccache toolchain image, single-kernel/two-ISO emit, build-once fan-out CI (4 parallel jobs), KVM auto-detect (off by default), `act` local validation, new split `*-build`/`*-run` modes in `run.sh` |
 | #127 | `feat/keyboard-hygiene` | Keyboard hardening - `unsigned char` audit complete, typematic-repeat filter for modifiers, PS/2 LED sync (`0xED <bitmap>`), boot-time LED state read |
 | #128 | `fix/reaper-uaf` | Reaper UAF (deferred PD free), keyboard IRQ-init order fix, loading-bar progress on startup, isolate ring-3 lifecycle suites from bg ktest |
+| #129 | `feat/per-tty-buffers` | Per-TTY `vt_buf_t` backing grids, deferred FB repaint on Alt+Fn switch, tmux-style status bar at bottom row, synthetic `/proc` filesystem, glob + tab completion across VFS, MAKAR_VERSION single-source, v0.5.0 |
+| #130 | `feat/vics-vim-polish` | VIX rename (was VICS, C-Sharp acronym is dead), vim-style gutter + word wrap + flashing block caret, root `/` enumeration in `vfs_complete`, linux-like serial (`g_serial_verbose`, `console=ttyS0`, `verbose` builtin), UI-test framework (`tests/ui_test.sh`) wired into CI as a 4th parallel job, shell-side FB restore after fullscreen commands |
 
 ## Future roadmap
 
