@@ -248,6 +248,21 @@ _run_ktest() {
 }
 
 _check_ktest() {
+    # Echo the per-test transcript so CI logs surface every group / PASS /
+    # FAIL line instead of just the overall verdict.  The kernel emits
+    # serial lines like "--- Running group: X ---", "PASS: <assert>",
+    # "GROUP PASS: X", "ktest summary: N/N passed".
+    # ktest format (see arch/i386/proc/ktest.c):
+    #   "[ktest] suite: <name>"
+    #   "  PASS: <assertion>" / "  FAIL: <assertion>"
+    #   "[ktest] results: N passed, M failed"
+    #   "KTEST_RESULT: PASS" / "KTEST_RESULT: FAIL"
+    # Plus any kernel panic / KPANIC line if a test corrupted state.
+    echo "---- ktest transcript ----"
+    grep -E "^(\[ktest\]|  PASS:|  FAIL:|KTEST_RESULT|KPANIC|kpanic)" \
+        "$REPO_ROOT/ktest.log" || true
+    echo "---- end ktest transcript ----"
+
     if grep -q "KTEST_RESULT: PASS" "$REPO_ROOT/ktest.log"; then
         echo "==> ktest: ALL PASSED"
     elif grep -q "KTEST_RESULT: FAIL" "$REPO_ROOT/ktest.log"; then

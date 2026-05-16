@@ -9,7 +9,7 @@
  * Minimal in-kernel unit-test harness.
  *
  * Usage:
- *   ktest_begin("suite name");
+ *   ktest_begin("suite name", "human-readable description of what this covers");
  *   KTEST_ASSERT(expr);          // fails if expr is false
  *   KTEST_ASSERT_EQ(a, b);       // fails if a != b
  *   ktest_summary();             // prints pass/fail counts
@@ -22,7 +22,7 @@
 extern int ktest_pass_count;
 extern int ktest_fail_count;
 
-void ktest_begin(const char *suite);
+void ktest_begin(const char *suite, const char *desc);
 void ktest_summary(void);
 void ktest_assert(int cond, const char *expr, const char *file, uint32_t line);
 
