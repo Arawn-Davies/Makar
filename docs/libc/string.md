@@ -1,3 +1,8 @@
+---
+title: string
+parent: libc
+---
+
 # string - Memory and string utilities
 
 **Header:** `libc/include/string.h`  

@@ -1,3 +1,8 @@
+---
+title: system
+parent: Kernel subsystems
+---
+
 # system - Panic, halt, and assertion helpers
 
 **Headers:** `kernel/include/kernel/system.h`  

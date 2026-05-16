@@ -1,3 +1,8 @@
+---
+title: Building & running
+nav_order: 2
+---
+
 # Building & Running Makar
 
 The entire build and test toolchain runs inside Docker - no cross-compiler or

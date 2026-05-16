@@ -1,3 +1,8 @@
+---
+title: vt
+parent: Kernel subsystems
+---
+
 # vt - virtual console backing grid
 
 `src/kernel/include/kernel/vt.h` + `src/kernel/arch/i386/display/vt.c`.

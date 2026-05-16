@@ -1,3 +1,8 @@
+---
+title: vesa_tty
+parent: Kernel subsystems
+---
+
 # vesa_tty - VESA bitmap-font text renderer
 
 **Header:** `kernel/include/kernel/vesa_tty.h`  

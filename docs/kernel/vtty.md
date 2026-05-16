@@ -1,3 +1,8 @@
+---
+title: vtty
+parent: Kernel subsystems
+---
+
 # vtty - virtual TTY manager
 
 `src/kernel/include/kernel/vtty.h` + `src/kernel/arch/i386/proc/vtty.c`.

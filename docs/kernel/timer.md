@@ -1,3 +1,8 @@
+---
+title: timer
+parent: Kernel subsystems
+---
+
 # timer - PIT timer driver and `ksleep`
 
 **Header:** `kernel/include/kernel/timer.h`  

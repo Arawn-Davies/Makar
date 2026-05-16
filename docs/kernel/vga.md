@@ -1,3 +1,8 @@
+---
+title: vga
+parent: Kernel subsystems
+---
+
 # vga - VGA text-mode constants and low-level helpers
 
 **Header:** `kernel/include/kernel/vga.h`

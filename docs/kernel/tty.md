@@ -1,3 +1,8 @@
+---
+title: tty
+parent: Kernel subsystems
+---
+
 # tty - VGA text terminal driver
 
 **Header:** `kernel/include/kernel/tty.h`  

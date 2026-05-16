@@ -1,3 +1,8 @@
+---
+title: isr
+parent: Kernel subsystems
+---
+
 # isr - Interrupt and IRQ dispatch
 
 **Header:** `kernel/include/kernel/isr.h`  

@@ -1,3 +1,8 @@
+---
+title: Testing
+nav_order: 3
+---
+
 # Testing Makar
 
 This guide covers the automated test infrastructure. For build and run

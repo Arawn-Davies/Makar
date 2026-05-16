@@ -1,3 +1,8 @@
+---
+title: serial
+parent: Kernel subsystems
+---
+
 # serial - Serial port (UART) driver
 
 **Header:** `kernel/include/kernel/serial.h`  

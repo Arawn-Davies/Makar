@@ -1,3 +1,8 @@
+---
+title: kernel
+parent: Kernel subsystems
+---
+
 # kernel - Boot entry point
 
 **Source:** `kernel/kernel/kernel.c`

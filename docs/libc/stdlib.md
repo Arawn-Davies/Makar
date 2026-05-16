@@ -1,3 +1,8 @@
+---
+title: stdlib
+parent: libc
+---
+
 # stdlib - Standard utilities
 
 **Header:** `libc/include/stdlib.h`  

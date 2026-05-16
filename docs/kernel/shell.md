@@ -1,3 +1,8 @@
+---
+title: shell
+parent: Kernel subsystems
+---
+
 # shell - Interactive kernel command shell
 
 **Header:** `kernel/include/kernel/shell.h`  

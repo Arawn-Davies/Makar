@@ -1,3 +1,8 @@
+---
+title: ide
+parent: Kernel subsystems
+---
+
 # IDE Driver (`ide.c` / `ide.h`)
 
 ## Overview

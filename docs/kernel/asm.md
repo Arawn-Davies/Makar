@@ -1,3 +1,8 @@
+---
+title: asm
+parent: Kernel subsystems
+---
+
 # asm - Inline x86 port I/O and CPU-control helpers
 
 **Header:** `kernel/include/kernel/asm.h`

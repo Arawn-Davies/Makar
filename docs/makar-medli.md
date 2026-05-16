@@ -1,3 +1,8 @@
+---
+title: Makar × Medli
+nav_order: 5
+---
+
 # Makar × Medli — Co-operation roadmap
 
 Makar and [Medli](https://github.com/Arawn-Davies/Medli) are two
