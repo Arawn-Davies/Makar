@@ -136,8 +136,21 @@ void vesa_tty_paint_string_at(uint32_t col, uint32_t row,
 
 /* Paint the tmux-style status bar at the bottom row of the screen.
  * Active TTY is highlighted with inverse video.  active=current VT,
- * count=number of registered slots.  No-op if vesa_tty isn't ready. */
+ * count=number of registered slots.  No-op if vesa_tty isn't ready
+ * OR if vesa_tty_set_status_visible(0) was called.
+ *
+ * TODO: long-term this whole renderer is a candidate for moving out
+ * of the kernel into a userland `statusbar.elf` -- it'd be a small
+ * tick-driven painter that uses the same SYS_PUTCH_AT primitives
+ * maktop does.  Pre-req: a way for a userland task to draw on the
+ * reserved status row without it being part of any TTY's pane. */
 void vesa_tty_paint_status(int active, int count);
+
+/* Show/hide the bottom-row status bar.  When hidden, the row is
+ * wiped to background and future vesa_tty_paint_status calls are
+ * no-ops until visibility is turned back on.  Used by shell_run's
+ * loading screen. */
+void vesa_tty_set_status_visible(int v);
 
 /* ------------------------------------------------------------------ */
 /* Visible caret on the default pane                                   */
