@@ -15,6 +15,7 @@
 #include <kernel/descr_tbl.h>
 #include <kernel/task.h>
 #include <kernel/fd.h>
+#include <kernel/signal.h>
 #include <kernel/syscall.h>
 #include <kernel/serial.h>
 #include <kernel/tty.h>
@@ -40,7 +41,7 @@ volatile int ktest_bg_done = 0;
  * inside the RUN macro in ktest_bg_task; total is fixed at compile time so
  * the bar length is known the moment shell_run starts. */
 volatile int ktest_bg_completed = 0;
-const    int ktest_bg_total     = 11;   /* keep in sync with RUN() calls below */
+const    int ktest_bg_total     = 14;   /* keep in sync with RUN() calls below */
 
 /* When set, suppress VGA output for pass lines and suite headers. */
 int ktest_muted = 0;
@@ -618,6 +619,91 @@ static void test_cwd(void)
     /* Restore caller's cwd via vfs_cd to exercise the full path. */
     KTEST_ASSERT(vfs_cd(saved) == 0);
     KTEST_ASSERT(strcmp(cur->cwd, saved) == 0);
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
+ * Suite: signal
+ *
+ * Exercises the per-task signal subsystem: default-action classification,
+ * sig_send pending-bit semantics, SIGKILL override of mask/handler, and
+ * default-terminate delivery from the scheduler.  Victim tasks loop on
+ * task_yield as a safety net; they should never run their body because
+ * sig_deliver runs on the incoming task in schedule() and transitions it
+ * to TASK_DEAD before the context switch.
+ * --------------------------------------------------------------------------- */
+
+static void test_signal_victim_loop(void)
+{
+    /* Loop on task_yield so the only path to TASK_DEAD is via signal
+     * delivery from schedule().  Calling task_exit here instead would
+     * race the SIGTERM send: preemption could give the victim a slice
+     * between task_create returning and the test's sig_send call,
+     * marking it DEAD before any signal is posted. */
+    for (;;)
+        task_yield();
+}
+
+static void test_signal(void)
+{
+    ktest_begin("signal",
+                "per-task signal subsystem: default classification, "
+                "sig_send + sig_deliver, SIGKILL override, scheduler delivery");
+
+    /* Default-action classification. */
+    KTEST_ASSERT(sig_default_terminates(SIGINT)  == 1);
+    KTEST_ASSERT(sig_default_terminates(SIGTERM) == 1);
+    KTEST_ASSERT(sig_default_terminates(SIGKILL) == 1);
+    KTEST_ASSERT(sig_default_terminates(SIGCHLD) == 0);
+    KTEST_ASSERT(sig_default_terminates(SIGCONT) == 0);
+
+    task_t *cur = task_current();
+    KTEST_ASSERT(cur != NULL);
+
+    /* sig_set_handler rejects SIGKILL / SIGSTOP, accepts others. */
+    KTEST_ASSERT(sig_set_handler(cur, SIGKILL, SIG_IGN) == -1);
+    KTEST_ASSERT(sig_set_handler(cur, SIGSTOP, SIG_IGN) == -1);
+    KTEST_ASSERT(sig_set_handler(cur, SIGINT,  SIG_IGN) == 0);
+
+    /* SIG_IGN: sig_deliver clears the pending bit without touching state. */
+    sig_send(cur, SIGINT);
+    KTEST_ASSERT((cur->sig_pending & SIG_BIT(SIGINT)) != 0);
+    sig_deliver(cur);
+    KTEST_ASSERT((cur->sig_pending & SIG_BIT(SIGINT)) == 0);
+    KTEST_ASSERT(cur->state != TASK_DEAD);
+    sig_set_handler(cur, SIGINT, SIG_DFL);
+
+    /* sig_send input validation: NULL task / bogus signo are no-ops. */
+    sig_send(NULL, SIGTERM);
+    sig_send(cur,  0);
+    sig_send(cur,  SIG_MAX + 1);
+    KTEST_ASSERT((cur->sig_pending & ~cur->sig_mask) == 0);
+
+    /* Default-terminate via scheduler: spawn victim, send SIGTERM, yield
+     * until schedule() picks it and sig_deliver flips state to DEAD. */
+    task_t *victim = task_create("sigtest_term", test_signal_victim_loop);
+    KTEST_ASSERT(victim != NULL);
+    if (victim) {
+        KTEST_ASSERT(victim->state == TASK_READY);
+        sig_send(victim, SIGTERM);
+        for (int i = 0; i < 16 && victim->state != TASK_DEAD; i++)
+            task_yield();
+        KTEST_ASSERT(victim->state == TASK_DEAD);
+        KTEST_ASSERT((victim->sig_pending & SIG_BIT(SIGTERM)) == 0);
+    }
+
+    /* SIGKILL overrides SIG_IGN on every other signal and terminates. */
+    task_t *vk = task_create("sigtest_kill", test_signal_victim_loop);
+    KTEST_ASSERT(vk != NULL);
+    if (vk) {
+        sig_set_handler(vk, SIGINT,  SIG_IGN);
+        sig_set_handler(vk, SIGTERM, SIG_IGN);
+        sig_send(vk, SIGKILL);
+        for (int i = 0; i < 16 && vk->state != TASK_DEAD; i++)
+            task_yield();
+        KTEST_ASSERT(vk->state == TASK_DEAD);
+    }
 
     ktest_summary();
 }
@@ -1515,6 +1601,10 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
+    test_signal();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
     test_gdt();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
@@ -1597,6 +1687,7 @@ void ktest_bg_task(void)
     RUN(test_syscall);
     RUN(test_fd_table);
     RUN(test_cwd);
+    RUN(test_signal);
     RUN(test_gdt);
     RUN(test_ring3_prereqs);
     RUN(test_idt);

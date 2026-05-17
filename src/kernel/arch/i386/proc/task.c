@@ -12,6 +12,7 @@
 
 #include <kernel/task.h>
 #include <kernel/fd.h>
+#include <kernel/signal.h>
 #include <kernel/heap.h>
 #include <kernel/vmm.h>
 #include <kernel/paging.h>
@@ -102,8 +103,9 @@ void tasking_init(void)
         idle->cwd[n] = '\0';
     }
     idle->tty      = TASK_TTY_NONE;
-    idle->sig_pending = 0;
-    idle->sig_mask    = 0;
+    /* sig_task_init zeroes sig_pending/sig_mask and resets the per-task
+     * handler table held in signal.c to SIG_DFL across all signals. */
+    sig_task_init(idle);
     /* Idle gets the default stdin/stdout/stderr table too: test_mode
      * boots run ktest_run_all from this context, and any code path that
      * dispatches int 0x80 from the idle context (ktests, in-kernel
@@ -189,10 +191,13 @@ task_t *task_create(const char *name, void (*entry)(void))
     t->name        = name;
     t->user_brk    = 0;
     t->pid         = next_pid++;
-    t->sig_pending = 0;
-    t->sig_mask    = 0;
     t->fd_table    = new_fds;
     t->exec_params = NULL;
+
+    /* Reset signal state.  Must run after the slot is on the task pool
+     * (either freshly allocated above or reclaimed from a DEAD slot) so
+     * sig_task_init's slot_of() lookup in signal.c finds it. */
+    sig_task_init(t);
 
     /* Inherit CWD and TTY binding from the creating task, mirroring POSIX
      * fork-then-exec semantics. */
@@ -255,12 +260,24 @@ static void schedule(void)
     if (!tasking_active || task_pool_count < 2)
         return;
 
+    /* Signal delivery point #1: outgoing task.  A default-terminate
+     * disposition transitions current_task to TASK_DEAD here, after
+     * which the runnable-task search below naturally walks past it. */
+    if (current_task->state == TASK_RUNNING)
+        sig_deliver(current_task);
+
     task_t *next = current_task->next;
 
-    /* Walk up to task_pool_count steps looking for a runnable task. */
+    /* Walk up to task_pool_count steps looking for a runnable task.
+     * sig_deliver on each candidate so a pending terminate-signal that
+     * arrived while the task was READY (e.g. via sig_send from another
+     * task or an IRQ) is honoured before we resume it. */
     for (int i = 0; i < task_pool_count; i++) {
-        if (next->state == TASK_READY)
-            break;
+        if (next->state == TASK_READY) {
+            sig_deliver(next);
+            if (next->state == TASK_READY)
+                break;
+        }
         next = next->next;
     }
 
