@@ -187,7 +187,7 @@ static const char *state_name(int s)
 
 static void render_tasks(pf_writer_t *w)
 {
-    pf_puts(w, "PID NAME            STATE TTY CWD\n");
+    pf_puts(w, "PID NAME            STATE TTY    TICKS CWD\n");
     int n = task_count();
     for (int i = 0; i < n; i++) {
         task_t *t = task_get(i);
@@ -202,6 +202,8 @@ static void render_tasks(pf_writer_t *w)
         pf_putc(w, ' ');
         if (t->tty < 0) pf_putc(w, '-');
         else            pf_putu(w, (uint32_t)t->tty);
+        pf_putc(w, ' ');
+        pf_putu(w, t->kticks);
         pf_putc(w, ' ');
         pf_puts(w, t->cwd[0] ? t->cwd : "-");
         pf_putc(w, '\n');

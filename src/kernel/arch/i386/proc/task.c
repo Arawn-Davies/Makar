@@ -220,6 +220,7 @@ task_t *task_create(const char *name, void (*entry)(void))
     t->name        = name;
     t->user_brk    = 0;
     t->pid         = next_pid++;
+    t->kticks      = 0;
     t->fd_table    = new_fds;
     t->exec_params = NULL;
 

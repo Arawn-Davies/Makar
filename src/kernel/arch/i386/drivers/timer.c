@@ -40,6 +40,15 @@ void timer_callback(registers_t *regs)
 	(void)regs;
 	tick++;
 	t_spinner_tick(tick);
+	/* Charge this tick to whichever task was executing.  Done before
+	 * the EOI / yield so a task that gets preempted on this very tick
+	 * still gets credit for it.  task_current() returns NULL pre-
+	 * tasking_init, so guard. */
+	{
+		task_t *cur = task_current();
+		if (cur)
+			cur->kticks++;
+	}
 	if (tick % SCHED_QUANTUM == 0) {
 		/* Send EOI to the master PIC before yielding so that the idle
 		   task's hlt can be woken by the next timer tick.  Without this
