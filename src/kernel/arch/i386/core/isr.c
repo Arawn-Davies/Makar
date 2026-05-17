@@ -8,6 +8,7 @@
 #include <kernel/isr.h>
 #include <kernel/tty.h>
 #include <kernel/serial.h>
+#include <kernel/signal.h>
 #include <kernel/asm.h>
 
 isr_t interrupt_handlers[256];
@@ -67,6 +68,11 @@ void isr_handler(registers_t *regs)
 		t_putchar('\n');
 		PANIC("Unhandled Interrupt");
 	}
+
+	/* Slice 8 phase 4: if we're about to iret back to ring 3, deliver
+	 * any pending user-handler signal via the trampoline route.  No-op
+	 * for ring-0 frames or when no user handler is installed. */
+	signal_check_user(regs);
 }
 
 // This gets called from our ASM interrupt handler stub.
@@ -88,4 +94,8 @@ void irq_handler(registers_t *regs)
 
 	// Send reset signal to master. (As well as slave, if necessary).
 	outb(0x20, 0x20);
+
+	/* Slice 8 phase 4: same hook as isr_handler -- a timer IRQ that
+	 * preempted ring 3 is the most common path here. */
+	signal_check_user(regs);
 }

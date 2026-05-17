@@ -21,6 +21,7 @@
 #define SYS_KILL       37   /* int kill(int pid, int signo)                     */
 #define SYS_BRK        45   /* void *brk(void *addr)                            */
 #define SYS_SIGNAL     48   /* sig_handler_t signal(int signo, sig_handler_t)   */
+#define SYS_SIGRETURN  119  /* void sigreturn(void) -- not for direct use      */
 #define SYS_DEBUG      100  /* void debug(uint32_t cp)      [Makar ext]         */
 #define SYS_YIELD      158  /* void sched_yield(void)                           */
 /* Makar display/input extensions (200+) */

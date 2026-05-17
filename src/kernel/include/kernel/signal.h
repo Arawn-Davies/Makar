@@ -99,4 +99,51 @@ int sig_check_and_clear(int signo);
  * ktest. */
 int sig_default_terminates(int signo);
 
+/* ---------------------------------------------------------------------------
+ * Ring-3 signal trampoline (slice 8 phase 4)
+ *
+ * When a user-defined handler is installed for a pending unblocked
+ * signal, signal_check_user (called at the end of isr_handler /
+ * irq_handler, i.e. just before iret to ring 3) builds a sigframe on
+ * the calling task's user stack, redirects regs->eip to the handler,
+ * and lets iret run.  The handler returns into the trampoline embedded
+ * at the bottom of the sigframe, which invokes SYS_SIGRETURN.
+ * SYS_SIGRETURN reads the sigframe back from the user stack and
+ * restores the interrupted state so the next iret resumes the original
+ * ring-3 instruction.
+ * --------------------------------------------------------------------------- */
+
+#define SIGFRAME_MAGIC 0x53494746u   /* "SIGF" */
+
+/* On-user-stack frame layout.  Kept compact and 4-byte aligned.  Do not
+ * reorder ret_addr / signo: the handler is invoked via iret with esp
+ * pointing at ret_addr and reads signo at [esp+4] (cdecl). */
+typedef struct sigframe {
+    uint32_t ret_addr;        /* points at trampoline[0] below          */
+    uint32_t signo;           /* handler's first arg                    */
+    uint32_t saved_eip;
+    uint32_t saved_cs;
+    uint32_t saved_eflags;
+    uint32_t saved_useresp;
+    uint32_t saved_ss;
+    uint32_t saved_eax;
+    uint32_t saved_ebx;
+    uint32_t saved_ecx;
+    uint32_t saved_edx;
+    uint32_t saved_esi;
+    uint32_t saved_edi;
+    uint32_t saved_ebp;
+    uint32_t saved_ds;
+    uint32_t magic;           /* SIGFRAME_MAGIC                         */
+    uint8_t  trampoline[8];   /* movl $SYS_SIGRETURN,%eax; int $0x80    */
+} sigframe_t;
+
+struct registers;
+
+/* Called from isr.c at the end of every interrupt dispatch.  No-op
+ * unless the interrupted frame is ring 3, the calling task has an
+ * unmasked pending signal, and that signal has a non-default
+ * non-ignore handler installed. */
+void signal_check_user(struct registers *regs);
+
 #endif /* _KERNEL_SIGNAL_H */

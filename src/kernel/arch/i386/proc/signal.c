@@ -30,7 +30,10 @@
 #include <kernel/signal.h>
 #include <kernel/task.h>
 #include <kernel/serial.h>
+#include <kernel/isr.h>
+#include <kernel/syscall.h>
 #include <stddef.h>
+#include <string.h>
 
 /* Per-task handler table.  Indexed by task_pool slot, not by pid, so
  * lookups don't have to walk the live list.  Keeping it out of task_t
@@ -201,6 +204,110 @@ void sig_deliver(struct task *t)
          * don't spin processing this same signal repeatedly in a
          * single delivery pass. */
         return;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * Ring-3 trampoline delivery (slice 8 phase 4)
+ *
+ * Called from isr.c at the end of every interrupt dispatch.  If the
+ * interrupted frame is ring 3 AND the calling task has a deliverable
+ * (pending & unmasked) signal with a user-installed handler, we build
+ * a sigframe on the user stack and redirect regs->eip to the handler.
+ * The handler returns into the trampoline at the bottom of the
+ * sigframe, which executes SYS_SIGRETURN to restore state.
+ *
+ * Default-action / SIG_IGN cases are handled at schedule()'s
+ * sig_deliver instead -- they don't need a user-stack trampoline,
+ * just kernel-side state mutation.  Those run before we ever return
+ * to user mode, so a default-terminate task never reaches this
+ * function (it's TASK_DEAD by then).
+ * --------------------------------------------------------------------------- */
+
+/* Trampoline bytes: movl $SYS_SIGRETURN, %eax; int $0x80; nop.
+ * Constant so the compiler embeds it in .rodata; we memcpy at delivery. */
+static const uint8_t s_sigreturn_trampoline[8] = {
+    0xb8,
+    (uint8_t)(SYS_SIGRETURN      ),
+    (uint8_t)(SYS_SIGRETURN >>  8),
+    (uint8_t)(SYS_SIGRETURN >> 16),
+    (uint8_t)(SYS_SIGRETURN >> 24),
+    0xcd, 0x80,
+    0x90,
+};
+
+void signal_check_user(registers_t *regs)
+{
+    /* Only consider tasks about to iret to ring 3.  The CS low two
+     * bits encode the requested privilege level; user code segments
+     * are RPL=3 (0x1B == GDT index 3 | RPL 3). */
+    if ((regs->cs & 0x3u) != 0x3u)
+        return;
+
+    struct task *t = task_current();
+    if (!t)
+        return;
+
+    uint32_t deliverable = t->sig_pending & ~t->sig_mask;
+    if (!deliverable)
+        return;
+
+    for (int sig = 1; sig <= SIG_MAX; sig++) {
+        uint32_t bit = SIG_BIT(sig);
+        if (!(deliverable & bit))
+            continue;
+        sig_handler_t h = sig_get_handler(t, sig);
+        /* SIG_DFL and SIG_IGN are sig_deliver()'s job; SIGKILL has no
+         * handler override.  Anything else is a user pointer. */
+        if (h == SIG_DFL || h == SIG_IGN)
+            continue;
+        if (sig == SIGKILL)
+            continue;
+
+        /* Place sigframe just below the current user esp.  The page is
+         * mapped (it's the ring-3 stack page) so direct writes via the
+         * same CR3 are safe.  Sigframe is ~70 bytes, well under one
+         * page, so we don't cross the stack-page boundary in practice. */
+        uint32_t base = regs->useresp - sizeof(sigframe_t);
+        sigframe_t *uf = (sigframe_t *)(uintptr_t)base;
+
+        uf->ret_addr     = base + (uint32_t)offsetof(sigframe_t, trampoline);
+        uf->signo        = (uint32_t)sig;
+        uf->saved_eip    = regs->eip;
+        uf->saved_cs     = regs->cs;
+        uf->saved_eflags = regs->eflags;
+        uf->saved_useresp= regs->useresp;
+        uf->saved_ss     = regs->ss;
+        uf->saved_eax    = regs->eax;
+        uf->saved_ebx    = regs->ebx;
+        uf->saved_ecx    = regs->ecx;
+        uf->saved_edx    = regs->edx;
+        uf->saved_esi    = regs->esi;
+        uf->saved_edi    = regs->edi;
+        uf->saved_ebp    = regs->ebp;
+        uf->saved_ds     = regs->ds;
+        uf->magic        = SIGFRAME_MAGIC;
+        memcpy(uf->trampoline, s_sigreturn_trampoline,
+               sizeof(s_sigreturn_trampoline));
+
+        /* Redirect iret to the handler with esp at the sigframe head.
+         * Handler is invoked cdecl with [esp]=ret_addr, [esp+4]=signo. */
+        regs->useresp = base;
+        regs->eip     = (uint32_t)(uintptr_t)h;
+
+        /* Clear pending so we don't re-deliver before the handler
+         * even gets a chance to run. */
+        t->sig_pending &= ~bit;
+
+        Serial_WriteString("[signal] deliver sig=");
+        Serial_WriteDec((uint32_t)sig);
+        Serial_WriteString(" pid=");
+        Serial_WriteDec((uint32_t)t->pid);
+        Serial_WriteString(" handler=0x");
+        Serial_WriteHex((uint32_t)(uintptr_t)h);
+        Serial_WriteString("\n");
+
+        return;   /* one signal per return-to-user pass */
     }
 }
 

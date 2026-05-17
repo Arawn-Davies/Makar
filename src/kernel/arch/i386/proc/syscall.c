@@ -42,6 +42,11 @@
 #include <string.h>
 #include <kernel/ktest.h>
 
+/* USER_STACK_TOP - matches usertest.c / elf.c; defined locally to
+ * avoid pulling those headers into syscall.c just for this one
+ * constant.  Stack grows down from here in one mapped 4 KiB page. */
+#define USER_STACK_TOP  0xBFFF0000u
+
 /* Standard CGA/VGA 16-colour palette for SYS_PUTCH_AT VESA rendering. */
 static const uint32_t s_vga_palette[16] = {
     0x000000, 0x0000AA, 0x00AA00, 0x00AAAA,
@@ -642,11 +647,75 @@ void syscall_dispatch(registers_t *regs)
         break;
     }
 
+    /* ------------------------------------------------------------------
+     * SYS_SIGRETURN(119): restore interrupted state from the sigframe
+     * on the user stack.  Invoked indirectly by the trampoline embedded
+     * in the sigframe -- userspace should never call this directly.
+     *
+     * On entry, regs->useresp points at the slot immediately after
+     * ret_addr (i.e. signo's old slot), because the handler's `ret`
+     * already popped ret_addr.  The sigframe starts at useresp - 4.
+     *
+     * On a corrupted / out-of-range sigframe we terminate the task
+     * rather than try to limp on with whatever state we recover --
+     * sigreturn from a missing or tampered frame is a recovery dead
+     * end.
+     * ------------------------------------------------------------------ */
+    case SYS_SIGRETURN: {
+        task_t *t = task_current();
+        uint32_t base = regs->useresp - 4u;
+        /* Range check: sigframe must lie inside the user stack page
+         * range we manage.  USER_STACK_TOP is the top of the one
+         * mapped 4 KiB stack page (stack grows down from there). */
+        if (base < (USER_STACK_TOP - 4096u) ||
+            base + sizeof(sigframe_t) > USER_STACK_TOP) {
+            Serial_WriteString("[signal] sigreturn: out-of-range frame; "
+                               "killing pid=");
+            Serial_WriteDec(t ? (uint32_t)t->pid : 0u);
+            Serial_WriteString("\n");
+            if (t) t->state = TASK_DEAD;
+            /* Fall through to task_yield -- we can't iret back to user. */
+            task_yield();
+            break;
+        }
+        sigframe_t sf;
+        memcpy(&sf, (const void *)(uintptr_t)base, sizeof(sf));
+        if (sf.magic != SIGFRAME_MAGIC) {
+            Serial_WriteString("[signal] sigreturn: bad magic 0x");
+            Serial_WriteHex(sf.magic);
+            Serial_WriteString("; killing pid=");
+            Serial_WriteDec(t ? (uint32_t)t->pid : 0u);
+            Serial_WriteString("\n");
+            if (t) t->state = TASK_DEAD;
+            task_yield();
+            break;
+        }
+        regs->eip      = sf.saved_eip;
+        regs->cs       = sf.saved_cs;
+        regs->eflags   = sf.saved_eflags;
+        regs->useresp  = sf.saved_useresp;
+        regs->ss       = sf.saved_ss;
+        regs->eax      = sf.saved_eax;
+        regs->ebx      = sf.saved_ebx;
+        regs->ecx      = sf.saved_ecx;
+        regs->edx      = sf.saved_edx;
+        regs->esi      = sf.saved_esi;
+        regs->edi      = sf.saved_edi;
+        regs->ebp      = sf.saved_ebp;
+        regs->ds       = sf.saved_ds;
+        break;
+    }
+
     default:
         /* Unknown syscall - return -ENOSYS. */
         regs->eax = (uint32_t)-38;   /* -ENOSYS */
         break;
     }
+
+    /* Slice 8 phase 4: deliver any user-handler signal that's pending
+     * (and unmasked) before iret returns to ring 3.  No-op when the
+     * frame is ring 0 or no handler is installed. */
+    signal_check_user(regs);
 }
 
 void syscall_init(void)

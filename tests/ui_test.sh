@@ -241,6 +241,47 @@ sendkey ret" \
     assert_serial_contains "24" "21" "32"
 }
 
+test_user_sigusr1_handler() {
+    # Slice 8 phase 4: ring-3 trampoline + sigreturn lets sys_signal(2)
+    # actually invoke a user-installed handler.  sigtest.elf installs a
+    # SIGUSR1 handler, sys_kills itself with SIGUSR1, yields, then prints
+    # "sigtest: SIGUSR1 handler ran (count=N)" via sys_write_serial when
+    # the handler set its flag.  Grep that exact string -- a partial
+    # match would also accept the "NEVER ran" failure line.
+    it "user-sigusr1-handler" \
+"sendkey e
+sendkey x
+sendkey e
+sendkey c
+sendkey spc
+sendkey slash
+sendkey c
+sendkey d
+sendkey r
+sendkey o
+sendkey m
+sendkey slash
+sendkey a
+sendkey p
+sendkey p
+sendkey s
+sendkey slash
+sendkey s
+sendkey i
+sendkey g
+sendkey t
+sendkey e
+sendkey s
+sendkey t
+sendkey dot
+sendkey e
+sendkey l
+sendkey f
+sendkey ret" \
+        2.0
+    assert_serial_contains "sigtest: SIGUSR1 handler ran"
+}
+
 test_ctrlc_kills_child() {
     # Slice 8 phase 3: Ctrl+C now delivers SIGINT to the focused task and
     # the kernel's default-terminate action in sig_deliver kills it.
@@ -306,7 +347,7 @@ sendkey ret"
 
 # --- Driver -----------------------------------------------------------------
 
-ALL_TESTS=(glob_proc tab_path exec_hello cd_root per_tty_cwd calc_brackets ctrlc_kills_child makbox_pwd)
+ALL_TESTS=(glob_proc tab_path exec_hello cd_root per_tty_cwd calc_brackets ctrlc_kills_child user_sigusr1_handler makbox_pwd)
 
 declare -a TO_RUN
 if [ $# -eq 0 ]; then

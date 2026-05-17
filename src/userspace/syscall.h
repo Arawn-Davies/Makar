@@ -11,6 +11,7 @@
 #define SYS_KILL       37
 #define SYS_BRK        45
 #define SYS_SIGNAL     48
+#define SYS_SIGRETURN  119
 #define SYS_DEBUG      100
 #define SYS_YIELD      158
 #define SYS_GETKEY     200
