@@ -30,6 +30,17 @@
 #define SYS_SHELL_CLEAR  213
 #define SYS_UPTIME       214
 #define SYS_GETCWD       215
+#define SYS_FCNTL        55
+
+/* fcntl cmds */
+#define F_GETFL          3
+#define F_SETFL          4
+
+/* O_NONBLOCK for F_SETFL on stdin (fd 0).  Matches Linux i386 0x800. */
+#define O_NONBLOCK       0x800
+
+/* read(2) errno-style return for "no data and non-blocking". */
+#define EAGAIN           11
 
 /* Signal numbers (Linux i386 ABI subset).  Mirrors <kernel/signal.h>;
  * kept in sync by hand since the userspace build doesn't see kernel
@@ -234,6 +245,15 @@ static inline void sys_yield(void)
 static inline int sys_getkey(void)
 {
     return (int)syscall1(SYS_GETKEY, 0);
+}
+
+/* POSIX-style fcntl.  Currently supported: F_GETFL (cmd=3) returns the
+ * current fd flags; F_SETFL (cmd=4) replaces them (the only meaningful
+ * bit today is O_NONBLOCK on stdin).  Returns 0/flags on success,
+ * negative errno on error. */
+static inline int sys_fcntl(int fd, int cmd, long arg)
+{
+    return (int)syscall3(SYS_FCNTL, (long)fd, (long)cmd, arg);
 }
 
 /* Write n screen cells at their specified positions. */

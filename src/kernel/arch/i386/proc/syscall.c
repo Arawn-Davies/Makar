@@ -121,6 +121,20 @@ void syscall_dispatch(registers_t *regs)
         if (!e) { regs->eax = (uint32_t)-1; break; }
 
         if (e->kind == FD_KIND_KEYBOARD) {
+            /* Non-blocking path (O_NONBLOCK on stdin): poll once and
+             * either deliver a single raw byte or return -EAGAIN.  No
+             * line buffering / echo / editing; callers asking for raw
+             * mode opt in deliberately.  Pairs with sys_fcntl(F_SETFL). */
+            if (e->flags & FD_FLAG_NONBLOCK) {
+                unsigned char c = keyboard_poll();
+                if (c == 0) {
+                    regs->eax = (uint32_t)-11;  /* -EAGAIN */
+                } else {
+                    buf[0] = (char)c;
+                    regs->eax = 1u;
+                }
+                break;
+            }
             /* Line-buffered stdin with echo, backspace, and cursor editing. */
             static char s_stdin_line[256];
             uint32_t cap = (len < sizeof(s_stdin_line)) ? len : (uint32_t)sizeof(s_stdin_line);
@@ -645,6 +659,32 @@ void syscall_dispatch(registers_t *regs)
             break;
         }
         regs->eax = (uint32_t)(uintptr_t)prev;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_FCNTL(55): minimal Linux-style fcntl.
+     *   F_GETFL (3) -> returns the fd's flags
+     *   F_SETFL (4) -> replaces them (only O_NONBLOCK is meaningful today)
+     * Returns the flags / 0 on success, negative errno on bad fd / cmd.
+     * ------------------------------------------------------------------ */
+    case SYS_FCNTL: {
+        int fd  = (int)regs->ebx;
+        int cmd = (int)regs->ecx;
+        long arg = (long)regs->edx;
+        task_t *t = task_current();
+        fd_entry_t *e = (t && t->fd_table) ? fd_get(t->fd_table, fd) : NULL;
+        if (!e) { regs->eax = (uint32_t)-9; break; }   /* -EBADF */
+        if (cmd == F_GETFL) {
+            regs->eax = e->flags;
+        } else if (cmd == F_SETFL) {
+            /* Only the documented bits are honoured; everything else
+             * silently dropped (Linux does similar masking). */
+            e->flags = (uint32_t)(arg & FD_FLAG_NONBLOCK);
+            regs->eax = 0u;
+        } else {
+            regs->eax = (uint32_t)-22;   /* -EINVAL */
+        }
         break;
     }
 
