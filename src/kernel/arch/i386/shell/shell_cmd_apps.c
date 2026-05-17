@@ -6,6 +6,7 @@
 
 #include "shell_priv.h"
 
+#include <kernel/shell.h>
 #include <kernel/tty.h>
 #include <kernel/vfs.h>
 #include <kernel/vix.h>
@@ -144,6 +145,29 @@ void shell_exec_elf(const char *path, int argc, char **argv)
     }
     t->exec_params = p;
 
+    /* Replace the placeholder "exec" task name with the basename of
+     * the program (minus a trailing ".elf") so /proc/tasks + maktop
+     * + `cat /proc/tasks` show the real running binary.  Stored in
+     * task_t.name_buf so the pointer outlives the path argument. */
+    {
+        const char *base = path;
+        for (const char *q = path; *q; q++) {
+            if (*q == '/') base = q + 1;
+        }
+        size_t n = 0;
+        while (base[n] && n < sizeof(t->name_buf) - 1) {
+            t->name_buf[n] = base[n];
+            n++;
+        }
+        /* Strip a trailing ".elf" if present. */
+        if (n >= 4 && t->name_buf[n-4] == '.' && t->name_buf[n-3] == 'e' &&
+                       t->name_buf[n-2] == 'l' && t->name_buf[n-1] == 'f') {
+            n -= 4;
+        }
+        t->name_buf[n] = '\0';
+        t->name = t->name_buf;
+    }
+
     task_t *self = task_current();
     keyboard_set_focus(t);
 
@@ -166,6 +190,16 @@ void shell_exec_elf(const char *path, int argc, char **argv)
      * means a dead app can never lock the user out of Alt+Fn TTY switching
      * or the Ctrl+A pane prefix. */
     keyboard_set_raw(0);
+
+    /* Only clean up after FULLSCREEN apps (those that touched the
+     * framebuffer via SYS_PUTCH_AT / SYS_TTY_CLEAR).  Line-mode
+     * children like cat / hello / makbox-fallback-on-typo write only
+     * via SYS_WRITE which scrolls normally; clearing after them would
+     * wipe their output.  Fullscreen apps that exited cleanly already
+     * called sys_shell_clear themselves -- doing it again is a no-op
+     * cost but rescues SIGKILL'd ones that never got the chance. */
+    if (t->fb_touched)
+        shell_clear_screen();
 }
 
 static void cmd_exec(int argc, char **argv)

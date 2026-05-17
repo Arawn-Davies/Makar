@@ -18,8 +18,8 @@ caller's buffer. No on-disk storage; nothing is cached between reads.
 | Path | Renderer | Content |
 |---|---|---|
 | `/proc/cpuinfo` | CPUID leaves 0 + 1 | `vendor_id`, `cpu family`, `model`, `stepping`, `flags` (fpu/tsc/msr/pae/apic/cmov/mmx/sse/sse2/sse3/sse4_1/sse4_2), `arch i386 (protected mode)` |
-| `/proc/meminfo` | `pmm_free_count()` + `heap_used/free()` | `MemFree`, `PageSize`, `FreeFrames`, `HeapTotal`, `HeapUsed`, `HeapFree` (all in kB where applicable) |
-| `/proc/tasks` | Walk `task_pool[]` | One row per task: `PID NAME STATE TTY CWD` |
+| `/proc/meminfo` | `pmm_managed_count()` + `pmm_free_count()` + `heap_used/free()` | Linux-style key/value: `MemTotal`, `MemFree`, `MemAvailable`, `MemUsed`, `Buffers` (0), `Cached` (0), `HeapTotal`, `HeapUsed`, `HeapFree`, `PageSize`, `FreeFrames`, `TotalFrames`.  `MemTotal` reflects the bootloader-available frame pool minus the null page + kernel image (cached at `pmm_init`). |
+| `/proc/tasks` | Walk `task_pool[]`, skip `TASK_DEAD` | `PID NAME STATE TTY TICKS CWD`.  Dead-but-not-yet-reclaimed slots are filtered so userspace tools (maktop / `cat /proc/tasks`) only see live work. |
 | `/proc/uname` | `MAKAR_VERSION` + build macros + `timer_get_ticks()` | `Makar 0.5.0 (i386) built <date> <time>` + uptime ticks |
 
 ## VFS integration

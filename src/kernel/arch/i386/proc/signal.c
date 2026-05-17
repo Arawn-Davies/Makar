@@ -166,9 +166,18 @@ void sig_deliver(struct task *t)
         if (!(deliverable & bit))
             continue;
 
-        /* SIGKILL ignores mask and handler entirely. */
+        /* SIGKILL ignores mask and handler entirely -- except for
+         * tasks marked unkillable (idle + shells).  Killing one of
+         * those would leave the kernel deadlocked or a VT permanently
+         * unusable, so drop the signal silently. */
         if (sig == SIGKILL) {
             t->sig_pending &= ~bit;
+            if (t->unkillable) {
+                Serial_WriteString("[signal] SIGKILL dropped on unkillable pid=");
+                Serial_WriteDec((uint32_t)t->pid);
+                Serial_WriteString("\n");
+                continue;
+            }
             t->state = TASK_DEAD;
             Serial_WriteString("[signal] pid=");
             Serial_WriteDec((uint32_t)t->pid);
@@ -186,6 +195,14 @@ void sig_deliver(struct task *t)
         if (h == SIG_DFL) {
             t->sig_pending &= ~bit;
             if (sig_default_terminates(sig)) {
+                if (t->unkillable) {
+                    Serial_WriteString("[signal] sig ");
+                    Serial_WriteDec((uint32_t)sig);
+                    Serial_WriteString(" dropped on unkillable pid=");
+                    Serial_WriteDec((uint32_t)t->pid);
+                    Serial_WriteString("\n");
+                    continue;
+                }
                 t->state = TASK_DEAD;
                 Serial_WriteString("[signal] pid=");
                 Serial_WriteDec((uint32_t)t->pid);

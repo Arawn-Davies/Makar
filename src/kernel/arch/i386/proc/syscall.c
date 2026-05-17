@@ -442,6 +442,12 @@ void syscall_dispatch(registers_t *regs)
         const tty_cell_t *cells = (const tty_cell_t *)(uintptr_t)regs->ebx;
         uint32_t n = regs->ecx;
         if (!cells || n == 0) { regs->eax = 0; break; }
+        /* Mark this task as "touched the framebuffer".  shell_exec_elf
+         * inspects this flag after the child dies and reissues
+         * shell_clear_screen if set, so fullscreen apps that exit via
+         * SIGKILL (no chance to clean up) don't leave their last frame
+         * underneath the next shell prompt. */
+        { task_t *cur = task_current(); if (cur) cur->fb_touched = 1; }
         /* SYS_PUTCH_AT cells carry their own colour attribute, so writing
          * each cell mutates the default pane's fg/bg.  Save the pane
          * colours up-front and restore at the end so apps that paint
@@ -484,6 +490,7 @@ void syscall_dispatch(registers_t *regs)
      * ------------------------------------------------------------------ */
     case SYS_TTY_CLEAR:
         t_fill((uint8_t)regs->ebx);
+        { task_t *cur = task_current(); if (cur) cur->fb_touched = 1; }
         break;
 
     /* ------------------------------------------------------------------

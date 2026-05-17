@@ -132,6 +132,10 @@ void tasking_init(void)
         idle->cwd[n] = '\0';
     }
     idle->tty      = TASK_TTY_NONE;
+    /* The idle task is unkillable: a SIGKILL/SIGTERM landing on it
+     * would mark it DEAD and the kernel has no fallback runnable when
+     * idle is gone (the scheduler bails out and the system hangs). */
+    idle->unkillable = 1;
     /* sig_task_init zeroes sig_pending/sig_mask and resets the per-task
      * handler table held in signal.c to SIG_DFL across all signals. */
     sig_task_init(idle);
@@ -221,6 +225,7 @@ task_t *task_create(const char *name, void (*entry)(void))
     t->user_brk    = 0;
     t->pid         = next_pid++;
     t->kticks      = 0;
+    t->unkillable  = 0;     /* default: ordinary task, no protection   */
     t->fd_table    = new_fds;
     t->exec_params = NULL;
 
