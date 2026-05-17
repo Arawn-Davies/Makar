@@ -7,6 +7,7 @@
 #include "shell_priv.h"
 
 #include <kernel/shell.h>
+#include <kernel/vtty.h>
 #include <kernel/tty.h>
 #include <kernel/vfs.h>
 #include <kernel/vix.h>
@@ -170,6 +171,9 @@ void shell_exec_elf(const char *path, int argc, char **argv)
 
     task_t *self = task_current();
     keyboard_set_focus(t);
+    /* Register t as VT-foreground so a user Alt+Fn excursion + return
+     * routes focus + KEY_FOCUS_GAIN back to the child, not the shell. */
+    if (self) vtty_set_foreground(self->tty, t);
 
     /* Wait for the child to finish.  Ctrl+C is now delivered as SIGINT
      * straight to the focused task (the child); the kernel's default-
@@ -183,6 +187,7 @@ void shell_exec_elf(const char *path, int argc, char **argv)
         task_yield();
 
     keyboard_release_task(t);
+    if (self) vtty_set_foreground(self->tty, NULL);
     keyboard_set_focus(self);
     /* Defensive: a ring-3 app that enabled raw mode (kbtester etc.) is
      * expected to disable it on the way out, but if it crashed or was

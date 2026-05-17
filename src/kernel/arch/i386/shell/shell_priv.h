@@ -40,6 +40,35 @@
 #define SHELL_FG_RGB          0xFFFFFF
 #define SHELL_BG_RGB          0x0000AA
 
+/* Per-VT colour scheme.  Each shell slot has its own palette so the
+ * four TTYs are visually distinct -- helpful for orienting after a
+ * VT switch.  shell_apply_scheme_for_tty() reads this table and
+ * pushes both the VGA attribute byte and the VESA RGB pair into the
+ * renderers.  shell_clear_screen routes through the same helper so
+ * fullscreen apps (vix, maktop) restore the right palette on exit. */
+typedef struct {
+    uint8_t  vga;     /* 8-bit VGA attribute = fg | (bg << 4)     */
+    uint32_t fg_rgb;  /* 24-bit VESA foreground                    */
+    uint32_t bg_rgb;  /* 24-bit VESA background                    */
+} shell_scheme_t;
+
+/* Indexed by VT slot 0..3.  Tracks the user's stated preferences:
+ *   VT0  light green on black
+ *   VT1  white on black
+ *   VT2  white on blue (the classic Makar look, preserved as default
+ *                       for the most-used secondary VT)
+ *   VT3  black on white                                            */
+static const shell_scheme_t SHELL_SCHEMES[4] = {
+    { 0x0A, 0x55FF55, 0x000000 },
+    { 0x0F, 0xFFFFFF, 0x000000 },
+    { 0x1F, 0xFFFFFF, 0x0000AA },
+    { 0xF0, 0x000000, 0xFFFFFF },
+};
+
+/* Apply the scheme for VT slot `tty` to both renderers.  Out-of-range
+ * tty falls back to slot 0. */
+void shell_apply_scheme_for_tty(int tty);
+
 /*
  * Command entry: all handlers share the same (int argc, char **argv) signature
  * for uniform dispatch.  A NULL name field terminates each module's table.

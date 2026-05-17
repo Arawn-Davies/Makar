@@ -6,7 +6,7 @@
 
 ## Testing harness
 
-Three test paths fan out from `./run.sh iso-test`:
+Three test paths fan out from `./run.sh iso test`:
 
 | Phase | Source | What it verifies |
 |---|---|---|

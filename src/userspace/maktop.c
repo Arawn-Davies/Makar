@@ -731,6 +731,18 @@ int main(int argc, char **argv, char **envp)
                 refresh_tasks();
                 draw_all();
                 next_refresh = sys_uptime() + REFRESH_TICKS;
+            } else if (c == (int)KEY_FOCUS_GAIN) {
+                /* Returning to our VT after the user Alt+Fn'd away.
+                 * The framebuffer is currently showing whichever VT
+                 * they switched through, not our last frame; the
+                 * diff buffer would only repaint cells that differ
+                 * from our internal s_prev (the stale frame).
+                 * Invalidate so the next draw_all is unconditional
+                 * and we own the screen again. */
+                invalidate_prev();
+                refresh_tasks();
+                draw_all();
+                next_refresh = sys_uptime() + REFRESH_TICKS;
             }
             continue;
         }

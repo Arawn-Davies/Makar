@@ -317,6 +317,307 @@ sendkey ret'
     assert_serial_contains "[makbox:pwd]"
 }
 
+test_per_vt_palettes() {
+    # Verify each VT has its declared colour scheme.  Visual check via
+    # PPM dumps -- serial can't see palette.  Expected:
+    #   VT0: green on black
+    #   VT1: white on black
+    #   VT2: white on blue
+    #   VT3: black on white
+    CURRENT_NAME=per-vt-palettes
+    reset_shell
+    local sb1=$(wc -c < "$SERIAL_LOG")
+    echo "screendump $LOGDIR/$CURRENT_NAME.vt0.ppm" \
+        | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    for f in f2 f3 f4 ; do
+        send_script "sendkey alt-$f"
+        sleep 0.8
+        echo "screendump $LOGDIR/$CURRENT_NAME.vt-$f.ppm" \
+            | nc -U "$MONITOR_SOCK" >/dev/null
+        sleep 0.2
+    done
+    send_script 'sendkey alt-f1'
+    sleep 0.4
+
+    CURRENT_SEGMENT=$LOGDIR/$CURRENT_NAME.serial
+    CURRENT_DUMP=$LOGDIR/$CURRENT_NAME.ppm
+    CURRENT_FAILED=0
+    rm -f "$CURRENT_SEGMENT" "$CURRENT_DUMP"
+    echo "screendump $CURRENT_DUMP" | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    dd if="$SERIAL_LOG" bs=1 skip="$sb1" 2>/dev/null > "$CURRENT_SEGMENT"
+    # No serial-level assertion -- this is a pure visual check.
+}
+
+test_two_maktops() {
+    # Multiple maktop instances on different VTs.  User reported: spawn
+    # maktop on VT0, switch to VT1, spawn maktop on VT1, round-trip --
+    # the second instance fails to repaint and shows the shell's blue
+    # bg underneath.
+    #
+    # Build the test by:
+    #  1. exec maktop on VT0, wait for it to draw
+    #  2. Alt+F2, type the exec command, wait
+    #  3. Alt+F1 (back to maktop1), screendump, Alt+F2 (back to maktop2)
+    #     screendump, repeat to be sure
+    #  4. Kill both with q's.  Pwd at the end on VT0 to prove the shell
+    #     came back to a working state.
+    CURRENT_NAME=two-maktops
+    reset_shell
+    local sb1=$(wc -c < "$SERIAL_LOG")
+    # Launch maktop on VT0.
+    send_script 'sendkey e
+sendkey x
+sendkey e
+sendkey c
+sendkey spc
+sendkey slash
+sendkey c
+sendkey d
+sendkey r
+sendkey o
+sendkey m
+sendkey slash
+sendkey a
+sendkey p
+sendkey p
+sendkey s
+sendkey slash
+sendkey m
+sendkey a
+sendkey k
+sendkey t
+sendkey o
+sendkey p
+sendkey dot
+sendkey e
+sendkey l
+sendkey f
+sendkey ret'
+    sleep 1.2
+    # Switch to VT1 and launch maktop there too.
+    send_script 'sendkey alt-f2'
+    sleep 0.6
+    send_script 'sendkey e
+sendkey x
+sendkey e
+sendkey c
+sendkey spc
+sendkey slash
+sendkey c
+sendkey d
+sendkey r
+sendkey o
+sendkey m
+sendkey slash
+sendkey a
+sendkey p
+sendkey p
+sendkey s
+sendkey slash
+sendkey m
+sendkey a
+sendkey k
+sendkey t
+sendkey o
+sendkey p
+sendkey dot
+sendkey e
+sendkey l
+sendkey f
+sendkey ret'
+    sleep 1.5
+    echo "screendump $LOGDIR/$CURRENT_NAME.vt1-maktop-running.ppm" \
+        | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    send_script 'sendkey alt-f1'
+    sleep 1.0
+    echo "screendump $LOGDIR/$CURRENT_NAME.vt0-after-vt1.ppm" \
+        | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    send_script 'sendkey alt-f2'
+    sleep 1.0
+    echo "screendump $LOGDIR/$CURRENT_NAME.vt1-after-vt0.ppm" \
+        | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    # Tear down: q on VT1 (current), Alt+F1, q on VT0.  Then pwd.
+    send_script 'sendkey q'
+    sleep 0.6
+    send_script 'sendkey alt-f1'
+    sleep 0.6
+    send_script 'sendkey q'
+    sleep 0.6
+    local sb2=$(wc -c < "$SERIAL_LOG")
+    send_script 'sendkey p
+sendkey w
+sendkey d
+sendkey ret'
+    wait_for_serial '\[makbox:pwd\]' "$sb2" 5 || \
+        echo "  - pwd never ran (one of the maktops never died)"
+
+    CURRENT_SEGMENT=$LOGDIR/$CURRENT_NAME.serial
+    CURRENT_DUMP=$LOGDIR/$CURRENT_NAME.ppm
+    CURRENT_FAILED=0
+    rm -f "$CURRENT_SEGMENT" "$CURRENT_DUMP"
+    echo "screendump $CURRENT_DUMP" | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    dd if="$SERIAL_LOG" bs=1 skip="$sb1" 2>/dev/null > "$CURRENT_SEGMENT"
+
+    assert_serial_contains "[makbox:pwd]"
+}
+
+test_vt_all_roundtrips() {
+    # Exercise every VT round-trip from maktop on VT0: Alt+F2 → back,
+    # Alt+F3 → back, Alt+F4 → back.  After each return we dump a PPM
+    # so the inspector (me, you, or a future image-diff) can see
+    # whether maktop actually repainted.  At the end 'q' should still
+    # reach maktop (proves focus survived all three excursions).
+    CURRENT_NAME=vt-all-roundtrips
+    reset_shell
+    local sb1=$(wc -c < "$SERIAL_LOG")
+    send_script 'sendkey e
+sendkey x
+sendkey e
+sendkey c
+sendkey spc
+sendkey slash
+sendkey c
+sendkey d
+sendkey r
+sendkey o
+sendkey m
+sendkey slash
+sendkey a
+sendkey p
+sendkey p
+sendkey s
+sendkey slash
+sendkey m
+sendkey a
+sendkey k
+sendkey t
+sendkey o
+sendkey p
+sendkey dot
+sendkey e
+sendkey l
+sendkey f
+sendkey ret'
+    sleep 1.2
+    for f in f2 f3 f4 ; do
+        send_script "sendkey alt-$f"
+        sleep 0.5
+        echo "screendump $LOGDIR/$CURRENT_NAME.at-$f.ppm" \
+            | nc -U "$MONITOR_SOCK" >/dev/null
+        sleep 0.2
+        send_script 'sendkey alt-f1'
+        sleep 1.0
+        echo "screendump $LOGDIR/$CURRENT_NAME.back-from-$f.ppm" \
+            | nc -U "$MONITOR_SOCK" >/dev/null
+        sleep 0.2
+    done
+    local sb2=$(wc -c < "$SERIAL_LOG")
+    send_script 'sendkey q
+sendkey p
+sendkey w
+sendkey d
+sendkey ret'
+    wait_for_serial '\[makbox:pwd\]' "$sb2" 5 || \
+        echo "  - pwd never ran (maktop lost focus during the multi-VT tour)"
+
+    CURRENT_SEGMENT=$LOGDIR/$CURRENT_NAME.serial
+    CURRENT_DUMP=$LOGDIR/$CURRENT_NAME.ppm
+    CURRENT_FAILED=0
+    rm -f "$CURRENT_SEGMENT" "$CURRENT_DUMP"
+    echo "screendump $CURRENT_DUMP" | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    dd if="$SERIAL_LOG" bs=1 skip="$sb1" 2>/dev/null > "$CURRENT_SEGMENT"
+
+    assert_serial_contains "[makbox:pwd]"
+}
+
+test_vt_roundtrip_keeps_maktop_focused() {
+    # When the user Alt+Fn's away from a VT running a fullscreen ELF
+    # (here maktop), then Alt+Fn's back, keyboard focus must return to
+    # the foreground child -- not the slot's shell.  Before the fix,
+    # vtty_switch routed to the slot's owner (shell0) and maktop sat in
+    # its non-blocking read getting -EAGAIN forever; the user could
+    # see the UI but typing did nothing.
+    #
+    # Test: exec maktop, wait for it to start (one CPU bar refresh
+    # gives a serial breadcrumb via /proc/tasks), Alt+F2, Alt+F1 back,
+    # then send 'q' to quit maktop.  If focus is correctly restored,
+    # maktop sees 'q', cleans up, and the shell prompt comes back -- we
+    # confirm via a `pwd` round-trip producing the makbox provenance
+    # tag.  If focus is broken, 'q' is lost and pwd never runs.
+    CURRENT_NAME=vt-roundtrip-keeps-maktop-focused
+    reset_shell
+    local sb1=$(wc -c < "$SERIAL_LOG")
+    send_script 'sendkey e
+sendkey x
+sendkey e
+sendkey c
+sendkey spc
+sendkey slash
+sendkey c
+sendkey d
+sendkey r
+sendkey o
+sendkey m
+sendkey slash
+sendkey a
+sendkey p
+sendkey p
+sendkey s
+sendkey slash
+sendkey m
+sendkey a
+sendkey k
+sendkey t
+sendkey o
+sendkey p
+sendkey dot
+sendkey e
+sendkey l
+sendkey f
+sendkey ret'
+    # Give maktop a moment to reach its main loop.
+    sleep 1.2
+    # Alt+F2 then Alt+F1 -- excursion + return.
+    send_script 'sendkey alt-f2'
+    sleep 0.4
+    send_script 'sendkey alt-f1'
+    sleep 1.2   # let maktop receive FOCUS_GAIN + finish its full repaint
+    # Visual snapshot AFTER the round-trip but BEFORE we kill maktop --
+    # this is what the operator actually sees when they Alt+F1 back.
+    # Serial-only assertions miss visual regressions (blue framebuffer
+    # under maktop's UI), so we save a PPM here that an inspector
+    # (or a future image-diff harness) can scrutinise.
+    echo "screendump $LOGDIR/$CURRENT_NAME.mid.ppm" \
+        | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    local sb2=$(wc -c < "$SERIAL_LOG")
+    # 'q' should reach maktop now and quit it.  Then pwd via makbox.
+    send_script 'sendkey q
+sendkey p
+sendkey w
+sendkey d
+sendkey ret'
+    wait_for_serial '\[makbox:pwd\]' "$sb2" 5 || \
+        echo "  - pwd never ran (maktop probably never saw 'q')"
+
+    CURRENT_SEGMENT=$LOGDIR/$CURRENT_NAME.serial
+    CURRENT_DUMP=$LOGDIR/$CURRENT_NAME.ppm
+    CURRENT_FAILED=0
+    rm -f "$CURRENT_SEGMENT" "$CURRENT_DUMP"
+    echo "screendump $CURRENT_DUMP" | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    dd if="$SERIAL_LOG" bs=1 skip="$sb1" 2>/dev/null > "$CURRENT_SEGMENT"
+
+    assert_serial_contains "[makbox:pwd]"
+}
+
 test_user_sigusr1_handler() {
     # Slice 8 phase 4: ring-3 trampoline + sigreturn lets sys_signal(2)
     # actually invoke a user-installed handler.  sigtest.elf installs a
@@ -423,7 +724,7 @@ sendkey ret"
 
 # --- Driver -----------------------------------------------------------------
 
-ALL_TESTS=(glob_proc tab_path exec_hello cd_root per_tty_cwd calc_brackets ctrlc_kills_child no_dead_in_proctasks typo_doesnt_clear user_sigusr1_handler makbox_pwd)
+ALL_TESTS=(glob_proc tab_path exec_hello cd_root per_tty_cwd calc_brackets ctrlc_kills_child no_dead_in_proctasks typo_doesnt_clear vt_roundtrip_keeps_maktop_focused vt_all_roundtrips user_sigusr1_handler makbox_pwd)
 
 declare -a TO_RUN
 if [ $# -eq 0 ]; then

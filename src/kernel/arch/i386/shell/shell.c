@@ -716,6 +716,10 @@ void shell_run(void)
     int slot = vtty_register();
 
     if (slot == 0) {
+        /* Boot scheme during the loading screen: keep the classic
+         * white-on-blue Medli look (it's what the splash + logo are
+         * tuned for).  The per-VT scheme is applied later, just before
+         * the REPL takes over. */
         terminal_set_colorscheme(SHELL_COLOR_VGA);
 
         /* Hide the tmux-style VT status bar for the duration of the
@@ -790,6 +794,11 @@ void shell_run(void)
         vesa_tty_set_status_visible(1);
         vesa_tty_paint_status(vtty_active(), vtty_count());
 
+        /* Switch into this VT's per-VT palette and clear so the
+         * banner prints in the new colours.  shell_clear_screen reads
+         * the calling task's tty and applies the right scheme. */
+        shell_clear_screen();
+
         t_writestring("Makar -- version " SHELL_VERSION
                       ", build: " BUILD_DATE " " BUILD_TIME "\n");
         t_writestring("The GCC/C++ sibling of Medli\n");
@@ -806,11 +815,8 @@ void shell_run(void)
             task_yield();
         while (!vtty_is_focused())
             task_yield();
-        terminal_set_colorscheme(SHELL_COLOR_VGA);
-        if (vesa_tty_is_ready()) {
-            vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
-            vesa_tty_clear();
-        }
+        /* Apply this VT's per-VT colour scheme on first focus. */
+        shell_clear_screen();
         /* Do NOT drain the input ring here.  The user may have typed a key
          * the same instant they hit Alt+Fn (single QEMU sendkey burst or a
          * fast typist on real hardware) - draining would swallow that first
