@@ -27,12 +27,19 @@ typedef enum {
     FD_KIND_FILE       = 5,   /* opened VFS file (eagerly buffered)        */
 } fd_kind_t;
 
+/* Per-fd flag bits, mirrored from Linux fcntl O_NONBLOCK.  Stored in
+ * fd_entry_t.flags and consulted by SYS_READ on FD_KIND_KEYBOARD to
+ * decide whether to block-yield or return -EAGAIN immediately when the
+ * keyboard ring is empty. */
+#define FD_FLAG_NONBLOCK  0x800u
+
 typedef struct {
     fd_kind_t kind;
     /* file-kind state (zero/NULL for other kinds) */
     uint8_t  *data;     /* kmalloc'd buffer, owned by this slot      */
     uint32_t  size;     /* total bytes valid in data                  */
     uint32_t  pos;      /* current read/seek position                 */
+    uint32_t  flags;    /* FD_FLAG_*; per-fd modes (e.g. O_NONBLOCK)  */
 } fd_entry_t;
 
 typedef struct fd_table {
