@@ -118,6 +118,54 @@ Runs `ktest_run_all()` and prints pass/fail for each subsystem suite
 
 ---
 
+## Black-box UI tests (`./run.sh ui-test`)
+
+Drives the running kernel through QEMU's HMP `sendkey` and asserts on
+the COM1 serial slice + PPM screen dump.  Scenarios live in
+`tests/ui_test.sh` as `test_<name>` shell functions; the shared runner
+in `tests/ui_runner.sh` boots one QEMU per invocation and rotates
+through scenarios with `reset_shell` in between.
+
+### Synchronisation: marker-based, not sleep-based
+
+The shell emits `[shell:ready vt=N]` to serial on every
+`shell_readline` entry (gated by `g_serial_verbose`, which
+`start_qemu` flips on as the first action after boot).  Test
+scenarios use this marker as a sync point instead of fixed `sleep N`:
+
+| Primitive | What it does |
+|---|---|
+| `it <name> <script> [wait_secs]` | Fixed-sleep style.  Send keys, sleep, snapshot serial slice. |
+| `it_until <name> <script> <regex> [timeout]` | **Sync-on-marker style.**  Send keys, poll the serial log until the regex appears, then snapshot.  Default sync regex is `'\[shell:ready vt=0\]'`. |
+| `wait_for_serial <regex> <start_bytes> [timeout]` | Low-level primitive.  Polls `$SERIAL_LOG` from `<start_bytes>` until `<regex>` matches.  Used by `it_until` and directly by multi-stage scenarios that need to sync between key batches (the `typo-doesnt-clear` scenario is the canonical multi-stage example: type the typo, wait for shell-ready, then type the next command, otherwise the in-flight bytes race the dying exec'd child and get dropped when `keyboard_release_task` reaps its slot). |
+
+This is the expect/pexpect pattern, scaled down.  Why it matters: a
+fixed `sleep 1.2` is a guess that's right under KVM and wrong under
+TCG-on-a-shared-runner.  A marker sync is right in both -- it returns
+the instant the kernel says it's ready and bounds via the timeout.
+
+### Scenarios currently covered
+
+| Scenario | Asserts |
+|---|---|
+| `glob-proc` | `cat /proc/*` glob-expands across the synthetic FS |
+| `tab-complete-path` | `cat<TAB> /proc/c<TAB><Enter>` resolves to `cat /proc/cpuinfo` |
+| `exec-hello` | `exec /cdrom/apps/hello.elf tester` reaches `sys_exit(0)` and prints the expected greeting |
+| `cd-root-listing` | `cd /<TAB><TAB>` lists mounts; subsequent `pwd` confirms cwd |
+| `per-tty-cwd` | Per-task cwd isolation across `Alt+F1`/`Alt+F3` switches |
+| `calc-brackets` | `calc.elf` evaluates parenthesised arithmetic |
+| `ctrlc-kills-child` | Ctrl+C delivers SIGINT to a running ELF, shell recovers |
+| `no-dead-in-proctasks` | `cat /proc/tasks` never lists DEAD slots |
+| `typo-doesnt-clear` | A wrong command falls back to makbox, prints an error, and **does not** wipe the screen (proves the `task_t.fb_touched` gate) |
+| `user-sigusr1-handler` | `sigtest.elf` installs a SIGUSR1 handler, self-sends, the handler runs in ring 3 (proves the sigframe + trampoline + `SYS_SIGRETURN` path) |
+| `makbox-pwd` | `pwd` resolves to the `makbox` applet end-to-end |
+
+`./run.sh ui-test` runs all of them; `./run.sh ui-test <name>` runs
+one; `./run.sh ui-test-gui` runs with a visible QEMU window for
+debugging.
+
+---
+
 ## CI
 
 `.github/workflows/build-test.yml` runs a **build-once, fan-out** topology on every push to `main` and every PR. Docs-only changes are skipped via path filter.

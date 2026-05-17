@@ -230,6 +230,62 @@ CURRENT_SEGMENT=""
 CURRENT_DUMP=""
 CURRENT_FAILED=0
 
+# wait_for_serial <pattern> <start_bytes> [timeout_s=5]
+#   Polls $SERIAL_LOG for the first match of <pattern> in the slice
+#   starting at byte offset <start_bytes>.  Returns 0 when found, 1 on
+#   timeout.  Used by `it_until` (and by tests directly) to replace
+#   fixed sleeps with "sync on a marker" -- the expect/pexpect idiom.
+wait_for_serial() {
+    local pattern=$1
+    local start_bytes=$2
+    local timeout=${3:-5}
+    local deadline=$(($(date +%s) + timeout))
+    while [ $(date +%s) -lt $deadline ]; do
+        if [ -f "$SERIAL_LOG" ] && \
+           dd if="$SERIAL_LOG" bs=1 skip="$start_bytes" 2>/dev/null \
+              | grep -qE -- "$pattern"; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    return 1
+}
+
+# it_until <label> <sendkey-script> <sync-pattern> [timeout_s=5]
+#   Like `it`, but instead of sleeping a fixed duration after the keys
+#   are sent, polls the serial log until <sync-pattern> appears (or
+#   the timeout elapses).  The shell's `shell_readline` emits
+#   `[shell:ready vt=N]` on entry, so `'\[shell:ready vt=0\]'` is the
+#   natural sync marker for "the shell is back at the prompt".
+it_until() {
+    CURRENT_NAME=$1
+    local script=$2
+    local pattern=$3
+    local timeout=${4:-5}
+
+    reset_shell
+
+    local start_bytes=0
+    if [ -f "$SERIAL_LOG" ]; then
+        start_bytes=$(wc -c < "$SERIAL_LOG")
+    fi
+
+    send_script "$script"
+
+    if ! wait_for_serial "$pattern" "$start_bytes" "$timeout"; then
+        echo "  - wait_for_serial timed out waiting for: $pattern"
+    fi
+
+    CURRENT_SEGMENT=$LOGDIR/$CURRENT_NAME.serial
+    CURRENT_DUMP=$LOGDIR/$CURRENT_NAME.ppm
+    CURRENT_FAILED=0
+    rm -f "$CURRENT_SEGMENT" "$CURRENT_DUMP"
+    echo "screendump $CURRENT_DUMP" | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+
+    dd if="$SERIAL_LOG" bs=1 skip="$start_bytes" 2>/dev/null > "$CURRENT_SEGMENT"
+}
+
 # it <label> <sendkey-script> [extra-wait-secs]
 #   Resets the shell, drives the keystrokes, waits long enough for the
 #   command(s) to complete, snapshots the per-test serial slice into

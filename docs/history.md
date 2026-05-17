@@ -14,6 +14,114 @@ this file is the trail of how the current state got there.
 
 ## Unreleased
 
+### Added — signals + preemption hardening (PR #154, slices 8 + 9)
+
+- **Per-task signal subsystem** (`src/kernel/include/kernel/signal.h`,
+  `src/kernel/arch/i386/proc/signal.c`).  Linux i386 signal numbers,
+  `sig_handler_t` typedef, `SIG_DFL`/`SIG_IGN` sentinels.  Per-task
+  handler table held in a static array indexed by task-pool slot.
+  Default-action classifier follows Linux defaults; SIGKILL bypasses
+  mask + handler; SIGKILL/SIGSTOP can't have their disposition
+  overridden.  Delivery hooks at `schedule()` (for default-terminate
+  and SIG_IGN) and at the return-to-ring-3 path in `isr_handler` /
+  `irq_handler` / `syscall_dispatch` (for user-installed handlers via
+  a sigframe trampoline on the user stack).
+- **Syscalls**:
+    - `SYS_KILL(37)` — `kill(pid, signo)`.  Linux i386 number.
+    - `SYS_SIGNAL(48)` — `signal(signo, handler)`.  Returns the
+      previous handler.
+    - `SYS_SIGRETURN(119)` — sigframe restore; invoked indirectly by
+      the trampoline embedded at the bottom of every sigframe.
+    - `SYS_FCNTL(55)` — `F_GETFL` / `F_SETFL` with `O_NONBLOCK` on
+      stdin so non-blocking reads return `-EAGAIN` instead of
+      blocking via `shell_readline`.
+- **`task_t.unkillable`** flag: idle (pid 1) and shell tasks set this,
+  and `sig_deliver` drops SIGKILL / default-terminate signals on
+  unkillable targets instead of marking them DEAD.  Without it,
+  maktop's F9-picker / a stray `kill` from the shell could leave a
+  VT permanently dead.
+- **Per-task `kticks`** PIT-tick accounting, incremented by
+  `timer_callback` and rendered in `/proc/tasks` (slice 9 phase 2).
+- **Runtime-tunable scheduling quantum** — `g_sched_quantum` (default
+  4 PIT ticks = 40 ms slice) writable via the new `sched_quantum`
+  shell builtin in `[1..100]` (slice 9 phase 3).
+- **`maktop.elf`** — htop-style task viewer.  Resolution-agnostic via
+  `sys_term_cols`/`sys_term_rows`.  Linux-style /proc/meminfo +
+  /proc/tasks parsing, horizontal CPU% + memory meter bars (green →
+  yellow → red), tmux-style preserved status bar at the bottom row.
+  Auto-refreshes every 1 s; ↑↓ navigate, F9 opens a left-side signal
+  picker (↑↓ pick a name, Enter sends), `s` is a numeric-entry
+  alternate, `r` forces refresh, F10 / `q` quits.  Stays
+  POSIX-aligned: stdin set to `O_NONBLOCK` via `fcntl`, `read` returns
+  `-EAGAIN` when the keyboard ring is empty.
+- **`sigtest.elf`** — ring-3 verifier for `sys_signal` + sigframe +
+  sigreturn.  Installs SIGUSR1 handler, self-sends, asserts the
+  handler ran.
+- **`/proc/meminfo` Linux-style fields** — `MemTotal`, `MemFree`,
+  `MemAvailable`, `MemUsed`, plus existing heap stats.  `pmm_init`
+  caches the bootloader-managed frame count as the source of
+  `MemTotal`.
+- **`task_t.fb_touched`** — set by `SYS_PUTCH_AT` / `SYS_TTY_CLEAR`
+  on the calling task.  `shell_exec_elf` checks it after the child
+  dies and only calls `shell_clear_screen()` for fullscreen apps,
+  so line-mode children (cat, hello, makbox-fallback on typos)
+  don't have their output wiped from the screen.
+- **`in_schedule` re-entrancy guard** in `schedule()`, paired with
+  `irq_save_disable` / `irq_restore` around the critical section.
+  Cleared *before* `task_switch` so fresh tasks (whose first
+  execution bypasses the schedule epilogue) don't leave the flag
+  set forever (slice 9 phase 1).
+- **ktest:**
+    - `test_signal` (31 asserts) — default-action classifier,
+      sig_send/sig_deliver, SIGKILL override of SIG_IGN, sig_send_pid,
+      sig_get_handler round-trip, scheduler-driven default-terminate
+      on a spawned victim.
+    - `test_preempt` — busy-loop victim + verify its `kticks`
+      advanced (proves timer-driven preemption).
+- **ui-test:**
+    - `ctrlc-kills-child` — exec calc, send Ctrl+C, verify shell
+      responsive (proves SIGINT default-terminate end-to-end).
+    - `user-sigusr1-handler` — runs `sigtest.elf`; greps for the
+      handler's serial line, end-to-end ring-3 trampoline coverage.
+    - `no-dead-in-proctasks` — proves the new procfs DEAD filter.
+    - `typo-doesnt-clear` — proves line-mode output survives the
+      shell's post-exec cleanup (`fb_touched` gate).
+- **`tests/ui_runner.sh` sync primitives** — `wait_for_serial
+  <pattern> <start_bytes> [timeout]` and an `it_until` helper.
+  The shell emits `[shell:ready vt=N]` to serial on every
+  `shell_readline` entry (gated by `g_serial_verbose`), so tests
+  can sync on "the prompt is ready" instead of `sleep N` — pexpect /
+  Tcl-Expect style.  Eliminated the typo-doesnt-clear flake.
+
+### Changed (signals + preemption)
+
+- `Ctrl+C` no longer sets a `kb_sigint` global; the keyboard ISR now
+  calls `sig_send(focused_task, SIGINT)` directly.  Shell tasks
+  install `SIG_IGN` for SIGINT at startup so they survive Ctrl+C at
+  their own prompt; the `\x03` byte still arrives via the keyboard
+  ring and `shell_readline` handles it cooperatively (echo `^C`,
+  drop the line).  Legacy `keyboard_sigint_consume()` shim removed.
+- `shell_exec_elf` no longer polls `keyboard_sigint_consume()` to
+  force-kill children.  Ctrl+C delivers SIGINT to the focused
+  child; the kernel terminates it via `sig_deliver`; the shell
+  just yields until `t->state == TASK_DEAD`.
+- Exec'd tasks now get a real name (basename of the path, minus a
+  trailing `.elf`) instead of the hard-coded `"exec"`, via the new
+  `task_t.name_buf[16]` durable-storage field.  Visible in
+  `/proc/tasks`, `cat /proc/tasks`, and maktop.
+- CI `run.sh` outer timeout for the GDB ISO test bumped 120 s →
+  300 s; on FAIL, `tests/groups/ktest_bg.py` prints the last
+  `ktest_bg_completed/total` it observed so triage doesn't need
+  the artifact tarball for the basic "which suite stalled"
+  question (separate commit, same PR).
+
+### Removed (signals + preemption)
+
+- `kb_sigint` static + `keyboard_sigint_consume()` function (replaced
+  by per-task signal delivery).
+- The 4-byte `SCHED_QUANTUM` compile-time `#define` (now the
+  `g_sched_quantum` runtime variable).
+
 ### Added
 - **makbox** — Makar busybox-style multicall binary
   (`src/userspace/makbox.c`).  Applets: `ls`, `cat`, `cp`, `mv`, `rm`,

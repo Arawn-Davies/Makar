@@ -78,10 +78,34 @@ static unsigned int s_cpu_pct;
 static tty_cell_t g_cells[MAX_COLS * MAX_ROWS];
 static int        g_ncells;
 
+/* Diff buffer.  We keep the last (ch, clr) we sent for every cell;
+ * put() skips re-queueing cells that haven't changed.  Eliminates the
+ * flicker that came from repainting 1920 cells per refresh on the
+ * VESA framebuffer (each glyph blit is visible).  ~19 KiB at MAX
+ * dimensions, lives in .bss. */
+typedef struct { unsigned char ch; unsigned char clr; } prev_cell_t;
+static prev_cell_t s_prev[MAX_COLS * MAX_ROWS];
+
+/* Force the next put() pass to emit every cell (after switching modes
+ * like picker overlay → restore, or on first frame). */
+static void invalidate_prev(void)
+{
+    for (int i = 0; i < (int)(sizeof(s_prev)/sizeof(s_prev[0])); i++) {
+        s_prev[i].ch  = 0xFF;
+        s_prev[i].clr = 0xFF;
+    }
+}
+
 /* ---- draw helpers ---- */
 
 static inline void put(int col, int row, char c, unsigned char clr)
 {
+    if (col < 0 || row < 0 || col >= MAX_COLS || row >= MAX_ROWS) return;
+    int key = row * MAX_COLS + col;
+    if (s_prev[key].ch == (unsigned char)c && s_prev[key].clr == clr)
+        return;
+    s_prev[key].ch  = (unsigned char)c;
+    s_prev[key].clr = clr;
     if (g_ncells < (int)(sizeof(g_cells) / sizeof(g_cells[0]))) {
         g_cells[g_ncells].col = (unsigned char)col;
         g_cells[g_ncells].row = (unsigned char)row;
@@ -186,18 +210,28 @@ static int parse_tasks_line(const char *line, task_row_t *r)
     return 1;
 }
 
+/* Static read buffers: the user stack is one 4 KiB page (see
+ * USER_STACK_TOP in usertest.c) and locals like a 4 KiB char[] would
+ * straddle the bottom guard and page-fault.  None of these helpers
+ * recurse or run concurrently, so .bss is the natural home. */
+static char s_proc_tasks_buf[4096];
+static char s_proc_meminfo_buf[1024];
+
 static void refresh_tasks(void)
 {
-    char buf[4096];
-    long n = read_file("/proc/tasks", buf, sizeof(buf));
+    long n = read_file("/proc/tasks", s_proc_tasks_buf, sizeof(s_proc_tasks_buf));
     if (n <= 0) { s_nrows = 0; return; }
 
-    task_row_t prev[MAX_TASKS_VIEW];
+    /* Move prev[] off the stack -- the user task gets one 4 KiB stack
+     * page, and a VLA of MAX_TASKS_CAP entries (~1.5 KiB) plus the
+     * other locals here was close enough to overflow it on the first
+     * iteration. */
+    static task_row_t prev[MAX_TASKS_CAP];
     int prev_n = s_nrows;
     for (int i = 0; i < prev_n; i++) prev[i] = s_task_rows[i];
 
     s_nrows = 0;
-    char *line = buf;
+    char *line = s_proc_tasks_buf;
     while (*line && s_nrows < MAX_TASKS_VIEW) {
         char *eol = line;
         while (*eol && *eol != '\n') eol++;
@@ -221,9 +255,17 @@ static void refresh_tasks(void)
     if (s_sel >= s_nrows) s_sel = s_nrows - 1;
     if (s_sel < 0) s_sel = 0;
 
-    /* CPU% over the snapshot interval. */
+    /* CPU% over the snapshot interval.  Exclude pid=1 (idle): at every
+     * PIT IRQ some task is current and gets credited, and when nothing
+     * else is runnable that's always idle -- so a naive sum would always
+     * read 100% utilisation.  Linux excludes idle the same way (the
+     * "idle" column in /proc/stat is the "subtract this for CPU%"
+     * bucket). */
     unsigned int total = 0;
-    for (int i = 0; i < s_nrows; i++) total += s_task_rows[i].kticks;
+    for (int i = 0; i < s_nrows; i++) {
+        if (s_task_rows[i].pid == 1) continue;
+        total += s_task_rows[i].kticks;
+    }
     unsigned int now = sys_uptime();
     unsigned int dt_real  = (now > s_uptime_prev) ? (now - s_uptime_prev) : 1u;
     unsigned int dt_total = (total > s_total_kticks_prev)
@@ -287,7 +329,6 @@ static void draw_bar(int col, int row, int inner_w, unsigned int pct,
 
 static void draw_header(void)
 {
-    char buf[1024];
     char tmp[32];
 
     /* CPU row. */
@@ -306,10 +347,10 @@ static void draw_header(void)
 
     /* Mem row. */
     unsigned int total_kb = 0, free_kb = 0;
-    long n = read_file("/proc/meminfo", buf, sizeof(buf));
+    long n = read_file("/proc/meminfo", s_proc_meminfo_buf, sizeof(s_proc_meminfo_buf));
     if (n > 0) {
-        total_kb = meminfo_field(buf, "MemTotal");
-        free_kb  = meminfo_field(buf, "MemFree");
+        total_kb = meminfo_field(s_proc_meminfo_buf, "MemTotal");
+        free_kb  = meminfo_field(s_proc_meminfo_buf, "MemFree");
     }
     unsigned int used_kb = (total_kb > free_kb) ? (total_kb - free_kb) : 0u;
     unsigned int mem_pct = (total_kb == 0u) ? 0u
@@ -490,7 +531,109 @@ static int prompt_signo(int pid)
     return (int)v;
 }
 
-#define REFRESH_TICKS 50u
+/* ---- htop-style left-panel signal picker ----
+ *
+ * F9 (or k) overlays a scrollable list of named signals on the left
+ * side of the screen.  Up/Down navigate, Enter sends to the highlighted
+ * task in the underlying list, Esc cancels.  Returns the chosen signo
+ * (1..31) or -1 on cancel. */
+
+static const struct { int signo; const char *name; } SIGNALS[] = {
+    {  1, "SIGHUP"   },
+    {  2, "SIGINT"   },
+    {  3, "SIGQUIT"  },
+    {  4, "SIGILL"   },
+    {  5, "SIGTRAP"  },
+    {  6, "SIGABRT"  },
+    {  8, "SIGFPE"   },
+    {  9, "SIGKILL"  },
+    { 10, "SIGUSR1"  },
+    { 11, "SIGSEGV"  },
+    { 12, "SIGUSR2"  },
+    { 13, "SIGPIPE"  },
+    { 14, "SIGALRM"  },
+    { 15, "SIGTERM"  },
+    { 17, "SIGCHLD"  },
+    { 18, "SIGCONT"  },
+    { 19, "SIGSTOP"  },
+    { 20, "SIGTSTP"  },
+};
+
+#define PICKER_W 20
+
+#define CLR_PICK_HDR  VGA_CLR(VGA_BLACK,  VGA_LGREEN)
+#define CLR_PICK_ROW  VGA_CLR(VGA_LGREY,  VGA_BLACK)
+#define CLR_PICK_SEL  VGA_CLR(VGA_BLACK,  VGA_LCYAN)
+#define CLR_PICK_HINT VGA_CLR(VGA_LCYAN,  VGA_BLACK)
+
+static void draw_picker(int sel, int target_pid)
+{
+    char tmp[16];
+    int total = (int)(sizeof(SIGNALS)/sizeof(SIGNALS[0]));
+
+    /* Header row across the picker width. */
+    put_pad(0, 0, PICKER_W, CLR_PICK_HDR);
+    put_str(1, 0, "Send signal:", CLR_PICK_HDR);
+    /* Show target PID compactly on the same header line if there's room. */
+    {
+        uitoa((unsigned int)target_pid, tmp);
+        unsigned int n = slen(tmp);
+        int col = PICKER_W - (int)n - 1;
+        if (col > 13) put_str(col, 0, tmp, CLR_PICK_HDR);
+    }
+
+    /* Body rows: scroll so sel is always visible.  ROW_FOOTER and
+     * one above it are reserved for the hint line.  We don't draw on
+     * the kernel's status row (s_rows is the pane height; kernel
+     * status bar lives at row s_rows). */
+    int body_top    = 1;
+    int body_bottom = s_rows - 2;       /* leave one row for hint */
+    int body_h      = body_bottom - body_top + 1;
+    int top = sel - body_h / 2;
+    if (top < 0) top = 0;
+    if (top > total - body_h) top = total - body_h;
+    if (top < 0) top = 0;
+
+    for (int row = body_top; row <= body_bottom; row++) {
+        int idx = top + (row - body_top);
+        unsigned char clr = (idx == sel) ? CLR_PICK_SEL : CLR_PICK_ROW;
+        put_pad(0, row, PICKER_W, clr);
+        if (idx < 0 || idx >= total) continue;
+        uitoa((unsigned int)SIGNALS[idx].signo, tmp);
+        /* Right-align signo in cols 1..3. */
+        int slot = 3 - (int)slen(tmp);
+        if (slot < 1) slot = 1;
+        put_str(slot, row, tmp, clr);
+        put_str(5, row, SIGNALS[idx].name, clr);
+    }
+
+    /* Hint row at the bottom of the picker. */
+    put_pad(0, s_rows - 1, PICKER_W, CLR_PICK_HINT);
+    put_str(1, s_rows - 1, " up/dn  ent send ", CLR_PICK_HINT);
+
+    flush();
+}
+
+static int signal_picker(int target_pid)
+{
+    int sel = 13;   /* index of SIGTERM in the table -- safe default */
+    int total = (int)(sizeof(SIGNALS)/sizeof(SIGNALS[0]));
+
+    invalidate_prev();    /* picker overlays the underlying view */
+    draw_picker(sel, target_pid);
+
+    for (;;) {
+        int c = wait_key();
+        if (c == 0x1B || c == 'q' || c == 'Q') return -1;     /* Esc / q */
+        if (c == '\n' || c == '\r') return SIGNALS[sel].signo;
+        if (c == KEY_ARROW_UP   && sel > 0)            { sel--; draw_picker(sel, target_pid); }
+        else if (c == KEY_ARROW_DOWN && sel < total-1) { sel++; draw_picker(sel, target_pid); }
+    }
+}
+
+/* htop's default refresh is 1.5 s; we use 1 s here.  Faster than that
+ * the digit cells flicker visibly on the VESA framebuffer. */
+#define REFRESH_TICKS 100u
 
 int main(int argc, char **argv, char **envp)
 {
@@ -533,6 +676,11 @@ int main(int argc, char **argv, char **envp)
     s_total_kticks_prev = 0;
     unsigned int next_refresh = s_uptime_prev + REFRESH_TICKS;
 
+    /* First frame: force every cell out so the diff buffer reflects
+     * what's actually on the framebuffer.  Without this the put()
+     * skip-if-unchanged would suppress cells whose new (ch, clr)
+     * matched the .bss-zeroed prev buffer (0x00 black-on-black). */
+    invalidate_prev();
     sys_tty_clear(CLR_BG);
     refresh_tasks();
     draw_all();
@@ -552,12 +700,21 @@ int main(int argc, char **argv, char **envp)
             } else if (c == (int)KEY_F9 || c == 'k' || c == 'K') {
                 if (s_nrows > 0) {
                     int pid = s_task_rows[s_sel].pid;
-                    int rc = sys_kill(pid, SIGTERM);
-                    show_status((rc == 0) ? " SIGTERM sent "
-                                          : " sys_kill failed ",
-                                (rc == 0) ? CLR_STATUS : CLR_STATUS_ERR);
+                    int sig = signal_picker(pid);
+                    /* Picker overlaid the left column; force a full
+                     * repaint of the underlying view to wipe it. */
+                    invalidate_prev();
+                    draw_all();
+                    if (sig > 0) {
+                        int rc = sys_kill(pid, sig);
+                        show_status((rc == 0) ? " signal sent "
+                                              : " sys_kill failed ",
+                                    (rc == 0) ? CLR_STATUS : CLR_STATUS_ERR);
+                    }
                 }
             } else if (c == 's' || c == 'S') {
+                /* Numeric-entry alternate path -- handy for muscle
+                 * memory.  Same effect as the picker but typed. */
                 if (s_nrows > 0) {
                     int pid = s_task_rows[s_sel].pid;
                     int sig = prompt_signo(pid);
@@ -588,6 +745,11 @@ int main(int argc, char **argv, char **envp)
     }
 
     sys_fcntl(0, F_SETFL, 0);
-    sys_tty_clear(VGA_CLR(VGA_LGREY, VGA_BLACK));
+    /* Restore the shell's default palette (same code path as the
+     * `clear` shell builtin and what vix uses on exit).  Our
+     * sys_tty_clear with our own bg colour leaves the screen black,
+     * which doesn't match the operator's expectation of returning to
+     * the shell colours. */
+    sys_shell_clear();
     return 0;
 }

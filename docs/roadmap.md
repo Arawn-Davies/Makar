@@ -28,8 +28,8 @@ usually one PR per slice.
 |    5b | Keyboard hardening                                     | ✅ shipped (#127)           | —                                                                                  |
 |     6 | Test-infra cleanup (ccache, fan-out CI)                | ✅ shipped (#125)           | —                                                                                  |
 |     7 | Per-task consumer migration                            | ✅ complete                 | —                                                                                  |
-|     8 | Linux-style signal subsystem                           | ⏭ queued                    | [#144](https://github.com/Arawn-Davies/Makar/issues/144)                          |
-|     9 | Preemption hardening                                   | ⏭ queued                    | [#145](https://github.com/Arawn-Davies/Makar/issues/145)                          |
+|     8 | Linux-style signal subsystem                           | ✅ shipped (#154)           | [#144](https://github.com/Arawn-Davies/Makar/issues/144)                          |
+|     9 | Preemption hardening                                   | ✅ shipped (#154)           | [#145](https://github.com/Arawn-Davies/Makar/issues/145)                          |
 |    10 | Per-TTY screen buffers + status bar + `/proc`          | ✅ shipped (#129)           | —                                                                                  |
 |    11 | `ps`-style task listing                                | ⏭ queued                    | [#147](https://github.com/Arawn-Davies/Makar/issues/147)                          |
 |    12 | `fork()` readiness (CoW PD clone, fd dup)              | ⏭ queued                    | rolled into [#121](https://github.com/Arawn-Davies/Makar/issues/121)              |
@@ -80,11 +80,20 @@ Background: [Makar × Medli](makar-medli.md).
 
 Things the kernel needs to be properly preemptive + signal-aware.
 
-Open:
+Shipped (PR #154):
 - [#144 — Linux-style signal subsystem](https://github.com/Arawn-Davies/Makar/issues/144)
-  (slice 8)
+  (slice 8) — per-task handler table, scheduler-driven default-terminate
+  delivery, `SYS_KILL(37)` / `SYS_SIGNAL(48)` / `SYS_SIGRETURN(119)`,
+  ring-3 trampoline so user-installed handlers actually run, Ctrl+C →
+  SIGINT migration (removed `g_sigint` / `keyboard_sigint_consume`),
+  `task_t.unkillable` flag protecting idle + shell tasks, `maktop.elf`
+  htop-style task viewer with F9 signal picker.
 - [#145 — Preemption hardening](https://github.com/Arawn-Davies/Makar/issues/145)
-  (slice 9)
+  (slice 9) — `in_schedule` re-entrancy guard cleared before
+  `task_switch`, `irq_save_disable` / `irq_restore` wrapping the
+  critical section, per-task `kticks` accounting in `/proc/tasks`,
+  runtime-tunable `g_sched_quantum` (`sched_quantum` shell builtin),
+  `test_preempt` busy-loop ktest.
 
 ### Filesystem & devices
 

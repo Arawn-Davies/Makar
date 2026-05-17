@@ -241,6 +241,82 @@ sendkey ret" \
     assert_serial_contains "24" "21" "32"
 }
 
+test_no_dead_in_proctasks() {
+    # Slice 8/9 cleanup: /proc/tasks should not list DEAD slots that
+    # are waiting for task_create to reclaim them.  bg-ktest spawns
+    # `preempt_victim`, `ktest_noop1`, etc., during the boot test
+    # suite and they end up DEAD by the time the shell is up.  If the
+    # filter is working, `cat /proc/tasks` should never include the
+    # string "DEAD".
+    it "no-dead-in-proctasks" \
+"sendkey c
+sendkey a
+sendkey t
+sendkey spc
+sendkey slash
+sendkey p
+sendkey r
+sendkey o
+sendkey c
+sendkey slash
+sendkey t
+sendkey a
+sendkey s
+sendkey k
+sendkey s
+sendkey ret"
+    assert_serial_contains "shell0" "shell1"
+    assert_serial_not_contains "DEAD"
+}
+
+test_typo_doesnt_clear() {
+    # Slice 8 polish: a wrong command falls back to makbox, which
+    # prints an error to stderr and exits.  With shell_exec_elf's
+    # unconditional shell_clear_screen this used to wipe the screen.
+    # After gating on task->fb_touched, line-mode output stays
+    # visible.  Verify by typing a typo, then `pwd`, and asserting
+    # both the makbox error AND the pwd provenance reach serial in
+    # the same slice.
+    # Two-stage send: type the typo + Enter, wait for shell-ready
+    # (== shell back at the prompt after makbox-fallback died), THEN
+    # type pwd + Enter.  Without the intermediate sync the second
+    # batch's first byte races keyboard_release_task on the dying
+    # exec child and gets dropped (we'd see "wd" reach the shell
+    # instead of "pwd").  Pure timing fix; no kernel changes.
+    CURRENT_NAME=typo-doesnt-clear
+    reset_shell
+    local sb1=$(wc -c < "$SERIAL_LOG")
+    send_script 'sendkey n
+sendkey o
+sendkey s
+sendkey u
+sendkey c
+sendkey h
+sendkey c
+sendkey m
+sendkey d
+sendkey ret'
+    wait_for_serial '\[shell:ready vt=0\]' "$sb1" 5 || \
+        echo "  - stage1: never returned to prompt"
+    local sb2=$(wc -c < "$SERIAL_LOG")
+    send_script 'sendkey p
+sendkey w
+sendkey d
+sendkey ret'
+    wait_for_serial '\[makbox:pwd\]' "$sb2" 5 || \
+        echo "  - stage2: pwd never produced [makbox:pwd]"
+
+    CURRENT_SEGMENT=$LOGDIR/$CURRENT_NAME.serial
+    CURRENT_DUMP=$LOGDIR/$CURRENT_NAME.ppm
+    CURRENT_FAILED=0
+    rm -f "$CURRENT_SEGMENT" "$CURRENT_DUMP"
+    echo "screendump $CURRENT_DUMP" | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    dd if="$SERIAL_LOG" bs=1 skip="$sb1" 2>/dev/null > "$CURRENT_SEGMENT"
+
+    assert_serial_contains "[makbox:pwd]"
+}
+
 test_user_sigusr1_handler() {
     # Slice 8 phase 4: ring-3 trampoline + sigreturn lets sys_signal(2)
     # actually invoke a user-installed handler.  sigtest.elf installs a
@@ -347,7 +423,7 @@ sendkey ret"
 
 # --- Driver -----------------------------------------------------------------
 
-ALL_TESTS=(glob_proc tab_path exec_hello cd_root per_tty_cwd calc_brackets ctrlc_kills_child user_sigusr1_handler makbox_pwd)
+ALL_TESTS=(glob_proc tab_path exec_hello cd_root per_tty_cwd calc_brackets ctrlc_kills_child no_dead_in_proctasks typo_doesnt_clear user_sigusr1_handler makbox_pwd)
 
 declare -a TO_RUN
 if [ $# -eq 0 ]; then
