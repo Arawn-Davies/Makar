@@ -332,7 +332,7 @@ _run_gdb_iso_test() {
             -s -S &
         QPID=$!
         sleep 2
-        timeout 120 "$_gdb" -batch \
+        timeout 300 "$_gdb" -batch \
             -ex "source $REPO_ROOT/tests/gdb_boot_test.py" \
             "$REPO_ROOT/src/kernel/makar.kernel" \
             2>&1 | tee "$REPO_ROOT/gdb-test.log"
@@ -351,7 +351,7 @@ _run_gdb_iso_test() {
                  -s -S &
              QPID=$!
              sleep 2
-             timeout 120 gdb-multiarch -batch \
+             timeout 300 gdb-multiarch -batch \
                  -ex "source tests/gdb_boot_test.py" \
                  src/kernel/makar.kernel \
                  2>&1 | tee /work/gdb-test.log
