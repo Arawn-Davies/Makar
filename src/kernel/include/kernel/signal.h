@@ -89,7 +89,9 @@ sig_handler_t sig_get_handler(struct task *t, int signo);
 
 /* sig_check_and_clear - test and clear a pending signal on the calling
  * task.  Returns 1 if the bit was set (and clears it), 0 otherwise.
- * Drop-in shim for the legacy keyboard_sigint_consume() pattern. */
+ * Useful for tasks that want to react to a signal without exposing
+ * themselves to the default-terminate action -- install SIG_IGN first,
+ * then poll this. */
 int sig_check_and_clear(int signo);
 
 /* sig_default_terminates - true if the default action for signo is to

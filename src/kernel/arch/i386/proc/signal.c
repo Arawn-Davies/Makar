@@ -20,10 +20,11 @@
  *   - SIGKILL and SIGSTOP cannot have their disposition overridden.
  *     SIGKILL always terminates regardless of mask or installed handler.
  *
- * The legacy g_sigint / keyboard_sigint_consume path is intentionally
- * untouched here; converting Ctrl+C to deliver SIGINT to the focused
- * task happens in a follow-up commit so the UI-test surface stays
- * stable while the infrastructure is verified in isolation.
+ * The legacy g_sigint / keyboard_sigint_consume path was removed in
+ * phase 3: the keyboard ISR now delivers SIGINT directly to the focused
+ * task via sig_send(), shell tasks install SIG_IGN at startup so they
+ * survive Ctrl+C at their own prompt, and shell_exec_elf simply yields
+ * until the child reaches TASK_DEAD (the kernel does the killing).
  */
 
 #include <kernel/signal.h>

@@ -107,6 +107,7 @@
 #include <kernel/isr.h>
 #include <kernel/asm.h>
 #include <kernel/task.h>
+#include <kernel/signal.h>
 #include <kernel/timer.h>
 #include <kernel/vesa_tty.h>
 #include <kernel/serial.h>
@@ -438,10 +439,12 @@ static task_t * volatile kb_pane[2] = {NULL, NULL};
 /* Ctrl-A prefix latch. Single byte, accessed only from IRQ context. */
 static volatile uint8_t kb_prefix = 0;
 
-/* SIGINT pending flag: set by the IRQ when it sees Ctrl+C, cleared by
- * keyboard_sigint_consume(). Atomic so the consumer can use a CAS-style
- * test-and-clear pattern. */
-static volatile uint32_t kb_sigint = 0;
+/* SIGINT delivery on Ctrl+C is now via sig_send(kb_focused, SIGINT) -- see
+ * the Ctrl+C handler below.  The previous kb_sigint global plus
+ * keyboard_sigint_consume() shim is gone (slice 8 phase 3); consumers
+ * that want to observe a SIGINT either install a handler / check
+ * sig_pending themselves, or rely on the kernel's default-terminate
+ * action via sig_deliver in schedule(). */
 
 /*
  * slot_count_v - per-task ring occupancy. Same wraparound trick as
@@ -945,9 +948,17 @@ static void on_make(kc_t kc)
         }
     }
 
-    /* Ctrl+C fires in BOTH modes - it's how a raw-mode app gets exited. */
+    /* Ctrl+C fires in BOTH modes - it's how a raw-mode app gets exited.
+     * Deliver SIGINT to the focused task (Linux-style); the kernel's
+     * default-terminate action in sig_deliver does the kill, the shell
+     * keeps SIGINT ignored at startup so its own prompt isn't affected.
+     * kb_route(0x03) is still issued so raw-mode apps that *want* to
+     * handle Ctrl+C cooperatively (e.g. a future vix) can read the byte
+     * before the kernel terminates them on the next schedule pass. */
     if (mod_ctrl && letter == 'c') {
-        __atomic_store_n(&kb_sigint, 1, __ATOMIC_RELEASE);
+        task_t *f = __atomic_load_n(&kb_focused, __ATOMIC_ACQUIRE);
+        if (f)
+            sig_send(f, SIGINT);
         kb_route(0x03);
         return;
     }
@@ -1233,20 +1244,6 @@ void keyboard_focus_pane(int pane_id)
 void keyboard_set_focus(task_t *t)
 {
     __atomic_store_n(&kb_focused, t, __ATOMIC_RELEASE);
-}
-
-/*
- * keyboard_sigint_consume - atomic test-and-clear of the SIGINT pending
- * flag. Returns 1 exactly once per Ctrl+C: even if multiple consumers
- * (shell readline, exec watcher) call this concurrently, exactly one will
- * see the 1, and the flag is cleared atomically.
- */
-int keyboard_sigint_consume(void)
-{
-    uint32_t expected = 1;
-    return __atomic_compare_exchange_n(&kb_sigint, &expected, 0,
-                                       /*weak=*/0,
-                                       __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
 }
 
 /*

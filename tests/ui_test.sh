@@ -241,6 +241,54 @@ sendkey ret" \
     assert_serial_contains "24" "21" "32"
 }
 
+test_ctrlc_kills_child() {
+    # Slice 8 phase 3: Ctrl+C now delivers SIGINT to the focused task and
+    # the kernel's default-terminate action in sig_deliver kills it.
+    # Verify the shell recovers cleanly after the child dies.
+    #
+    # Steps: exec calc.elf (long-running interactive REPL) -> give it time
+    # to reach its input loop -> send Ctrl+C -> shell sees calc go DEAD and
+    # returns to the prompt -> type `pwd` -> makbox emits its `[makbox:pwd]`
+    # serial provenance tag.  Presence of that tag is unambiguous evidence
+    # the shell prompt is responsive again after the child was killed.
+    it "ctrlc-kills-child" \
+"sendkey e
+sendkey x
+sendkey e
+sendkey c
+sendkey spc
+sendkey slash
+sendkey c
+sendkey d
+sendkey r
+sendkey o
+sendkey m
+sendkey slash
+sendkey a
+sendkey p
+sendkey p
+sendkey s
+sendkey slash
+sendkey c
+sendkey a
+sendkey l
+sendkey c
+sendkey dot
+sendkey e
+sendkey l
+sendkey f
+sendkey ret
+PAUSE 0.8
+sendkey ctrl-c
+PAUSE 0.4
+sendkey p
+sendkey w
+sendkey d
+sendkey ret" \
+        2.0
+    assert_serial_contains "[makbox:pwd]"
+}
+
 test_makbox_pwd() {
     # Prove `pwd` is served by makbox.elf, not the (now-removed) shell
     # builtin.  makbox's pwd applet writes "[makbox:pwd] <cwd>" to COM1
@@ -258,7 +306,7 @@ sendkey ret"
 
 # --- Driver -----------------------------------------------------------------
 
-ALL_TESTS=(glob_proc tab_path exec_hello cd_root per_tty_cwd calc_brackets makbox_pwd)
+ALL_TESTS=(glob_proc tab_path exec_hello cd_root per_tty_cwd calc_brackets ctrlc_kills_child makbox_pwd)
 
 declare -a TO_RUN
 if [ $# -eq 0 ]; then

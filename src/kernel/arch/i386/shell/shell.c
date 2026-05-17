@@ -21,6 +21,7 @@
 #include <kernel/vfs.h>
 #include <kernel/timer.h>
 #include <kernel/task.h>
+#include <kernel/signal.h>
 #include <kernel/ktest.h>
 
 #include <string.h>
@@ -293,12 +294,13 @@ void shell_readline(char *buf, size_t max)
             continue;
         }
 
-        /* Ctrl+C: abort current line.  Also drain g_sigint so the flag
-         * can't leak into the next shell_exec_elf and kill the child
-         * task before it even runs - exactly the bug that made
-         * reset_shell + makbox tests fail in shared-VM ui_test runs. */
+        /* Ctrl+C: abort current line.  The kernel keyboard ISR already
+         * delivers SIGINT to the focused task (us) -- the shell task
+         * installed SIG_IGN for SIGINT at startup so sig_deliver just
+         * clears the bit instead of terminating us.  The 0x03 byte
+         * routed via kb_route is what we read here; this branch is the
+         * shell's cooperative response (echo "^C" and drop the line). */
         if (c == KEY_CTRL_C) {
-            keyboard_sigint_consume();
             t_writestring("^C\n");
             buf[0] = '\0';
             return;
@@ -680,6 +682,14 @@ void shell_run(void)
 {
     char  buf[SHELL_MAX_INPUT];   /* stack-allocated: each task gets its own */
     char *argv[SHELL_MAX_ARGS];
+
+    /* Shell tasks ignore SIGINT.  Ctrl+C at the prompt is meant to abort
+     * the current input line, not terminate the shell -- the kernel
+     * delivers SIGINT to the focused task on every Ctrl+C and the
+     * default action is terminate, so without this the shell would die
+     * the moment the user pressed Ctrl+C.  The 0x03 byte arrives via
+     * the keyboard ring and shell_readline handles it cooperatively. */
+    sig_set_handler(task_current(), SIGINT, SIG_IGN);
 
     int slot = vtty_register();
 
