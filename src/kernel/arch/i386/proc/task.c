@@ -34,6 +34,35 @@ static task_t *current_task    = NULL;
 static int     tasking_active  = 0;
 static int     next_pid        = 2;   /* idle task gets PID 1; created tasks start at 2 */
 
+/* schedule() re-entrancy guard.  Single-CPU only; an MP port would need
+ * this per-CPU and protected by a different primitive.  Set to 1 across
+ * schedule()'s critical section; checked at entry to bail on nested
+ * calls (either an IRQ that managed to land during the pre-cli window
+ * or some future kernel code that calls task_yield() from inside one of
+ * the helpers schedule() invokes).
+ *
+ * Without this, the scheduler relied entirely on cli/sti discipline:
+ * the timer IRQ runs with IF=0 from isr_common_stub, so re-entry via
+ * IRQ was already prevented in practice -- but the guarantee was
+ * implicit and one stray sti would have re-opened the hole.  The flag
+ * makes the invariant explicit so future code can't accidentally undo
+ * it. */
+static volatile int in_schedule = 0;
+
+/* Save EFLAGS and disable interrupts; return the prior EFLAGS so the
+ * caller can restore exactly the IF state it had on entry. */
+static inline uint32_t irq_save_disable(void)
+{
+    uint32_t f;
+    asm volatile("pushfl; popl %0; cli" : "=r"(f) :: "memory");
+    return f;
+}
+
+static inline void irq_restore(uint32_t f)
+{
+    asm volatile("pushl %0; popfl" :: "r"(f) : "memory", "cc");
+}
+
 /* -------------------------------------------------------------------------
  * init_task_stack
  *
@@ -260,6 +289,19 @@ static void schedule(void)
     if (!tasking_active || task_pool_count < 2)
         return;
 
+    uint32_t saved_eflags = irq_save_disable();
+
+    /* Re-entrancy guard.  If we got here while another schedule() is
+     * already in flight on this CPU (timer IRQ that beat the cli, or a
+     * helper that recursed), bail without doing anything -- the outer
+     * schedule() will finish its work.  The caller's IF state is
+     * restored so we don't silently leave IRQs masked on the way out. */
+    if (in_schedule) {
+        irq_restore(saved_eflags);
+        return;
+    }
+    in_schedule = 1;
+
     /* Signal delivery point #1: outgoing task.  A default-terminate
      * disposition transitions current_task to TASK_DEAD here, after
      * which the runnable-task search below naturally walks past it. */
@@ -281,8 +323,11 @@ static void schedule(void)
         next = next->next;
     }
 
-    if (next == current_task || next->state != TASK_READY)
+    if (next == current_task || next->state != TASK_READY) {
+        in_schedule = 0;
+        irq_restore(saved_eflags);
         return;   /* nothing else to run */
+    }
 
     task_t *prev = current_task;
     if (prev->state == TASK_RUNNING)
@@ -327,7 +372,25 @@ static void schedule(void)
          * dead PD is not the active address space. */
     }
 
+    /* Release the re-entrancy guard BEFORE swapping stacks.  Fresh
+     * tasks start from the frame init_task_stack baked into their
+     * kernel stack and never run this schedule() epilogue -- their
+     * first execution jumps straight to the entry function via
+     * task_switch's ret.  If we cleared the flag only after
+     * task_switch, the first time we scheduled into a new task the
+     * flag would stay 1 forever and every subsequent schedule() would
+     * bail at the re-entry check, deadlocking the kernel after the
+     * first context switch.  Re-entered tasks (the not-fresh path)
+     * resume after task_switch and just restore IF -- the flag is
+     * already clear so there's nothing more to do. */
+    in_schedule = 0;
     task_switch(&prev->esp, current_task->esp);
+
+    /* Re-entered task: restore the IF state we had on entry to this
+     * invocation of schedule().  task_switch's popfl already restored
+     * THIS task's EFLAGS to what was saved when we called task_switch
+     * (IF=0 from our irq_save_disable), so we still need this. */
+    irq_restore(saved_eflags);
 }
 
 void task_yield(void)
