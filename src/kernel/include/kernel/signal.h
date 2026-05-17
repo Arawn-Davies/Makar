@@ -81,6 +81,12 @@ void sig_deliver(struct task *t);
  * success, -1 on error. */
 int sig_set_handler(struct task *t, int signo, sig_handler_t handler);
 
+/* sig_get_handler - read the currently installed handler for signo
+ * on task t.  Returns SIG_DFL on any error (out-of-range signo,
+ * NULL task, or task not in the pool) -- callers that care can
+ * range-check signo themselves first. */
+sig_handler_t sig_get_handler(struct task *t, int signo);
+
 /* sig_check_and_clear - test and clear a pending signal on the calling
  * task.  Returns 1 if the bit was set (and clears it), 0 otherwise.
  * Drop-in shim for the legacy keyboard_sigint_consume() pattern. */

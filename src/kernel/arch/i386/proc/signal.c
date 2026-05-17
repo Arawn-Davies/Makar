@@ -141,6 +141,13 @@ static sig_handler_t handler_for(struct task *t, int signo)
     return s_handlers[slot][signo];
 }
 
+sig_handler_t sig_get_handler(struct task *t, int signo)
+{
+    if (!t || signo < 1 || signo > SIG_MAX)
+        return SIG_DFL;
+    return handler_for(t, signo);
+}
+
 void sig_deliver(struct task *t)
 {
     if (!t || t->state == TASK_DEAD)

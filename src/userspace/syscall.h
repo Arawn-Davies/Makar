@@ -8,7 +8,9 @@
 #define SYS_OPEN       5
 #define SYS_CLOSE      6
 #define SYS_LSEEK      19
+#define SYS_KILL       37
 #define SYS_BRK        45
+#define SYS_SIGNAL     48
 #define SYS_DEBUG      100
 #define SYS_YIELD      158
 #define SYS_GETKEY     200
@@ -27,6 +29,33 @@
 #define SYS_SHELL_CLEAR  213
 #define SYS_UPTIME       214
 #define SYS_GETCWD       215
+
+/* Signal numbers (Linux i386 ABI subset).  Mirrors <kernel/signal.h>;
+ * kept in sync by hand since the userspace build doesn't see kernel
+ * headers. */
+#define SIGHUP    1
+#define SIGINT    2
+#define SIGQUIT   3
+#define SIGILL    4
+#define SIGTRAP   5
+#define SIGABRT   6
+#define SIGFPE    8
+#define SIGKILL   9
+#define SIGUSR1  10
+#define SIGSEGV  11
+#define SIGUSR2  12
+#define SIGPIPE  13
+#define SIGALRM  14
+#define SIGTERM  15
+#define SIGCHLD  17
+#define SIGCONT  18
+#define SIGSTOP  19
+#define SIGTSTP  20
+
+/* sig_handler_t function pointer + SIG_DFL/SIG_IGN sentinels (POSIX). */
+typedef void (*sig_handler_t)(int);
+#define SIG_DFL  ((sig_handler_t)0)
+#define SIG_IGN  ((sig_handler_t)1)
 
 /* open() flags */
 #define O_RDONLY    0
@@ -274,6 +303,24 @@ static inline int sys_rename_file(const char *old_path, const char *new_path)
 static inline int sys_delete_dir(const char *path)
 {
     return (int)syscall1(SYS_DELETE_DIR, (long)path);
+}
+
+/* Send signo to pid.  Returns 0 on success, -1 on error (no such pid
+ * or invalid signo).  No permission model yet -- any task may signal
+ * any other. */
+static inline int sys_kill(int pid, int signo)
+{
+    return (int)syscall2(SYS_KILL, (long)pid, (long)signo);
+}
+
+/* Install a handler for signo.  Returns the previous handler, or
+ * (sig_handler_t)-1 on error.  User-defined handlers are stored but
+ * not yet invoked by the kernel (no ring-3 trampoline yet); SIG_DFL
+ * and SIG_IGN take effect immediately. */
+static inline sig_handler_t sys_signal(int signo, sig_handler_t h)
+{
+    return (sig_handler_t)(unsigned long)
+        syscall2(SYS_SIGNAL, (long)signo, (long)(unsigned long)h);
 }
 
 #endif

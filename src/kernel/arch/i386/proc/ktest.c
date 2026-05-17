@@ -680,6 +680,47 @@ static void test_signal(void)
     sig_send(cur,  SIG_MAX + 1);
     KTEST_ASSERT((cur->sig_pending & ~cur->sig_mask) == 0);
 
+    /* sig_get_handler / sig_set_handler round-trip and previous-value
+     * semantics that SYS_SIGNAL relies on. */
+    KTEST_ASSERT(sig_get_handler(cur, SIGUSR1) == SIG_DFL);
+    KTEST_ASSERT(sig_set_handler(cur, SIGUSR1, SIG_IGN) == 0);
+    KTEST_ASSERT(sig_get_handler(cur, SIGUSR1) == SIG_IGN);
+    KTEST_ASSERT(sig_set_handler(cur, SIGUSR1, SIG_DFL) == 0);
+    KTEST_ASSERT(sig_get_handler(cur, SIGUSR1) == SIG_DFL);
+    /* Out-of-range signo: getter returns SIG_DFL, setter rejects. */
+    KTEST_ASSERT(sig_get_handler(cur, 0) == SIG_DFL);
+    KTEST_ASSERT(sig_get_handler(cur, SIG_MAX + 1) == SIG_DFL);
+
+    /* sig_send_pid: unknown pid returns -1. */
+    KTEST_ASSERT(sig_send_pid(99999, SIGTERM) == -1);
+
+    /* sig_send_pid: valid pid posts the pending bit.  Use a fresh
+     * victim (not the running task) so a preempting timer IRQ between
+     * the post and the observe can't pick the signal up via sig_deliver
+     * and clear it.  Even so, wrap post + observe in disable_interrupts
+     * to remove the window entirely: terminating the test runner via
+     * its own signal would kill idle under the test_mode boot path and
+     * deadlock the kernel. */
+    task_t *vp = task_create("sigtest_pid", test_signal_victim_loop);
+    KTEST_ASSERT(vp != NULL);
+    if (vp) {
+        disable_interrupts();
+        int posted = sig_send_pid(vp->pid, SIGCHLD);
+        uint32_t pending = vp->sig_pending;
+        /* Clear so a later sig_deliver pass treats it as no-op (SIGCHLD
+         * default action is ignore, so leaving it pending would also
+         * be safe -- but explicit cleanup keeps the assertion focused). */
+        vp->sig_pending &= ~SIG_BIT(SIGCHLD);
+        enable_interrupts();
+        KTEST_ASSERT(posted == 0);
+        KTEST_ASSERT((pending & SIG_BIT(SIGCHLD)) != 0);
+        /* Reap the victim. */
+        sig_send(vp, SIGTERM);
+        for (int i = 0; i < 16 && vp->state != TASK_DEAD; i++)
+            task_yield();
+        KTEST_ASSERT(vp->state == TASK_DEAD);
+    }
+
     /* Default-terminate via scheduler: spawn victim, send SIGTERM, yield
      * until schedule() picks it and sig_deliver flips state to DEAD. */
     task_t *victim = task_create("sigtest_term", test_signal_victim_loop);

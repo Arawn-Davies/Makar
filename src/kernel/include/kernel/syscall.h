@@ -18,7 +18,9 @@
 #define SYS_OPEN       5    /* int open(const char *path, int flags)            */
 #define SYS_CLOSE      6    /* int close(int fd)                                */
 #define SYS_LSEEK      19   /* off_t lseek(int fd, off_t offset, int whence)   */
+#define SYS_KILL       37   /* int kill(int pid, int signo)                     */
 #define SYS_BRK        45   /* void *brk(void *addr)                            */
+#define SYS_SIGNAL     48   /* sig_handler_t signal(int signo, sig_handler_t)   */
 #define SYS_DEBUG      100  /* void debug(uint32_t cp)      [Makar ext]         */
 #define SYS_YIELD      158  /* void sched_yield(void)                           */
 /* Makar display/input extensions (200+) */

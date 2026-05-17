@@ -27,6 +27,7 @@
 #include <kernel/isr.h>
 #include <kernel/task.h>
 #include <kernel/fd.h>
+#include <kernel/signal.h>
 #include <kernel/tty.h>
 #include <kernel/keyboard.h>
 #include <kernel/shell.h>
@@ -586,6 +587,58 @@ void syscall_dispatch(registers_t *regs)
         const char *path = (const char *)(uintptr_t)regs->ebx;
         if (!path) { regs->eax = (uint32_t)-1; break; }
         regs->eax = (vfs_delete_dir(path) == 0) ? 0 : (uint32_t)-1;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_KILL(37): deliver a signal to a target pid.
+     * EBX = pid, ECX = signo.  Returns 0 on success, -1 on error
+     * (no such pid, or invalid signo).
+     *
+     * No permission model yet -- any task can signal any other.  When
+     * a user/kernel split lands, this will become the natural choke
+     * point for credential checks.
+     * ------------------------------------------------------------------ */
+    case SYS_KILL: {
+        int pid   = (int)regs->ebx;
+        int signo = (int)regs->ecx;
+        if (signo < 1 || signo > SIG_MAX) {
+            regs->eax = (uint32_t)-1;
+            break;
+        }
+        regs->eax = (sig_send_pid(pid, signo) == 0)
+                    ? 0u : (uint32_t)-1;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_SIGNAL(48): install a handler for signo on the calling task.
+     * EBX = signo, ECX = handler (SIG_DFL = 0, SIG_IGN = 1, or a
+     * user-space function pointer).
+     *
+     * Returns the previous handler value, or (uint32_t)-1 on error
+     * (out-of-range signo, or signo == SIGKILL/SIGSTOP).
+     *
+     * User-defined handlers are stored but not yet invoked (no ring-3
+     * trampoline + sigreturn machinery yet).  SIG_DFL and SIG_IGN take
+     * effect immediately because the in-kernel delivery path checks
+     * those sentinels by pointer identity.
+     * ------------------------------------------------------------------ */
+    case SYS_SIGNAL: {
+        int signo = (int)regs->ebx;
+        sig_handler_t new_h = (sig_handler_t)(uintptr_t)regs->ecx;
+        task_t *t = task_current();
+        if (!t || signo < 1 || signo > SIG_MAX ||
+            signo == SIGKILL || signo == SIGSTOP) {
+            regs->eax = (uint32_t)-1;
+            break;
+        }
+        sig_handler_t prev = sig_get_handler(t, signo);
+        if (sig_set_handler(t, signo, new_h) != 0) {
+            regs->eax = (uint32_t)-1;
+            break;
+        }
+        regs->eax = (uint32_t)(uintptr_t)prev;
         break;
     }
 
