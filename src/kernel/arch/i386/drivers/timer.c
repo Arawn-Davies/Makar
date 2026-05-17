@@ -29,9 +29,14 @@
 #include <string.h>
 #include <kernel/asm.h>
 
-/* Preemptive scheduling: yield to the next task every SCHED_QUANTUM ticks.
- * At 100 Hz this gives a 40 ms time slice per task. */
-#define SCHED_QUANTUM 4
+/* Preemptive scheduling quantum: yield every g_sched_quantum PIT ticks.
+ * Runtime-tunable (slice 9 phase 3) via the `sched_quantum` shell builtin
+ * or by writing the global directly.  Default 4 ticks @ 100 Hz = 40 ms
+ * slice per task.  Clamped to [SCHED_QUANTUM_MIN, SCHED_QUANTUM_MAX] by
+ * setters; the IRQ reads the global unsynchronised so don't bother with
+ * atomics -- a torn 32-bit read is impossible on i386, and a stale read
+ * just delays the new value by one tick. */
+volatile uint32_t g_sched_quantum = 4;
 
 static volatile uint32_t tick = 0;
 
@@ -49,7 +54,7 @@ void timer_callback(registers_t *regs)
 		if (cur)
 			cur->kticks++;
 	}
-	if (tick % SCHED_QUANTUM == 0) {
+	if (tick % g_sched_quantum == 0) {
 		/* Send EOI to the master PIC before yielding so that the idle
 		   task's hlt can be woken by the next timer tick.  Without this
 		   the IRQ 0 in-service bit stays set, blocking all future timer
