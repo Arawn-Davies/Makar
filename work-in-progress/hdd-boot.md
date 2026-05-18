@@ -15,8 +15,8 @@ Separate `makar-hdd-test.img` for CI testing.
       `grub-mkimage` (explicit `(hd0,msdos1)` prefix, no UUID probe)
 - [x] `generate-hdd.sh --test` - same image but grub.cfg passes `test`
       kernel arg (foundation for runtime test-mode switching)
-- [x] `./run.sh hdd-boot` - clean-build + interactive QEMU HDD boot
-- [x] `./run.sh hdd-test` - clean-build + GDB boot test with separate
+- [x] `./run.sh hdd boot` - clean-build + interactive QEMU HDD boot
+- [x] `./run.sh hdd test` - clean-build + GDB boot test with separate
       `makar-hdd-test.img` (never reuses interactive image)
 - [x] IDE SRST fix: software reset before probing so GRUB's transient
       channel state doesn't cause drive 0 to be silently skipped

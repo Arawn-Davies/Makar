@@ -58,4 +58,11 @@ vt_buf_t *vtty_buf_focused(void);
  * no switch is pending. */
 void vtty_drain_pending(void);
 
+/* Foreground task override.  When a slot has a foreground task set
+ * (e.g. shell_exec_elf's child taking focus), vtty_switch routes
+ * keyboard focus + KEY_FOCUS_GAIN to that task instead of the slot's
+ * registered shell.  Pass NULL to clear (reverts to slot owner).
+ * No-op if slot is out of range. */
+void vtty_set_foreground(int slot, task_t *t);
+
 #endif /* _KERNEL_VTTY_H */

@@ -79,13 +79,23 @@ static void print_palette(void)
  * Command handlers
  * --------------------------------------------------------------------------- */
 
+void shell_apply_scheme_for_tty(int tty)
+{
+    if (tty < 0 || tty >= 4) tty = 0;
+    const shell_scheme_t *s = &SHELL_SCHEMES[tty];
+    terminal_set_colorscheme(s->vga);
+    if (vesa_tty_is_ready())
+        vesa_tty_setcolor(s->fg_rgb, s->bg_rgb);
+}
+
 void shell_clear_screen(void)
 {
-    terminal_set_colorscheme(SHELL_COLOR_VGA);
-    if (vesa_tty_is_ready()) {
-        vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
+    int tty = 0;
+    task_t *t = task_current();
+    if (t && t->tty >= 0 && t->tty < 4) tty = t->tty;
+    shell_apply_scheme_for_tty(tty);
+    if (vesa_tty_is_ready())
         vesa_tty_clear();
-    }
 }
 
 static void cmd_clear(int argc, char **argv)

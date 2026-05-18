@@ -65,10 +65,10 @@ jobs:
             ccache-${{ runner.os }}-
 
       - name: Build ISOs (kernel + makar.iso + makar-test.iso)
-        run: ./run.sh iso-build
+        run: ./run.sh iso build
 
       - name: Build HDD test image (kernel cached from ISO build)
-        run: ./run.sh hdd-build
+        run: ./run.sh hdd build
 
       - name: ccache stats
         if: always()
@@ -115,7 +115,7 @@ jobs:
           name: makar-build
 
       - name: Run ktest
-        run: ./run.sh ktest-run
+        run: ./run.sh ktest
 
       - name: Upload ktest log
         if: always()
@@ -148,7 +148,7 @@ jobs:
           name: makar-build
 
       - name: Run GDB ISO boot test
-        run: ./run.sh gdb-iso-run
+        run: ./run.sh gdb iso
 
       - name: Upload GDB logs
         if: always()
@@ -183,7 +183,7 @@ jobs:
           name: makar-build
 
       - name: Run GDB HDD boot test
-        run: ./run.sh gdb-hdd-run
+        run: ./run.sh gdb hdd
 
       - name: Upload GDB logs
         if: always()
@@ -195,7 +195,7 @@ jobs:
             hdd-test-serial.log
 
   # NOTE: UI tests (sendkey + serial grep) live in tests/ui_test.sh and
-  # are runnable locally via `./run.sh ui-test`.  They are intentionally
+  # are runnable locally via `./run.sh ui`.  They are intentionally
   # NOT wired into this CI workflow: under TCG (no KVM in GHA runners)
   # boot to shell takes 30-60s per scenario, so the suite is slow and
   # historically prone to hanging when QEMU misbehaves on shared

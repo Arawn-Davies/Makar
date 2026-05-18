@@ -61,11 +61,11 @@ private kernel stack and (for ring-3 programs) its own page directory.
 ## Quick start
 
 ```sh
-./run.sh iso-boot       # build & run interactively in QEMU (host or Docker)
-./run.sh iso-test       # full CI suite: ktest + GDB boot-checkpoint + UI sendkey tests
-./run.sh hdd-boot       # build & run from a 512 MiB FAT32 HDD image
-./run.sh hdd-test       # HDD-only GDB boot test (no CD-ROM)
-./run.sh ui-test        # UI tests against an existing makar.iso (sendkey + serial grep)
+./run.sh iso boot       # build & run interactively in QEMU (host or Docker)
+./run.sh iso test       # full CI suite: ktest + GDB boot-checkpoint + UI sendkey tests
+./run.sh hdd boot       # build & run from a 512 MiB FAT32 HDD image
+./run.sh hdd test       # HDD-only GDB boot test (no CD-ROM)
+./run.sh ui        # UI tests against an existing makar.iso (sendkey + serial grep)
 ./run.sh clean
 ```
 

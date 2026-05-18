@@ -24,13 +24,13 @@ native GDB is required on the host.  For Windows-specific setup see
 
 ```sh
 # Interactive kernel shell (builds in Docker, QEMU runs on host or in Docker):
-./run.sh iso-boot
+./run.sh iso boot
 
 # Full CI test suite (ktest + GDB boot tests - works with or without host QEMU):
-./run.sh iso-test
+./run.sh iso test
 
 # Interactive HDD boot:
-./run.sh hdd-boot
+./run.sh hdd boot
 ```
 
 ---
@@ -134,7 +134,7 @@ Prefer `run.sh` for day-to-day use.
 |---|---|
 | `build` | `bash iso.sh` (release ISO) |
 | `build-debug` | `bash iso.sh` with `CFLAGS=-O0 -g3` |
-| `test` | `bash run.sh iso-test` (full suite) |
+| `test` | `bash run.sh iso test` (full suite) |
 
 ```sh
 docker compose run --rm build          # release ISO
@@ -175,14 +175,14 @@ docker buildx build --platform linux/amd64 \
 
 ## QEMU drive layout
 
-`run.sh iso-boot` launches QEMU with two IDE drives:
+`run.sh iso boot` launches QEMU with two IDE drives:
 
 | IDE slot | Purpose |
 |---|---|
 | index 0 | Hard disk - 512 MiB raw image (`hdd.img`, auto-created blank) |
 | index 2 | Live CD - `makar.iso`, GRUB boots from here (`-boot order=d`) |
 
-`run.sh hdd-boot` attaches only the HDD (`-boot c`, no CD-ROM).
+`run.sh hdd boot` attaches only the HDD (`-boot c`, no CD-ROM).
 
 The ISO GDB test (`iso-test` phase 2) adds a 32 MiB FAT32 test disk on index 0 alongside the CD-ROM so the kernel can mount `/hd` and the `hdd_mount` GDB group can be verified on the ISO boot path.
 

@@ -1,11 +1,11 @@
 # docker-compose.yml – Makar OS development services
 #
 # Prefer run.sh for day-to-day use:
-#   ./run.sh iso-release    – optimised ISO
-#   ./run.sh iso-boot       – debug ISO + interactive QEMU
-#   ./run.sh iso-test       – full ktest + GDB boot suite
-#   ./run.sh hdd-boot       – HDD image + interactive QEMU
-#   ./run.sh hdd-test       – HDD image + GDB boot suite
+#   ./run.sh iso release    – optimised ISO
+#   ./run.sh iso boot       – debug ISO + interactive QEMU
+#   ./run.sh iso test       – full ktest + GDB boot suite
+#   ./run.sh hdd boot       – HDD image + interactive QEMU
+#   ./run.sh hdd test       – HDD image + GDB boot suite
 #
 # The Compose services below remain available for workflows that prefer
 # 'docker compose run'.  The source tree is bind-mounted at /work so all
@@ -34,11 +34,11 @@ services:
     command: bash iso.sh
 
   # ── ISO test suite (ktest test_mode + GDB) ────────────────────────────────
-  # Equivalent to ./run.sh iso-test but runs inside Compose.
+  # Equivalent to ./run.sh iso test but runs inside Compose.
   test:
     build: .
     platform: linux/amd64
     volumes:
       - .:/work
     working_dir: /work
-    command: bash -lc "bash run.sh iso-test"
+    command: bash -lc "bash run.sh iso test"

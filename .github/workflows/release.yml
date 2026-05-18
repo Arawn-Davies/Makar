@@ -40,10 +40,10 @@ jobs:
           echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
       - name: Build release ISO
-        run: ./run.sh iso-release
+        run: ./run.sh iso release
 
       - name: Build release HDD image
-        run: ./run.sh hdd-release
+        run: ./run.sh hdd release
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2

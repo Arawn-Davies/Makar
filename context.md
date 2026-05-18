@@ -83,9 +83,9 @@ CP2 does not, the write syscall is the fault; if neither appears, ring-3 entry i
 
 ## Build / run
 ```sh
-./run.sh iso-release     # build ISO inside Docker
-./run.sh iso-boot        # build + run in QEMU (no KVM; serial -> serial.log)
-./run.sh iso-test        # build + run ktest suite + GDB automation
+./run.sh iso release     # build ISO inside Docker
+./run.sh iso boot        # build + run in QEMU (no KVM; serial -> serial.log)
+./run.sh iso test        # build + run ktest suite + GDB automation
 ./build.sh               # build without Docker (needs cross-toolchain on host)
 ```
 Serial output lands in `serial.log`; GDB transcript in `gdb-test.log`.

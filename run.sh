@@ -61,14 +61,57 @@ HDD_IMG=${HDD_IMG:-makar-hdd.img}
 HDD_TEST_IMG=${HDD_TEST_IMG:-makar-hdd-test.img}
 export DOCKER_PLATFORM
 
-MODE="${1:-}"
-if [ -z "$MODE" ]; then
-    echo "Usage: $0 <mode>"
-    echo "Modes: iso-boot  iso-test  iso-ktest-gui  iso-release  iso-build  ui-test  ui-test-gui"
-    echo "       hdd-boot  hdd-test  hdd-release    hdd-build"
-    echo "       ktest-run gdb-iso-run gdb-hdd-run  clean"
-    exit 1
-fi
+# Argument grammar: `./run.sh <target> <verb> [args...]`.  Linux-build-
+# style: incremental by default (make handles "did anything change");
+# only `clean` wipes artefacts.
+#
+#   iso build                    iso boot                iso test
+#   iso release
+#   hdd build                    hdd boot                hdd test
+#   hdd release
+#   gdb iso                      gdb hdd
+#   ktest                        ktest graphical
+#   ui [scenarios...]            ui graphical [scenarios...]
+#   clean
+_usage() {
+    echo "Usage: $0 <target> <verb> [args...]"
+    echo ""
+    echo "  iso   build | boot | test | release"
+    echo "  hdd   build | boot | test | release"
+    echo "  gdb   iso | hdd"
+    echo "  ktest [graphical]"
+    echo "  ui    [graphical] [scenario_names...]"
+    echo "  clean"
+    echo ""
+    echo "Builds are incremental (make-driven).  Run \`clean\` to force"
+    echo "a from-scratch rebuild."
+    exit "${1:-1}"
+}
+
+case "${1:-}" in
+    iso|hdd|gdb)
+        if [ -z "${2:-}" ]; then _usage; fi
+        MODE="$1 $2"; shift 2 ;;
+    ktest)
+        if [ "${2:-}" = "graphical" ]; then
+            MODE="ktest graphical"; shift 2
+        else
+            MODE="ktest"; shift 1
+        fi ;;
+    ui)
+        if [ "${2:-}" = "graphical" ]; then
+            MODE="ui graphical"; shift 2
+        else
+            MODE="ui"; shift 1
+        fi ;;
+    clean)
+        MODE="clean"; shift 1 ;;
+    -h|--help|help|"")
+        _usage 0 ;;
+    *)
+        echo "ERROR: unknown target '$1'" >&2
+        _usage ;;
+esac
 
 # ── context helpers ────────────────────────────────────────────────────────────
 
@@ -437,63 +480,16 @@ _build_kernel() {
 
 case "$MODE" in
 
-# ── iso-build ────────────────────────────────────────────────────────────────
-# Produce makar.iso + makar-test.iso from a single kernel build, no run/test.
-# Used by CI's build job (artifacts feed the parallel ktest / gdb-iso jobs).
-iso-build)
-    _clean
+# ── iso build ────────────────────────────────────────────────────────────────
+# Incremental kernel + makar.iso + makar-test.iso build.  Used by CI's
+# build job (artifacts feed the parallel ktest / gdb / ui jobs).
+"iso build")
     _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
     echo "==> Artifacts: makar.iso, makar-test.iso, src/kernel/makar.kernel"
     ;;
 
-# ── hdd-build ────────────────────────────────────────────────────────────────
-# Build kernel + generate makar-hdd-test.img.  No run.  HDD_SIZE_MB defaults
-# to generate-hdd.sh's value (512); CI overrides to 64 for faster artifact
-# upload.
-hdd-build)
-    _clean
-    _build_kernel "CFLAGS='-O0 -g3'"
-    rm -f "$REPO_ROOT/$HDD_TEST_IMG"
-    HDD_IMG="$HDD_TEST_IMG" DOCKER_BIN="$DOCKER_BIN" DOCKER_PLATFORM="$DOCKER_PLATFORM" \
-        "$REPO_ROOT/generate-hdd.sh"
-    echo "==> Artifacts: $HDD_TEST_IMG, src/kernel/makar.kernel"
-    ;;
-
-# ── ktest-run ────────────────────────────────────────────────────────────────
-# Run the ktest suite against an existing makar-test.iso.  Used by CI.
-ktest-run)
-    if [ ! -f "$REPO_ROOT/makar-test.iso" ]; then
-        echo "ERROR: makar-test.iso not found.  Run iso-build first." >&2
-        exit 1
-    fi
-    _run_ktest
-    ;;
-
-# ── gdb-iso-run ──────────────────────────────────────────────────────────────
-# Run the GDB ISO boot-checkpoint test against an existing makar.iso +
-# makar.kernel.  Used by CI.
-gdb-iso-run)
-    if [ ! -f "$REPO_ROOT/makar.iso" ] || [ ! -f "$REPO_ROOT/src/kernel/makar.kernel" ]; then
-        echo "ERROR: makar.iso or src/kernel/makar.kernel missing.  Run iso-build first." >&2
-        exit 1
-    fi
-    _run_gdb_iso_test
-    ;;
-
-# ── gdb-hdd-run ──────────────────────────────────────────────────────────────
-# Run the GDB HDD boot test against an existing makar-hdd-test.img.  CI uses
-# this on artifacts uploaded by hdd-build.
-gdb-hdd-run)
-    if [ ! -f "$REPO_ROOT/$HDD_TEST_IMG" ] || [ ! -f "$REPO_ROOT/src/kernel/makar.kernel" ]; then
-        echo "ERROR: $HDD_TEST_IMG or src/kernel/makar.kernel missing.  Run hdd-build first." >&2
-        exit 1
-    fi
-    _run_gdb_hdd_test "$HDD_TEST_IMG"
-    ;;
-
-# ── iso-boot ──────────────────────────────────────────────────────────────────
-iso-boot)
-    _clean
+# ── iso boot ──────────────────────────────────────────────────────────────────
+"iso boot")
     _build_iso "CFLAGS='-O0 -g3'"
     if [ ! -f "$REPO_ROOT/hdd.img" ]; then
         _drun --as-root -- "qemu-img create -f raw hdd.img 512M"
@@ -504,12 +500,9 @@ iso-boot)
          -boot order=d -serial stdio"
     ;;
 
-# ── iso-test ──────────────────────────────────────────────────────────────────
-# One kernel build, two ISO variants packaged from the same staged isodir:
-#   makar.iso       - interactive menu (also exercised by gdb_boot_test, ui-test)
-#   makar-test.iso  - single auto-boot entry with test_mode cmdline
-iso-test)
-    _clean
+# ── iso test ──────────────────────────────────────────────────────────────────
+# Full ISO test suite: incremental build → ktest → GDB ISO boot test → ui.
+"iso test")
     _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
     _run_ktest
     _run_gdb_iso_test
@@ -517,49 +510,94 @@ iso-test)
     echo "==> All ISO tests PASSED."
     ;;
 
-# ── ui-test ───────────────────────────────────────────────────────────────────
-# Black-box UI tests driven through QEMU's HMP monitor (sendkey + serial grep).
-# Requires host QEMU + nc.  See tests/ui_test.sh for the scenarios.
-ui-test)
-    if [ ! -f "$REPO_ROOT/makar.iso" ]; then
-        _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
-    fi
-    _run_ui_test "${@:2}"
+# ── iso release ───────────────────────────────────────────────────────────────
+"iso release")
+    _build_iso "CFLAGS='-O2 -g'"
+    echo "==> Release ISO ready: $REPO_ROOT/makar.iso"
     ;;
 
-# ── ui-test-gui ───────────────────────────────────────────────────────────────
-# Same as ui-test but with the QEMU display window visible and keystrokes
-# paced so a human can watch the scenarios drive the kernel.  Headless
-# ui-test stays the canonical "did the change regress anything" path; this
-# is the "what is actually happening on screen" path for debugging.
-# QEMU_DISPLAY (cocoa|gtk|sdl) overrides QEMU's default backend pick;
-# KEY_DELAY overrides the inter-keystroke pause (default 0.15 s).
-ui-test-gui)
+# ── hdd build ────────────────────────────────────────────────────────────────
+"hdd build")
+    _build_kernel "CFLAGS='-O0 -g3'"
+    rm -f "$REPO_ROOT/$HDD_TEST_IMG"
+    HDD_IMG="$HDD_TEST_IMG" DOCKER_BIN="$DOCKER_BIN" DOCKER_PLATFORM="$DOCKER_PLATFORM" \
+        "$REPO_ROOT/generate-hdd.sh"
+    echo "==> Artifacts: $HDD_TEST_IMG, src/kernel/makar.kernel"
+    ;;
+
+# ── hdd boot ──────────────────────────────────────────────────────────────────
+"hdd boot")
+    _build_kernel "CFLAGS='-O0 -g3'"
+    rm -f "$REPO_ROOT/$HDD_IMG"
+    HDD_IMG="$HDD_IMG" DOCKER_BIN="$DOCKER_BIN" DOCKER_PLATFORM="$DOCKER_PLATFORM" \
+        "$REPO_ROOT/generate-hdd.sh"
+    _run_qemu_interactive \
+        "-drive file=/work/$HDD_IMG,format=raw,if=ide,index=0 \
+         -boot c -serial stdio"
+    ;;
+
+# ── hdd test ──────────────────────────────────────────────────────────────────
+"hdd test")
+    _build_kernel "CFLAGS='-O0 -g3'"
+    if [ ! -f "$REPO_ROOT/src/kernel/makar.kernel" ]; then
+        echo "ERROR: src/kernel/makar.kernel not found after build." >&2; exit 1
+    fi
+    rm -f "$REPO_ROOT/$HDD_TEST_IMG"
+    HDD_IMG="$HDD_TEST_IMG" DOCKER_BIN="$DOCKER_BIN" DOCKER_PLATFORM="$DOCKER_PLATFORM" \
+        "$REPO_ROOT/generate-hdd.sh"
+    _run_gdb_hdd_test "$HDD_TEST_IMG"
+    echo ""
+    echo "==> HDD boot test PASSED."
+    echo "    GDB log:    hdd-test-gdb.log"
+    echo "    Serial log: hdd-test-serial.log"
+    ;;
+
+# ── hdd release ───────────────────────────────────────────────────────────────
+"hdd release")
+    _build_kernel "CFLAGS='-O2 -g'"
+    rm -f "$REPO_ROOT/$HDD_IMG"
+    HDD_IMG="$HDD_IMG" DOCKER_BIN="$DOCKER_BIN" DOCKER_PLATFORM="$DOCKER_PLATFORM" \
+        "$REPO_ROOT/generate-hdd.sh"
+    echo "==> HDD image ready: $REPO_ROOT/$HDD_IMG"
+    ;;
+
+# ── gdb iso ──────────────────────────────────────────────────────────────────
+# GDB boot-checkpoint test against the existing ISO.  Incremental build
+# first so the kernel + ISO are fresh when the gdbstub attaches.  CI's
+# gdb-iso job downloads an artifact so the build step is a no-op there.
+"gdb iso")
+    _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
+    _run_gdb_iso_test
+    ;;
+
+# ── gdb hdd ──────────────────────────────────────────────────────────────────
+"gdb hdd")
+    _build_kernel "CFLAGS='-O0 -g3'"
+    if [ ! -f "$REPO_ROOT/$HDD_TEST_IMG" ]; then
+        rm -f "$REPO_ROOT/$HDD_TEST_IMG"
+        HDD_IMG="$HDD_TEST_IMG" DOCKER_BIN="$DOCKER_BIN" DOCKER_PLATFORM="$DOCKER_PLATFORM" \
+            "$REPO_ROOT/generate-hdd.sh"
+    fi
+    _run_gdb_hdd_test "$HDD_TEST_IMG"
+    ;;
+
+# ── ktest (headless, default) ────────────────────────────────────────────────
+# Incremental build of makar-test.iso, then run ktest against it headless.
+ktest)
+    _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
+    _run_ktest
+    ;;
+
+# ── ktest graphical ──────────────────────────────────────────────────────────
+# Incremental build, then run ktest in a visible QEMU window.  Requires
+# host QEMU + display server.
+"ktest graphical")
     QEMU_BIN=$(_host_qemu)
     if [ -z "$QEMU_BIN" ]; then
-        echo "ERROR: ui-test-gui requires host QEMU with a display server." >&2
+        echo "ERROR: 'ktest graphical' requires host QEMU and a display server." >&2
         echo "       Install qemu-system-i386 with X11/SDL/Cocoa support." >&2
         exit 1
     fi
-    if [ ! -f "$REPO_ROOT/makar.iso" ]; then
-        _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
-    fi
-    echo "==> Running UI tests with display window (GUI mode, paced typing)..."
-    # "${@:2}" drops $1 (the mode token "ui-test-gui") so positional
-    # scenario names land at the script as bare scenario filters.
-    ( cd "$REPO_ROOT" && GUI=1 bash tests/ui_test.sh "${@:2}" )
-    ;;
-
-# ── iso-ktest-gui ─────────────────────────────────────────────────────────────
-# Requires host QEMU and a display server - cannot fall back to Docker.
-iso-ktest-gui)
-    QEMU_BIN=$(_host_qemu)
-    if [ -z "$QEMU_BIN" ]; then
-        echo "ERROR: iso-ktest-gui requires host QEMU and a display server." >&2
-        echo "       Install qemu-system-i386 with X11/SDL/Cocoa support." >&2
-        exit 1
-    fi
-    _clean
     _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
     echo "==> Running ktest suite (graphical QEMU - window closes on completion)..."
     rm -f "$REPO_ROOT/ktest.log"
@@ -578,50 +616,30 @@ iso-ktest-gui)
     _check_ktest
     ;;
 
-# ── iso-release ───────────────────────────────────────────────────────────────
-iso-release)
-    _clean
-    _build_iso "CFLAGS='-O2 -g'"
-    echo "==> Release ISO ready: $REPO_ROOT/makar.iso"
+# ── ui (headless, default) ───────────────────────────────────────────────────
+# Black-box ui-tests driven through QEMU's HMP monitor (sendkey + serial
+# grep).  Requires host QEMU + nc.  Extra positional args are scenario
+# filters; bare `./run.sh ui` runs the full suite.
+ui)
+    _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
+    _run_ui_test "$@"
     ;;
 
-# ── hdd-boot ──────────────────────────────────────────────────────────────────
-hdd-boot)
-    _clean
-    _build_kernel "CFLAGS='-O0 -g3'"
-    rm -f "$REPO_ROOT/$HDD_IMG"
-    HDD_IMG="$HDD_IMG" DOCKER_BIN="$DOCKER_BIN" DOCKER_PLATFORM="$DOCKER_PLATFORM" \
-        "$REPO_ROOT/generate-hdd.sh"
-    _run_qemu_interactive \
-        "-drive file=/work/$HDD_IMG,format=raw,if=ide,index=0 \
-         -boot c -serial stdio"
-    ;;
-
-# ── hdd-test ──────────────────────────────────────────────────────────────────
-hdd-test)
-    _clean
-    _build_kernel "CFLAGS='-O0 -g3'"
-    if [ ! -f "$REPO_ROOT/src/kernel/makar.kernel" ]; then
-        echo "ERROR: src/kernel/makar.kernel not found after build." >&2; exit 1
+# ── ui graphical ─────────────────────────────────────────────────────────────
+# Same as `ui` but with a visible QEMU window + paced typing -- the
+# debugging path when serial-only assertions aren't enough.
+# QEMU_DISPLAY (cocoa|gtk|sdl) overrides QEMU's default backend pick;
+# KEY_DELAY overrides the inter-keystroke pause (default 0.15 s).
+"ui graphical")
+    QEMU_BIN=$(_host_qemu)
+    if [ -z "$QEMU_BIN" ]; then
+        echo "ERROR: 'ui graphical' requires host QEMU with a display server." >&2
+        echo "       Install qemu-system-i386 with X11/SDL/Cocoa support." >&2
+        exit 1
     fi
-    rm -f "$REPO_ROOT/$HDD_TEST_IMG"
-    HDD_IMG="$HDD_TEST_IMG" DOCKER_BIN="$DOCKER_BIN" DOCKER_PLATFORM="$DOCKER_PLATFORM" \
-        "$REPO_ROOT/generate-hdd.sh"
-    _run_gdb_hdd_test "$HDD_TEST_IMG"
-    echo ""
-    echo "==> HDD boot test PASSED."
-    echo "    GDB log:    hdd-test-gdb.log"
-    echo "    Serial log: hdd-test-serial.log"
-    ;;
-
-# ── hdd-release ───────────────────────────────────────────────────────────────
-hdd-release)
-    _clean
-    _build_kernel "CFLAGS='-O2 -g'"
-    rm -f "$REPO_ROOT/$HDD_IMG"
-    HDD_IMG="$HDD_IMG" DOCKER_BIN="$DOCKER_BIN" DOCKER_PLATFORM="$DOCKER_PLATFORM" \
-        "$REPO_ROOT/generate-hdd.sh"
-    echo "==> HDD image ready: $REPO_ROOT/$HDD_IMG"
+    _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
+    echo "==> Running ui-tests with display window (graphical, paced typing)..."
+    ( cd "$REPO_ROOT" && GUI=1 bash tests/ui_test.sh "$@" )
     ;;
 
 # ── clean ─────────────────────────────────────────────────────────────────────
@@ -634,9 +652,6 @@ clean)
 
 *)
     echo "ERROR: unknown mode '$MODE'" >&2
-    echo "Modes: iso-boot  iso-test  iso-ktest-gui  iso-release  iso-build  ui-test  ui-test-gui" >&2
-    echo "       hdd-boot  hdd-test  hdd-release    hdd-build" >&2
-    echo "       ktest-run gdb-iso-run gdb-hdd-run  clean" >&2
-    exit 1
+    _usage
     ;;
 esac

@@ -10,12 +10,12 @@ instructions see [Building & Running](building.md).
 
 ---
 
-## CI test suite (`./run.sh iso-test`)
+## CI test suite (`./run.sh iso test`)
 
 The single command for complete ISO CI validation:
 
 ```sh
-./run.sh iso-test
+./run.sh iso test
 ```
 
 Runs two phases; build steps use Docker, QEMU/GDB prefer the host if available:
@@ -36,12 +36,12 @@ Exit code 0 = everything passed; 1 = any failure or timeout.
 
 ---
 
-## HDD boot test (`./run.sh hdd-test`)
+## HDD boot test (`./run.sh hdd test`)
 
 Verifies the installed HDD boot path end-to-end - no CD-ROM attached:
 
 ```sh
-./run.sh hdd-test
+./run.sh hdd test
 ```
 
 What it does:
@@ -85,7 +85,7 @@ To add a new group: create `tests/groups/<name>.py` exposing `NAME` and
 
 ```sh
 # Build a debug ISO first
-./run.sh iso-boot   # or: CFLAGS='-O0 -g3' ./run.sh iso-release
+./run.sh iso boot   # or: CFLAGS='-O0 -g3' ./run.sh iso release
 
 # In one terminal - start QEMU with GDB stub (inside Docker)
 docker run --rm -it -v "$PWD:/work" -w /work arawn780/gcc-cross-i686-elf:fast \
@@ -118,7 +118,7 @@ Runs `ktest_run_all()` and prints pass/fail for each subsystem suite
 
 ---
 
-## Black-box UI tests (`./run.sh ui-test`)
+## Black-box UI tests (`./run.sh ui`)
 
 Drives the running kernel through QEMU's HMP `sendkey` and asserts on
 the COM1 serial slice + PPM screen dump.  Scenarios live in
@@ -160,8 +160,8 @@ the instant the kernel says it's ready and bounds via the timeout.
 | `user-sigusr1-handler` | `sigtest.elf` installs a SIGUSR1 handler, self-sends, the handler runs in ring 3 (proves the sigframe + trampoline + `SYS_SIGRETURN` path) |
 | `makbox-pwd` | `pwd` resolves to the `makbox` applet end-to-end |
 
-`./run.sh ui-test` runs all of them; `./run.sh ui-test <name>` runs
-one; `./run.sh ui-test-gui` runs with a visible QEMU window for
+`./run.sh ui` runs all of them; `./run.sh ui <name>` runs
+one; `./run.sh ui graphical` runs with a visible QEMU window for
 debugging.
 
 ---
@@ -172,10 +172,10 @@ debugging.
 
 | Job | Runner | What runs |
 |---|---|---|
-| `build` | `ubuntu-latest` (host, Docker available) | `./run.sh iso-build` + `./run.sh hdd-build` → uploads `makar.kernel`, `makar.iso`, `makar-test.iso`, `makar-hdd-test.img` as artifact `makar-build` |
-| `ktest` | `ubuntu-latest` + container `arawn780/gcc-cross-i686-elf:fast` | downloads artifact → `./run.sh ktest-run` |
-| `gdb-iso` | `ubuntu-latest` + container | downloads artifact → `./run.sh gdb-iso-run` |
-| `gdb-hdd` | `ubuntu-latest` + container | downloads artifact → `./run.sh gdb-hdd-run` |
+| `build` | `ubuntu-latest` (host, Docker available) | `./run.sh iso build` + `./run.sh hdd build` → uploads `makar.kernel`, `makar.iso`, `makar-test.iso`, `makar-hdd-test.img` as artifact `makar-build` |
+| `ktest` | `ubuntu-latest` + container `arawn780/gcc-cross-i686-elf:fast` | downloads artifact → `./run.sh ktest` |
+| `gdb-iso` | `ubuntu-latest` + container | downloads artifact → `./run.sh gdb iso` |
+| `gdb-hdd` | `ubuntu-latest` + container | downloads artifact → `./run.sh gdb hdd` |
 
 Why this shape:
 - One compile → three parallel test runs. The compile is the expensive step; the test jobs are I/O-bound on QEMU boot.

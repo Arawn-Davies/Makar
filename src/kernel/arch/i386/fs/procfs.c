@@ -9,6 +9,7 @@
 #include <kernel/task.h>
 #include <kernel/timer.h>
 #include <kernel/version.h>
+#include <kernel/asm.h>     /* outb / inb for CMOS RTC in render_rtc */
 #include <string.h>
 #include <stdio.h>
 
@@ -26,6 +27,7 @@ typedef enum {
     PROC_MEMINFO,
     PROC_TASKS,
     PROC_UNAME,
+    PROC_RTC,
 } procfs_id_t;
 
 typedef struct {
@@ -38,6 +40,7 @@ static const procfs_entry_t s_entries[] = {
     { "meminfo", PROC_MEMINFO },
     { "tasks",   PROC_TASKS   },
     { "uname",   PROC_UNAME   },
+    { "rtc",     PROC_RTC     },
     { NULL,      PROC_NONE    },
 };
 
@@ -155,6 +158,82 @@ static void render_cpuinfo(pf_writer_t *w)
  * meminfo
  * ---------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------------
+ * /proc/rtc -- CMOS real-time clock readout.
+ *
+ * Standard PC RTC at I/O ports 0x70 (index) + 0x71 (data).  Registers:
+ *   0x00 seconds   0x02 minutes  0x04 hours
+ *   0x07 day       0x08 month    0x09 year   (year is last two digits)
+ *   0x0A status A  0x0B status B
+ *
+ * Status A bit 7 = update-in-progress; status B bit 2 = 0 means BCD
+ * encoding (the common BIOS default; QEMU's emulated RTC sets it this
+ * way unless told otherwise).  We retry until UIP clears, read the
+ * fields, decode BCD if needed, and format Linux-style:
+ *   YYYY-MM-DD HH:MM:SS
+ * --------------------------------------------------------------------------- */
+
+static inline uint8_t cmos_read(uint8_t reg)
+{
+    outb(0x70, reg);
+    return inb(0x71);
+}
+
+static inline uint8_t bcd_to_bin(uint8_t v)
+{
+    return (uint8_t)(((v & 0xF0u) >> 4) * 10u + (v & 0x0Fu));
+}
+
+static void render_rtc(pf_writer_t *w)
+{
+    /* Drain any in-progress update so we don't read mid-tick.  Bounded
+     * loop so a broken RTC can't hang procfs forever. */
+    for (int spin = 0; spin < 1000000; spin++) {
+        if (!(cmos_read(0x0A) & 0x80u)) break;
+    }
+
+    uint8_t sec  = cmos_read(0x00);
+    uint8_t min  = cmos_read(0x02);
+    uint8_t hour = cmos_read(0x04);
+    uint8_t day  = cmos_read(0x07);
+    uint8_t mon  = cmos_read(0x08);
+    uint8_t year = cmos_read(0x09);
+    uint8_t statB = cmos_read(0x0B);
+
+    if (!(statB & 0x04u)) {
+        sec  = bcd_to_bin(sec);
+        min  = bcd_to_bin(min);
+        /* Hour high bit is 12/24 indicator in BCD mode; mask before
+         * decoding so we don't decode the indicator as a digit. */
+        hour = bcd_to_bin((uint8_t)(hour & 0x7Fu));
+        day  = bcd_to_bin(day);
+        mon  = bcd_to_bin(mon);
+        year = bcd_to_bin(year);
+    }
+
+    /* CMOS year is two digits; assume the 21st century.  When the
+     * Makar wall clock matters more than this, plumb the century byte
+     * from FADT or take it from build epoch. */
+    uint32_t full_year = 2000u + (uint32_t)year;
+
+    /* Helper: pad-2 decimal. */
+    #define WPAD2(v) do { \
+        unsigned _v = (unsigned)(v); \
+        pf_putc(w, (char)('0' + (_v / 10u) % 10u)); \
+        pf_putc(w, (char)('0' + (_v % 10u))); \
+    } while (0)
+
+    pf_putu(w, full_year);
+    pf_putc(w, '-'); WPAD2(mon);
+    pf_putc(w, '-'); WPAD2(day);
+    pf_putc(w, ' '); WPAD2(hour);
+    pf_putc(w, ':'); WPAD2(min);
+    pf_putc(w, ':'); WPAD2(sec);
+    pf_putc(w, '\n');
+
+    #undef WPAD2
+}
+
 /* /proc/meminfo - Linux-style key/value format ("Label:<spaces>N kB").
  * Field order and naming match Linux for the headline numbers so
  * tools like maktop don't need Makar-specific parsing.  Fields after
@@ -269,6 +348,7 @@ int procfs_read_file(const char *path, void *buf, uint32_t bufsz,
     case PROC_MEMINFO: render_meminfo(&w); break;
     case PROC_TASKS:   render_tasks(&w);   break;
     case PROC_UNAME:   render_uname(&w);   break;
+    case PROC_RTC:     render_rtc(&w);     break;
     default: break;
     }
 

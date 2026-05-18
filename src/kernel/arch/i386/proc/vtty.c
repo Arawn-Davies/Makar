@@ -37,6 +37,16 @@ static bool     vtty_bufs_ready = false;
  * task context the next time the new owner's REPL yields. */
 static volatile int vtty_pending = -1;
 
+/* Per-slot foreground task override.  When non-NULL, vtty_switch
+ * directs keyboard focus + KEY_FOCUS_GAIN to this task instead of
+ * the slot's registered shell.  Used by shell_exec_elf so the
+ * exec'd child keeps getting keystrokes even after the user
+ * Alt+Fn'd away and back.  Without it: after a VT excursion the
+ * shell got refocused, the foreground task (maktop, vix) sat in
+ * its read loop with no keys arriving, the operator had to kill
+ * the QEMU window. */
+static task_t * volatile vtty_foreground[VTTY_MAX];
+
 /* Default attribute values used when no display renderer has set colours
  * yet.  Renderer interprets - VESA uses these as composed FB pixels,
  * VGA uses only the low byte as a VGA attribute. */
@@ -167,13 +177,22 @@ vt_buf_t *vtty_buf_focused(void)
 void vtty_switch(int n)
 {
     if (n < 0 || n >= vtty_nslots || n == vtty_current) return;
-    task_t *owner = vtty_owner(n);
+    /* Foreground task override beats the slot's shell.  Falls back to
+     * the slot owner when no fullscreen child is currently running. */
+    task_t *fg    = __atomic_load_n(&vtty_foreground[n], __ATOMIC_ACQUIRE);
+    task_t *owner = fg ? fg : vtty_owner(n);
     if (!owner) return;
     vtty_current = n;
     keyboard_set_focus(owner);
     keyboard_send_to(owner, KEY_FOCUS_GAIN);
     /* Defer the FB repaint to task context - see vtty_pending comment. */
     __atomic_store_n(&vtty_pending, n, __ATOMIC_RELEASE);
+}
+
+void vtty_set_foreground(int slot, task_t *t)
+{
+    if (slot < 0 || slot >= VTTY_MAX) return;
+    __atomic_store_n(&vtty_foreground[slot], t, __ATOMIC_RELEASE);
 }
 
 void vtty_drain_pending(void)

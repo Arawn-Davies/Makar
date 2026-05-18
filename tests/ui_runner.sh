@@ -42,7 +42,7 @@ IT_DEFAULT_WAIT=${IT_DEFAULT_WAIT:-1.2}
 # --- Sanity checks -----------------------------------------------------------
 
 if [ ! -f "$ISO" ]; then
-    echo "ui_test: $ISO not found - build first with './run.sh iso-build'" >&2
+    echo "ui_test: $ISO not found - build first with './run.sh iso build'" >&2
     exit 2
 fi
 if ! command -v "$QEMU" >/dev/null 2>&1; then

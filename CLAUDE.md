@@ -12,24 +12,24 @@ All build, test, and boot operations go through a single entrypoint:
 
 ```sh
 # Day-to-day (build + run in one shot)
-./run.sh iso-boot       # clean → debug ISO → interactive QEMU
-./run.sh iso-test       # full CI suite: ktest + GDB boot-checkpoint tests
-./run.sh iso-ktest-gui  # test ISO → ktest with display window (needs host QEMU)
-./run.sh iso-release    # optimised release ISO
+./run.sh iso boot       # clean → debug ISO → interactive QEMU
+./run.sh iso test       # full CI suite: ktest + GDB boot-checkpoint tests
+./run.sh ktest graphical  # test ISO → ktest with display window (needs host QEMU)
+./run.sh iso release    # optimised release ISO
 
-./run.sh hdd-boot       # clean → build kernel → HDD image → interactive QEMU
-./run.sh hdd-test       # clean → build kernel → HDD image → GDB boot test
-./run.sh hdd-release    # HDD image only
+./run.sh hdd boot       # clean → build kernel → HDD image → interactive QEMU
+./run.sh hdd test       # clean → build kernel → HDD image → GDB boot test
+./run.sh hdd release    # HDD image only
 
-./run.sh ui-test        # black-box UI tests (headless QEMU, sendkey + serial grep)
-./run.sh ui-test-gui    # same but with visible QEMU window + paced typing
+./run.sh ui        # black-box UI tests (headless QEMU, sendkey + serial grep)
+./run.sh ui graphical    # same but with visible QEMU window + paced typing
 
 # CI-style split modes (build once, run many — used by .github/workflows/build-test.yml)
-./run.sh iso-build      # kernel + makar.iso + makar-test.iso, no run
-./run.sh hdd-build      # kernel + makar-hdd-test.img, no run
-./run.sh ktest-run      # ktest against existing makar-test.iso
-./run.sh gdb-iso-run    # GDB ISO boot test against existing makar.iso
-./run.sh gdb-hdd-run    # GDB HDD boot test against existing makar-hdd-test.img
+./run.sh iso build      # kernel + makar.iso + makar-test.iso, no run
+./run.sh hdd build      # kernel + makar-hdd-test.img, no run
+./run.sh ktest      # ktest against existing makar-test.iso
+./run.sh gdb iso    # GDB ISO boot test against existing makar.iso
+./run.sh gdb hdd    # GDB HDD boot test against existing makar-hdd-test.img
 
 ./run.sh clean          # remove all build artefacts
 
@@ -65,7 +65,7 @@ QEMU steps prefer host `qemu-system-i386` when Docker is the build context; fall
 
 **Full CI suite** (`iso-test`: ktest + GDB boot checkpoints):
 ```sh
-./run.sh iso-test
+./run.sh iso test
 # Phase 1: test_mode ISO → ktest_run_all() → QEMU exits.  Output: ktest.log
 # Phase 2: debug ISO + FAT32 test disk → full GDB test suite.  Output: gdb-test.log
 # exits 0 on pass, 1 on any failure
@@ -73,7 +73,7 @@ QEMU steps prefer host `qemu-system-i386` when Docker is the build context; fall
 
 **HDD boot test:**
 ```sh
-./run.sh hdd-test
+./run.sh hdd test
 # Builds kernel → generates makar-hdd-test.img → GDB boot test (no CD-ROM)
 # outputs: hdd-test-gdb.log, hdd-test-serial.log
 ```
@@ -101,15 +101,15 @@ docker run --rm -it -v "$PWD:/work" -w /work arawn780/gcc-cross-i686-elf:fast \
 **In-kernel test suite (interactive)**: shell command `ktest` runs all suites from the kernel shell.
 At boot (when `test_mode` is *not* in the cmdline), `ktest_bg_task` runs all suites silently in the background - only prints to VGA on failure; always writes `KTEST_BG: PASS/FAIL` to serial.
 
-**Black-box UI tests** (`tests/ui_test.sh`, fronted by `./run.sh ui-test` / `ui-test-gui`): boots `makar.iso`, drives keyboard input through QEMU's **HMP** (Human Monitor Protocol — the text-based control channel exposed by `-monitor unix:...`) via the `sendkey` command, and asserts on substrings in the serial mirror. Covers user-visible flows that `iso-test` doesn't: ELF exec → syscalls → output, shell tab completion, glob expansion, `cd`/`pwd`. **Not wired into CI** (the per-merge job was dropped in `a9b7474` — the framework's reliance on HMP timing made it flaky under the **TCG** (Tiny Code Generator — QEMU's interpreted/JIT CPU emulator, used because KVM is off by default per the note above) emulation that runs in the CI containers). Run locally before opening any PR that touches syscalls, shell, ELF exec, VFS, keyboard, or display:
+**Black-box UI tests** (`tests/ui_test.sh`, fronted by `./run.sh ui` / `ui-test-gui`): boots `makar.iso`, drives keyboard input through QEMU's **HMP** (Human Monitor Protocol — the text-based control channel exposed by `-monitor unix:...`) via the `sendkey` command, and asserts on substrings in the serial mirror. Covers user-visible flows that `iso-test` doesn't: ELF exec → syscalls → output, shell tab completion, glob expansion, `cd`/`pwd`. **Not wired into CI** (the per-merge job was dropped in `a9b7474` — the framework's reliance on HMP timing made it flaky under the **TCG** (Tiny Code Generator — QEMU's interpreted/JIT CPU emulator, used because KVM is off by default per the note above) emulation that runs in the CI containers). Run locally before opening any PR that touches syscalls, shell, ELF exec, VFS, keyboard, or display:
 ```sh
-./run.sh ui-test                                # headless: all scenarios
-./run.sh ui-test exec-hello                     # headless: one scenario
-./run.sh ui-test-gui                            # visible window + paced typing (watch it run)
-./run.sh ui-test-gui exec-hello                 # one scenario, visible
-QEMU_DISPLAY=cocoa ./run.sh ui-test-gui         # override QEMU display backend (cocoa|gtk|sdl)
-KEY_DELAY=0.3      ./run.sh ui-test-gui         # slower typing (default 0.15 s/key)
-UI_TEST_LOGDIR=/tmp/uilogs ./run.sh ui-test     # keep logs (serial + PPM screen dump)
+./run.sh ui                                # headless: all scenarios
+./run.sh ui exec-hello                     # headless: one scenario
+./run.sh ui graphical                            # visible window + paced typing (watch it run)
+./run.sh ui graphical exec-hello                 # one scenario, visible
+QEMU_DISPLAY=cocoa ./run.sh ui graphical         # override QEMU display backend (cocoa|gtk|sdl)
+KEY_DELAY=0.3      ./run.sh ui graphical         # slower typing (default 0.15 s/key)
+UI_TEST_LOGDIR=/tmp/uilogs ./run.sh ui     # keep logs (serial + PPM screen dump)
 ```
 The `ui-test-gui` target keeps a paced-typing visible-window mode for debugging; headless `ui-test` is the canonical "did the change regress anything" path and is what runs noise-free. **Shutdown path differs by mode**: headless sends HMP `quit` (instant), while GUI mode types `shutdown<Enter>` into the focused shell so the kernel runs its real ACPI S5 power-off (port `0x604 / 0x2000` — see `acpi_shutdown()`), then QEMU exits naturally; this exercises the shutdown code path on every GUI run *and* gives the watcher a visible "Shutting down..." final frame instead of the window blinking out the instant assertions complete. Both modes fall back to SIGKILL after a bounded wait if the guest is wedged. **PPM** = Portable Pixmap, the screen-snapshot format HMP's `screendump` emits — useful for triaging visual-only regressions (cursor position, gutter rendering) that the serial mirror can't capture. Scenarios live as `scenario_<name>` shell functions in `tests/ui_test.sh`; add a new one alongside any PR that changes a user-facing path.
 
