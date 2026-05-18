@@ -27,6 +27,7 @@
 #include <kernel/isr.h>
 #include <kernel/task.h>
 #include <kernel/fd.h>
+#include <kernel/signal.h>
 #include <kernel/tty.h>
 #include <kernel/keyboard.h>
 #include <kernel/shell.h>
@@ -40,6 +41,11 @@
 #include <kernel/ide.h>
 #include <string.h>
 #include <kernel/ktest.h>
+
+/* USER_STACK_TOP - matches usertest.c / elf.c; defined locally to
+ * avoid pulling those headers into syscall.c just for this one
+ * constant.  Stack grows down from here in one mapped 4 KiB page. */
+#define USER_STACK_TOP  0xBFFF0000u
 
 /* Standard CGA/VGA 16-colour palette for SYS_PUTCH_AT VESA rendering. */
 static const uint32_t s_vga_palette[16] = {
@@ -589,11 +595,127 @@ void syscall_dispatch(registers_t *regs)
         break;
     }
 
+    /* ------------------------------------------------------------------
+     * SYS_KILL(37): deliver a signal to a target pid.
+     * EBX = pid, ECX = signo.  Returns 0 on success, -1 on error
+     * (no such pid, or invalid signo).
+     *
+     * No permission model yet -- any task can signal any other.  When
+     * a user/kernel split lands, this will become the natural choke
+     * point for credential checks.
+     * ------------------------------------------------------------------ */
+    case SYS_KILL: {
+        int pid   = (int)regs->ebx;
+        int signo = (int)regs->ecx;
+        if (signo < 1 || signo > SIG_MAX) {
+            regs->eax = (uint32_t)-1;
+            break;
+        }
+        regs->eax = (sig_send_pid(pid, signo) == 0)
+                    ? 0u : (uint32_t)-1;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_SIGNAL(48): install a handler for signo on the calling task.
+     * EBX = signo, ECX = handler (SIG_DFL = 0, SIG_IGN = 1, or a
+     * user-space function pointer).
+     *
+     * Returns the previous handler value, or (uint32_t)-1 on error
+     * (out-of-range signo, or signo == SIGKILL/SIGSTOP).
+     *
+     * User-defined handlers are stored but not yet invoked (no ring-3
+     * trampoline + sigreturn machinery yet).  SIG_DFL and SIG_IGN take
+     * effect immediately because the in-kernel delivery path checks
+     * those sentinels by pointer identity.
+     * ------------------------------------------------------------------ */
+    case SYS_SIGNAL: {
+        int signo = (int)regs->ebx;
+        sig_handler_t new_h = (sig_handler_t)(uintptr_t)regs->ecx;
+        task_t *t = task_current();
+        if (!t || signo < 1 || signo > SIG_MAX ||
+            signo == SIGKILL || signo == SIGSTOP) {
+            regs->eax = (uint32_t)-1;
+            break;
+        }
+        sig_handler_t prev = sig_get_handler(t, signo);
+        if (sig_set_handler(t, signo, new_h) != 0) {
+            regs->eax = (uint32_t)-1;
+            break;
+        }
+        regs->eax = (uint32_t)(uintptr_t)prev;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_SIGRETURN(119): restore interrupted state from the sigframe
+     * on the user stack.  Invoked indirectly by the trampoline embedded
+     * in the sigframe -- userspace should never call this directly.
+     *
+     * On entry, regs->useresp points at the slot immediately after
+     * ret_addr (i.e. signo's old slot), because the handler's `ret`
+     * already popped ret_addr.  The sigframe starts at useresp - 4.
+     *
+     * On a corrupted / out-of-range sigframe we terminate the task
+     * rather than try to limp on with whatever state we recover --
+     * sigreturn from a missing or tampered frame is a recovery dead
+     * end.
+     * ------------------------------------------------------------------ */
+    case SYS_SIGRETURN: {
+        task_t *t = task_current();
+        uint32_t base = regs->useresp - 4u;
+        /* Range check: sigframe must lie inside the user stack page
+         * range we manage.  USER_STACK_TOP is the top of the one
+         * mapped 4 KiB stack page (stack grows down from there). */
+        if (base < (USER_STACK_TOP - 4096u) ||
+            base + sizeof(sigframe_t) > USER_STACK_TOP) {
+            Serial_WriteString("[signal] sigreturn: out-of-range frame; "
+                               "killing pid=");
+            Serial_WriteDec(t ? (uint32_t)t->pid : 0u);
+            Serial_WriteString("\n");
+            if (t) t->state = TASK_DEAD;
+            /* Fall through to task_yield -- we can't iret back to user. */
+            task_yield();
+            break;
+        }
+        sigframe_t sf;
+        memcpy(&sf, (const void *)(uintptr_t)base, sizeof(sf));
+        if (sf.magic != SIGFRAME_MAGIC) {
+            Serial_WriteString("[signal] sigreturn: bad magic 0x");
+            Serial_WriteHex(sf.magic);
+            Serial_WriteString("; killing pid=");
+            Serial_WriteDec(t ? (uint32_t)t->pid : 0u);
+            Serial_WriteString("\n");
+            if (t) t->state = TASK_DEAD;
+            task_yield();
+            break;
+        }
+        regs->eip      = sf.saved_eip;
+        regs->cs       = sf.saved_cs;
+        regs->eflags   = sf.saved_eflags;
+        regs->useresp  = sf.saved_useresp;
+        regs->ss       = sf.saved_ss;
+        regs->eax      = sf.saved_eax;
+        regs->ebx      = sf.saved_ebx;
+        regs->ecx      = sf.saved_ecx;
+        regs->edx      = sf.saved_edx;
+        regs->esi      = sf.saved_esi;
+        regs->edi      = sf.saved_edi;
+        regs->ebp      = sf.saved_ebp;
+        regs->ds       = sf.saved_ds;
+        break;
+    }
+
     default:
         /* Unknown syscall - return -ENOSYS. */
         regs->eax = (uint32_t)-38;   /* -ENOSYS */
         break;
     }
+
+    /* Slice 8 phase 4: deliver any user-handler signal that's pending
+     * (and unmasked) before iret returns to ring 3.  No-op when the
+     * frame is ring 0 or no handler is installed. */
+    signal_check_user(regs);
 }
 
 void syscall_init(void)

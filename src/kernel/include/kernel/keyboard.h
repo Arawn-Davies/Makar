@@ -75,13 +75,6 @@ void keyboard_release_task(task_t *t);
 void keyboard_send_to(task_t *t, unsigned char c);
 
 /*
- * keyboard_sigint_consume – atomically read and clear the Ctrl+C flag.
- * Returns 1 if Ctrl+C was pressed since the last call, 0 otherwise.
- * Used by cmd_exec to force-kill a running user task.
- */
-int keyboard_sigint_consume(void);
-
-/*
  * keyboard_set_raw – enable/disable raw key event delivery.
  *
  * In raw mode the cooked-mode shortcuts that normally swallow keys are

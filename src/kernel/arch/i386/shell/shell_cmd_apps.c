@@ -147,14 +147,16 @@ void shell_exec_elf(const char *path, int argc, char **argv)
     task_t *self = task_current();
     keyboard_set_focus(t);
 
-    while (t->state != TASK_DEAD) {
-        if (keyboard_sigint_consume()) {
-            t->state = TASK_DEAD;
-            t_writestring("\n^C\n");
-            break;
-        }
+    /* Wait for the child to finish.  Ctrl+C is now delivered as SIGINT
+     * straight to the focused task (the child); the kernel's default-
+     * terminate action in sig_deliver kills it on the next schedule
+     * pass, so the shell just yields until t->state flips to DEAD.
+     * No more explicit force-kill from this side -- the previous
+     * keyboard_sigint_consume polling could also race the kernel
+     * (consume the flag here, child runs one more time, then dies
+     * for unrelated reasons and we lose the cause attribution). */
+    while (t->state != TASK_DEAD)
         task_yield();
-    }
 
     keyboard_release_task(t);
     keyboard_set_focus(self);
