@@ -56,7 +56,7 @@ if [ -n "${UI_TEST_LOGDIR:-}" ]; then
     LOGDIR=$UI_TEST_LOGDIR
     mkdir -p "$LOGDIR"
 else
-    LOGDIR=$(mktemp -d -t makar-ui)
+    LOGDIR=$(mktemp -d -t makar-ui.XXXXXX)
     trap 'rm -rf "$LOGDIR"' EXIT
 fi
 
@@ -94,6 +94,11 @@ send_script() {
 # --- QEMU lifecycle ---------------------------------------------------------
 
 stop_qemu() {
+    # Unified-runner mode: the caller owns QEMU.  Don't touch it.
+    if [ "${UI_REUSE_QEMU:-0}" = "1" ]; then
+        return 0
+    fi
+
     if [ -z "$QEMU_PID" ] || ! kill -0 "$QEMU_PID" 2>/dev/null; then
         return 0
     fi
@@ -140,6 +145,64 @@ sendkey ret'
 }
 
 start_qemu() {
+    # Unified-runner mode: a QEMU instance is already running, owned by
+    # the caller (`./run.sh all`), with monitor + serial paths already
+    # set up.  Skip the boot wait and the launch -- jump straight to
+    # the verbose-on handshake.  The caller owns shutdown.
+    if [ "${UI_REUSE_QEMU:-0}" = "1" ]; then
+        SERIAL_LOG="${UI_SERIAL_LOG:?UI_SERIAL_LOG required when UI_REUSE_QEMU=1}"
+        MONITOR_SOCK="${UI_MONITOR_SOCK:?UI_MONITOR_SOCK required when UI_REUSE_QEMU=1}"
+        QEMU_PID="${UI_QEMU_PID:-0}"
+        local waited=0
+        while [ $waited -lt 30 ] && [ ! -S "$MONITOR_SOCK" ]; do
+            sleep 0.2; waited=$((waited + 1))
+        done
+        if [ ! -S "$MONITOR_SOCK" ]; then
+            echo "FAIL: monitor socket $MONITOR_SOCK not present" >&2
+            return 1
+        fi
+        # Reuse mode: GDB just detached.  Sleep so shell0 reaches its
+        # prompt before keystrokes (the [shell:ready vt=N] marker is
+        # gated by g_serial_verbose which is OFF post-boot, so we can't
+        # sync on it -- wall-clock instead).
+        echo "  reuse-mode: waiting 8s for shell to reach prompt post-detach..."
+        sleep 8
+        local _dumpdir="${UI_TEST_LOGDIR:-/work}"
+        echo "  reuse-mode: screendump -> $_dumpdir/all-postdetach.ppm"
+        echo "screendump $_dumpdir/all-postdetach.ppm" | nc -U "$MONITOR_SOCK" >/dev/null 2>&1 || true
+        sleep 0.5
+        echo "  reuse-mode: wakeup newline"
+        send_script 'sendkey ret'
+        sleep 1
+        echo "  reuse-mode: screendump -> $_dumpdir/all-after-wakeup.ppm"
+        echo "screendump $_dumpdir/all-after-wakeup.ppm" | nc -U "$MONITOR_SOCK" >/dev/null 2>&1 || true
+        sleep 0.5
+        echo "  reuse-mode: sending verbose on"
+        send_script 'sendkey v
+sendkey e
+sendkey r
+sendkey b
+sendkey o
+sendkey s
+sendkey e
+sendkey spc
+sendkey o
+sendkey n
+sendkey ret'
+        sleep 1.5
+        echo "  reuse-mode: screendump -> $_dumpdir/all-after-verbose.ppm"
+        echo "screendump $_dumpdir/all-after-verbose.ppm" | nc -U "$MONITOR_SOCK" >/dev/null 2>&1 || true
+        sleep 0.5
+        echo "  reuse-mode: serial tail after verbose-on:"
+        if [ -f "$SERIAL_LOG" ]; then
+            local _bytes
+            _bytes=$(wc -c < "$SERIAL_LOG")
+            local _from=$(( _bytes > 512 ? _bytes - 512 : 0 ))
+            dd if="$SERIAL_LOG" bs=1 skip="$_from" 2>/dev/null | sed 's/^/    | /'
+        fi
+        return 0
+    fi
+
     rm -f "$SERIAL_LOG" "$MONITOR_SOCK"
 
     # shellcheck disable=SC2086

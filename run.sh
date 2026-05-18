@@ -81,6 +81,7 @@ _usage() {
     echo "  gdb   iso | hdd"
     echo "  ktest [graphical]"
     echo "  ui    [graphical] [scenario_names...]"
+    echo "  all   [graphical]   -- gdb checkpoints + bg-ktest + ui in one QEMU"
     echo "  clean"
     echo ""
     echo "Builds are incremental (make-driven).  Run \`clean\` to force"
@@ -103,6 +104,12 @@ case "${1:-}" in
             MODE="ui graphical"; shift 2
         else
             MODE="ui"; shift 1
+        fi ;;
+    all)
+        if [ "${2:-}" = "graphical" ]; then
+            MODE="all graphical"; shift 2
+        else
+            MODE="all"; shift 1
         fi ;;
     clean)
         MODE="clean"; shift 1 ;;
@@ -144,7 +151,14 @@ _host_qemu() {
 
 # Return gdb-multiarch path, or empty string.
 _host_gdb() {
-    command -v gdb-multiarch >/dev/null 2>&1 && printf 'gdb-multiarch' || true
+    if command -v gdb-multiarch >/dev/null 2>&1; then
+        printf 'gdb-multiarch'
+    elif command -v gdb >/dev/null 2>&1; then
+        # macOS via brew: plain `gdb` supports remote :1234 against the
+        # QEMU stub for i386 -- no ptrace involved, so the codesigning
+        # caveat doesn't apply.
+        printf 'gdb'
+    fi
 }
 
 # Emit "-accel kvm" when /dev/kvm is usable AND MAKAR_USE_KVM=1.  Disabled
@@ -352,6 +366,235 @@ _run_ui_test() {
     fi
     echo "==> Running UI tests (sendkey + serial grep)..."
     ( cd "$REPO_ROOT" && bash tests/ui_test.sh "$@" )
+}
+
+# Run all phases (gdb checkpoints + bg-ktest verification + ui scenarios)
+# against a single shared QEMU instance.  The kernel boots once; the
+# operator can watch the whole sequence end-to-end without shutdowns
+# between phases.
+#
+# Pipeline:
+#   1. boot QEMU with -s -S (frozen, gdbstub on) + monitor socket
+#   2. gdb-multiarch -batch runs tests/gdb_boot_test.py
+#      -- check Multiboot2 magic, boot_checkpoints, hardware_state,
+#         vesa, ktest_bg, cdrom_content.  Quits on completion; QEMU's
+#         CPU resumes from wherever GDB detached.
+#   3. scrape serial for "KTEST_BG: PASS" as a paranoia check
+#   4. UI_REUSE_QEMU=1 hands the same QEMU to tests/ui_test.sh -- it
+#      sends `verbose on` (the marker that turns serial-mirror back on
+#      after the kernel's post-boot Linux-style cmdline-gated flip)
+#      and runs every scenario.
+#   5. HMP `quit` cleanly shuts QEMU down.
+#
+# GUI mode (`all graphical`) opens a visible window so the operator can
+# watch the kernel transition from GDB-paused to live shell.
+_run_all() {
+    local _gui="${1:-0}"
+
+    local _qemu _gdb _accel
+    _qemu=$(_host_qemu)
+    _gdb=$(_host_gdb)
+    _accel=$(_qemu_accel)
+
+    if [ ! -f "$REPO_ROOT/makar.iso" ]; then
+        echo "ERROR: makar.iso missing -- did the build step succeed?" >&2
+        return 2
+    fi
+
+    # GUI mode requires host qemu + nc (Docker can't open a display).
+    # GDB is optional in GUI mode -- if host gdb-multiarch is missing we
+    # skip Phase 1 and run bg-ktest + UI only.
+    # Headless mode: prefer host tools; fall back to Docker for the whole
+    # pipeline when any host tool is missing.
+    local _docker_fallback=0
+    local _skip_gdb=0
+    if [ "$_gui" = "1" ]; then
+        if [ -z "$_qemu" ] || ! command -v nc >/dev/null 2>&1; then
+            echo "ERROR: 'all graphical' requires host qemu-system-i386 and nc." >&2
+            return 2
+        fi
+        if [ -z "$_gdb" ]; then
+            echo "WARN: host gdb-multiarch missing -- skipping Phase 1 (GDB checkpoints) in GUI mode."
+            _skip_gdb=1
+        fi
+    else
+        if [ -z "$_qemu" ] || [ -z "$_gdb" ] || ! command -v nc >/dev/null 2>&1; then
+            if ! command -v "$DOCKER_BIN" >/dev/null 2>&1; then
+                echo "ERROR: ./run.sh all needs either host tools (qemu+gdb+nc) or Docker." >&2
+                return 2
+            fi
+            _docker_fallback=1
+        fi
+    fi
+
+    if [ "$_docker_fallback" = "1" ]; then
+        echo "==> Running unified pipeline inside Docker toolchain container..."
+        _drun --as-root --env "QEMU_ACCEL=$_accel" -- \
+            'bash -c "
+                set -e
+                command -v nc >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y --no-install-recommends netcat-openbsd >/dev/null)
+                rm -f /work/all-serial.log /work/all-monitor.sock /work/all-gdb.log
+                echo \"==> Phase 0: starting QEMU (frozen at reset, gdbstub on :1234)...\"
+                qemu-system-i386 \
+                    -cdrom /work/makar.iso \
+                    -m 256 -vga std -display none \
+                    $QEMU_ACCEL \
+                    -s -S \
+                    -serial file:/work/all-serial.log \
+                    -monitor unix:/work/all-monitor.sock,server,nowait \
+                    -no-reboot &
+                QPID=\$!
+                sleep 2
+                echo \"==> Phase 1: GDB boot-checkpoint suite...\"
+                set +e
+                timeout 300 gdb-multiarch -batch \
+                    -ex \"source /work/tests/gdb_boot_test.py\" \
+                    /work/src/kernel/makar.kernel 2>&1 | tee /work/all-gdb.log
+                GRC=\${PIPESTATUS[0]}
+                set -e
+                if [ \"\$GRC\" -ne 0 ]; then
+                    echo \"==> Phase 1 FAILED (rc=\$GRC)\" >&2
+                    kill \"\$QPID\" 2>/dev/null || true
+                    wait \"\$QPID\" 2>/dev/null || true
+                    exit 1
+                fi
+                echo \"==> Phase 1 PASS\"
+                if grep -q \"KTEST_BG: PASS\" /work/all-serial.log; then
+                    echo \"==> Phase 2 PASS\"
+                elif grep -q \"KTEST_BG: FAIL\" /work/all-serial.log; then
+                    echo \"==> Phase 2 FAIL\" >&2
+                    kill \"\$QPID\" 2>/dev/null || true
+                    wait \"\$QPID\" 2>/dev/null || true
+                    exit 1
+                else
+                    echo \"==> Phase 2 WARN (no KTEST_BG marker; Phase 1 already covered)\"
+                fi
+                echo \"==> Phase 3: UI scenarios (line-buffered, per-scenario PASS/FAIL streams live)...\"
+                cd /work
+                set +e
+                UI_REUSE_QEMU=1 \
+                UI_SERIAL_LOG=/work/all-serial.log \
+                UI_MONITOR_SOCK=/work/all-monitor.sock \
+                UI_QEMU_PID=\$QPID \
+                stdbuf -oL -eL bash tests/ui_test.sh 2>&1
+                URC=\$?
+                set -e
+                echo \"==> Phase 3 done (rc=\$URC)\"
+                echo \"==> Phase 4: HMP quit...\"
+                echo quit | nc -U /work/all-monitor.sock >/dev/null 2>&1 || true
+                W=0
+                while [ \$W -lt 50 ] && kill -0 \"\$QPID\" 2>/dev/null; do
+                    sleep 0.1; W=\$((W+1))
+                done
+                kill -9 \"\$QPID\" 2>/dev/null || true
+                wait \"\$QPID\" 2>/dev/null || true
+                if [ \$URC -ne 0 ]; then
+                    echo \"==> Phase 3 FAIL (rc=\$URC)\" >&2
+                    exit 1
+                fi
+                echo \"==> ALL PHASES PASSED\"
+            "'
+        return $?
+    fi
+
+    local _serial="$REPO_ROOT/all-serial.log"
+    local _monitor="$REPO_ROOT/all-monitor.sock"
+    local _gdblog="$REPO_ROOT/all-gdb.log"
+    rm -f "$_serial" "$_monitor" "$_gdblog"
+
+    local _display="-display none"
+    if [ "$_gui" = "1" ]; then
+        _display="${QEMU_DISPLAY:+-display $QEMU_DISPLAY}"
+    fi
+
+    local _freeze=""
+    [ "$_skip_gdb" = "0" ] && _freeze="-S"
+
+    echo "==> Phase 0: starting QEMU ${_freeze:+(frozen at reset, gdbstub on :1234)}..."
+    # shellcheck disable=SC2086
+    "$_qemu" \
+        -cdrom "$REPO_ROOT/makar.iso" \
+        -m 256 -vga std \
+        $_display \
+        $_accel \
+        -s $_freeze \
+        -serial "file:$_serial" \
+        -monitor "unix:$_monitor,server,nowait" \
+        -no-reboot &
+    local _qpid=$!
+    sleep 2
+
+    if [ "$_skip_gdb" = "0" ]; then
+        echo "==> Phase 1: GDB boot-checkpoint suite..."
+        # macOS has no `timeout(1)`; use gtimeout if present, else run raw.
+        local _to=""
+        if   command -v timeout  >/dev/null 2>&1; then _to="timeout 300"
+        elif command -v gtimeout >/dev/null 2>&1; then _to="gtimeout 300"
+        fi
+        $_to "$_gdb" -batch \
+            -ex "source $REPO_ROOT/tests/gdb_boot_test.py" \
+            "$REPO_ROOT/src/kernel/makar.kernel" \
+            2>&1 | tee "$_gdblog"
+        local _gdb_rc=${PIPESTATUS[0]}
+        if [ "$_gdb_rc" -ne 0 ]; then
+            echo "==> Phase 1 FAILED (gdb rc=$_gdb_rc)" >&2
+            kill "$_qpid" 2>/dev/null || true
+            wait "$_qpid" 2>/dev/null || true
+            return 1
+        fi
+        echo "==> Phase 1 PASS"
+    else
+        echo "==> Phase 1 SKIPPED (no host gdb-multiarch; GUI mode)"
+        # Without GDB the kernel runs from reset normally; give it time
+        # to reach the shell prompt before UI scenarios start.
+        echo "==> Waiting 10s for boot-complete..."
+        local _w=0
+        while [ $_w -lt 60 ]; do
+            grep -q "kernel: boot complete" "$_serial" 2>/dev/null && break
+            sleep 0.5; _w=$((_w + 1))
+        done
+    fi
+
+    echo "==> Phase 2: bg-ktest verification..."
+    if grep -q "KTEST_BG: PASS" "$_serial" 2>/dev/null; then
+        echo "==> Phase 2 PASS"
+    elif grep -q "KTEST_BG: FAIL" "$_serial" 2>/dev/null; then
+        echo "==> Phase 2 FAIL (KTEST_BG: FAIL in serial)" >&2
+        kill "$_qpid" 2>/dev/null || true
+        wait "$_qpid" 2>/dev/null || true
+        return 1
+    else
+        echo "==> Phase 2 WARN (no KTEST_BG marker in serial; GDB Phase 1 already covered bg-ktest)"
+    fi
+
+    echo "==> Phase 3: UI scenarios (reusing the same QEMU)..."
+    (
+        cd "$REPO_ROOT"
+        UI_REUSE_QEMU=1 \
+        UI_SERIAL_LOG="$_serial" \
+        UI_MONITOR_SOCK="$_monitor" \
+        UI_QEMU_PID="$_qpid" \
+        bash tests/ui_test.sh
+    )
+    local _ui_rc=$?
+
+    echo "==> Phase 4: HMP quit..."
+    echo quit | nc -U "$_monitor" >/dev/null 2>&1 || true
+    local _waited=0
+    while [ "$_waited" -lt 50 ] && kill -0 "$_qpid" 2>/dev/null; do
+        sleep 0.1; _waited=$((_waited + 1))
+    done
+    if kill -0 "$_qpid" 2>/dev/null; then
+        kill -9 "$_qpid" 2>/dev/null || true
+    fi
+    wait "$_qpid" 2>/dev/null || true
+
+    if [ "$_ui_rc" -ne 0 ]; then
+        echo "==> Phase 3 FAIL (ui rc=$_ui_rc)" >&2
+        return 1
+    fi
+    echo "==> ALL PHASES PASSED"
+    return 0
 }
 
 # Run the GDB ISO boot-checkpoint test.
@@ -640,6 +883,21 @@ ui)
     _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
     echo "==> Running ui-tests with display window (graphical, paced typing)..."
     ( cd "$REPO_ROOT" && GUI=1 bash tests/ui_test.sh "$@" )
+    ;;
+
+# ── all (unified runner) ─────────────────────────────────────────────────────
+# Boot once; run gdb checkpoints + bg-ktest scrape + ui scenarios in
+# sequence against the same QEMU instance.  Keeps the separated modes
+# untouched; use this when you want a single end-to-end verification.
+all)
+    _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
+    _run_all 0
+    ;;
+
+# ── all graphical ────────────────────────────────────────────────────────────
+"all graphical")
+    _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
+    _run_all 1
     ;;
 
 # ── clean ─────────────────────────────────────────────────────────────────────
