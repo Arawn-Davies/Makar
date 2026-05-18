@@ -97,6 +97,14 @@ typedef struct task {
      * frames or jumps to garbage EIPs in ring-3.  NULL for tasks that
      * aren't exec'ing a userspace program. */
     void         *exec_params;
+
+    /* --- shell scripting state ---
+     * Per-shell-task variable table for sh-style scripting (NAME=value,
+     * $VAR expansion, `read` builtin).  Each VT's shell owns its own
+     * table; variables don't leak across VTs.  NULL for non-shell tasks.
+     * Allocated lazily on first assignment by sh_vars_set().  See
+     * src/kernel/arch/i386/shell/sh_vars.c. */
+    void         *script_vars;
 } task_t;
 
 /*

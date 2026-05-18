@@ -19,6 +19,7 @@
 #include <kernel/vesa_tty.h>
 #include <kernel/serial.h>
 #include <kernel/vfs.h>
+#include <kernel/sh_script.h>
 #include <kernel/timer.h>
 #include <kernel/task.h>
 #include <kernel/signal.h>
@@ -526,7 +527,7 @@ void shell_readline(char *buf, size_t max)
  *
  * Tokens are separated by spaces.  Returns the number of tokens found.
  * --------------------------------------------------------------------------- */
-static int shell_parse(char *line, char **argv, int max_args)
+int shell_parse(char *line, char **argv, int max_args)
 {
     int argc = 0;
     char *p = line;
@@ -568,6 +569,7 @@ static const shell_cmd_entry_t * const cmd_modules[] = {
     disk_cmds,
     fs_cmds,
     apps_cmds,
+    script_cmds,
     NULL,
 };
 
@@ -606,7 +608,7 @@ static void shell_restore_screen(void)
     vesa_tty_paint_status(vtty_active(), vtty_count());
 }
 
-static int shell_dispatch(int argc, char **argv)
+int shell_dispatch_argv(int argc, char **argv)
 {
     for (int m = 0; cmd_modules[m]; m++) {
         for (int i = 0; cmd_modules[m][i].name; i++) {
@@ -854,6 +856,17 @@ void shell_run(void)
 
         history_push(buf);
 
+        /* Scripting: detect NAME=value first (no command dispatch).
+         * Then $VAR expansion before parse so all downstream paths
+         * (globs, dispatch, fallbacks) see expanded text uniformly. */
+        if (sh_try_assign(buf))
+            continue;
+        static char expanded_buf[SHELL_MAX_INPUT];
+        if (sh_expand(buf, expanded_buf, sizeof(expanded_buf)) == 0) {
+            strncpy(buf, expanded_buf, SHELL_MAX_INPUT - 1);
+            buf[SHELL_MAX_INPUT - 1] = '\0';
+        }
+
         int argc = shell_parse(buf, argv, SHELL_MAX_ARGS);
         if (argc == 0)
             continue;
@@ -865,7 +878,7 @@ void shell_run(void)
         argc = shell_expand_globs(argc, argv, SHELL_MAX_ARGS,
                                   glob_buf, sizeof(glob_buf));
 
-        if (!shell_dispatch(argc, argv)) {
+        if (!shell_dispatch_argv(argc, argv)) {
             t_setcolor(SHELL_ERROR_COLOR_VGA);
             t_writestring("Unknown command '");
             t_writestring(argv[0]);

@@ -722,9 +722,31 @@ sendkey ret"
     assert_serial_contains "[makbox:pwd]"
 }
 
+test_shell_scripting_vars() {
+    # Bash-flavoured scripting smoke: assign NAME=foo, dump env, verify
+    # the variable round-trips through the per-shell-task table.
+    reset_shell
+    it "shell-scripting-vars" \
+"sendkey n
+sendkey a
+sendkey m
+sendkey e
+sendkey equal
+sendkey f
+sendkey o
+sendkey o
+sendkey ret
+sendkey e
+sendkey n
+sendkey v
+sendkey ret" \
+        1.5
+    assert_serial_contains "name=foo"
+}
+
 # --- Driver -----------------------------------------------------------------
 
-ALL_TESTS=(glob_proc tab_path exec_hello cd_root per_tty_cwd calc_brackets ctrlc_kills_child no_dead_in_proctasks typo_doesnt_clear vt_roundtrip_keeps_maktop_focused vt_all_roundtrips user_sigusr1_handler makbox_pwd)
+ALL_TESTS=(glob_proc tab_path exec_hello cd_root per_tty_cwd calc_brackets ctrlc_kills_child no_dead_in_proctasks typo_doesnt_clear vt_roundtrip_keeps_maktop_focused vt_all_roundtrips user_sigusr1_handler makbox_pwd shell_scripting_vars)
 
 declare -a TO_RUN
 if [ $# -eq 0 ]; then
