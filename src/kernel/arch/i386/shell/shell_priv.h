@@ -21,7 +21,7 @@
 /* Shell version - independent of the kernel version (<kernel/version.h>).
  * The shell is conceptually a separate component; bump this when shell
  * features change, MAKAR_VERSION when the kernel itself changes. */
-#define SHELL_VERSION    "0.5.0"
+#define SHELL_VERSION    "0.6.0"
 
 #define BUILD_DATE __DATE__
 #define BUILD_TIME __TIME__
