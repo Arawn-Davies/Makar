@@ -744,9 +744,57 @@ sendkey ret" \
     assert_serial_contains "name=foo"
 }
 
+test_demo_script() {
+    # End-to-end run of the bundled scripting demo: exercises every
+    # feature (vars, expansion, comments, env, [, integer + string
+    # tests, elif chain, for, while, $?, clock).  Assert on markers
+    # the script emits for each section so a regression in any layer
+    # surfaces as a failing assertion.
+    reset_shell
+    it "demo-script" \
+"sendkey s
+sendkey h
+sendkey spc
+sendkey slash
+sendkey c
+sendkey d
+sendkey r
+sendkey o
+sendkey m
+sendkey slash
+sendkey a
+sendkey p
+sendkey p
+sendkey s
+sendkey slash
+sendkey d
+sendkey e
+sendkey m
+sendkey o
+sendkey dot
+sendkey s
+sendkey h
+sendkey ret" \
+        12
+    assert_serial_contains \
+        "Makar shell-script demo" \
+        "cwd-ok" \
+        "hello, tester!" \
+        "str-eq-ok" \
+        "n-ok" \
+        "gt-ok" \
+        "eq-ok" \
+        "elif-correct-blue" \
+        "for: gamma" \
+        "word: three" \
+        "countdown: 1" \
+        "after-true: 0" \
+        "demo complete"
+}
+
 # --- Driver -----------------------------------------------------------------
 
-ALL_TESTS=(glob_proc tab_path exec_hello cd_root per_tty_cwd calc_brackets ctrlc_kills_child no_dead_in_proctasks typo_doesnt_clear vt_roundtrip_keeps_maktop_focused vt_all_roundtrips user_sigusr1_handler makbox_pwd shell_scripting_vars)
+ALL_TESTS=(glob_proc tab_path exec_hello cd_root per_tty_cwd calc_brackets ctrlc_kills_child no_dead_in_proctasks typo_doesnt_clear vt_roundtrip_keeps_maktop_focused vt_all_roundtrips user_sigusr1_handler makbox_pwd shell_scripting_vars demo_script)
 
 declare -a TO_RUN
 if [ $# -eq 0 ]; then

@@ -140,6 +140,18 @@ int sh_expand(const char *in, char *out, size_t outsz)
 {
     size_t oi = 0;
     for (size_t i = 0; in[i]; ) {
+        /* $? -- last command's exit status.  Special single-char var,
+         * not an identifier, so handle before the general ident path. */
+        if (in[i] == '$' && in[i+1] == '?') {
+            const char *v = sh_vars_get("?");
+            if (!v) v = "0";
+            size_t vl = strlen(v);
+            if (oi + vl >= outsz) return -1;
+            memcpy(out + oi, v, vl);
+            oi += vl;
+            i += 2;
+            continue;
+        }
         if (in[i] == '$' && (is_ident_start(in[i+1]) || in[i+1] == '{')) {
             int braced = (in[i+1] == '{');
             size_t s = i + 1 + (size_t)braced;
@@ -256,6 +268,22 @@ int sh_exec_line(char *line)
 
 static int sh_last_status = 0;
 
+/* Set $? from sh_last_status.  Called after every dispatched line, after
+ * every `[ TEST ]` evaluation, and on exit from a script so the parent
+ * shell observes the final status. */
+static void publish_status(int rc)
+{
+    sh_last_status = rc;
+    char buf[12];
+    int n = 0;
+    if (rc < 0) { buf[n++] = '-'; rc = -rc; }
+    char tmp[12]; int t = 0;
+    do { tmp[t++] = (char)('0' + (rc % 10)); rc /= 10; } while (rc && t < (int)sizeof(tmp));
+    while (t > 0) buf[n++] = tmp[--t];
+    buf[n] = '\0';
+    sh_vars_set("?", buf);
+}
+
 /* Forward decl: defined further down. */
 static int run_block(char **lines, int from, int to);
 
@@ -305,7 +333,16 @@ static int find_match(char **lines, int from, int to,
  *   [ INT -eq INT ]   integer equal (also -ne -lt -le -gt -ge)
  * Returns 0 on true, 1 on false (sh convention).
  */
-static int atoi_safe(const char *s) { int r=0,n=0; if(*s=='-'){n=1;s++;} while(*s>='0'&&*s<='9') r=r*10+(*s++-'0'); return n?-r:r; }
+static int is_numeric(const char *s)
+{
+    if (!s || !*s) return 0;
+    if (*s == '-' || *s == '+') s++;
+    if (!*s) return 0;
+    while (*s) { if (*s < '0' || *s > '9') return 0; s++; }
+    return 1;
+}
+
+static int atoi_safe(const char *s) { int r=0,n=0; if(*s=='-'){n=1;s++;} else if(*s=='+'){s++;} while(*s>='0'&&*s<='9') r=r*10+(*s++-'0'); return n?-r:r; }
 
 static int sh_test(int argc, char **argv)
 {
@@ -318,13 +355,25 @@ static int sh_test(int argc, char **argv)
     if (argc == 3) {
         if (strcmp(argv[1], "=")  == 0) return strcmp(argv[0], argv[2]) == 0 ? 0 : 1;
         if (strcmp(argv[1], "!=") == 0) return strcmp(argv[0], argv[2]) != 0 ? 0 : 1;
-        int a = atoi_safe(argv[0]), b = atoi_safe(argv[2]);
-        if (strcmp(argv[1], "-eq") == 0) return a == b ? 0 : 1;
-        if (strcmp(argv[1], "-ne") == 0) return a != b ? 0 : 1;
-        if (strcmp(argv[1], "-lt") == 0) return a <  b ? 0 : 1;
-        if (strcmp(argv[1], "-le") == 0) return a <= b ? 0 : 1;
-        if (strcmp(argv[1], "-gt") == 0) return a >  b ? 0 : 1;
-        if (strcmp(argv[1], "-ge") == 0) return a >= b ? 0 : 1;
+        /* Integer ops: refuse if either operand isn't numeric so a
+         * non-numeric string doesn't silently compare as 0. */
+        int is_int_op =
+               (strcmp(argv[1], "-eq") == 0) || (strcmp(argv[1], "-ne") == 0)
+            || (strcmp(argv[1], "-lt") == 0) || (strcmp(argv[1], "-le") == 0)
+            || (strcmp(argv[1], "-gt") == 0) || (strcmp(argv[1], "-ge") == 0);
+        if (is_int_op) {
+            if (!is_numeric(argv[0]) || !is_numeric(argv[2])) {
+                t_writestring("sh: [: integer expected\n");
+                return 2;   /* bash convention: usage/operand error */
+            }
+            int a = atoi_safe(argv[0]), b = atoi_safe(argv[2]);
+            if (strcmp(argv[1], "-eq") == 0) return a == b ? 0 : 1;
+            if (strcmp(argv[1], "-ne") == 0) return a != b ? 0 : 1;
+            if (strcmp(argv[1], "-lt") == 0) return a <  b ? 0 : 1;
+            if (strcmp(argv[1], "-le") == 0) return a <= b ? 0 : 1;
+            if (strcmp(argv[1], "-gt") == 0) return a >  b ? 0 : 1;
+            if (strcmp(argv[1], "-ge") == 0) return a >= b ? 0 : 1;
+        }
     }
     return 1;
 }
@@ -356,7 +405,7 @@ static int eval_condition(const char *line)
     char *argv[SHELL_MAX_ARGS];
     int argc = shell_parse(expanded, argv, SHELL_MAX_ARGS);
     int rc = sh_test(argc, argv);
-    sh_last_status = rc;
+    publish_status(rc);
     return rc == 0;
 }
 
@@ -368,36 +417,126 @@ static int run_block(char **lines, int from, int to)
         char *t = lines[i];
         while (*t == ' ' || *t == '\t') t++;
 
-        if (strncmp(t, "if ", 3) == 0 || strcmp(t, "if") == 0) {
-            const char *mids[2] = { "elif ", "else" };
-            int mid;
-            int end = find_match(lines, i + 1, to, "if", NULL, "fi",
-                                 mids, 2, &mid);
-            if (end < 0) { t_writestring("sh: missing fi\n"); return -2; }
-            /* Condition is on the same line as `if`: "if [ X ]; then" */
-            const char *cond_start = t + 2;
-            while (*cond_start == ' ' || *cond_start == '\t') cond_start++;
-            /* Drop a trailing "; then" or " then" if present. */
-            static char cond[256];
-            strncpy(cond, cond_start, sizeof(cond) - 1);
-            cond[sizeof(cond) - 1] = '\0';
-            char *th = strstr(cond, "then");
-            if (th) {
-                while (th > cond && (th[-1] == ' ' || th[-1] == ';' || th[-1] == '\t'))
-                    th--;
-                *th = '\0';
+        /* Single-line form: `if [ X ]; then CMD; fi`.  Bash-compatible.
+         * Detect by spotting `; fi` at the end of this line (after `; then`).
+         * Handles only one body command (no elif/else on the same line). */
+        if ((strncmp(t, "if ", 3) == 0 || strcmp(t, "if") == 0)) {
+            size_t tl = strlen(t);
+            int has_inline_fi = 0;
+            if (tl >= 4) {
+                /* Match ` fi` (with optional trailing whitespace already trimmed). */
+                if (t[tl-2] == 'f' && t[tl-1] == 'i' &&
+                    (tl == 2 || t[tl-3] == ' ' || t[tl-3] == ';'))
+                    has_inline_fi = 1;
             }
-            int true_branch = eval_condition(cond);
-            int body_from = i + 1;
-            int body_to   = (mid >= 0) ? mid : end;
-            int else_from = (mid >= 0) ? (mid + 1) : end;
+            if (has_inline_fi) {
+                /* Split into <cond> | <body>.  Layout:
+                 *   if <COND>; then <BODY>; fi
+                 * Steps: find " then " or ";then "; that splits cond/body.
+                 * Then strip trailing "; fi" from body. */
+                static char work[512];
+                strncpy(work, t, sizeof(work) - 1);
+                work[sizeof(work) - 1] = '\0';
+                /* skip past "if " */
+                char *cp = work + (work[2] == ' ' ? 3 : 2);
+                while (*cp == ' ') cp++;
+                char *then_kw = strstr(cp, "then");
+                if (then_kw) {
+                    /* Cond ends just before `then` (and any `;` / spaces). */
+                    char *cend = then_kw;
+                    while (cend > cp && (cend[-1] == ' ' || cend[-1] == ';' || cend[-1] == '\t'))
+                        cend--;
+                    *cend = '\0';
+                    char *body = then_kw + 4;
+                    while (*body == ' ') body++;
+                    /* Trim trailing "; fi" (or " fi") from body. */
+                    size_t bl = strlen(body);
+                    while (bl > 0 && (body[bl-1] == ' ' || body[bl-1] == '\t')) body[--bl] = '\0';
+                    if (bl >= 2 && body[bl-1] == 'i' && body[bl-2] == 'f') {
+                        bl -= 2;
+                        while (bl > 0 && (body[bl-1] == ' ' || body[bl-1] == ';')) bl--;
+                        body[bl] = '\0';
+                    }
+                    if (eval_condition(cp)) {
+                        sh_exec_line(body);
+                    }
+                    i++;
+                    continue;
+                }
+                /* Falls through to multi-line path if no `then`. */
+            }
+            /* Multi-line form follows. */
+        }
+
+        if (strncmp(t, "if ", 3) == 0 || strcmp(t, "if") == 0) {
+            /* Find the matching `fi`, ignoring nested if/fi.  We don't
+             * use find_match's mid output for elif chaining -- we walk
+             * each elif/else inline below so we visit them in order. */
+            int end = find_match(lines, i + 1, to, "if", NULL, "fi",
+                                 NULL, 0, NULL);
+            if (end < 0) { t_writestring("sh: missing fi\n"); return -2; }
+
+            /* `cond_line` points at the current branch's condition line
+             * (the `if [ X ]; then` or `elif [ X ]; then` line).
+             * `body_from` is the first line of that branch's body. */
+            int cond_line  = i;
+            const char *cond_kw = "if";
+            size_t      kw_len  = 2;
             int rc = 0;
-            if (true_branch) {
-                rc = run_block(lines, body_from, body_to);
-            } else if (mid >= 0) {
-                /* Currently treats elif as else (no chained elif).  Good
-                 * enough for the MVP; chained elif is a follow-up. */
-                rc = run_block(lines, else_from, end);
+            int taken = 0;
+            int scan = i + 1;
+
+            while (1) {
+                /* Extract this branch's condition from cond_line. */
+                char *ct = lines[cond_line];
+                while (*ct == ' ' || *ct == '\t') ct++;
+                ct += kw_len;
+                while (*ct == ' ' || *ct == '\t') ct++;
+                static char cond[256];
+                strncpy(cond, ct, sizeof(cond) - 1);
+                cond[sizeof(cond) - 1] = '\0';
+                char *th = strstr(cond, "then");
+                if (th) {
+                    while (th > cond && (th[-1] == ' ' || th[-1] == ';' || th[-1] == '\t'))
+                        th--;
+                    *th = '\0';
+                }
+                /* Find the next elif/else/fi at our depth so we know
+                 * where this branch's body ends. */
+                int depth = 1;
+                int next  = end;   /* default: extends to `fi` */
+                int next_is_else = 0;
+                for (int k = scan; k < end; k++) {
+                    char *kt = lines[k];
+                    while (*kt == ' ' || *kt == '\t') kt++;
+                    if (strncmp(kt, "if ", 3) == 0 || strcmp(kt, "if") == 0) { depth++; continue; }
+                    if (strncmp(kt, "fi", 2) == 0 &&
+                        (kt[2] == '\0' || kt[2] == ' ' || kt[2] == ';')) { depth--; continue; }
+                    if (depth != 1) continue;
+                    if (strncmp(kt, "elif ", 5) == 0) { next = k; break; }
+                    if (strncmp(kt, "else", 4) == 0 &&
+                        (kt[4] == '\0' || kt[4] == ' ' || kt[4] == ';')) {
+                        next = k; next_is_else = 1; break;
+                    }
+                }
+
+                if (!taken && eval_condition(cond)) {
+                    rc = run_block(lines, cond_line + 1, next);
+                    if (rc < 0) return rc;
+                    taken = 1;
+                }
+
+                if (next == end) break;   /* no more branches */
+                if (next_is_else) {
+                    if (!taken)
+                        rc = run_block(lines, next + 1, end);
+                    break;
+                }
+                /* It was an `elif`: loop with cond_line=next. */
+                cond_line = next;
+                cond_kw   = "elif";
+                kw_len    = 4;
+                scan      = next + 1;
             }
             if (rc < 0) return rc;
             i = end + 1;
@@ -469,22 +608,26 @@ static int run_block(char **lines, int from, int to)
             continue;
         }
 
-        /* Plain command line. */
+        /* Plain command line.  Track its exit status in $? so scripts
+         * can branch on it (bash-style). */
         static char copy[512];
         strncpy(copy, lines[i], sizeof(copy) - 1);
         copy[sizeof(copy) - 1] = '\0';
-        sh_last_status = sh_exec_line(copy) ? 0 : 1;
+        publish_status(sh_exec_line(copy) ? 0 : 127);
         i++;
     }
-    return 0;
+    return sh_last_status;
 }
 
 int sh_run_file(const char *path)
 {
-    /* Read into a fixed scratch buffer.  64 KiB is plenty for hand-written
-     * shell scripts; bigger scripts can be split into multiple files and
-     * `sh` chained.  Allocated from the heap to keep the kernel stack lean. */
-    enum { SH_MAX_SCRIPT = 65536 };
+    /* Read into a scratch buffer.  256 KiB covers any realistic shell
+     * script; if a file genuinely exceeds this, the layered fix is to
+     * grow on demand from the heap (vfs has no stat() yet).  Until then
+     * we warn on apparent truncation -- detected when the bytes read
+     * exactly fill the buffer, which the kernel VFS treats as "more may
+     * exist".  Detect, complain, keep going on the prefix. */
+    enum { SH_MAX_SCRIPT = 262144 };
     char    *data = (char *)kmalloc(SH_MAX_SCRIPT);
     uint32_t sz = 0;
     if (!data) return -1;
@@ -496,6 +639,11 @@ int sh_run_file(const char *path)
         return -1;
     }
     data[sz] = '\0';
+    if (sz == SH_MAX_SCRIPT - 1) {
+        t_writestring("sh: warning: script may be truncated at ");
+        /* Crude size print without depending on stdio. */
+        t_writestring("256KiB; split into multiple files and chain via `sh`\n");
+    }
     /* Build an array of line pointers by NUL-terminating each \n. */
     int nlines = 1;
     for (uint32_t i = 0; i < sz; i++) if (data[i] == '\n') nlines++;

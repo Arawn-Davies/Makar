@@ -20,7 +20,22 @@ static void cmd_sh(int argc, char **argv)
         t_writestring("usage: sh <script.sh>\n");
         return;
     }
-    sh_run_file(argv[1]);
+    int rc = sh_run_file(argv[1]);
+    /* Persist the script's exit code as $? so callers (interactive or
+     * scripted) can branch on it.  Also echo to serial so ui-test
+     * scenarios can scrape the value. */
+    char buf[16];
+    int n = 0, v = rc;
+    if (v < 0) { buf[n++] = '-'; v = -v; }
+    char tmp[12]; int t = 0;
+    do { tmp[t++] = (char)('0' + (v % 10)); v /= 10; } while (v && t < (int)sizeof(tmp));
+    while (t > 0) buf[n++] = tmp[--t];
+    buf[n] = '\0';
+    sh_vars_set("?", buf);
+    extern void Serial_WriteString(const char *);
+    Serial_WriteString("sh: exit=");
+    Serial_WriteString(buf);
+    Serial_WriteString("\n");
 }
 
 static void cmd_read(int argc, char **argv)

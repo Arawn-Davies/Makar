@@ -1,59 +1,120 @@
-# demo.sh -- shows what the Makar shell scripting layer can do.
-# Run with:  sh /cdrom/apps/demo.sh
+# demo.sh -- exercise every part of the Makar shell scripting layer.
+# Run with:  sh /cdrom/apps/demo.sh   (or /hd/apps/demo.sh)
+# No user input required -- safe to invoke from ui-test.
 
 echo === Makar shell-script demo ===
 
-# 1. Plain commands -- pwd is a makbox applet
+# 1. plain commands (makbox applets)
 echo
-echo -- pwd --
+echo -- 1. plain commands --
 pwd
+echo cwd-ok
 
-# 2. Variables + expansion
+# 2. variable assignment + $VAR + ${VAR}
+echo
+echo -- 2. variables --
 NAME=tester
 GREETING=hello
-echo
-echo -- variables --
-echo $GREETING $NAME
-echo from cwd: $(pwd)   # no command substitution yet; literal
+echo $GREETING, ${NAME}!
+echo current name is $NAME
 
-# 3. cat through a $VAR-expanded path
-PROC=/proc/uname
+# 3. cat through an expanded path
 echo
-echo -- cat $PROC --
+echo -- 3. expansion into command args --
+PROC=/proc/uname
 cat $PROC
 
-# 4. if / then / else / fi
+# 4. unset
 echo
-echo -- if branches --
+echo -- 4. unset --
+THROWAWAY=keep
+unset THROWAWAY
+echo throwaway-now: $THROWAWAY-end
+
+# 5. env (dump table)
+echo
+echo -- 5. env dump --
+env
+
+# 6. # comments inline -- nothing prints after this
+echo done-with-comment   # this trailing fragment is a comment
+echo
+echo -- 6. comments handled --
+
+# 7. string tests via [ ... ]
+echo
+echo -- 7. string tests --
 if [ $NAME = tester ]; then
-echo if-branch: NAME is tester
+echo str-eq-ok
+fi
+if [ $NAME != stranger ]; then
+echo str-neq-ok
+fi
+if [ -z "" ]; then echo z-ok; fi
+if [ -n yes ]; then echo n-ok; fi
+
+# 8. integer tests
+echo
+echo -- 8. integer tests --
+A=7
+B=4
+if [ $A -gt $B ]; then echo gt-ok; fi
+if [ $B -lt $A ]; then echo lt-ok; fi
+if [ $A -ne $B ]; then echo ne-ok; fi
+if [ $A -eq 7 ]; then echo eq-ok; fi
+if [ $A -ge 7 ]; then echo ge-ok; fi
+if [ $B -le 4 ]; then echo le-ok; fi
+
+# 9. if / elif / else / fi  (chained elif)
+echo
+echo -- 9. elif chain --
+COLOR=blue
+if [ $COLOR = red ]; then
+echo elif-wrong-red
+elif [ $COLOR = green ]; then
+echo elif-wrong-green
+elif [ $COLOR = blue ]; then
+echo elif-correct-blue
 else
-echo else-branch: NAME is something else
+echo elif-fell-through
 fi
 
-# 5. for ... in
+# 10. for ... in WORDS
 echo
-echo -- for loop --
+echo -- 10. for loop --
 for x in alpha beta gamma; do
-echo  loop: $x
+echo for: $x
 done
 
-# 6. while ... do ... done (use a counter via assignment + test)
+# 11. for with variable substitution
 echo
-echo -- while loop --
+echo -- 11. for over variable --
+WORDS=one two three
+for w in $WORDS; do
+echo word: $w
+done
+
+# 12. while with countdown
+echo
+echo -- 12. while loop --
 N=3
 while [ $N -gt 0 ]; do
-echo  countdown: $N
-N=$N
-# decrement via simple replacement -- one-shot for 3..1
-if [ $N = 3 ]; then N=2; else
-  if [ $N = 2 ]; then N=1; else N=0; fi
-fi
+echo countdown: $N
+if [ $N = 3 ]; then N=2; elif [ $N = 2 ]; then N=1; else N=0; fi
 done
 
-# 7. wall clock
+# 13. exit code observable via $?
 echo
-echo -- clock.elf --
+echo -- 13. exit code in dollar-question --
+true
+echo after-true: $?
+# An unknown command sets $? to 127.
+nonsense-command-that-does-not-exist
+echo after-bad: $?
+
+# 14. clock.elf integration
+echo
+echo -- 14. clock.elf --
 /cdrom/apps/clock.elf
 
 echo

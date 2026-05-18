@@ -622,9 +622,16 @@ int shell_dispatch_argv(int argc, char **argv)
     }
 
     /* Path-style invocation: `/abs/path[.elf]` or `./relative[.elf]`.
-     * Resolved by the VFS so `./foo` is interpreted relative to the CWD. */
+     * Resolved by the VFS so `./foo` is interpreted relative to the CWD.
+     * Bash-style: if the path ends in `.sh` (or any non-ELF text file),
+     * run it through the shell-script interpreter instead of exec()ing. */
     const char *cmd = argv[0];
     if (cmd[0] == '/' || (cmd[0] == '.' && cmd[1] == '/')) {
+        size_t cl = strlen(cmd);
+        if (cl > 3 && cmd[cl-3] == '.' && cmd[cl-2] == 's' && cmd[cl-1] == 'h') {
+            sh_run_file(cmd);
+            return 1;
+        }
         if (try_exec_path(cmd, argc, argv)) {
             /* Any ELF could have painted to the FB; restore unconditionally. */
             shell_restore_screen();
