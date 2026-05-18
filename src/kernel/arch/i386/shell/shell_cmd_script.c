@@ -99,11 +99,36 @@ static void cmd_lbracket(int argc, char **argv)
     sh_vars_set("?", rs);
 }
 
+/* sleep N -- busy-poll the PIT for N seconds.  Yields between checks so
+ * other tasks (including bg-ktest, other shells) keep running. */
+static void cmd_sleep(int argc, char **argv)
+{
+    if (argc < 2) { t_writestring("usage: sleep <secs>\n"); return; }
+    int n = 0;
+    for (const char *p = argv[1]; *p >= '0' && *p <= '9'; p++)
+        n = n * 10 + (*p - '0');
+    if (n <= 0) return;
+    extern uint32_t timer_get_ticks(void);
+    extern void task_yield(void);
+    uint32_t target = timer_get_ticks() + (uint32_t)n * 100u;   /* 100 Hz PIT */
+    while (timer_get_ticks() < target) task_yield();
+}
+
+/* true / false -- standard POSIX status helpers. */
+static void cmd_true(int argc, char **argv)  { (void)argc; (void)argv; }
+static void cmd_false(int argc, char **argv) {
+    (void)argc; (void)argv;
+    sh_vars_set("?", "1");
+}
+
 const shell_cmd_entry_t script_cmds[] = {
     { "sh",     cmd_sh,       0 },
     { "read",   cmd_read,     0 },
     { "env",    cmd_env,      0 },
     { "unset",  cmd_unset,    0 },
+    { "sleep",  cmd_sleep,    0 },
+    { "true",   cmd_true,     0 },
+    { "false",  cmd_false,    0 },
     { "[",      cmd_lbracket, 0 },
     { NULL,     NULL,         0 },
 };

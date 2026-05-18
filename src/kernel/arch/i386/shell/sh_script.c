@@ -644,22 +644,154 @@ int sh_run_file(const char *path)
         /* Crude size print without depending on stdio. */
         t_writestring("256KiB; split into multiple files and chain via `sh`\n");
     }
-    /* Build an array of line pointers by NUL-terminating each \n. */
+    /* Split into logical lines.  Two passes:
+     *   1. break on \n  (physical lines)
+     *   2. break on `;`  (multi-statement lines)
+     *
+     * The second pass respects single-quote and double-quote runs so
+     * `echo "a; b"` stays one statement.  Trailing-`then`/`do` keywords
+     * after a `;` stay glued to the previous line so the `if`/`while`/
+     * `for` headers (`if [ X ]; then`) are still recognised by the
+     * keyword walker. */
     int nlines = 1;
-    for (uint32_t i = 0; i < sz; i++) if (data[i] == '\n') nlines++;
-    char **lines = (char **)kmalloc((size_t)nlines * sizeof(char *));
+    for (uint32_t i = 0; i < sz; i++) if (data[i] == '\n' || data[i] == ';') nlines++;
+    /* Each `;` may yield up to two fragments after gluing keywords, so
+     * over-allocate a little. */
+    char **lines = (char **)kmalloc((size_t)(nlines + 4) * sizeof(char *));
     if (!lines) { kfree(data); return -1; }
     int li = 0;
-    lines[li++] = data;
-    for (uint32_t i = 0; i < sz; i++) {
-        if (data[i] == '\n') {
-            data[i] = '\0';
-            if ((uint32_t)(i + 1) < sz)
-                lines[li++] = &data[i + 1];
+
+    /* Pass 1: physical lines. */
+    char *p = data;
+    char *line_start = data;
+    while (p < data + sz) {
+        if (*p == '\n') {
+            *p = '\0';
+            lines[li++] = line_start;
+            line_start = p + 1;
+        }
+        p++;
+    }
+    if (line_start < data + sz) lines[li++] = line_start;
+
+    /* Pre-strip comments before semicolon split so a trailing `# ...`
+     * doesn't smuggle a fake `;` into our parser. */
+    for (int i = 0; i < li; i++) sh_strip_comment(lines[i]);
+
+    /* Pass 2: split each physical line on top-level `;` into its own
+     * logical line, then run a fix-up pass so control-flow keywords
+     * end up where the walker expects them.
+     *
+     * Source forms we have to handle:
+     *
+     *   if [ X ]; then A; B; fi             # inline if (full)
+     *   if [ X ]; then A; elif [ Y ]; then B; else C; fi
+     *   while [ X ]; do A; B; done
+     *   for V in W; do A; B; done
+     *
+     * After a naive `;`-split we'd get fragments like ["if [ X ]",
+     * "then A", "elif [ Y ]", "then B", "else C", "fi"].  The walker
+     * wants:
+     *
+     *   if [ X ]; then     # condition line (then trimmed off)
+     *   A
+     *   elif [ Y ]; then
+     *   B
+     *   else
+     *   C
+     *   fi
+     *
+     * Fix-up rule: if a fragment starts with `then ` or `do `, peel the
+     * keyword off, glue it onto the previous line (with `; `), and emit
+     * the remainder as a new line.  `else FOO` and `elif ... ; then FOO`
+     * have FOO peeled off the same way. */
+    int  oli = 0;
+    char **olines = (char **)kmalloc((size_t)(nlines * 4 + 16) * sizeof(char *));
+    if (!olines) { kfree(lines); kfree(data); return -1; }
+    for (int i = 0; i < li; i++) {
+        char *s = lines[i];
+        int   sq = 0, dq = 0;
+        char *frag = s;
+        for (char *q = s; *q; q++) {
+            if (*q == '\'' && !dq) sq = !sq;
+            else if (*q == '"' && !sq) dq = !dq;
+            else if (*q == ';' && !sq && !dq) {
+                *q = '\0';
+                olines[oli++] = frag;
+                frag = q + 1;
+            }
+        }
+        olines[oli++] = frag;
+    }
+    /* Fix-up: emit keyword + body splits. */
+    char **flines = (char **)kmalloc((size_t)(oli * 4 + 16) * sizeof(char *));
+    if (!flines) { kfree(olines); kfree(lines); kfree(data); return -1; }
+    int fli = 0;
+    static char glue_buf[2048];
+    size_t glue_used = 0;
+    for (int i = 0; i < oli; i++) {
+        char *t = olines[i];
+        while (*t == ' ' || *t == '\t') t++;
+        /* If this fragment starts with `then ` or `do `, glue the
+         * keyword onto the previous emitted line and emit the body. */
+        if ((strncmp(t, "then", 4) == 0 && (t[4] == '\0' || t[4] == ' ')) ||
+            (strncmp(t, "do",   2) == 0 && (t[2] == '\0' || t[2] == ' '))) {
+            const char *kw = (t[0] == 't') ? "then" : "do";
+            size_t kwlen = (kw[0] == 't') ? 4 : 2;
+            /* glue: <prev>; then  -- in a static glue arena.  No
+             * lifetime issue: glue_buf lives till sh_run_file returns. */
+            if (fli > 0) {
+                char *prev = flines[fli - 1];
+                size_t pl = strlen(prev);
+                if (glue_used + pl + 3 + kwlen + 1 < sizeof(glue_buf)) {
+                    char *dst = glue_buf + glue_used;
+                    memcpy(dst, prev, pl);
+                    dst[pl] = ';'; dst[pl+1] = ' ';
+                    memcpy(dst + pl + 2, kw, kwlen);
+                    dst[pl + 2 + kwlen] = '\0';
+                    flines[fli - 1] = dst;
+                    glue_used += pl + 2 + kwlen + 1;
+                }
+            }
+            /* Emit body if any. */
+            char *body = t + kwlen;
+            while (*body == ' ' || *body == '\t') body++;
+            if (*body) flines[fli++] = body;
+            continue;
+        }
+        /* `else BODY` and `elif ...; then BODY` already split correctly
+         * for `else`; for `elif` the `then BODY` next fragment is what
+         * gets peeled by the path above.  Just emit. */
+        flines[fli++] = olines[i];
+    }
+    /* `else BODY` on one line: split into "else" + "BODY". */
+    int  efli = 0;
+    char **elines = (char **)kmalloc((size_t)(fli * 2 + 16) * sizeof(char *));
+    if (!elines) { kfree(flines); kfree(olines); kfree(lines); kfree(data); return -1; }
+    for (int i = 0; i < fli; i++) {
+        char *t = flines[i];
+        char *p = t;
+        while (*p == ' ' || *p == '\t') p++;
+        if (strncmp(p, "else ", 5) == 0) {
+            /* Emit `else`, then the body. */
+            if (glue_used + 5 < sizeof(glue_buf)) {
+                memcpy(glue_buf + glue_used, "else", 5);
+                elines[efli++] = glue_buf + glue_used;
+                glue_used += 5;
+            }
+            char *body = p + 5;
+            while (*body == ' ' || *body == '\t') body++;
+            if (*body) elines[efli++] = body;
+        } else {
+            elines[efli++] = t;
         }
     }
-    /* Pre-strip comments on every line so keyword recognition is clean. */
-    for (int i = 0; i < li; i++) sh_strip_comment(lines[i]);
+    kfree(flines);
+    kfree(olines);
+    kfree(lines);
+    lines = elines;
+    li = efli;
+    /* No further comment strip needed -- already done above. */
     int rc = run_block(lines, 0, li);
     kfree(lines);
     kfree(data);

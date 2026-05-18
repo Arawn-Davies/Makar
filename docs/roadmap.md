@@ -38,6 +38,7 @@ usually one PR per slice.
 |    15 | VFS `task->cwd` authoritative                          | ✅ shipped (#135)           | —                                                                                  |
 |    16 | VGA-text fallback per-TTY                              | ⏭ queued                    | [#146](https://github.com/Arawn-Davies/Makar/issues/146)                          |
 |    17 | makbox multicall + `SYS_GETCWD` + exec race fix        | ✅ shipped (#137)           | —                                                                                  |
+|    18 | Bash-flavoured shell scripting (vars, `$?`, if/elif/else, while, for, `sh script.sh`, `./script.sh`, makbox-restriction, `datetime`/`date`/`time` builtins) | ✅ shipped (#163)           | —                                                                                  |
 
 ## Active themes
 

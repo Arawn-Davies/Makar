@@ -658,29 +658,38 @@ int shell_dispatch_argv(int argc, char **argv)
         }
     }
 
-    /* makbox multicall fallback: PATH didn't have argv[0] as its own ELF,
-     * so try `makbox.elf <argv[0]> <rest...>`.  This is the busybox dispatch
-     * trick adapted for a FAT32 world without symlinks: ls/cat/cp/mv/rm/echo
-     * etc. all live as applets inside the single makbox binary. */
-    static char makbox_argv0[] = "makbox";
-    for (int p = 0; s_app_path[p]; p++) {
-        size_t dlen = strlen(s_app_path[p]);
-        if (dlen + sizeof(makbox_argv0) >= VFS_PATH_MAX)
-            continue;
-        strncpy(path_buf, s_app_path[p], VFS_PATH_MAX - 1);
-        strncpy(path_buf + dlen, makbox_argv0, VFS_PATH_MAX - 1 - dlen);
-        path_buf[dlen + sizeof(makbox_argv0) - 1] = '\0';
+    /* makbox multicall fallback: only for the applets makbox actually
+     * owns (busybox-style fs utilities).  Anything else falls through to
+     * the shell's "unknown command" path -- we don't want random typos
+     * routed into makbox just to have it print its usage banner. */
+    static const char *MAKBOX_APPLETS[] = {
+        "ls", "cat", "cp", "mv", "rm", "rmdir", "echo", "pwd", NULL
+    };
+    int is_makbox_applet = 0;
+    for (int a = 0; MAKBOX_APPLETS[a]; a++) {
+        if (strcmp(argv[0], MAKBOX_APPLETS[a]) == 0) { is_makbox_applet = 1; break; }
+    }
+    if (is_makbox_applet) {
+        static char makbox_argv0[] = "makbox";
+        for (int p = 0; s_app_path[p]; p++) {
+            size_t dlen = strlen(s_app_path[p]);
+            if (dlen + sizeof(makbox_argv0) >= VFS_PATH_MAX)
+                continue;
+            strncpy(path_buf, s_app_path[p], VFS_PATH_MAX - 1);
+            strncpy(path_buf + dlen, makbox_argv0, VFS_PATH_MAX - 1 - dlen);
+            path_buf[dlen + sizeof(makbox_argv0) - 1] = '\0';
 
-        /* Build new argv: [makbox, <original argv[0]>, <original args...>]. */
-        char *new_argv[SHELL_MAX_ARGS + 1];
-        int new_argc = 0;
-        new_argv[new_argc++] = makbox_argv0;
-        for (int i = 0; i < argc && new_argc < SHELL_MAX_ARGS + 1; i++)
-            new_argv[new_argc++] = argv[i];
+            /* Build new argv: [makbox, <original argv[0]>, <original args...>]. */
+            char *new_argv[SHELL_MAX_ARGS + 1];
+            int new_argc = 0;
+            new_argv[new_argc++] = makbox_argv0;
+            for (int i = 0; i < argc && new_argc < SHELL_MAX_ARGS + 1; i++)
+                new_argv[new_argc++] = argv[i];
 
-        if (try_exec_path(path_buf, new_argc, new_argv)) {
-            shell_restore_screen();
-            return 1;
+            if (try_exec_path(path_buf, new_argc, new_argv)) {
+                shell_restore_screen();
+                return 1;
+            }
         }
     }
 

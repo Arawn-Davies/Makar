@@ -14,6 +14,7 @@
 #include <kernel/debug.h>
 #include <kernel/ktest.h>
 #include <kernel/serial.h>
+#include <kernel/vfs.h>
 
 static void cmd_echo(int argc, char **argv)
 {
@@ -171,7 +172,31 @@ static void cmd_verbose(int argc, char **argv)
  * Module table
  * --------------------------------------------------------------------------- */
 
+/* date -- one-line wall clock readout, scriptable.
+ *
+ * Reads /proc/rtc (procfs already formats YYYY-MM-DD HH:MM:SS from CMOS).
+ * Unlike clock.elf which takes over the framebuffer, this is a single
+ * printf -- safe to call inside a shell script or a backtick context
+ * once we have command substitution. */
+static void cmd_date(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    char buf[64];
+    uint32_t got = 0;
+    if (vfs_read_file("/proc/rtc", buf, sizeof(buf) - 1, &got) != 0 || got == 0) {
+        t_writestring("date: /proc/rtc unavailable\n");
+        return;
+    }
+    buf[got] = '\0';
+    /* /proc/rtc emits "YYYY-MM-DD HH:MM:SS\n"; pass through verbatim. */
+    t_writestring(buf);
+    if (got > 0 && buf[got - 1] != '\n') t_putchar('\n');
+}
+
 const shell_cmd_entry_t system_cmds[] = {
+    { "datetime", cmd_date     },   /* canonical: one line "YYYY-MM-DD HH:MM:SS" */
+    { "date",     cmd_date     },   /* alias */
+    { "time",     cmd_date     },   /* alias */
     { "echo",     cmd_echo     },
     { "meminfo",  cmd_meminfo  },
     { "uptime",   cmd_uptime   },
