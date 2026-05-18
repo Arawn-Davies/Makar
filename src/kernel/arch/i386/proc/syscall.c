@@ -498,10 +498,17 @@ void syscall_dispatch(registers_t *regs)
      * Returns EAX = (cols << 16) | rows.
      * ------------------------------------------------------------------ */
     case SYS_TERM_SIZE: {
+        /* Report the *drawable* area, not the full framebuffer.  The
+         * bottom VESA_TTY_STATUS_ROWS row is reserved for the tmux-style
+         * VT bar -- fullscreen apps (maktop, clock, vix) that paint up
+         * to (rows-1) would otherwise stomp the bar.  Resolution-aware
+         * because both vesa_tty_get_rows() and the constant scale with
+         * the chosen mode. */
         uint32_t cols, rows;
         if (vesa_tty_is_ready()) {
             cols = vesa_tty_get_cols();
             rows = vesa_tty_get_rows();
+            if (rows > VESA_TTY_STATUS_ROWS) rows -= VESA_TTY_STATUS_ROWS;
         } else {
             cols = VGA_WIDTH;
             rows = (uint32_t)t_get_rows();

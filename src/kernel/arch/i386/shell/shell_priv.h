@@ -92,9 +92,12 @@ extern const shell_cmd_entry_t disk_cmds[];
 extern const shell_cmd_entry_t fs_cmds[];
 extern const shell_cmd_entry_t apps_cmds[];
 extern const shell_cmd_entry_t man_cmds[];
+extern const shell_cmd_entry_t script_cmds[];
 
 /* shell.c – REPL core */
 void shell_readline(char *buf, size_t max);
+int  shell_parse(char *line, char **argv, int max_args);
+int  shell_dispatch_argv(int argc, char **argv);
 
 /* shell_glob.c – wildcard (* and ?) expansion of argv tokens via VFS. */
 int  shell_expand_globs(int argc, char **argv, int argv_cap,

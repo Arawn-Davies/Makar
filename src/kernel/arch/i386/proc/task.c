@@ -192,6 +192,15 @@ task_t *task_create(const char *name, void (*entry)(void))
             if (t->exec_params) {
                 kfree(t->exec_params);
                 t->exec_params = NULL;
+    t->script_vars = NULL;
+            }
+
+            /* Reap the per-shell-task scripting variable table.  Same
+             * deferred-free pattern as fd_table: don't touch from
+             * task_exit (which may run in arbitrary scheduler context). */
+            if (t->script_vars) {
+                extern void sh_vars_free_for(void *task);
+                sh_vars_free_for(t);
             }
 
             /* Reuse the existing kernel stack. */
@@ -228,6 +237,7 @@ task_t *task_create(const char *name, void (*entry)(void))
     t->unkillable  = 0;     /* default: ordinary task, no protection   */
     t->fd_table    = new_fds;
     t->exec_params = NULL;
+    t->script_vars = NULL;
 
     /* Reset signal state.  Must run after the slot is on the task pool
      * (either freshly allocated above or reclaimed from a DEAD slot) so

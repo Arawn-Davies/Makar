@@ -33,7 +33,7 @@ DOCKER_BIN=${DOCKER_BIN:-docker}
 DOCKER_PLATFORM=${DOCKER_PLATFORM:-linux/amd64}
 BUILD_IMAGE=${BUILD_IMAGE:-arawn780/gcc-cross-i686-elf:fast}
 HDD_IMG=${HDD_IMG:-makar-hdd.img}
-HDD_SIZE_MB=${HDD_SIZE_MB:-512}
+HDD_SIZE_MB=${HDD_SIZE_MB:-96}
 
 # Parse flags.
 for _arg in "$@"; do
@@ -134,6 +134,17 @@ cp /work/sysroot/boot/makar.kernel "$MNT/boot/makar.kernel"
 if [ -d /work/isodir/apps ]; then
     mkdir -p "$MNT/apps"
     cp -r /work/isodir/apps/. "$MNT/apps/"
+fi
+
+# Mirror the ISO's docs + src trees onto the HDD so the same VIX-readable
+# documentation and source code are available from /hd as from /cdrom.
+if [ -d /work/isodir/docs ]; then
+    mkdir -p "$MNT/docs"
+    cp -r /work/isodir/docs/. "$MNT/docs/"
+fi
+if [ -d /work/isodir/src ]; then
+    mkdir -p "$MNT/src"
+    cp -r /work/isodir/src/. "$MNT/src/"
 fi
 
 cat > "$MNT/boot/grub/grub.cfg" << GCFG

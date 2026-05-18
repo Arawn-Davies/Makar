@@ -19,6 +19,7 @@
 #include <kernel/vesa_tty.h>
 #include <kernel/serial.h>
 #include <kernel/vfs.h>
+#include <kernel/sh_script.h>
 #include <kernel/timer.h>
 #include <kernel/task.h>
 #include <kernel/signal.h>
@@ -526,7 +527,7 @@ void shell_readline(char *buf, size_t max)
  *
  * Tokens are separated by spaces.  Returns the number of tokens found.
  * --------------------------------------------------------------------------- */
-static int shell_parse(char *line, char **argv, int max_args)
+int shell_parse(char *line, char **argv, int max_args)
 {
     int argc = 0;
     char *p = line;
@@ -568,6 +569,7 @@ static const shell_cmd_entry_t * const cmd_modules[] = {
     disk_cmds,
     fs_cmds,
     apps_cmds,
+    script_cmds,
     NULL,
 };
 
@@ -606,7 +608,7 @@ static void shell_restore_screen(void)
     vesa_tty_paint_status(vtty_active(), vtty_count());
 }
 
-static int shell_dispatch(int argc, char **argv)
+int shell_dispatch_argv(int argc, char **argv)
 {
     for (int m = 0; cmd_modules[m]; m++) {
         for (int i = 0; cmd_modules[m][i].name; i++) {
@@ -620,9 +622,16 @@ static int shell_dispatch(int argc, char **argv)
     }
 
     /* Path-style invocation: `/abs/path[.elf]` or `./relative[.elf]`.
-     * Resolved by the VFS so `./foo` is interpreted relative to the CWD. */
+     * Resolved by the VFS so `./foo` is interpreted relative to the CWD.
+     * Bash-style: if the path ends in `.sh` (or any non-ELF text file),
+     * run it through the shell-script interpreter instead of exec()ing. */
     const char *cmd = argv[0];
     if (cmd[0] == '/' || (cmd[0] == '.' && cmd[1] == '/')) {
+        size_t cl = strlen(cmd);
+        if (cl > 3 && cmd[cl-3] == '.' && cmd[cl-2] == 's' && cmd[cl-1] == 'h') {
+            sh_run_file(cmd);
+            return 1;
+        }
         if (try_exec_path(cmd, argc, argv)) {
             /* Any ELF could have painted to the FB; restore unconditionally. */
             shell_restore_screen();
@@ -649,29 +658,38 @@ static int shell_dispatch(int argc, char **argv)
         }
     }
 
-    /* makbox multicall fallback: PATH didn't have argv[0] as its own ELF,
-     * so try `makbox.elf <argv[0]> <rest...>`.  This is the busybox dispatch
-     * trick adapted for a FAT32 world without symlinks: ls/cat/cp/mv/rm/echo
-     * etc. all live as applets inside the single makbox binary. */
-    static char makbox_argv0[] = "makbox";
-    for (int p = 0; s_app_path[p]; p++) {
-        size_t dlen = strlen(s_app_path[p]);
-        if (dlen + sizeof(makbox_argv0) >= VFS_PATH_MAX)
-            continue;
-        strncpy(path_buf, s_app_path[p], VFS_PATH_MAX - 1);
-        strncpy(path_buf + dlen, makbox_argv0, VFS_PATH_MAX - 1 - dlen);
-        path_buf[dlen + sizeof(makbox_argv0) - 1] = '\0';
+    /* makbox multicall fallback: only for the applets makbox actually
+     * owns (busybox-style fs utilities).  Anything else falls through to
+     * the shell's "unknown command" path -- we don't want random typos
+     * routed into makbox just to have it print its usage banner. */
+    static const char *MAKBOX_APPLETS[] = {
+        "ls", "cat", "cp", "mv", "rm", "rmdir", "echo", "pwd", NULL
+    };
+    int is_makbox_applet = 0;
+    for (int a = 0; MAKBOX_APPLETS[a]; a++) {
+        if (strcmp(argv[0], MAKBOX_APPLETS[a]) == 0) { is_makbox_applet = 1; break; }
+    }
+    if (is_makbox_applet) {
+        static char makbox_argv0[] = "makbox";
+        for (int p = 0; s_app_path[p]; p++) {
+            size_t dlen = strlen(s_app_path[p]);
+            if (dlen + sizeof(makbox_argv0) >= VFS_PATH_MAX)
+                continue;
+            strncpy(path_buf, s_app_path[p], VFS_PATH_MAX - 1);
+            strncpy(path_buf + dlen, makbox_argv0, VFS_PATH_MAX - 1 - dlen);
+            path_buf[dlen + sizeof(makbox_argv0) - 1] = '\0';
 
-        /* Build new argv: [makbox, <original argv[0]>, <original args...>]. */
-        char *new_argv[SHELL_MAX_ARGS + 1];
-        int new_argc = 0;
-        new_argv[new_argc++] = makbox_argv0;
-        for (int i = 0; i < argc && new_argc < SHELL_MAX_ARGS + 1; i++)
-            new_argv[new_argc++] = argv[i];
+            /* Build new argv: [makbox, <original argv[0]>, <original args...>]. */
+            char *new_argv[SHELL_MAX_ARGS + 1];
+            int new_argc = 0;
+            new_argv[new_argc++] = makbox_argv0;
+            for (int i = 0; i < argc && new_argc < SHELL_MAX_ARGS + 1; i++)
+                new_argv[new_argc++] = argv[i];
 
-        if (try_exec_path(path_buf, new_argc, new_argv)) {
-            shell_restore_screen();
-            return 1;
+            if (try_exec_path(path_buf, new_argc, new_argv)) {
+                shell_restore_screen();
+                return 1;
+            }
         }
     }
 
@@ -854,6 +872,17 @@ void shell_run(void)
 
         history_push(buf);
 
+        /* Scripting: detect NAME=value first (no command dispatch).
+         * Then $VAR expansion before parse so all downstream paths
+         * (globs, dispatch, fallbacks) see expanded text uniformly. */
+        if (sh_try_assign(buf))
+            continue;
+        static char expanded_buf[SHELL_MAX_INPUT];
+        if (sh_expand(buf, expanded_buf, sizeof(expanded_buf)) == 0) {
+            strncpy(buf, expanded_buf, SHELL_MAX_INPUT - 1);
+            buf[SHELL_MAX_INPUT - 1] = '\0';
+        }
+
         int argc = shell_parse(buf, argv, SHELL_MAX_ARGS);
         if (argc == 0)
             continue;
@@ -865,7 +894,7 @@ void shell_run(void)
         argc = shell_expand_globs(argc, argv, SHELL_MAX_ARGS,
                                   glob_buf, sizeof(glob_buf));
 
-        if (!shell_dispatch(argc, argv)) {
+        if (!shell_dispatch_argv(argc, argv)) {
             t_setcolor(SHELL_ERROR_COLOR_VGA);
             t_writestring("Unknown command '");
             t_writestring(argv[0]);

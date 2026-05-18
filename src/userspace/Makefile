@@ -64,6 +64,7 @@ install: all
 	rm -f $(ISODIR)/apps/ls.elf $(ISODIR)/apps/cp.elf $(ISODIR)/apps/mv.elf \
 	      $(ISODIR)/apps/rm.elf $(ISODIR)/apps/echo.elf $(ISODIR)/apps/fsutil.elf
 	cp $(PROGS) $(ISODIR)/apps/
+	cp demo.sh $(ISODIR)/apps/
 
 install-headers:
 

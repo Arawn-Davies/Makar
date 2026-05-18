@@ -198,6 +198,28 @@ Stack: PS/2 IRQ → scancode (set-1 + 0xE0 prefix) → keycode (HID-style abstra
 - Ctrl+C: abort current input line (prints `^C`, returns empty line to REPL).
 - Tab completion: first token completes command names; subsequent tokens complete VFS paths via `vfs_complete()` → `fat32_complete()`.
 - `exec <path>`: loads and runs an ELF binary from the VFS. Ctrl+C during exec force-kills the child task.
+- **makbox fallback is restricted**: bare command names route through makbox **only** if they match an actual applet (`ls cat cp mv rm rmdir echo pwd`). Anything else hits the shell's "Unknown command" path — typos no longer trigger makbox's usage banner.
+- `datetime` / `date` / `time` builtins — one-line `YYYY-MM-DD HH:MM:SS` from `/proc/rtc`.  Scriptable; for fullscreen use see `clock.elf`.
+
+### Shell scripting (sh-flavoured)
+The kernel shell exposes a per-shell-task scripting layer (`kernel/sh_script.h`, `arch/i386/shell/sh_script.c`):
+
+| Surface | Behaviour |
+|---|---|
+| `NAME=value` | Per-task assignment.  RHS shell-expanded.  Stored in `task_t.script_vars` (isolated per VT — VT0's vars don't leak into VT1, matching the per-VT palette model). |
+| `$VAR` / `${VAR}` / `$?` | Expansion at REPL or inside scripts.  `$?` is the last command's exit status (set after every dispatched line and every `[ TEST ]`). |
+| `env` / `unset NAME ...` | Dump table / remove vars. |
+| `read VAR` | Reads one line of input from the keyboard into VAR. |
+| `[ TEST ]` | String tests (`-z`/`-n`/`=`/`!=`) and integer tests (`-eq`/`-ne`/`-lt`/`-le`/`-gt`/`-ge`).  Non-numeric operand to integer ops fails with `[: integer expected`. |
+| `sh script.sh` / `./script.sh` | Run a script file (path ending in `.sh` dispatches through the script interpreter; arbitrary paths still try to ELF-exec). |
+| `# comment` | End-of-line comments (outside quotes). |
+| `if / elif / else / fi` | Chained, both multi-line and single-line `if [ X ]; then CMD; fi` forms. |
+| `while ... do ... done` | Multi-statement `do` bodies via `;`-split preprocessor. |
+| `for VAR in WORDS; do ... done` | Word-list iteration with `$VAR` expansion in the list. |
+| `sleep N` | Busy-yield until N seconds elapse (PIT-driven). |
+| `true` / `false` | POSIX status helpers. |
+
+Limitations: no command substitution (`$(cmd)`), no pipes, no subshells (needs `fork()` — see slice 12).  See `src/userspace/demo.sh` for a worked example exercising every surface.
 
 ### VMM (per-task page directories)
 - `vmm_create_pd()` - allocates a page directory and mirrors kernel PDEs (indices 0–63)
@@ -214,7 +236,8 @@ Freestanding ELF binaries built with the cross-compiler. Link against `crt0.S` +
 |--------|-------------|
 | `hello.elf` | Hello-world smoke test |
 | `calc.elf` | bc-style expression calculator - `+`, `-`, `*`, `/`, `%`, parentheses, recursive-descent parser |
-| `makbox.elf` | Makar busybox: multicall binary for `ls`, `cat`, `cp`, `mv`, `rm`, `rmdir`, `echo`, `pwd`. The shell PATH-resolves bare names against `*.elf` first, then falls back to `makbox <name>` — no symlinks needed (FAT32 has none). Replaces the former standalone `ls.elf`/`echo.elf`/`rm.elf`/`mv.elf`/`cp.elf`. |
+| `makbox.elf` | Makar busybox: multicall binary for `ls`, `cat`, `cp`, `mv`, `rm`, `rmdir`, `echo`, `pwd`. Shell dispatch falls back to `makbox <name>` **only for those specific applet names** — random typos no longer get routed into makbox just to surface its usage banner; they hit the shell's "Unknown command" path instead. Replaces the former standalone `ls.elf`/`echo.elf`/`rm.elf`/`mv.elf`/`cp.elf`. |
+| `clock.elf` | Fullscreen wall-clock display (CMOS RTC via `/proc/rtc`).  For scripted / one-line use see the `datetime`/`date`/`time` shell builtins instead. |
 | `diskinfo.elf` | partition table + FAT32 BPB dump via `SYS_DISK_INFO` |
 | `vix.elf` | pane-aware vi-style text editor; uses `SYS_PUTCH_AT` / `SYS_SET_CURSOR` / `SYS_TERM_SIZE` |
 | `kbtester.elf` | keyboard diagnostic — logs every event (scancode/keycode/sentinel/modifier) to serial via `SYS_WRITE_SERIAL` |
