@@ -466,9 +466,31 @@ void vesa_tty_paint_string_at(uint32_t col, uint32_t row, const char *s,
 	}
 }
 
+/* Visibility gate for the bottom status bar.  Default 1 (visible).
+ * shell_run flips it to 0 during the loading screen so the boot
+ * progress isn't competing with the VT0/VT1/... markers, then back
+ * to 1 once ktest_bg_done flips and the prompt is about to appear.
+ * Long-term this whole renderer is destined to move out of the
+ * kernel into a userland statusbar.elf; see the comment in
+ * vesa_tty.h. */
+static int s_status_visible = 1;
+
+void vesa_tty_set_status_visible(int v)
+{
+	s_status_visible = v ? 1 : 0;
+	if (!tty_ready) return;
+	if (!v) {
+		uint32_t row = tty_rows - 1;
+		for (uint32_t c = 0; c < tty_cols; c++)
+			paint_cell(' ', compose_rgb(0x000000),
+			           compose_rgb(0x000000), c, row);
+	}
+}
+
 void vesa_tty_paint_status(int active, int count)
 {
 	if (!tty_ready) return;
+	if (!s_status_visible) return;
 	uint32_t row = tty_rows - 1;     /* bottom row reserved for status */
 	uint32_t bar_fg = 0xC0C0C0;      /* light grey on dark             */
 	uint32_t bar_bg = 0x202020;

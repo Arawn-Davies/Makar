@@ -718,6 +718,12 @@ void shell_run(void)
     if (slot == 0) {
         terminal_set_colorscheme(SHELL_COLOR_VGA);
 
+        /* Hide the tmux-style VT status bar for the duration of the
+         * loading screen: nothing's registered yet on most slots, and
+         * the half-populated bar looks broken next to the logo + bar
+         * progress.  Restored just before the REPL takes over. */
+        vesa_tty_set_status_visible(0);
+
         /* Loading screen: render a progress bar that fills as bg ktest
          * completes each suite.  The wait is OUTSIDE the VESA conditional so
          * the VGA fallback also blocks the REPL until ktest_bg_done = 1.
@@ -775,6 +781,14 @@ void shell_run(void)
         while (!ktest_bg_done)
             task_yield();
         while (keyboard_poll()) {}
+
+        /* Loading is over -- bring the VT status bar back and repaint
+         * it with the live slot count.  vtty_register() has already
+         * incremented the count for shell0..shell3 by this point, so
+         * the bar lights up with all four indicators on the first
+         * draw. */
+        vesa_tty_set_status_visible(1);
+        vesa_tty_paint_status(vtty_active(), vtty_count());
 
         t_writestring("Makar -- version " SHELL_VERSION
                       ", build: " BUILD_DATE " " BUILD_TIME "\n");
