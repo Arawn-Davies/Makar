@@ -39,6 +39,7 @@
 #include <kernel/vga.h>
 #include <kernel/vesa_tty.h>
 #include <kernel/ide.h>
+#include <kernel/timer.h>
 #include <string.h>
 #include <kernel/ktest.h>
 
