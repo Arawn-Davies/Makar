@@ -33,7 +33,7 @@ DOCKER_BIN=${DOCKER_BIN:-docker}
 DOCKER_PLATFORM=${DOCKER_PLATFORM:-linux/amd64}
 BUILD_IMAGE=${BUILD_IMAGE:-arawn780/gcc-cross-i686-elf:fast}
 HDD_IMG=${HDD_IMG:-makar-hdd.img}
-HDD_SIZE_MB=${HDD_SIZE_MB:-512}
+HDD_SIZE_MB=${HDD_SIZE_MB:-96}
 
 # Parse flags.
 for _arg in "$@"; do
