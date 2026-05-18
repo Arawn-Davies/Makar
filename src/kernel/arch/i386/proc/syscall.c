@@ -100,6 +100,17 @@ void syscall_dispatch(registers_t *regs)
     }
 
     /* ------------------------------------------------------------------
+     * SYS_FORK(2): clone the calling task.  STUBBED: returns -ENOSYS
+     * until the COW + trap-frame + fd-dup work in fork.c lands.
+     * See kernel/fork.h for the design notes.
+     * ------------------------------------------------------------------ */
+    case SYS_FORK: {
+        extern void sys_fork(registers_t *regs);
+        sys_fork(regs);
+        break;
+    }
+
+    /* ------------------------------------------------------------------
      * SYS_READ(3): read bytes from a file descriptor.
      * EBX = fd, ECX = buf, EDX = len
      * Returns: bytes read (EAX), 0 on EOF, (uint32_t)-1 on error.
