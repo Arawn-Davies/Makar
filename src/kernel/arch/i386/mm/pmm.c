@@ -10,6 +10,11 @@
 /* bit = 1 → frame used   bit = 0 → frame free */
 static uint32_t bitmap[PMM_BITMAP_WORDS];
 
+/* Total managed (= bootloader-available, minus null page + kernel image)
+ * frames.  Constant after pmm_init.  Used by /proc/meminfo to expose
+ * MemTotal so userspace tools (maktop) can show a memory bar. */
+static uint32_t s_total_managed_frames;
+
 static inline void pmm_set_frame(uint32_t frame)
 {
 	bitmap[frame / 32] |= (1U << (frame % 32));
@@ -95,7 +100,11 @@ void pmm_init(uint32_t magic, multiboot2_info_t *mbi)
 	for (uint32_t f = kstart; f < kend; f++)
 		pmm_set_frame(f);
 
+	/* Capture the pool size before any runtime allocations; this is
+	 * what /proc/meminfo's MemTotal reports.  pmm_free_count() walks
+	 * the bitmap so we cache the result rather than re-counting. */
 	uint32_t free_frames = pmm_free_count();
+	s_total_managed_frames = free_frames;
 	t_writestring("PMM: ");
 	t_dec(free_frames);
 	t_writestring(" frames free (");
@@ -128,6 +137,11 @@ uint32_t pmm_alloc_frame(void)
 void pmm_free_frame(uint32_t addr)
 {
 	pmm_clear_frame(addr / PMM_FRAME_SIZE);
+}
+
+uint32_t pmm_managed_count(void)
+{
+	return s_total_managed_frames;
 }
 
 uint32_t pmm_free_count(void)

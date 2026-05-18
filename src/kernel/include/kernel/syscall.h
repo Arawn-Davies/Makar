@@ -42,6 +42,13 @@
 #define SYS_UPTIME       214  /* uint32_t uptime_ticks(void) - 100 Hz timer ticks */
 #define SYS_GETCWD       215  /* int getcwd(char *buf, size_t size) - copy task cwd */
 
+/* Back to Linux i386 ABI numbers for the next set. */
+#define SYS_FCNTL      55   /* int fcntl(int fd, int cmd, int arg) - F_GETFL/F_SETFL */
+
+/* fcntl cmd values (Linux i386 ABI subset). */
+#define F_GETFL         3
+#define F_SETFL         4
+
 /*
  * tty_cell_t - one screen cell passed to SYS_PUTCH_AT.
  * clr is a standard VGA attribute byte: fg = bits[3:0], bg = bits[6:4].

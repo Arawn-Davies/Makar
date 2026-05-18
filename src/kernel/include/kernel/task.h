@@ -27,7 +27,9 @@ typedef struct task {
     uint8_t      *stack;     /* base of allocated stack (lowest address)          */
     uint32_t     *page_dir;  /* page directory (phys == virt, identity-mapped)    */
     task_state_t  state;
-    const char   *name;
+    const char   *name;      /* points at name_buf for exec'd tasks,    *
+                              * or a string literal for kernel tasks.   */
+    char          name_buf[16]; /* durable storage for exec/spawn names */
     struct task  *next;      /* intrusive circular linked list                    */
 
     /* --- identity --- */
@@ -60,6 +62,23 @@ typedef struct task {
      * task_create. Always allocated (even for idle, since ktest runs
      * there in test_mode boots). See kernel/fd.h. */
     fd_table_t   *fd_table;
+
+    /* --- protection ---
+     * If non-zero, sig_deliver refuses to transition this task to
+     * TASK_DEAD regardless of pending signal (including SIGKILL).
+     * Set on the idle task (kernel would deadlock without it) and on
+     * the four shell tasks (terminating one leaves its VT permanently
+     * dead, since the shell pool is created once at boot).  User-
+     * installed handlers still run normally; only the kernel-driven
+     * termination path is gated. */
+    int           unkillable;
+
+    /* Set the first time this task calls SYS_PUTCH_AT or SYS_TTY_CLEAR.
+     * Used by shell_exec_elf to decide whether to repaint after a
+     * fullscreen ELF exits -- ordinary line-mode programs (cat, hello,
+     * makbox fallback for typos) leave this 0, so the shell's "always
+     * clean up after exec" behaviour doesn't clobber their output. */
+    int           fb_touched;
 
     /* --- tick accounting ---
      * Cumulative PIT ticks (100 Hz) during which this task was the

@@ -121,6 +121,20 @@ void syscall_dispatch(registers_t *regs)
         if (!e) { regs->eax = (uint32_t)-1; break; }
 
         if (e->kind == FD_KIND_KEYBOARD) {
+            /* Non-blocking path (O_NONBLOCK on stdin): poll once and
+             * either deliver a single raw byte or return -EAGAIN.  No
+             * line buffering / echo / editing; callers asking for raw
+             * mode opt in deliberately.  Pairs with sys_fcntl(F_SETFL). */
+            if (e->flags & FD_FLAG_NONBLOCK) {
+                unsigned char c = keyboard_poll();
+                if (c == 0) {
+                    regs->eax = (uint32_t)-11;  /* -EAGAIN */
+                } else {
+                    buf[0] = (char)c;
+                    regs->eax = 1u;
+                }
+                break;
+            }
             /* Line-buffered stdin with echo, backspace, and cursor editing. */
             static char s_stdin_line[256];
             uint32_t cap = (len < sizeof(s_stdin_line)) ? len : (uint32_t)sizeof(s_stdin_line);
@@ -428,6 +442,12 @@ void syscall_dispatch(registers_t *regs)
         const tty_cell_t *cells = (const tty_cell_t *)(uintptr_t)regs->ebx;
         uint32_t n = regs->ecx;
         if (!cells || n == 0) { regs->eax = 0; break; }
+        /* Mark this task as "touched the framebuffer".  shell_exec_elf
+         * inspects this flag after the child dies and reissues
+         * shell_clear_screen if set, so fullscreen apps that exit via
+         * SIGKILL (no chance to clean up) don't leave their last frame
+         * underneath the next shell prompt. */
+        { task_t *cur = task_current(); if (cur) cur->fb_touched = 1; }
         /* SYS_PUTCH_AT cells carry their own colour attribute, so writing
          * each cell mutates the default pane's fg/bg.  Save the pane
          * colours up-front and restore at the end so apps that paint
@@ -470,6 +490,7 @@ void syscall_dispatch(registers_t *regs)
      * ------------------------------------------------------------------ */
     case SYS_TTY_CLEAR:
         t_fill((uint8_t)regs->ebx);
+        { task_t *cur = task_current(); if (cur) cur->fb_touched = 1; }
         break;
 
     /* ------------------------------------------------------------------
@@ -645,6 +666,32 @@ void syscall_dispatch(registers_t *regs)
             break;
         }
         regs->eax = (uint32_t)(uintptr_t)prev;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_FCNTL(55): minimal Linux-style fcntl.
+     *   F_GETFL (3) -> returns the fd's flags
+     *   F_SETFL (4) -> replaces them (only O_NONBLOCK is meaningful today)
+     * Returns the flags / 0 on success, negative errno on bad fd / cmd.
+     * ------------------------------------------------------------------ */
+    case SYS_FCNTL: {
+        int fd  = (int)regs->ebx;
+        int cmd = (int)regs->ecx;
+        long arg = (long)regs->edx;
+        task_t *t = task_current();
+        fd_entry_t *e = (t && t->fd_table) ? fd_get(t->fd_table, fd) : NULL;
+        if (!e) { regs->eax = (uint32_t)-9; break; }   /* -EBADF */
+        if (cmd == F_GETFL) {
+            regs->eax = e->flags;
+        } else if (cmd == F_SETFL) {
+            /* Only the documented bits are honoured; everything else
+             * silently dropped (Linux does similar masking). */
+            e->flags = (uint32_t)(arg & FD_FLAG_NONBLOCK);
+            regs->eax = 0u;
+        } else {
+            regs->eax = (uint32_t)-22;   /* -EINVAL */
+        }
         break;
     }
 

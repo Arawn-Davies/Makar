@@ -155,20 +155,38 @@ static void render_cpuinfo(pf_writer_t *w)
  * meminfo
  * ---------------------------------------------------------------------- */
 
+/* /proc/meminfo - Linux-style key/value format ("Label:<spaces>N kB").
+ * Field order and naming match Linux for the headline numbers so
+ * tools like maktop don't need Makar-specific parsing.  Fields after
+ * MemAvailable are Makar-specific kernel-heap diagnostics. */
 static void render_meminfo(pf_writer_t *w)
 {
-    uint32_t free_frames = pmm_free_count();
-    uint32_t free_kb     = free_frames * 4u;       /* 4 KiB per frame */
-    size_t   heap_total  = (size_t)(0x1800000u - 0x800000u); /* HEAP_MAX-HEAP_START */
-    size_t   heap_u      = heap_used();
-    size_t   heap_f      = heap_free();
+    uint32_t total_frames = pmm_managed_count();
+    uint32_t free_frames  = pmm_free_count();
+    uint32_t used_frames  = (total_frames > free_frames)
+                             ? (total_frames - free_frames) : 0u;
+    uint32_t total_kb = total_frames * 4u;
+    uint32_t free_kb  = free_frames  * 4u;
+    uint32_t used_kb  = used_frames  * 4u;
 
-    pf_puts(w, "MemFree     : "); pf_putu(w, free_kb);            pf_puts(w, " kB\n");
-    pf_puts(w, "PageSize    : 4 kB\n");
-    pf_puts(w, "FreeFrames  : "); pf_putu(w, free_frames);        pf_putc(w, '\n');
-    pf_puts(w, "HeapTotal   : "); pf_putu(w, (uint32_t)(heap_total / 1024u)); pf_puts(w, " kB\n");
-    pf_puts(w, "HeapUsed    : "); pf_putu(w, (uint32_t)(heap_u / 1024u));     pf_puts(w, " kB\n");
-    pf_puts(w, "HeapFree    : "); pf_putu(w, (uint32_t)(heap_f / 1024u));     pf_puts(w, " kB\n");
+    size_t heap_total = (size_t)(0x1800000u - 0x800000u); /* HEAP_MAX-HEAP_START */
+    size_t heap_u     = heap_used();
+    size_t heap_f     = heap_free();
+
+    pf_puts(w, "MemTotal:        "); pf_putu(w, total_kb); pf_puts(w, " kB\n");
+    pf_puts(w, "MemFree:         "); pf_putu(w, free_kb);  pf_puts(w, " kB\n");
+    /* MemAvailable -- Linux's "memory likely usable for new allocations".
+     * We don't have page cache to reclaim, so it's the same as MemFree. */
+    pf_puts(w, "MemAvailable:    "); pf_putu(w, free_kb);  pf_puts(w, " kB\n");
+    pf_puts(w, "MemUsed:         "); pf_putu(w, used_kb);  pf_puts(w, " kB\n");
+    pf_puts(w, "Buffers:                0 kB\n");
+    pf_puts(w, "Cached:                 0 kB\n");
+    pf_puts(w, "HeapTotal:       "); pf_putu(w, (uint32_t)(heap_total / 1024u)); pf_puts(w, " kB\n");
+    pf_puts(w, "HeapUsed:        "); pf_putu(w, (uint32_t)(heap_u     / 1024u)); pf_puts(w, " kB\n");
+    pf_puts(w, "HeapFree:        "); pf_putu(w, (uint32_t)(heap_f     / 1024u)); pf_puts(w, " kB\n");
+    pf_puts(w, "PageSize:               4 kB\n");
+    pf_puts(w, "FreeFrames:      "); pf_putu(w, free_frames);  pf_putc(w, '\n');
+    pf_puts(w, "TotalFrames:     "); pf_putu(w, total_frames); pf_putc(w, '\n');
 }
 
 /* -------------------------------------------------------------------------
@@ -192,6 +210,11 @@ static void render_tasks(pf_writer_t *w)
     for (int i = 0; i < n; i++) {
         task_t *t = task_get(i);
         if (!t) continue;
+        /* DEAD slots linger until task_create reclaims them.  Hide them
+         * so /proc/tasks shows only live work -- otherwise maktop and
+         * `cat /proc/tasks` keep listing finished one-shots like
+         * ktest_bg or exec'd userspace binaries indefinitely. */
+        if (t->state == TASK_DEAD) continue;
         pf_putu(w, (uint32_t)t->pid);
         pf_putc(w, ' ');
         const char *name = t->name ? t->name : "(noname)";

@@ -186,6 +186,21 @@ void shell_readline(char *buf, size_t max)
     buf[0]  = '\0';
     work[0] = '\0';
 
+    /* Sync sentinel for ui_runner.sh's `wait_for_serial`: emit a
+     * structured marker the moment the shell is ready to accept the
+     * next line of input.  Lets tests replace fixed `sleep N` with
+     * "wait until you see [shell:ready vt=X]", eliminating the
+     * timing-race flakes that plagued the typo-doesnt-clear scenario
+     * under TCG.  Cheap: one line per prompt; gated by g_serial_verbose
+     * so production boots without `verbose on` don't pay for it. */
+    if (g_serial_verbose) {
+        task_t *t = task_current();
+        int vt = t ? t->tty : -1;
+        Serial_WriteString("[shell:ready vt=");
+        Serial_WriteDec((uint32_t)(vt < 0 ? 0u : (uint32_t)vt));
+        Serial_WriteString("]\n");
+    }
+
     /* Capture where the prompt ended.  VGA uses t_column/t_row (wraps at
      * VGA_WIDTH and resets t_row=0 when VESA is active).  VESA tracks its
      * own cursor which must be read separately to avoid the t_row=0 desync. */
@@ -690,6 +705,13 @@ void shell_run(void)
      * the moment the user pressed Ctrl+C.  The 0x03 byte arrives via
      * the keyboard ring and shell_readline handles it cooperatively. */
     sig_set_handler(task_current(), SIGINT, SIG_IGN);
+
+    /* Mark unkillable so maktop / `kill` / SIGKILL from any other
+     * source can't terminate a shell: the shell pool is created once
+     * at boot and a dead shell leaves its VT permanently unusable.
+     * User handlers (sys_signal) still run; only the kernel-driven
+     * default-terminate / SIGKILL path is gated. */
+    task_current()->unkillable = 1;
 
     int slot = vtty_register();
 

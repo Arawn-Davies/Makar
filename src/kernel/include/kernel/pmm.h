@@ -24,4 +24,8 @@ void     pmm_free_frame(uint32_t addr);
 /* Return the number of frames currently in the free pool. */
 uint32_t pmm_free_count(void);
 
+/* Total managed frames (bootloader-available, minus null page + kernel
+ * image).  Constant after pmm_init; used by /proc/meminfo's MemTotal. */
+uint32_t pmm_managed_count(void);
+
 #endif
