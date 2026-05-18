@@ -794,9 +794,11 @@ void shell_run(void)
         vesa_tty_set_status_visible(1);
         vesa_tty_paint_status(vtty_active(), vtty_count());
 
-        /* Switch into this VT's per-VT palette and clear so the
-         * banner prints in the new colours.  shell_clear_screen reads
-         * the calling task's tty and applies the right scheme. */
+        /* Switch into this VT's per-VT palette and clear so the banner
+         * prints on the VT's bg colour (the loading screen left the FB
+         * filled with Medli white-on-blue; without re-clearing, that
+         * blue bleeds through any rows the banner doesn't cover).
+         * Linux VT semantics: clear-on-init uses the current VT's bg. */
         shell_clear_screen();
 
         t_writestring("Makar -- version " SHELL_VERSION
@@ -815,7 +817,13 @@ void shell_run(void)
             task_yield();
         while (!vtty_is_focused())
             task_yield();
-        /* Apply this VT's per-VT colour scheme on first focus. */
+        /* Apply this VT's per-VT colour scheme + clear on first focus.
+         * This branch runs ONCE per VT (when the VT first becomes
+         * focused after boot); subsequent Alt+Fn round-trips don't
+         * re-enter this code, so VT content survives focus switches.
+         * The clear here is what establishes the VT's bg colour --
+         * Linux VT semantics: empty cells show the VT's bg, not
+         * whatever pixels happened to be on the framebuffer before. */
         shell_clear_screen();
         /* Do NOT drain the input ring here.  The user may have typed a key
          * the same instant they hit Alt+Fn (single QEMU sendkey burst or a
