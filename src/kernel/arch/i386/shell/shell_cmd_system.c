@@ -110,6 +110,47 @@ static void cmd_ktest(int argc, char **argv)
     ktest_run_all();
 }
 
+/* `sched_quantum [n]` - read or set the preemption quantum (PIT ticks
+ * per slice).  No argument prints the current value; an argument 1..100
+ * sets it.  Slice 9 phase 3 -- pairs with the per-task kticks counter
+ * in /proc/tasks so an operator can see the effect of changing the
+ * quantum on individual tasks. */
+static int parse_uint_dec(const char *s, uint32_t *out)
+{
+    uint32_t v = 0;
+    if (!*s) return -1;
+    for (const char *p = s; *p; p++) {
+        if (*p < '0' || *p > '9') return -1;
+        v = v * 10u + (uint32_t)(*p - '0');
+        if (v > 1000000u) return -1;
+    }
+    *out = v;
+    return 0;
+}
+
+static void cmd_sched_quantum(int argc, char **argv)
+{
+    if (argc >= 2) {
+        uint32_t n;
+        if (parse_uint_dec(argv[1], &n) != 0 ||
+            n < SCHED_QUANTUM_MIN || n > SCHED_QUANTUM_MAX) {
+            t_writestring("Usage: sched_quantum [");
+            t_dec(SCHED_QUANTUM_MIN);
+            t_writestring("..");
+            t_dec(SCHED_QUANTUM_MAX);
+            t_writestring("]\n");
+            return;
+        }
+        g_sched_quantum = n;
+    }
+    t_writestring("sched_quantum: ");
+    t_dec(g_sched_quantum);
+    t_writestring(" ticks (");
+    /* 100 Hz, so slice_ms = quantum * 10. */
+    t_dec(g_sched_quantum * 10u);
+    t_writestring(" ms @ 100 Hz)\n");
+}
+
 /* `verbose [on|off]` - toggle the tty-to-serial mirror.  Linux-equivalent
  * to flipping `console=ttyS0` on the kernel cmdline at runtime.  Without
  * an argument, just reports the current state.  Used both interactively
@@ -140,5 +181,6 @@ const shell_cmd_entry_t system_cmds[] = {
     { "panic",    cmd_panic    },
     { "ktest",    cmd_ktest    },
     { "verbose",  cmd_verbose  },
+    { "sched_quantum", cmd_sched_quantum },
     { NULL, NULL }
 };

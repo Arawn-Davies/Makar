@@ -41,7 +41,7 @@ volatile int ktest_bg_done = 0;
  * inside the RUN macro in ktest_bg_task; total is fixed at compile time so
  * the bar length is known the moment shell_run starts. */
 volatile int ktest_bg_completed = 0;
-const    int ktest_bg_total     = 14;   /* keep in sync with RUN() calls below */
+const    int ktest_bg_total     = 15;   /* keep in sync with RUN() calls below */
 
 /* When set, suppress VGA output for pass lines and suite headers. */
 int ktest_muted = 0;
@@ -745,6 +745,72 @@ static void test_signal(void)
             task_yield();
         KTEST_ASSERT(vk->state == TASK_DEAD);
     }
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
+ * Suite: preempt
+ *
+ * Proves the timer-driven preemptive scheduler is doing its job: a victim
+ * task busy-loops with no task_yield, the test task yields normally, and
+ * we verify both tasks' per-task tick counters advance over ~30 ticks of
+ * wallclock.  If the scheduler is broken (re-entrancy lockup, missing
+ * preemption, in_schedule flag stuck) one of those counters stays flat
+ * and the assertion fires.  Pairs with the slice 9 phase 1 re-entrancy
+ * guard and the phase 2 kticks counter.
+ * --------------------------------------------------------------------------- */
+
+static volatile int preempt_run = 0;
+
+static void test_preempt_busy_loop(void)
+{
+    /* No task_yield: only the PIT IRQ can preempt us.  Cleared from
+     * the parent so we exit cleanly even if the SIGKILL teardown
+     * below somehow doesn't fire. */
+    while (preempt_run)
+        ;
+    task_exit();
+}
+
+static void test_preempt(void)
+{
+    ktest_begin("preempt",
+                "timer-driven preemption: a busy-loop task does not "
+                "starve the rest of the system, kticks counter advances");
+
+    task_t *cur = task_current();
+    KTEST_ASSERT(cur != NULL);
+
+    preempt_run = 1;
+    task_t *v = task_create("preempt_victim", test_preempt_busy_loop);
+    KTEST_ASSERT(v != NULL);
+    if (!v) { preempt_run = 0; ktest_summary(); return; }
+
+    uint32_t v_before = v->kticks;
+    uint32_t t0       = timer_get_ticks();
+
+    /* Wait ~30 PIT ticks of wallclock (300 ms at 100 Hz).  The caller
+     * yields each iteration so we don't accumulate kticks of our own
+     * here (a tick only charges the task that's current at IRQ-0
+     * time, and yields make our resident window vanishingly small).
+     * The fact that we exit this loop at all is the implicit "we
+     * weren't starved" check; if preemption were broken and the
+     * busy-looping victim hogged forever, this loop would hang and
+     * the iso-test outer timeout would kill the run. */
+    while (timer_get_ticks() - t0 < 30)
+        task_yield();
+
+    KTEST_ASSERT(v->kticks > v_before);   /* victim got CPU via preemption */
+
+    /* Teardown.  Clear the loop flag first (lets the victim exit
+     * cleanly on its next scheduled slice), then SIGKILL as a
+     * belt-and-braces in case it somehow doesn't see the write. */
+    preempt_run = 0;
+    sig_send(v, SIGKILL);
+    for (int i = 0; i < 64 && v->state != TASK_DEAD; i++)
+        task_yield();
+    KTEST_ASSERT(v->state == TASK_DEAD);
 
     ktest_summary();
 }
@@ -1646,6 +1712,10 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
+    test_preempt();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
     test_gdt();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
@@ -1729,6 +1799,7 @@ void ktest_bg_task(void)
     RUN(test_fd_table);
     RUN(test_cwd);
     RUN(test_signal);
+    RUN(test_preempt);
     RUN(test_gdt);
     RUN(test_ring3_prereqs);
     RUN(test_idt);

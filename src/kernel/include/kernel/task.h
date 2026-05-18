@@ -61,6 +61,14 @@ typedef struct task {
      * there in test_mode boots). See kernel/fd.h. */
     fd_table_t   *fd_table;
 
+    /* --- tick accounting ---
+     * Cumulative PIT ticks (100 Hz) during which this task was the
+     * current_task at IRQ 0 time.  Incremented by timer_callback before
+     * the preemptive yield.  Rolls every ~497 days at 100 Hz; that's
+     * fine for diagnostics, replace with uint64_t if real uptime SLAs
+     * ever appear.  Read via /proc/tasks. */
+    uint32_t      kticks;
+
     /* --- exec hand-off ---
      * Pointer to a heap-allocated exec_params_t set up by shell_exec_elf
      * just before task_create.  exec_task_entry reads from this field
