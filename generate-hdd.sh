@@ -136,6 +136,17 @@ if [ -d /work/isodir/apps ]; then
     cp -r /work/isodir/apps/. "$MNT/apps/"
 fi
 
+# Mirror the ISO's docs + src trees onto the HDD so the same VIX-readable
+# documentation and source code are available from /hd as from /cdrom.
+if [ -d /work/isodir/docs ]; then
+    mkdir -p "$MNT/docs"
+    cp -r /work/isodir/docs/. "$MNT/docs/"
+fi
+if [ -d /work/isodir/src ]; then
+    mkdir -p "$MNT/src"
+    cp -r /work/isodir/src/. "$MNT/src/"
+fi
+
 cat > "$MNT/boot/grub/grub.cfg" << GCFG
 set default=0
 set timeout=3
