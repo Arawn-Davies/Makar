@@ -18,6 +18,7 @@
 #define SYS_WRITE      4    /* ssize_t write(int fd, const void *buf, size_t)   */
 #define SYS_OPEN       5    /* int open(const char *path, int flags)            */
 #define SYS_CLOSE      6    /* int close(int fd)                                */
+#define SYS_EXECVE     11   /* int execve(const char *path, char *const argv[], char *const envp[]) */
 #define SYS_LSEEK      19   /* off_t lseek(int fd, off_t offset, int whence)   */
 #define SYS_KILL       37   /* int kill(int pid, int signo)                     */
 #define SYS_BRK        45   /* void *brk(void *addr)                            */

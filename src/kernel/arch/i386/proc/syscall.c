@@ -35,6 +35,7 @@
 #include <kernel/heap.h>
 #include <kernel/vmm.h>
 #include <kernel/pmm.h>
+#include <kernel/elf.h>
 #include <kernel/serial.h>
 #include <kernel/vga.h>
 #include <kernel/vesa_tty.h>
@@ -97,6 +98,65 @@ void syscall_dispatch(registers_t *regs)
         Serial_WriteDec((uint32_t)regs->ebx);
         Serial_WriteString(" -> task_exit()\n");
         task_exit();   /* does not return */
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_EXECVE(11): replace current task's address space with a new
+     * ELF.  EBX=path, ECX=argv (NULL-terminated), EDX=envp (ignored).
+     *
+     * On success, elf_exec swaps CR3, frees the old PD, and iret's to
+     * the new entry point -- this case never falls through.  Argv
+     * strings live in the caller's about-to-be-freed user PD, so we
+     * copy them into kernel scratch before invoking elf_exec.
+     *
+     * Static scratch buffers are safe because syscalls are serialised
+     * (cli at entry); we never have two execves in flight at once.
+     * ------------------------------------------------------------------ */
+    case SYS_EXECVE: {
+        const char  *upath = (const char *)(uintptr_t)regs->ebx;
+        char *const *uargv = (char *const *)(uintptr_t)regs->ecx;
+        /* envp deliberately ignored: Makar has no environment yet. */
+
+        if (!upath) { regs->eax = (uint32_t)-14; break; }   /* -EFAULT */
+
+        enum { EXECVE_MAX_ARGC = 16, EXECVE_ARG_MAX = 256 };
+        static char  s_path[256];
+        static char  s_argbuf[EXECVE_MAX_ARGC * EXECVE_ARG_MAX];
+        static char *s_argv[EXECVE_MAX_ARGC + 1];
+
+        /* Copy path. */
+        size_t pi = 0;
+        while (upath[pi] && pi < sizeof(s_path) - 1) { s_path[pi] = upath[pi]; pi++; }
+        s_path[pi] = '\0';
+
+        /* Copy argv strings.  argv[0] convention is the program name;
+         * shell-side exec already supplies it that way.  Stop on first
+         * NULL pointer (POSIX argv terminator). */
+        int kargc = 0;
+        if (uargv) {
+            for (; kargc < EXECVE_MAX_ARGC; kargc++) {
+                const char *us = uargv[kargc];
+                if (!us) break;
+                char *dst = s_argbuf + kargc * EXECVE_ARG_MAX;
+                size_t i = 0;
+                while (us[i] && i < EXECVE_ARG_MAX - 1) { dst[i] = us[i]; i++; }
+                dst[i] = '\0';
+                s_argv[kargc] = dst;
+            }
+        }
+        s_argv[kargc] = NULL;
+
+        /* POSIX: execve resets all caught signal handlers to SIG_DFL.
+         * SIG_IGN is also reset (Makar's sig_task_init clears everything,
+         * matching the simple-is-better choice). */
+        sig_task_init(task_current());
+
+        /* elf_exec swaps the PD and iret's to the new entry on success
+         * (never returns).  Any return value here means it failed; pass
+         * the negative errno back to the caller via EAX. */
+        int rc = elf_exec(s_path, kargc, (const char *const *)s_argv);
+        regs->eax = (uint32_t)(int32_t)rc;
         break;
     }
 

@@ -5,6 +5,7 @@
 #define SYS_EXIT       1
 #define SYS_FORK       2
 #define SYS_READ       3
+#define SYS_EXECVE     11
 #define SYS_WRITE      4
 #define SYS_OPEN       5
 #define SYS_CLOSE      6
@@ -176,6 +177,20 @@ static inline int sys_fork(void)
     __asm__ volatile ("int $0x80"
         : "=a"(ret) : "0"((long)SYS_FORK) : "memory");
     return (int)ret;
+}
+
+/* execve(2): replace the calling task's address space with the ELF at
+ * `path`.  argv is a NULL-terminated array of pointers to argument
+ * strings (POSIX convention; argv[0] is the program name).  envp is
+ * currently ignored by the kernel -- pass NULL.
+ *
+ * On success this call does NOT return: control resumes at the new
+ * ELF's entry point with argc/argv/envp on the user stack.  On failure
+ * (file not found, malformed ELF, OOM) returns negative errno and the
+ * original address space is still active. */
+static inline int sys_execve(const char *path, char *const argv[], char *const envp[])
+{
+    return (int)syscall3(SYS_EXECVE, (long)path, (long)argv, (long)envp);
 }
 
 static inline long sys_read(int fd, void *buf, unsigned int len)

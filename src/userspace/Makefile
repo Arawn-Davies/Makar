@@ -14,7 +14,7 @@ LDFLAGS=-T link.ld -nostdlib
 DESTDIR?=
 ISODIR?=$(CURDIR)/../../isodir
 
-PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf kbtester.elf makbox.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf
+PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf kbtester.elf makbox.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf
 
 
 all: $(PROGS)
@@ -56,6 +56,9 @@ lines.elf: crt0.o lines.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 forktest.elf: crt0.o forktest.o
+	$(LD) $(LDFLAGS) -o $@ $^
+
+execvetest.elf: crt0.o execvetest.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 
