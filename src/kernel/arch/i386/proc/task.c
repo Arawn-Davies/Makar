@@ -270,6 +270,144 @@ task_t *task_create(const char *name, void (*entry)(void))
     return t;
 }
 
+/* -------------------------------------------------------------------------
+ * task_fork – implementation of SYS_FORK (slice 12d).
+ *
+ * Steps:
+ *   1. Reserve a task pool slot (reclaim DEAD if possible, else extend).
+ *   2. Allocate kernel stack + default fd table up front so OOM unwinds
+ *      can't leave a half-populated slot in the run list.
+ *   3. Clone the parent's address space via vmm_clone_pd_cow.
+ *   4. Replace the default fd table with a clone of the parent's.
+ *   5. Inherit cwd, tty, user_brk; reset signal handler table.
+ *   6. Lay down the child's kernel stack so its first task_switch ret
+ *      enters fork_child_iret with a copy of parent_regs (EAX = 0) as
+ *      the iret frame.
+ *   7. Link into the circular run list right after current_task.
+ * ------------------------------------------------------------------------- */
+extern void fork_child_iret(void);   /* in task_asm.S */
+
+task_t *task_fork(registers_t *parent_regs)
+{
+    /* Up-front allocations.  Done before touching the pool so any OOM
+     * here is a clean -EAGAIN-style failure, with no slot to roll back. */
+    fd_table_t *child_fds = fd_table_clone(current_task->fd_table);
+    if (!child_fds)
+        return NULL;
+
+    uint32_t *child_pd = vmm_clone_pd_cow(current_task->page_dir);
+    if (!child_pd) {
+        fd_table_destroy(child_fds);
+        return NULL;
+    }
+
+    /* Reserve a slot (same logic as task_create, modulo the explicit
+     * stack/PD init below). */
+    task_t *t = NULL;
+    for (int i = 1; i < task_pool_count; i++) {
+        if (task_pool[i].state == TASK_DEAD) {
+            t = &task_pool[i];
+
+            task_t *prev = current_task;
+            while (prev->next != t)
+                prev = prev->next;
+            prev->next = t->next;
+
+            if (t->page_dir && t->page_dir != paging_kernel_pd())
+                vmm_free_pd(t->page_dir);
+            if (t->fd_table) {
+                fd_table_destroy(t->fd_table);
+                t->fd_table = NULL;
+            }
+            if (t->exec_params) {
+                kfree(t->exec_params);
+                t->exec_params = NULL;
+            }
+            if (t->script_vars) {
+                extern void sh_vars_free_for(void *task);
+                sh_vars_free_for(t);
+                t->script_vars = NULL;
+            }
+            memset(t->stack, 0, TASK_STACK_SIZE);
+            break;
+        }
+    }
+    if (!t) {
+        if (task_pool_count >= MAX_TASKS) {
+            vmm_free_pd(child_pd);
+            fd_table_destroy(child_fds);
+            return NULL;
+        }
+        uint8_t *stack = (uint8_t *)kmalloc(TASK_STACK_SIZE);
+        if (!stack) {
+            vmm_free_pd(child_pd);
+            fd_table_destroy(child_fds);
+            return NULL;
+        }
+        t = &task_pool[task_pool_count++];
+        memset(t, 0, sizeof(*t));
+        t->stack = stack;
+    }
+
+    t->page_dir    = child_pd;
+    t->state       = TASK_READY;
+    t->name        = current_task->name;     /* same image */
+    t->user_brk    = current_task->user_brk;
+    t->pid         = next_pid++;
+    t->kticks      = 0;
+    t->unkillable  = 0;
+    t->fb_touched  = current_task->fb_touched;
+    t->fd_table    = child_fds;
+    t->exec_params = NULL;
+    t->script_vars = NULL;  /* child gets fresh scripting state; non-POSIX
+                             * but the only consumer is in-kernel shell */
+
+    sig_task_init(t);
+
+    /* Inherit cwd + tty from parent. */
+    {
+        size_t n = strlen(current_task->cwd);
+        if (n >= VFS_PATH_MAX) n = VFS_PATH_MAX - 1;
+        memcpy(t->cwd, current_task->cwd, n);
+        t->cwd[n] = '\0';
+        t->tty    = current_task->tty;
+    }
+
+    /* Lay down the child's kernel stack:
+     *
+     *   [high]
+     *   registers_t       <- copy of parent's, EAX patched to 0
+     *   fork_child_iret   <- task_switch ret target
+     *   eflags = 0x002    <- popf (IF=0 in kernel mode; user EFLAGS
+     *                       restored from the iret frame)
+     *   ebp = 0
+     *   ebx = 0
+     *   esi = 0
+     *   edi = 0           <- t->esp (top of saved task_switch frame)
+     *   [low]
+     */
+    uint8_t *kstack_top = t->stack + TASK_STACK_SIZE;
+    registers_t *child_regs = (registers_t *)(kstack_top - sizeof(registers_t));
+    memcpy(child_regs, parent_regs, sizeof(registers_t));
+    child_regs->eax     = 0;             /* fork() returns 0 in the child */
+    child_regs->eflags |= 0x200u;        /* ensure IF=1 in user mode */
+
+    uint32_t *sp = (uint32_t *)child_regs;
+    *--sp = (uint32_t)(uintptr_t)fork_child_iret;
+    *--sp = 0x00000002u;                 /* EFLAGS for popf: reserved bit only */
+    *--sp = 0;                           /* ebp */
+    *--sp = 0;                           /* ebx */
+    *--sp = 0;                           /* esi */
+    *--sp = 0;                           /* edi */
+    t->esp = (uint32_t)(uintptr_t)sp;
+
+    /* Link into the run list right after the parent. */
+    t->next            = current_task->next;
+    current_task->next = t;
+
+    return t;
+}
+
 task_t *task_by_pid(int pid)
 {
     for (int i = 0; i < task_pool_count; i++) {

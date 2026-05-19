@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <kernel/vfs.h>      /* VFS_PATH_MAX */
 #include <kernel/fd.h>       /* fd_table_t, TASK_MAX_FDS */
+#include <kernel/isr.h>      /* registers_t for task_fork */
 
 /* Size of the private kernel stack allocated for each task. */
 #define TASK_STACK_SIZE  8192
@@ -151,6 +152,23 @@ int task_count(void);
 
 /* Look up a task by PID. Returns NULL if no live task has that PID. */
 task_t *task_by_pid(int pid);
+
+/*
+ * task_fork – COW-clone the calling task.
+ *
+ * Implements the kernel side of SYS_FORK.  The parent's user address
+ * space is duplicated via vmm_clone_pd_cow; the fd table is deep-copied
+ * via fd_table_clone; cwd / tty / signal handlers / user_brk are inherited.
+ *
+ * `parent_regs` is the registers_t frame the int 0x80 dispatcher received
+ * from the parent; the child's kernel stack is initialised so that its
+ * first task_switch lands in fork_child_iret with a copy of this frame
+ * (EAX patched to 0) ready to iret back to ring 3.
+ *
+ * Returns the child task (parent should put child->pid into regs->eax),
+ * or NULL on PMM/heap exhaustion or full task pool.
+ */
+task_t *task_fork(registers_t *parent_regs);
 
 /*
  * task_switch – low-level context switch (implemented in task_asm.S).

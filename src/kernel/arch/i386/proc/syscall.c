@@ -101,6 +101,26 @@ void syscall_dispatch(registers_t *regs)
     }
 
     /* ------------------------------------------------------------------
+     * SYS_FORK(2): COW-clone the calling task.
+     * Returns child pid in parent, 0 in child, -EAGAIN on failure.
+     * Child returns through fork_child_iret, never through this dispatch.
+     * ------------------------------------------------------------------ */
+    case SYS_FORK: {
+        task_t *child = task_fork(regs);
+        if (!child) {
+            regs->eax = (uint32_t)-11;   /* -EAGAIN */
+        } else {
+            Serial_WriteString("[sys_fork] parent pid=");
+            Serial_WriteDec((uint32_t)task_current()->pid);
+            Serial_WriteString(" -> child pid=");
+            Serial_WriteDec((uint32_t)child->pid);
+            Serial_WriteString("\n");
+            regs->eax = (uint32_t)child->pid;
+        }
+        break;
+    }
+
+    /* ------------------------------------------------------------------
      * SYS_READ(3): read bytes from a file descriptor.
      * EBX = fd, ECX = buf, EDX = len
      * Returns: bytes read (EAX), 0 on EOF, (uint32_t)-1 on error.

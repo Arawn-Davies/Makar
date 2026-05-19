@@ -13,6 +13,7 @@
  *   Return value written back to EAX (negative errno on error).
  */
 #define SYS_EXIT       1    /* void exit(int status)                            */
+#define SYS_FORK       2    /* pid_t fork(void) -- COW clone of caller          */
 #define SYS_READ       3    /* ssize_t read(int fd, void *buf, size_t len)      */
 #define SYS_WRITE      4    /* ssize_t write(int fd, const void *buf, size_t)   */
 #define SYS_OPEN       5    /* int open(const char *path, int flags)            */

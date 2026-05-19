@@ -3,6 +3,7 @@
 
 /* Syscall numbers - Linux i386 ABI subset + Makar extensions. */
 #define SYS_EXIT       1
+#define SYS_FORK       2
 #define SYS_READ       3
 #define SYS_WRITE      4
 #define SYS_OPEN       5
@@ -164,6 +165,17 @@ static inline void sys_exit(int status)
 {
     syscall1(SYS_EXIT, (long)status);
     __builtin_unreachable();
+}
+
+/* fork(2): clone the calling process via COW.  Returns child pid in the
+ * parent, 0 in the child, or a negative errno on failure (typically
+ * -EAGAIN if the task pool is full or PMM is exhausted). */
+static inline int sys_fork(void)
+{
+    long ret;
+    __asm__ volatile ("int $0x80"
+        : "=a"(ret) : "0"((long)SYS_FORK) : "memory");
+    return (int)ret;
 }
 
 static inline long sys_read(int fd, void *buf, unsigned int len)
