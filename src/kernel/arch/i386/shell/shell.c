@@ -713,6 +713,17 @@ int shell_dispatch_argv(int argc, char **argv)
  * --------------------------------------------------------------------------- */
 static void shell_print_prompt(void)
 {
+    /* Reassert the per-VT colour scheme on every prompt.  The terminal
+     * colour is global VGA state -- any error path, builtin, or
+     * cross-VT switch that mutated it would otherwise bleed into the
+     * next user-visible line.  Touching it here once per REPL turn
+     * means the VT layer owns its palette and no individual command
+     * has to clean up after itself. */
+    int tty = 0;
+    task_t *t = task_current();
+    if (t && t->tty >= 0 && t->tty < 4) tty = t->tty;
+    shell_apply_scheme_for_tty(tty);
+
     t_writestring(SHELL_USERNAME "@" SHELL_HOSTNAME " ");
     t_writestring(vfs_getcwd());
     t_writestring("~> ");
@@ -871,7 +882,12 @@ void shell_run(void)
             if (!prev || !*prev) {
                 t_setcolor(SHELL_ERROR_COLOR_VGA);
                 t_writestring("!!: no previous command\n\n");
-                t_setcolor(SHELL_COLOR_VGA);
+                /* Reapply per-VT scheme rather than the medli default --
+                 * SHELL_COLOR_VGA is white-on-blue and would clobber
+                 * the focused VT's palette. */
+                { int tty = 0; task_t *tc = task_current();
+                  if (tc && tc->tty >= 0 && tc->tty < 4) tty = tc->tty;
+                  shell_apply_scheme_for_tty(tty); }
                 continue;
             }
             strncpy(buf, prev, SHELL_MAX_INPUT - 1);
@@ -909,7 +925,8 @@ void shell_run(void)
             t_writestring("Unknown command '");
             t_writestring(argv[0]);
             t_writestring("' - try 'lsman'.\n\n");
-            t_setcolor(SHELL_COLOR_VGA);
+            /* shell_print_prompt reapplies the per-VT scheme; no need
+             * to fall back to SHELL_COLOR_VGA here. */
         }
     }
 }
