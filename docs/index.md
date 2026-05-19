@@ -22,6 +22,7 @@ how language choice shapes the implementation.
 ## Quick links
 
 - **[Building & running](building.md)** — toolchain, Docker, QEMU
+- **[Internals](internals.md)** — CPU state at boot, paging, TLBs, per-task PDs, scheduler, syscall ABI, and the road to fork/POSIX/libc
 - **[Testing](testing.md)** — ktest, GDB checkpoint suite, UI sendkey tests
 - **[Userland libc](userland-libc.md)** — porting roadmap toward musl/dash
 - **[Makar × Medli](makar-medli.md)** — sibling-project co-operation roadmap and VIX→VICS history
