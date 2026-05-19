@@ -402,6 +402,51 @@ static void test_vmm(void)
     vmm_free_pd(pd);                           /* frees phys + PT + PD = 3 */
     KTEST_ASSERT(pmm_free_count() == fc_before + 3);
 
+    /* --- COW clone (slice 12b) ---
+     * Build a parent PD with one writable user page, clone it, and verify:
+     *   - both parent and child PTEs are now RO + COW-tagged
+     *   - the shared frame's refcount is 2
+     *   - freeing the child drops refcount to 1 (frame still owned by parent)
+     *   - freeing the parent drops refcount to 0 (frame actually released) */
+    uint32_t *parent = vmm_create_pd();
+    KTEST_ASSERT(parent != NULL);
+
+    uint32_t cow_phys = pmm_alloc_frame();
+    KTEST_ASSERT(cow_phys != PMM_ALLOC_ERROR);
+    KTEST_ASSERT(pmm_ref_count(cow_phys) == 1);
+
+    uint32_t cow_virt = 0x40002000u;
+    uint32_t cow_pdi  = cow_virt >> 22;
+    uint32_t cow_pti  = (cow_virt >> 12) & 0x3FFu;
+    vmm_map_page(parent, cow_virt, cow_phys, VMM_FLAG_USER | VMM_FLAG_WRITABLE);
+
+    uint32_t *child = vmm_clone_pd_cow(parent);
+    KTEST_ASSERT(child != NULL);
+    KTEST_ASSERT(child != parent);
+
+    uint32_t *p_pt = (uint32_t *)(parent[cow_pdi] & ~0xFFFu);
+    uint32_t *c_pt = (uint32_t *)(child[cow_pdi]  & ~0xFFFu);
+    KTEST_ASSERT(p_pt != c_pt);  /* child got a fresh PT frame */
+
+    /* Both PTEs lost WRITABLE and gained the COW bit. */
+    KTEST_ASSERT((p_pt[cow_pti] & 0x2u) == 0);
+    KTEST_ASSERT((p_pt[cow_pti] & VMM_PTE_COW) != 0);
+    KTEST_ASSERT((c_pt[cow_pti] & 0x2u) == 0);
+    KTEST_ASSERT((c_pt[cow_pti] & VMM_PTE_COW) != 0);
+
+    /* Both point at the same physical frame, now refcount=2. */
+    KTEST_ASSERT((p_pt[cow_pti] & ~0xFFFu) == cow_phys);
+    KTEST_ASSERT((c_pt[cow_pti] & ~0xFFFu) == cow_phys);
+    KTEST_ASSERT(pmm_ref_count(cow_phys) == 2);
+
+    /* Free child first: refcount drops to 1, frame still owned by parent. */
+    vmm_free_pd(child);
+    KTEST_ASSERT(pmm_ref_count(cow_phys) == 1);
+
+    /* Free parent: refcount drops to 0, frame released to the pool. */
+    vmm_free_pd(parent);
+    KTEST_ASSERT(pmm_ref_count(cow_phys) == 0);
+
     ktest_summary();
 }
 
