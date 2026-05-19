@@ -30,6 +30,8 @@
 #define SYS_SHELL_CLEAR  213
 #define SYS_UPTIME       214
 #define SYS_GETCWD       215
+#define SYS_FB_INFO      216
+#define SYS_DRAW_LINE    217
 #define SYS_FCNTL        55
 
 /* fcntl cmds */
@@ -214,6 +216,25 @@ static inline unsigned int sys_uptime(void)
 static inline int sys_getcwd(char *buf, unsigned int size)
 {
     return (int)syscall2(SYS_GETCWD, (long)buf, (long)size);
+}
+
+/* Query pixel-mode framebuffer geometry.  Returns (width << 16) | height
+ * when VESA is up, 0 when VGA-only (graphical apps fall back to cell mode). */
+static inline unsigned int sys_fb_info(void)
+{
+    return (unsigned int)syscall1(SYS_FB_INFO, 0);
+}
+
+static inline unsigned int sys_fb_width(void)  { return (sys_fb_info() >> 16) & 0xFFFFu; }
+static inline unsigned int sys_fb_height(void) { return  sys_fb_info()        & 0xFFFFu; }
+
+/* Bresenham line in framebuffer pixels.  Clipped to the drawable area
+ * (status row excluded).  Returns 0 on success, -1 when no FB. */
+static inline int sys_draw_line(int x0, int y0, int x1, int y1, unsigned int rgb)
+{
+    unsigned int xy0 = ((unsigned int)(x0 & 0xFFFF) << 16) | (unsigned int)(y0 & 0xFFFF);
+    unsigned int xy1 = ((unsigned int)(x1 & 0xFFFF) << 16) | (unsigned int)(y1 & 0xFFFF);
+    return (int)syscall3(SYS_DRAW_LINE, (long)xy0, (long)xy1, (long)rgb);
 }
 
 static inline int sys_open(const char *path, int flags)
