@@ -214,8 +214,14 @@ void syscall_dispatch(registers_t *regs)
                 for (uint32_t i = 0; i < len; i++)
                     t_putchar(buf[i]);
             }
-            for (uint32_t i = 0; i < len; i++)
-                Serial_WriteChar(buf[i]);
+            /* t_putchar already mirrors to COM1 when verbose mode is on
+             * (default).  Only echo here when verbose is off so stderr
+             * always reaches the serial log -- otherwise we'd write the
+             * same bytes twice and the log shows every chunk doubled. */
+            if (!g_serial_verbose) {
+                for (uint32_t i = 0; i < len; i++)
+                    Serial_WriteChar(buf[i]);
+            }
             regs->eax = len;
         } else if (e->kind == FD_KIND_SERIAL) {
             for (uint32_t i = 0; i < len; i++)
