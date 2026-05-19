@@ -82,14 +82,21 @@ void paging_init(void)
     /* Load CR3 with the physical address of the page directory. */
     asm volatile("mov %0, %%cr3" :: "r"(page_directory) : "memory");
 
-    /* Enable paging: set CR0.PG (bit 31). */
+    /* Enable paging and write-protect:
+     *   bit 31 (PG): turn paging on.
+     *   bit 16 (WP): respect user-page R/W bits even from ring 0.
+     *
+     * WP is required for fork+COW (slice 12c) -- without it, kernel
+     * writes to a COW-tagged user page silently succeed instead of
+     * faulting into the COW handler.  Linux/ELKS both enable WP for
+     * the same reason. */
     uint32_t cr0;
     asm volatile("mov %%cr0, %0" : "=r"(cr0));
-    cr0 |= 0x80000000u;
+    cr0 |= 0x80010000u;
     asm volatile("mov %0, %%cr0" :: "r"(cr0) : "memory");
 
-    t_writestring("Paging: enabled (identity-mapped 0-256 MiB, 4 MiB large pages)\n");
-    KLOG("paging_init: 256 MiB identity map via PSE large pages\n");
+    t_writestring("Paging: enabled (identity-mapped 0-256 MiB, 4 MiB large pages, WP on)\n");
+    KLOG("paging_init: 256 MiB identity map via PSE large pages, CR0.WP=1\n");
 }
 
 void paging_map_region(uint32_t phys_start, uint32_t size)

@@ -345,8 +345,8 @@ Tracked here, pulled into branches one at a time so each PR stays focused.
 | 11 | **`ps`-style task listing** with privilege/state/CWD/TTY columns | ⏭ (covered by `cat /proc/tasks` for now) |
 | 12 | **fork() readiness** - PD clone (CoW), fd dup, PID alloc, return-value split | 🚧 in progress |
 | 12a | **PMM frame refcounts** - per-frame `uint8_t refcount` table; `pmm_alloc_frame` sets refcount=1, `pmm_free_frame` decrements and only releases at 0, new `pmm_inc_ref` / `pmm_ref_count`.  Preserves all single-owner callers' behaviour; unlocks shared frames for COW clone. | ✅ |
-| 12b | **`vmm_clone_pd_cow()`** - walk parent PD, mark user PTEs RO + software COW bit (`VMM_PTE_COW`, PTE bit 9), `pmm_inc_ref` each frame, mirror into child PD.  Reloads CR3 if parent is active so the freshly-RO PTEs take effect. | 🚧 |
-| 12c | **COW `#PF` handler** - on write-fault to COW-tagged user PTE: if refcount==1 just clear COW + set RW; else alloc fresh frame, memcpy, dec old refcount, install RW.  Fall through to existing panic for real faults. | ⏭ |
+| 12b | **`vmm_clone_pd_cow()`** - walk parent PD, mark user PTEs RO + software COW bit (`VMM_PTE_COW`, PTE bit 9), `pmm_inc_ref` each frame, mirror into child PD.  Reloads CR3 if parent is active so the freshly-RO PTEs take effect. | ✅ |
+| 12c | **COW `#PF` handler + CR0.WP** - on write-fault to COW-tagged user PTE: if refcount==1 just clear COW + set RW; else alloc fresh frame, memcpy, dec old refcount, install RW.  Fall through to existing panic for real faults.  Enables `CR0.WP` at paging_init so kernel writes also fault on RO user pages (required for SYS_READ-into-shared-buffer scenarios). | 🚧 |
 | 12d | **`SYS_FORK` (EAX=2)** - clone task slot (kstack memcpy + saved-EAX patch on child = 0, fd_table dup, cwd, script_vars), clone PD via 12b.  Returns child pid to parent, 0 to child. | ⏭ |
 | 12e | **fork ui-test + ktest** - `forktest.elf` ring-3 verifier (parent writes page after fork, child's view unchanged); new `tests/ui_test.sh` scenario. | ⏭ |
 | 13 | **UTF-8 terminal** with ASCII fallback / runtime mode switch | ⏭ deferred |
