@@ -668,11 +668,12 @@ sendkey f
 sendkey ret" \
         3.0
     assert_serial_contains \
-        "[forktest] PARENT-PRE sentinel=0xAA550000" \
-        "[forktest] CHILD-SAW sentinel=0xAA550000" \
-        "[forktest] CHILD-WROTE sentinel=0xC0DEBABE" \
+        "[forktest] PARENT-PRE sentinel=0xAA550000 p1=0x11110000 p2=0x22220000 p3=0x33330000 p4=0x44440000" \
+        "[forktest] CHILD-SAW sentinel=0xAA550000 p1=0x11110000 p2=0x22220000 p3=0x33330000 p4=0x44440000" \
+        "[forktest] CHILD-WROTE sentinel=0xC0DEBABE p1=0xDEAD0001 p2=0xDEAD0002 p3=0xDEAD0003 p4=0xDEAD0004" \
         "[forktest] PARENT-POST" \
-        "sentinel=0xAA550000"
+        "sentinel=0xAA550000 p1=0x11110000 p2=0x22220000 p3=0x33330000 p4=0x44440000" \
+        "status=42"
 }
 
 test_user_sigusr1_handler() {

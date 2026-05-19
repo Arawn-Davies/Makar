@@ -51,15 +51,47 @@ static void write_dec(int fd, int v)
     while (i--) sys_write(fd, &buf[i], 1);
 }
 
-/* Sentinel lives in BSS (writable, gets COW-tagged on fork). */
+/* Single-page sentinel (12d default). */
 static volatile unsigned int sentinel = 0xAA550000u;
+
+/* Multi-page sentinels (12e).  Each lives in its own page so the child's
+ * writes trigger four independent COW faults; the parent's view of each
+ * must remain at the original value.  Page alignment forces the linker
+ * to place each on its own 4 KiB frame; the +PAGE filler is the minimum
+ * needed for the next-aligned `static` to actually land in a fresh page
+ * rather than sharing one with its neighbour.
+ *
+ * NOTE: aligned(4096) needs link.ld's SECTIONS to align .bss to 4 KiB;
+ * checked by inspection -- isodir/apps/forktest.elf objdump shows the
+ * four pages laid out as expected. */
+#define PAGE 4096
+static volatile unsigned int p1[PAGE / sizeof(unsigned int)] __attribute__((aligned(PAGE)));
+static volatile unsigned int p2[PAGE / sizeof(unsigned int)] __attribute__((aligned(PAGE)));
+static volatile unsigned int p3[PAGE / sizeof(unsigned int)] __attribute__((aligned(PAGE)));
+static volatile unsigned int p4[PAGE / sizeof(unsigned int)] __attribute__((aligned(PAGE)));
+
+/* Magic exit status -- ui-test asserts on the kernel's `status=42` log
+ * line to confirm the child's exit code propagated through SYS_EXIT. */
+#define CHILD_EXIT_STATUS 42
 
 int main(int argc, char **argv, char **envp)
 {
     (void)argc; (void)argv; (void)envp;
 
+    /* Seed the four multi-page sentinels with distinct, recognisable
+     * values so a child-side stomp on one page can't accidentally pass
+     * an audit on another. */
+    p1[0] = 0x11110000u;
+    p2[0] = 0x22220000u;
+    p3[0] = 0x33330000u;
+    p4[0] = 0x44440000u;
+
     write_str(2, "[forktest] PARENT-PRE sentinel=");
     write_hex(2, sentinel);
+    write_str(2, " p1=");      write_hex(2, p1[0]);
+    write_str(2, " p2=");      write_hex(2, p2[0]);
+    write_str(2, " p3=");      write_hex(2, p3[0]);
+    write_str(2, " p4=");      write_hex(2, p4[0]);
     write_str(2, "\n");
 
     int pid = sys_fork();
@@ -71,29 +103,46 @@ int main(int argc, char **argv, char **envp)
     }
 
     if (pid == 0) {
-        /* CHILD: read shared sentinel (proves COW visibility), then
-         * write a new value (triggers the COW fault, gives child its
-         * own private frame). */
+        /* CHILD: read all sentinels (proves multi-page COW visibility). */
         write_str(2, "[forktest] CHILD-SAW sentinel=");
         write_hex(2, sentinel);
+        write_str(2, " p1=");  write_hex(2, p1[0]);
+        write_str(2, " p2=");  write_hex(2, p2[0]);
+        write_str(2, " p3=");  write_hex(2, p3[0]);
+        write_str(2, " p4=");  write_hex(2, p4[0]);
         write_str(2, "\n");
 
+        /* Write each page (each triggers an independent COW fault). */
         sentinel = 0xC0DEBABEu;
+        p1[0]    = 0xDEAD0001u;
+        p2[0]    = 0xDEAD0002u;
+        p3[0]    = 0xDEAD0003u;
+        p4[0]    = 0xDEAD0004u;
 
         write_str(2, "[forktest] CHILD-WROTE sentinel=");
         write_hex(2, sentinel);
+        write_str(2, " p1=");  write_hex(2, p1[0]);
+        write_str(2, " p2=");  write_hex(2, p2[0]);
+        write_str(2, " p3=");  write_hex(2, p3[0]);
+        write_str(2, " p4=");  write_hex(2, p4[0]);
         write_str(2, "\n");
-        sys_exit(0);
+
+        /* Exit with a recognisable non-zero status. */
+        sys_exit(CHILD_EXIT_STATUS);
     }
 
     /* PARENT: yield a few times so the child can run + exit before we
      * sample.  No wait(2) yet; this is good enough for the COW proof. */
-    for (int i = 0; i < 32; i++) sys_yield();
+    for (int i = 0; i < 64; i++) sys_yield();
 
     write_str(2, "[forktest] PARENT-POST child_pid=");
     write_dec(2, pid);
     write_str(2, " sentinel=");
     write_hex(2, sentinel);
+    write_str(2, " p1=");      write_hex(2, p1[0]);
+    write_str(2, " p2=");      write_hex(2, p2[0]);
+    write_str(2, " p3=");      write_hex(2, p3[0]);
+    write_str(2, " p4=");      write_hex(2, p4[0]);
     write_str(2, "\n");
     sys_exit(0);
     return 0;
