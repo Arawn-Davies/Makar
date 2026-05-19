@@ -235,6 +235,10 @@ task_t *task_create(const char *name, void (*entry)(void))
     t->pid         = next_pid++;
     t->kticks      = 0;
     t->unkillable  = 0;     /* default: ordinary task, no protection   */
+    t->fb_touched  = 0;     /* clean slate even when reclaiming a DEAD slot
+                             * whose prior occupant ran a fullscreen ELF;
+                             * otherwise shell_exec_elf would clear-screen
+                             * for every subsequent line-mode child. */
     t->fd_table    = new_fds;
     t->exec_params = NULL;
     t->script_vars = NULL;

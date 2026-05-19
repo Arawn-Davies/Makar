@@ -202,6 +202,10 @@ int main(int argc, char **argv, char **envp)
     }
 
     sys_fcntl(0, F_SETFL, 0);
-    sys_shell_clear();
+    /* No sys_shell_clear here: the shell's post-fullscreen restore path
+     * (shell_exec_elf + shell_restore_screen) reapplies the per-VT
+     * palette and wipes the backing grid.  An app reaching into VT
+     * state would just duplicate that work and, before bug-hunt, also
+     * leaked vt->fg/bg = blue from the last cell painted. */
     return 0;
 }

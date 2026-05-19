@@ -38,6 +38,7 @@
 #include <kernel/serial.h>
 #include <kernel/vga.h>
 #include <kernel/vesa_tty.h>
+#include <kernel/vesa.h>
 #include <kernel/ide.h>
 #include <kernel/timer.h>
 #include <string.h>
@@ -272,6 +273,75 @@ void syscall_dispatch(registers_t *regs)
         if (cl + 1 > size) { regs->eax = (uint32_t)-1; break; }
         memcpy(buf, cwd, cl + 1);
         regs->eax = cl;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_FB_INFO(216): query framebuffer pixel geometry.
+     * Returns (width << 16) | height when VESA is up, 0 when VGA-only.
+     * Userspace uses this to pick pixel vs character-cell drawing.
+     * ------------------------------------------------------------------ */
+    case SYS_FB_INFO: {
+        const vesa_fb_t *fb = vesa_get_fb();
+        if (!fb || !vesa_tty_is_ready()) { regs->eax = 0; break; }
+        uint32_t w = fb->width  & 0xFFFFu;
+        uint32_t h = fb->height & 0xFFFFu;
+        regs->eax = (w << 16) | h;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_DRAW_LINE(217): Bresenham line in framebuffer pixels.
+     * EBX = (x0 << 16) | (y0 & 0xFFFF)
+     * ECX = (x1 << 16) | (y1 & 0xFFFF)
+     * EDX = 24-bit RGB
+     *
+     * Clipped to [0, fb->width) x [0, drawable_height) where
+     * drawable_height excludes the bottom status row -- the same
+     * carve-out SYS_TERM_SIZE reports in cell units, just expressed
+     * in pixels for graphical apps.  Returns 0 on success, (uint32_t)-1
+     * if no pixel framebuffer is available (VGA-only boot).
+     * ------------------------------------------------------------------ */
+    case SYS_DRAW_LINE: {
+        const vesa_fb_t *fb = vesa_get_fb();
+        if (!fb || !vesa_tty_is_ready()) { regs->eax = (uint32_t)-1; break; }
+        int32_t x0 = (int32_t)(int16_t)(regs->ebx >> 16);
+        int32_t y0 = (int32_t)(int16_t)(regs->ebx & 0xFFFFu);
+        int32_t x1 = (int32_t)(int16_t)(regs->ecx >> 16);
+        int32_t y1 = (int32_t)(int16_t)(regs->ecx & 0xFFFFu);
+        uint32_t rgb = regs->edx & 0xFFFFFFu;
+
+        /* Drawable area excludes the status row.  vesa_tty_get_rows()
+         * is in cell units; cell_h derives from the FB / row count so
+         * we honour whatever font scale the operator selected. */
+        uint32_t rows = vesa_tty_get_rows();
+        uint32_t cell_h = rows ? (fb->height / rows) : 0;
+        int32_t y_max = (int32_t)fb->height;
+        if (cell_h && y_max > (int32_t)cell_h
+            && VESA_TTY_STATUS_ROWS > 0)
+            y_max -= (int32_t)(cell_h * VESA_TTY_STATUS_ROWS);
+        int32_t x_max = (int32_t)fb->width;
+
+        int32_t dx =  (x1 > x0) ? (x1 - x0) : (x0 - x1);
+        int32_t dy = -((y1 > y0) ? (y1 - y0) : (y0 - y1));
+        int32_t sx = (x0 < x1) ? 1 : -1;
+        int32_t sy = (y0 < y1) ? 1 : -1;
+        int32_t err = dx + dy;
+        for (;;) {
+            if (x0 >= 0 && x0 < x_max && y0 >= 0 && y0 < y_max)
+                vesa_put_pixel((uint32_t)x0, (uint32_t)y0, rgb);
+            if (x0 == x1 && y0 == y1) break;
+            int32_t e2 = err * 2;
+            if (e2 >= dy) { err += dy; x0 += sx; }
+            if (e2 <= dx) { err += dx; y0 += sy; }
+        }
+
+        /* Mark fb_touched so the shell's post-exit cleanup wipes the
+         * FB and repaints the VT's backing grid.  Without this the
+         * stray pixels we just drew would persist under the next
+         * prompt. */
+        { task_t *cur = task_current(); if (cur) cur->fb_touched = 1; }
+        regs->eax = 0;
         break;
     }
 

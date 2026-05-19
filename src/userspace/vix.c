@@ -20,7 +20,8 @@
 #define VIX_CLR_TEXT    VGA_CLR(VGA_LGREY,    VGA_BLACK)
 #define VIX_CLR_STATUS  VGA_CLR(VGA_BLACK,    VGA_LGREY)
 #define VIX_CLR_WARN    VGA_CLR(VGA_LRED,     VGA_BLACK)
-#define VIX_SHELL_CLR   VGA_CLR(VGA_WHITE,    VGA_BLUE)
+/* VIX_SHELL_CLR removed: vix no longer owns the post-exit palette.
+ * shell_restore_screen reapplies the per-VT scheme. */
 
 /* Editor state */
 static char v_lines[VIX_MAX_LINES][VIX_LINE_CAP + 1];
@@ -359,7 +360,8 @@ int main(int argc, char **argv)
         if (c >= ' ' && c <= '~') { vix_insert_char((char)c); continue; }
     }
 
-    /* Restore shell colour scheme. */
-    sys_tty_clear(VIX_SHELL_CLR);
+    /* VT-layer responsibility: shell_restore_screen reapplies the
+     * per-VT palette + wipes the backing grid after a fullscreen
+     * command returns. */
     return 0;
 }

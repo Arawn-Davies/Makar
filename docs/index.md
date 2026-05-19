@@ -16,12 +16,13 @@ C# / Cosmos counterpart. The two share a command vocabulary,
 filesystem layout, and long-term binary-format goals while exploring
 how language choice shapes the implementation.
 
-**Current version:** 0.5.0 (see
+**Current version:** 0.6.0 (see
 [`include/kernel/version.h`](https://github.com/Arawn-Davies/Makar/blob/main/src/kernel/include/kernel/version.h)).
 
 ## Quick links
 
 - **[Building & running](building.md)** — toolchain, Docker, QEMU
+- **[Internals](internals.md)** — CPU state at boot, paging, TLBs, per-task PDs, scheduler, syscall ABI, and the road to fork/POSIX/libc
 - **[Testing](testing.md)** — ktest, GDB checkpoint suite, UI sendkey tests
 - **[Userland libc](userland-libc.md)** — porting roadmap toward musl/dash
 - **[Makar × Medli](makar-medli.md)** — sibling-project co-operation roadmap and VIX→VICS history

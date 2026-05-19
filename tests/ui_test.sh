@@ -17,6 +17,16 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=tests/ui_runner.sh
 . "$HERE/ui_runner.sh"
 
+# Pull the kernel version from its single source of truth so the
+# glob-proc assertion (and anything else that needs to recognise the
+# /proc/uname banner) stays in sync with the kernel automatically.
+VERSION_H="$HERE/../src/kernel/include/kernel/version.h"
+MAKAR_VERSION=$(awk -F\" '/define[[:space:]]+MAKAR_VERSION/ { print $2; exit }' "$VERSION_H")
+if [ -z "$MAKAR_VERSION" ]; then
+    echo "ui_test.sh: could not extract MAKAR_VERSION from $VERSION_H" >&2
+    exit 1
+fi
+
 # --- Tests ------------------------------------------------------------------
 
 test_glob_proc() {
@@ -33,7 +43,7 @@ sendkey c
 sendkey slash
 sendkey shift-8
 sendkey ret"
-    assert_serial_contains "vendor_id" "MemFree" "Makar 0.5.0"
+    assert_serial_contains "vendor_id" "MemFree" "Makar $MAKAR_VERSION"
 }
 
 test_tab_path() {
@@ -792,9 +802,229 @@ sendkey ret" \
         "demo complete"
 }
 
+test_bughunt_clock_exit_palette() {
+    # Bug-hunt: after clock.elf exits, the shell prompt should reappear on
+    # the current VT's palette (VT0 -- green on black), not white-on-blue.
+    # We snapshot at three points: (a) clock running, (b) immediately after
+    # 'q', (c) after running 'pwd' on the restored prompt.
+    CURRENT_NAME=bughunt-clock-exit
+    reset_shell
+    local sb1=$(wc -c < "$SERIAL_LOG")
+    send_script 'sendkey e
+sendkey x
+sendkey e
+sendkey c
+sendkey spc
+sendkey slash
+sendkey c
+sendkey d
+sendkey r
+sendkey o
+sendkey m
+sendkey slash
+sendkey a
+sendkey p
+sendkey p
+sendkey s
+sendkey slash
+sendkey c
+sendkey l
+sendkey o
+sendkey c
+sendkey k
+sendkey dot
+sendkey e
+sendkey l
+sendkey f
+sendkey ret'
+    sleep 1.5
+    echo "screendump $LOGDIR/$CURRENT_NAME.running.ppm" \
+        | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    send_script 'sendkey q'
+    sleep 0.8
+    echo "screendump $LOGDIR/$CURRENT_NAME.exited.ppm" \
+        | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    send_script 'sendkey p
+sendkey w
+sendkey d
+sendkey ret'
+    sleep 0.6
+    echo "screendump $LOGDIR/$CURRENT_NAME.after-pwd.ppm" \
+        | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    send_script 'sendkey l
+sendkey s
+sendkey ret'
+    sleep 0.6
+    echo "screendump $LOGDIR/$CURRENT_NAME.after-ls.ppm" \
+        | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+
+    CURRENT_SEGMENT=$LOGDIR/$CURRENT_NAME.serial
+    CURRENT_DUMP=$LOGDIR/$CURRENT_NAME.ppm
+    CURRENT_FAILED=0
+    rm -f "$CURRENT_SEGMENT" "$CURRENT_DUMP"
+    echo "screendump $CURRENT_DUMP" | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    dd if="$SERIAL_LOG" bs=1 skip="$sb1" 2>/dev/null > "$CURRENT_SEGMENT"
+    assert_serial_contains "[makbox:pwd]"
+}
+
+test_bughunt_vix_exit_palette() {
+    # Bug-hunt: vix exit should land back on the VT's palette (green/black
+    # on VT0), not white-on-blue (the loading-screen palette).
+    CURRENT_NAME=bughunt-vix-exit
+    reset_shell
+    local sb1=$(wc -c < "$SERIAL_LOG")
+    send_script 'sendkey v
+sendkey i
+sendkey x
+sendkey spc
+sendkey slash
+sendkey t
+sendkey m
+sendkey p
+sendkey ret'
+    sleep 1.5
+    echo "screendump $LOGDIR/$CURRENT_NAME.running.ppm" \
+        | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    # Ctrl-Q to quit (no edits, so single press suffices).
+    send_script 'sendkey ctrl-q'
+    sleep 0.8
+    echo "screendump $LOGDIR/$CURRENT_NAME.exited.ppm" \
+        | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    send_script 'sendkey p
+sendkey w
+sendkey d
+sendkey ret'
+    sleep 0.6
+    echo "screendump $LOGDIR/$CURRENT_NAME.after-pwd.ppm" \
+        | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+
+    CURRENT_SEGMENT=$LOGDIR/$CURRENT_NAME.serial
+    CURRENT_DUMP=$LOGDIR/$CURRENT_NAME.ppm
+    CURRENT_FAILED=0
+    rm -f "$CURRENT_SEGMENT" "$CURRENT_DUMP"
+    echo "screendump $CURRENT_DUMP" | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    dd if="$SERIAL_LOG" bs=1 skip="$sb1" 2>/dev/null > "$CURRENT_SEGMENT"
+    assert_serial_contains "[makbox:pwd]"
+}
+
+test_bughunt_vix_palette_on_vt3() {
+    # VT3's scheme is black-on-white -- the inverse of the (legacy)
+    # hardcoded post-vix scheme.  After vix exits on VT3 the prompt
+    # must come back black-on-white, not white-on-blue.  Confirms the
+    # palette restoration is genuinely per-VT, not a VT0-only special
+    # case.
+    CURRENT_NAME=bughunt-vix-palette-vt3
+    reset_shell
+    local sb1=$(wc -c < "$SERIAL_LOG")
+    send_script 'sendkey alt-f4'
+    sleep 0.8
+    send_script 'sendkey v
+sendkey i
+sendkey x
+sendkey spc
+sendkey slash
+sendkey t
+sendkey m
+sendkey p
+sendkey ret'
+    sleep 1.5
+    echo "screendump $LOGDIR/$CURRENT_NAME.running.ppm" \
+        | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    send_script 'sendkey ctrl-q'
+    sleep 0.8
+    echo "screendump $LOGDIR/$CURRENT_NAME.exited.ppm" \
+        | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+
+    CURRENT_SEGMENT=$LOGDIR/$CURRENT_NAME.serial
+    CURRENT_DUMP=$LOGDIR/$CURRENT_NAME.ppm
+    CURRENT_FAILED=0
+    rm -f "$CURRENT_SEGMENT" "$CURRENT_DUMP"
+    echo "screendump $CURRENT_DUMP" | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    dd if="$SERIAL_LOG" bs=1 skip="$sb1" 2>/dev/null > "$CURRENT_SEGMENT"
+    # No serial assertion -- pure visual check on the palette.
+}
+
+test_bughunt_status_bar_after_switch() {
+    # Bug-hunt: switching INTO a VT running a fullscreen ELF (maktop) should
+    # update the status bar so the active-VT highlight matches the new VT.
+    # Currently the highlight stays on the previous VT because
+    # vtty_drain_pending only runs in keyboard_getchar (blocking read), and
+    # maktop uses non-blocking reads via keyboard_poll.
+    CURRENT_NAME=bughunt-status-bar
+    reset_shell
+    local sb1=$(wc -c < "$SERIAL_LOG")
+    # Launch maktop on VT0.
+    send_script 'sendkey e
+sendkey x
+sendkey e
+sendkey c
+sendkey spc
+sendkey slash
+sendkey c
+sendkey d
+sendkey r
+sendkey o
+sendkey m
+sendkey slash
+sendkey a
+sendkey p
+sendkey p
+sendkey s
+sendkey slash
+sendkey m
+sendkey a
+sendkey k
+sendkey t
+sendkey o
+sendkey p
+sendkey dot
+sendkey e
+sendkey l
+sendkey f
+sendkey ret'
+    sleep 1.2
+    # Alt+F2 (shell on VT1), Alt+F1 back to maktop on VT0.
+    send_script 'sendkey alt-f2'
+    sleep 0.6
+    send_script 'sendkey alt-f1'
+    sleep 1.2
+    echo "screendump $LOGDIR/$CURRENT_NAME.vt0-maktop.ppm" \
+        | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    # Tear down: 'q' to maktop.
+    send_script 'sendkey q'
+    sleep 0.6
+    send_script 'sendkey p
+sendkey w
+sendkey d
+sendkey ret'
+    sleep 0.8
+
+    CURRENT_SEGMENT=$LOGDIR/$CURRENT_NAME.serial
+    CURRENT_DUMP=$LOGDIR/$CURRENT_NAME.ppm
+    CURRENT_FAILED=0
+    rm -f "$CURRENT_SEGMENT" "$CURRENT_DUMP"
+    echo "screendump $CURRENT_DUMP" | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    dd if="$SERIAL_LOG" bs=1 skip="$sb1" 2>/dev/null > "$CURRENT_SEGMENT"
+    assert_serial_contains "[makbox:pwd]"
+}
+
 # --- Driver -----------------------------------------------------------------
 
-ALL_TESTS=(glob_proc tab_path exec_hello cd_root per_tty_cwd calc_brackets ctrlc_kills_child no_dead_in_proctasks typo_doesnt_clear vt_roundtrip_keeps_maktop_focused vt_all_roundtrips user_sigusr1_handler makbox_pwd shell_scripting_vars demo_script)
+ALL_TESTS=(glob_proc tab_path exec_hello cd_root per_tty_cwd calc_brackets ctrlc_kills_child no_dead_in_proctasks typo_doesnt_clear vt_roundtrip_keeps_maktop_focused vt_all_roundtrips user_sigusr1_handler makbox_pwd shell_scripting_vars demo_script bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch)
 
 declare -a TO_RUN
 if [ $# -eq 0 ]; then
