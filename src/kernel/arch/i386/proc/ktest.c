@@ -237,6 +237,32 @@ static void test_pmm(void)
     pmm_free_frame(f2);
     pmm_free_frame(f4);
 
+    /* --- refcount semantics (slice 12a, fork+COW prep) --- */
+    uint32_t rc_fc = pmm_free_count();
+    uint32_t rf = pmm_alloc_frame();
+    KTEST_ASSERT(rf != PMM_ALLOC_ERROR);
+    KTEST_ASSERT(pmm_ref_count(rf) == 1);
+    KTEST_ASSERT(pmm_free_count() == rc_fc - 1);
+
+    /* Bump to 3 owners. */
+    pmm_inc_ref(rf);
+    pmm_inc_ref(rf);
+    KTEST_ASSERT(pmm_ref_count(rf) == 3);
+
+    /* Two frees drop refcount to 1 but DON'T release the frame. */
+    pmm_free_frame(rf);
+    pmm_free_frame(rf);
+    KTEST_ASSERT(pmm_ref_count(rf) == 1);
+    KTEST_ASSERT(pmm_free_count() == rc_fc - 1);
+
+    /* Final free releases the frame and makes it re-allocatable. */
+    pmm_free_frame(rf);
+    KTEST_ASSERT(pmm_ref_count(rf) == 0);
+    KTEST_ASSERT(pmm_free_count() == rc_fc);
+    uint32_t rf2 = pmm_alloc_frame();
+    KTEST_ASSERT(rf2 == rf);
+    pmm_free_frame(rf2);
+
     ktest_summary();
 }
 
