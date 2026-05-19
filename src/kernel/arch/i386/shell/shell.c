@@ -603,6 +603,16 @@ static void shell_restore_screen(void)
 {
     if (!vesa_tty_is_ready())
         return;
+    /* Re-apply the per-VT colour scheme first so vt->fg/bg are back at
+     * the values the operator expects.  Fullscreen apps (kernel-builtin
+     * vix, ring-3 maktop/clock) leave vt->fg/bg pointed at whatever
+     * their last cell painted with; without this the next prompt would
+     * inherit that palette.  This is the VT-layer's job, not the
+     * application's. */
+    int tty = 0;
+    task_t *t = task_current();
+    if (t && t->tty >= 0 && t->tty < 4) tty = t->tty;
+    shell_apply_scheme_for_tty(tty);
     vt_buf_t *vt = vtty_buf_current();
     if (vt) vesa_tty_paint_buf(vt);
     vesa_tty_paint_status(vtty_active(), vtty_count());

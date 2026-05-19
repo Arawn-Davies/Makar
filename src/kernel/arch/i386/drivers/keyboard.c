@@ -1268,6 +1268,12 @@ static int slot_for_current(void)
  */
 unsigned char keyboard_poll(void)
 {
+    /* Mirror keyboard_getchar: apps using O_NONBLOCK stdin (maktop, clock)
+     * never hit the blocking path, so without this drain a vtty_switch
+     * deferred from IRQ never lands and the status bar / FB stay stale
+     * until something else calls keyboard_getchar. */
+    vtty_drain_pending();
+
     int s = slot_for_current();
     if (s >= 0) {
         kb_slot_t *slot = &kb_slots[s];
