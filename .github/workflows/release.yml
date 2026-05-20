@@ -12,6 +12,7 @@ name: Release
 #   makar-hdd.img  – installed HDD image (MBR + FAT32 + GRUB 2)
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - 'v*'
