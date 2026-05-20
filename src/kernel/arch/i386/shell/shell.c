@@ -62,8 +62,8 @@ static void shell_print_prompt(void);
 /* Search path for executables - also used by tab completion to enumerate
  * the available `*.elf` binaries when completing the first token. */
 static const char *const s_app_path[] = {
-    "/cdrom/apps/",
-    "/hd/apps/",
+    "/mnt/cdrom/apps/",
+    "/mnt/hd/apps/",
     NULL,
 };
 
