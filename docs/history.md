@@ -14,6 +14,75 @@ this file is the trail of how the current state got there.
 
 ## Unreleased
 
+### Added — fork() + execve() + wait4() (PR #166, slices 15-16)
+
+POSIX process model on Makar.  Detailed implementation walkthrough in
+[internals §11](internals.md#11-fork-execve-wait4--how-they-actually-work);
+overview here.
+
+- **PMM frame refcounts** (slice 15a).  `uint8_t refcount[PMM_MAX_FRAMES]`
+  parallel to the bitmap.  `pmm_alloc_frame` sets refcount=1;
+  `pmm_free_frame` decrements and only releases the bitmap bit when the
+  count hits zero; new `pmm_inc_ref` / `pmm_ref_count`.  All pre-existing
+  single-owner callers (heap, vmm) keep their behaviour for free.
+- **`vmm_clone_pd_cow()`** (slice 15b) — walks parent PD, marks user PTEs
+  RO + software COW bit (`VMM_PTE_COW`, PTE bit 9), `pmm_inc_ref` each
+  frame, mirrors into the child PD.  Reloads CR3 if the parent is active.
+- **COW `#PF` handler** (slice 15c) in `arch/i386/debug/debug.c` — write
+  fault on COW-tagged user PTE: refcount==1 fast path (clear COW + set
+  RW), else alloc fresh frame + memcpy 4 KiB + dec old refcount + install
+  fresh frame as RW.  Falls through to existing panic for real faults.
+  `CR0.WP` enabled at `paging_init` so kernel writes also fault on RO
+  user pages.
+- **`SYS_FORK` (= 2) + `fork_child_iret`** (slice 15d).  `task_fork()` in
+  `arch/i386/proc/task.c` clones a task slot, deep-copies the fd_table
+  via new `fd_table_clone`, inherits cwd/tty/user_brk, clones the PD via
+  15b, resets sig handlers.  Child's kernel stack hand-built so its first
+  `task_switch` ret lands in `fork_child_iret` (in `task_asm.S`, a 1:1
+  mirror of the `isr_common_stub` epilogue) and iret's back to ring 3 at
+  exactly the same EIP where the parent's `int 0x80` returns, with EAX=0.
+- **Multi-page COW + exit-code coverage** (slice 15e).  `forktest.elf`
+  exercises five independent BSS sentinels (one single-page + four
+  4 KiB-aligned), child writes all of them after fork (independent COW
+  faults), parent verifies all five remain at original values; child
+  exits with status=42.
+- **`SYS_EXECVE` (= 11)** (slice 16a) — replaces caller's address space
+  with a new ELF.  `elf_exec` extended to free the OLD user PD on
+  success.  Syscall handler copies path + argv into kernel scratch
+  before the PD swap.  POSIX-compliant signal handler reset on execve.
+  `execvetest.elf` does fork → child-execve `hello.elf` → parent-survives.
+- **`SYS_WAIT4` (= 114) + `TASK_ZOMBIE`** (slice 16b) — new lifecycle
+  state between RUNNING and DEAD; child holds its slot + `exit_status`
+  for the parent to read.  `task_t.parent_pid` + `task_t.exit_status`
+  added.  `task_exit` decides ZOMBIE vs DEAD based on whether parent is
+  a live ring-3 task (kernel-internal tasks go straight to DEAD so kernel
+  shell children don't pile up unwait4'd zombies).  Orphan zombies
+  auto-reaped by parent's `task_exit`.  `forktest.elf` and
+  `execvetest.elf` migrated off busy-yielding to use `sys_wait4`.
+
+### Fixed
+
+- **`SYS_WRITE` on fd 2 double-printed to COM1.**  `t_putchar` already
+  mirrors to serial when `g_serial_verbose` is on (the default since
+  PR #130); the explicit `Serial_WriteChar` loop in the
+  `FD_KIND_VGA_SERIAL` case was duplicate work.  Result: every chunk
+  written by `hello.elf`, `forktest.elf`, etc. showed up twice in the
+  serial log ("Hello, Hello, testertester!\n!\n" instead of
+  "Hello, tester!\n").  Now only echoes explicitly when verbose is off.
+
+### Changed
+
+- **Slice queue renumbered** (`CLAUDE.md` + `docs/roadmap.md`).  The old
+  numbering had duplicate slice 13s (UTF-8 terminal *and* execve+wait4)
+  and slice 14s (Per-task FD table *and* Userland shell), plus a "5b"
+  hybrid that nothing else used.  Queue now runs 1..21 cleanly, sub-letters
+  reserved for tightly-grouped commit groups (15a-e for fork+COW,
+  16a-b for execve+wait4, 20a-f for the staged userland shell).
+- **ui-test `demo-script` timeout** bumped 12 s → 25 s.  The script
+  legitimately takes ~15 s of sleeps + work; the old budget was tripping
+  a cascade into the bughunt scenarios whose windows would then absorb
+  demo's leftover output and start on the wrong VT.
+
 ### Added — signals + preemption hardening (PR #154, slices 8 + 9)
 
 - **Per-task signal subsystem** (`src/kernel/include/kernel/signal.h`,

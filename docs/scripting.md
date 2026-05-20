@@ -5,7 +5,7 @@ nav_order: 7
 
 # Shell scripting
 
-The Makar shell exposes a small bash-flavoured scripting layer.  No `fork()`, no pipes, no command substitution yet — everything runs inside the calling shell task.  Per-VT isolation: each shell's variable table hangs off its `task_t`, so `NAME=foo` on VT0 doesn't show up in VT1.
+The Makar shell exposes a small bash-flavoured scripting layer.  `fork()` / `execve()` / `wait4()` are available (slices 15+16), but the in-kernel shell hasn't yet rewired its dispatch to use them — no pipes, no command substitution yet, everything below still runs inside the calling shell task.  Per-VT isolation: each shell's variable table hangs off its `task_t`, so `NAME=foo` on VT0 doesn't show up in VT1.
 
 Implementation: `kernel/sh_script.h`, `arch/i386/shell/sh_script.c`, `arch/i386/shell/shell_cmd_script.c`.
 
@@ -83,8 +83,8 @@ The `sh` builtin writes the script's final `$?` to serial as `sh: exit=N` so tes
 ## Limitations (and what they're waiting on)
 
 - **No command substitution (`$(cmd)`)** — would require capturing a child's stdout into a buffer; needs subshell-equivalent.
-- **No pipes** — needs `fork()`.
-- **No background jobs (`&`)** — needs `fork()`.
+- **No pipes** — needs `SYS_PIPE` + `dup2` (fork is available; the missing piece is the open-file refcount layer that `pipe(2)` hangs off).
+- **No background jobs (`&`)** — the in-kernel shell would need to use `fork+execve+wait4` for child dispatch first; that's the slice 20 (userland shell) work.
 - **`elif` chained but `elif` itself can't appear on the same line as preceding body** — `; elif` is fine; `then A; elif [ Y ]; then B` works; bare `; elif` without preceding `; then BODY` may not parse.
 - **64 KiB scratch buffer for script source** — warns on truncation; chain `sh foo.sh; sh bar.sh` for bigger workloads.
 

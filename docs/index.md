@@ -22,7 +22,7 @@ how language choice shapes the implementation.
 ## Quick links
 
 - **[Building & running](building.md)** — toolchain, Docker, QEMU
-- **[Internals](internals.md)** — CPU state at boot, paging, TLBs, per-task PDs, scheduler, syscall ABI, and the road to fork/POSIX/libc
+- **[Internals](internals.md)** — CPU state at boot, paging, TLBs, per-task PDs, scheduler, syscall ABI, fork+COW, execve, wait4
 - **[Testing](testing.md)** — ktest, GDB checkpoint suite, UI sendkey tests
 - **[Userland libc](userland-libc.md)** — porting roadmap toward musl/dash
 - **[Makar × Medli](makar-medli.md)** — sibling-project co-operation roadmap and VIX→VICS history
@@ -39,9 +39,10 @@ how language choice shapes the implementation.
 | **Storage** | FAT32 (HDD/USB) + ISO 9660 (CD-ROM) over IDE PIO. Auto-mount at `/hd` and `/cdrom`. Read + write + delete + rename on FAT32. |
 | **`/proc`** | Synthetic filesystem with `cpuinfo`, `meminfo`, `tasks`, `uname` — content generated on each read. |
 | **Memory** | PMM bitmap allocator, paging (256 MiB identity + per-task 4 KiB user pages), kernel heap. |
-| **Tasking** | Preemptive round-robin scheduler. PIT 100 Hz, `SCHED_QUANTUM = 4` ticks (40 ms slice). Per-task `pid`, `cwd`, `tty`, fd-table placeholder, signal bitmasks. User PD reaped on task exit. |
-| **Userspace** | Ring-3 via `iret`. ELF loader (`elf_exec`) with argc/argv. Apps: `hello`, `echo`, `calc`, `ls`, `vix`, `diskinfo`, `rm`, `mv`, `cp`, `kbtester`. |
-| **Syscalls** | Linux i386 ABI subset over `int 0x80` + Makar extensions (211–214). |
+| **Tasking** | Preemptive round-robin scheduler. PIT 100 Hz, `SCHED_QUANTUM = 4` ticks (40 ms slice). Per-task `pid`, `parent_pid`, `cwd`, `tty`, real `fd_table_t`, signal bitmasks, `exit_status`. User PD reaped on task exit. Lifecycle: `READY → RUNNING → ZOMBIE → DEAD`. |
+| **Processes** | Full POSIX **fork + execve + wait4**: copy-on-write page-table clone (per-frame refcounts + `VMM_PTE_COW` software bit + COW `#PF` handler with `CR0.WP` enforced), execve replaces caller's address space with a new ELF, wait4 reaps zombies and round-trips the child's `exit_status`. |
+| **Userspace** | Ring-3 via `iret`. ELF loader (`elf_exec`) with argc/argv. Apps: `hello`, `calc`, `vix`, `diskinfo`, `kbtester`, `makbox` (multicall: `ls`/`cat`/`cp`/`mv`/`rm`/`rmdir`/`echo`/`pwd`), `clock`, `lines`, `maktop`, `sigtest`, `forktest` + `execvetest`. |
+| **Syscalls** | Linux i386 ABI subset over `int 0x80` (1 exit, 2 fork, 11 execve, 19 lseek, 37 kill, 45 brk, 48 signal, 114 wait4, 119 sigreturn, 158 yield, ...) + Makar extensions (200–217). |
 | **Shell** | Inline editing, 16-entry history, cross-FS tab completion, glob expansion, Ctrl+C sigint, `lsman`/`man <cmd>`. Fullscreen-command dispatch with auto FB restore. |
 | **Drivers** | 16550 UART, PIT, layered PS/2 keyboard (full set-1 + e0 with per-task SPSC rings), ATA/IDE PIO 28-bit LBA, MBR + GPT partition tables. |
 | **Debug** | INT 1 / INT 3 GDB-friendly handlers, kernel panic screen, ktest harness with per-suite descriptions and VGA + serial output. |

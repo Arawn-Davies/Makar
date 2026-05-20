@@ -18,6 +18,10 @@ For the chronological log of what's *already shipped*, see
 Kernel and userspace work, numbered as focused mergeable units —
 usually one PR per slice.
 
+Slice numbers were resequenced in May 2026 so the queue runs 1..N
+without gaps or duplicates.  CLAUDE.md's slice queue is the source of
+truth; this table mirrors it.
+
 | Slice | Title                                                  | Status                      | Issue                                                                              |
 |------:|--------------------------------------------------------|-----------------------------|------------------------------------------------------------------------------------|
 |     1 | Reaper for dead-task user PDs                          | ✅ shipped (`fcb8771`)      | —                                                                                  |
@@ -25,20 +29,31 @@ usually one PR per slice.
 |     3 | Ring-3 lifecycle ktest                                 | ✅ shipped (`f48d730`)      | —                                                                                  |
 |     4 | 100 Hz timer + `SYS_WRITE_SERIAL`                      | ✅ shipped (`5e40001`)      | —                                                                                  |
 |     5 | Keyboard rewrite (layered decoder)                     | ✅ shipped (#124)           | —                                                                                  |
-|    5b | Keyboard hardening                                     | ✅ shipped (#127)           | —                                                                                  |
-|     6 | Test-infra cleanup (ccache, fan-out CI)                | ✅ shipped (#125)           | —                                                                                  |
-|     7 | Per-task consumer migration                            | ✅ complete                 | —                                                                                  |
-|     8 | Linux-style signal subsystem                           | ✅ shipped (#154)           | [#144](https://github.com/Arawn-Davies/Makar/issues/144)                          |
-|     9 | Preemption hardening                                   | ✅ shipped (#154)           | [#145](https://github.com/Arawn-Davies/Makar/issues/145)                          |
-|    10 | Per-TTY screen buffers + status bar + `/proc`          | ✅ shipped (#129)           | —                                                                                  |
-|    11 | `ps`-style task listing                                | ⏭ queued                    | [#147](https://github.com/Arawn-Davies/Makar/issues/147)                          |
-|    12 | `fork()` readiness (CoW PD clone, fd dup)              | ⏭ queued                    | rolled into [#121](https://github.com/Arawn-Davies/Makar/issues/121)              |
-|    13 | UTF-8 terminal                                         | ⏭ deferred                  | [#148](https://github.com/Arawn-Davies/Makar/issues/148)                          |
-|    14 | Per-task FD table                                      | ✅ shipped (#134)           | —                                                                                  |
-|    15 | VFS `task->cwd` authoritative                          | ✅ shipped (#135)           | —                                                                                  |
-|    16 | VGA-text fallback per-TTY                              | ⏭ queued                    | [#146](https://github.com/Arawn-Davies/Makar/issues/146)                          |
-|    17 | makbox multicall + `SYS_GETCWD` + exec race fix        | ✅ shipped (#137)           | —                                                                                  |
-|    18 | Bash-flavoured shell scripting (vars, `$?`, if/elif/else, while, for, `sh script.sh`, `./script.sh`, makbox-restriction, `datetime`/`date`/`time` builtins) | ✅ shipped (#163)           | —                                                                                  |
+|     6 | Keyboard hardening                                     | ✅ shipped (#127)           | —                                                                                  |
+|     7 | Test-infra cleanup (ccache, fan-out CI)                | ✅ shipped (#125)           | —                                                                                  |
+|     8 | Per-task consumer migration (vtty/fd/cwd)              | ✅ complete                 | —                                                                                  |
+|     9 | Linux-style signal subsystem                           | ✅ shipped (#154)           | [#144](https://github.com/Arawn-Davies/Makar/issues/144)                          |
+|    10 | Preemption hardening                                   | ✅ shipped (#154)           | [#145](https://github.com/Arawn-Davies/Makar/issues/145)                          |
+|    11 | Per-TTY screen buffers + status bar + `/proc`          | ✅ shipped (#129)           | —                                                                                  |
+|    12 | Per-task FD table                                      | ✅ shipped (#134)           | —                                                                                  |
+|    13 | VFS `task->cwd` authoritative                          | ✅ shipped (#135)           | —                                                                                  |
+|    14 | makbox multicall + `SYS_GETCWD` + exec race fix        | ✅ shipped (#137)           | —                                                                                  |
+|    15 | fork() + copy-on-write (15a-e)                         | ✅ shipped (#166)           | rolled into [#121](https://github.com/Arawn-Davies/Makar/issues/121)              |
+|    16 | execve + wait4 + `TASK_ZOMBIE` (16a-b)                 | ✅ shipped (#166)           | rolled into [#121](https://github.com/Arawn-Davies/Makar/issues/121)              |
+|    17 | UTF-8 terminal                                         | ⏭ deferred                  | [#148](https://github.com/Arawn-Davies/Makar/issues/148)                          |
+|    18 | `ps`-style task listing (covered by `/proc/tasks`)     | ⏭ deferred                  | [#147](https://github.com/Arawn-Davies/Makar/issues/147)                          |
+|    19 | VGA-text fallback per-TTY                              | ⏭ queued                    | [#146](https://github.com/Arawn-Davies/Makar/issues/146)                          |
+|    20 | Userland shell (`sh.elf`, multi-PR feature, 20a-f)     | ⏭ paused (scope pending)    | —                                                                                  |
+|    21 | COM2 serial-input mode for ui-test runner              | ⏭ planned                   | —                                                                                  |
+
+### Bash-flavoured shell scripting
+
+Shipped in #163 (May 2026): variables (`NAME=value`, `$VAR`, `$?`),
+`if`/`elif`/`else`/`fi`, `while`, `for ... in`, `[ TEST ]`,
+`sh script.sh`, `./script.sh`, makbox dispatch restriction,
+`datetime`/`date`/`time` builtins.  Not on the slice queue (was a
+single PR that didn't fit the slice cadence); covered in
+[scripting](scripting.md).
 
 ## Active themes
 
@@ -51,8 +66,9 @@ then port `dash` (or extend the in-kernel shell), then bring up TCC
 for in-place compile-run.  Detailed plan in
 [Userland libc](userland-libc.md).
 
-Open: [#121 — process model & libc](https://github.com/Arawn-Davies/Makar/issues/121)
-(rolls slice 12's `fork()` work in with musl/uClibc-ng porting).
+Slices 15+16 closed the `fork`/`execve`/`wait4` half of [#121](https://github.com/Arawn-Davies/Makar/issues/121);
+the remaining libc/musl/dash half is still open under the same issue.
+Slice 20 (paused) carries the userland-shell follow-on.
 
 ### Networking
 
@@ -132,15 +148,16 @@ Already shipped:
 
 Open:
 - [#146 — VGA-text fallback per-TTY backing buffers](https://github.com/Arawn-Davies/Makar/issues/146)
-  (slice 16)
+  (slice 19)
 - [#148 — UTF-8 terminal with ASCII fallback](https://github.com/Arawn-Davies/Makar/issues/148)
-  (slice 13, deferred)
+  (slice 17, deferred)
 
 ### Shell
 
 Open:
 - [#147 — `ps`-style task listing](https://github.com/Arawn-Davies/Makar/issues/147)
-  (slice 11)
+  (slice 18; today's `cat /proc/tasks` covers this)
+- Slice 20 — userland `sh.elf` (multi-PR feature, paused)
 
 (`serial shell over COM1` lives under the Makar×Medli theme as [#139](https://github.com/Arawn-Davies/Makar/issues/139).)
 
@@ -152,9 +169,11 @@ See [history](history.md) for the changelog.  Highlights:
   directories, ring-3 lifecycle proven by ktest.
 - Storage: FAT32 R/W, ISO 9660, IDE PIO, VFS with auto-mount, synthetic
   `/proc`.
-- Userspace: ELF loader, ring-3 `iret`, syscall surface (Linux i386
-  subset + Makar extensions 200–215), `makbox` busybox-style
-  multicall, apps (`calc`, `vix`, `kbtester`, …).
+- Userspace: ELF loader, ring-3 `iret`, full POSIX **fork + execve +
+  wait4** (slices 15-16 with copy-on-write page-table clone), syscall
+  surface (Linux i386 subset + Makar extensions 200–217), `makbox`
+  busybox-style multicall, apps (`calc`, `vix`, `kbtester`, `forktest`,
+  `execvetest`, …).
 - Display: VESA framebuffer (720p default), VGA 80×50 fallback, per-TTY
   backing grids, tmux-style status bar, four independent TTYs with
   Alt+F1–F4.

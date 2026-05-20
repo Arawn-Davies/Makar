@@ -159,14 +159,20 @@ Authoritative table in `src/kernel/include/kernel/syscall.h`. Selected entries:
 
 | EAX | Syscall          | Args |
 |-----|------------------|------|
-| 1   | SYS_EXIT         | EBX = status |
+| 1   | SYS_EXIT         | EBX = status.  Sets `task_current()->exit_status` before transitioning to ZOMBIE/DEAD (see SYS_WAIT4). |
+| 2   | SYS_FORK         | -.  COW-clone the calling task; returns child pid in parent, 0 in child, -EAGAIN on failure. (slice 15) |
 | 3   | SYS_READ         | EBX = fd (0=stdin keyboard, ≥3=VFS), ECX = buf, EDX = count |
 | 4   | SYS_WRITE        | EBX = fd, ECX = buf, EDX = count. fd 1 = VGA, fd 2 = VGA + COM1, ≥3 = VFS |
 | 5   | SYS_OPEN         | EBX = path, ECX = flags (returns fd) |
 | 6   | SYS_CLOSE        | EBX = fd |
+| 11  | SYS_EXECVE       | EBX = path, ECX = argv (NULL-terminated `char *const argv[]`), EDX = envp (ignored).  On success doesn't return.  (slice 16a) |
 | 19  | SYS_LSEEK        | EBX = fd, ECX = offset, EDX = whence |
+| 37  | SYS_KILL         | EBX = pid, ECX = signo |
 | 45  | SYS_BRK          | EBX = new break (returns current/new break) |
+| 48  | SYS_SIGNAL       | EBX = signo, ECX = handler (returns previous handler) |
 | 100 | SYS_DEBUG        | EBX = uint32 checkpoint (prints to VGA + serial) |
+| 114 | SYS_WAIT4        | EBX = pid (-1 = any child), ECX = `int *status`, EDX = options (WNOHANG=1), ESI = rusage ptr (ignored).  Returns child pid, 0 (WNOHANG no zombie), or -ECHILD.  (slice 16b) |
+| 119 | SYS_SIGRETURN    | - (sigframe trampoline, not for direct use) |
 | 158 | SYS_YIELD        | - |
 | 200 | SYS_GETKEY       | raw single-char keyboard read |
 | 201–204 | SYS_PUTCH_AT / SET_CURSOR / TTY_CLEAR / TERM_SIZE | direct TTY ops for full-screen apps (vix) |
