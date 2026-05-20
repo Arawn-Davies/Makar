@@ -315,9 +315,12 @@ static void render_tasks(pf_writer_t *w)
         pf_putc(w, ' ');
         pf_putu(w, t->kticks);
         pf_putc(w, ' ');
-        /* Resident user memory (KiB): 0 for kernel-only tasks (shells,
-         * idle, ktest), non-zero for each ring-3 app instance. */
-        pf_putu(w, vmm_count_user_pages(t->page_dir) * 4u);
+        /* Per-task memory (KiB): every task owns an 8 KiB kernel stack;
+         * ring-3 tasks additionally have their resident user pages.  So
+         * shells/idle report their stack baseline and apps report stack +
+         * RSS, rather than kernel tasks reading as 0. */
+        pf_putu(w, (TASK_STACK_SIZE / 1024u)
+                   + vmm_count_user_pages(t->page_dir) * 4u);
         pf_putc(w, ' ');
         pf_puts(w, t->cwd[0] ? t->cwd : "-");
         pf_putc(w, '\n');
