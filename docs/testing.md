@@ -29,7 +29,7 @@ Boots `makar-test.iso` (single grub menuentry with `timeout=0`, `multiboot2 /boo
 **Phase 2 - GDB boot-checkpoint tests**
 
 Builds a normal debug ISO. Creates a 32 MiB FAT32 test disk and attaches it
-on IDE:0 alongside the CD-ROM so the kernel can mount `/hd`. Launches QEMU
+on IDE:0 alongside the CD-ROM so the kernel can mount `/mnt/hd`. Launches QEMU
 with the GDB stub and runs `tests/gdb_boot_test.py`. Output: `gdb-test.log`.
 
 Exit code 0 = everything passed; 1 = any failure or timeout.
@@ -65,7 +65,7 @@ boot medium:
 | `boot_checkpoints` | Every major boot function reached in order: `kernel_main` → `terminal_initialize` → … → `shell_run` |
 | `hardware_state` | CR0.PG set (paging enabled), CR3 non-zero (page directory loaded), `timer_callback` fires (PIT ticking) |
 | `vesa` | VESA framebuffer active and TTY initialised (or absent without crashing - graceful headless) |
-| `hdd_mount` | `fat32_mounted()` non-zero - FAT32 partition auto-mounted at `/hd` after `shell_run` |
+| `hdd_mount` | `fat32_mounted()` non-zero - FAT32 partition auto-mounted at `/mnt/hd` after `shell_run` |
 
 The `hdd_mount` check advances execution to `keyboard_getchar` (the shell's
 read-loop entry) before inspecting `fat32_mounted()`, ensuring

@@ -104,6 +104,30 @@ Draw one frame of a four-character spinner (`|`, `/`, `-`, `\`) at the
 top-right corner of the display.  The frame advances every 12 ticks.
 Mirrors `t_spinner_tick()` on the VESA display.
 
+### `vesa_tty_paint_status` (makmux bar)
+
+```c
+void vesa_tty_paint_status(int active, int count);
+```
+
+Paints the **makmux** status bar on the reserved bottom row:
+`makmux  VT1 VT2 VT3 VT4  …  Alt+F1-F4`, with slot `active` highlighted
+(black-on-yellow). Labels are 1-based to match the Alt+F1–F4 keys. Driven by
+[vtty](vtty.md) on register / switch-drain / clear. `vesa_tty_set_status_visible()`
+hides it during the boot loading screen.
+
+### Caret style
+
+```c
+void     vesa_tty_set_caret_style(uint32_t style);  /* 0 = line, 2 = flashing block */
+uint32_t vesa_tty_get_caret_style(void);
+```
+
+Selects the on-screen caret. Userspace reaches this via `SYS_CARET_STYLE`
+(218), which returns the previous style so an app (e.g. `vix.elf`) can request
+a flashing block caret while editing and restore the default on exit. No-op in
+VGA-text mode.
+
 ---
 
 ## Scrolling

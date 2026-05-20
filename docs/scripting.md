@@ -20,6 +20,11 @@ env                  # dump the table
 unset NAME [...]     # remove vars
 ```
 
+`PATH` is a special variable: command dispatch and first-token tab completion
+search its colon-separated directories for `<cmd>[.elf]`. Unset, it defaults to
+`/mnt/cdrom/apps:/mnt/hd/apps`; set it like any other var to change where the
+shell looks for executables.
+
 ## Tests
 
 ```sh

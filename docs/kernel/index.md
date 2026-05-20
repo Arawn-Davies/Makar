@@ -34,4 +34,5 @@ Per-driver and per-module reference documentation for Makar's kernel.
 | [ide](ide.md) | ATA/IDE PIO driver |
 | [partition](partition.md) | MBR + GPT partition tables |
 | [procfs](procfs.md) | Synthetic `/proc` filesystem |
+| [devfs](devfs.md) | Synthetic `/dev` block devices (disks, partitions, CD-ROM) |
 | [shell](shell.md) | Interactive multi-TTY kernel command shell |
