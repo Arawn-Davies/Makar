@@ -172,6 +172,23 @@ sendkey ret"
     assert_serial_contains "cdrom"
 }
 
+test_ls_dev() {
+    # `ls /dev` enumerates the synthetic block-device tree.  The ui
+    # runner attaches only a CD-ROM, so /dev/cdrom is the stable node to
+    # assert on (disks/partitions depend on an attached HDD).  Exercises
+    # devfs_ls + the VFS_FS_DEV route end-to-end.
+    it "ls-dev" \
+"sendkey l
+sendkey s
+sendkey spc
+sendkey slash
+sendkey d
+sendkey e
+sendkey v
+sendkey ret"
+    assert_serial_contains "cdrom"
+}
+
 test_calc_brackets() {
     # Bracket/parenthesis arithmetic smoke test in calc.elf.  Absolute
     # path so cwd doesn't matter.  The PAUSE after `exec ...<Enter>`
@@ -1124,7 +1141,7 @@ sendkey ret'
 
 # --- Driver -----------------------------------------------------------------
 
-ALL_TESTS=(glob_proc tab_path exec_hello cd_root per_tty_cwd calc_brackets ctrlc_kills_child no_dead_in_proctasks typo_doesnt_clear vt_roundtrip_keeps_maktop_focused vt_all_roundtrips fork_cow fork_execve user_sigusr1_handler makbox_pwd shell_scripting_vars demo_script bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch)
+ALL_TESTS=(glob_proc tab_path exec_hello cd_root ls_dev per_tty_cwd calc_brackets ctrlc_kills_child no_dead_in_proctasks typo_doesnt_clear vt_roundtrip_keeps_maktop_focused vt_all_roundtrips fork_cow fork_execve user_sigusr1_handler makbox_pwd shell_scripting_vars demo_script bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch)
 
 declare -a TO_RUN
 if [ $# -eq 0 ]; then
