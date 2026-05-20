@@ -45,6 +45,12 @@ uint32_t devfs_node_size(int idx);
 /* 1 if node `idx` is read-only (e.g. CD-ROM), else 0. */
 int devfs_node_readonly(int idx);
 
+/* Report a node's backing IDE drive index and starting LBA (for a whole
+ * disk this is 0; for a partition it's the partition's first sector).
+ * Returns 0 on success, -1 if idx is invalid.  Lets `mount` translate a
+ * /dev/hdaN path into the (drive, lba) pair fat32_mount expects. */
+int devfs_node_location(int idx, uint8_t *out_drive, uint32_t *out_base_lba);
+
 /* Byte-addressed read/write against node `idx`.  Handle arbitrary
  * offset/length via internal sector RMW.  Return bytes transferred
  * (clamped to the node size), or -1 on error. */

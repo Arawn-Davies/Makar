@@ -110,8 +110,11 @@ static const man_entry_t man_table[] = {
       "Formats the specified partition as FAT32.  DESTRUCTIVE - all data lost.\n"
     },
     { "mount",
-      "mount a FAT32 partition at /mnt/hd/",
-      "Usage: mount <drv> <part#>\n\nMounts the FAT32 partition at the /mnt/hd VFS mount point.\n"
+      "mount a FAT32 partition at /mnt/hd",
+      "Usage: mount /dev/hdaN /mnt/hd\n       mount <drv> <part#>   (legacy)\n\n"
+      "Mounts a FAT32 partition at /mnt/hd (the default OS drive).  Prefer the\n"
+      "device-path form, e.g. `mount /dev/hda1 /mnt/hd`; the legacy numeric\n"
+      "form still works.  /mnt/hd is currently the only supported mountpoint.\n"
     },
     { "umount",
       "unmount the FAT32 volume",

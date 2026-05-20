@@ -46,6 +46,11 @@
  */
 static char s_boot_cwd[VFS_PATH_MAX] = "/";
 static int  s_cdrom_drive = -1;    /* IDE drive index of CD-ROM, -1 = none */
+
+/* Component name under /mnt where the single FAT32 volume is mounted.
+ * Default "hd" (the OS drive); `mount /dev/hdaN /mnt/<name>` changes it. */
+#define VFS_MOUNT_NAME_MAX 32
+static char s_hd_mount[VFS_MOUNT_NAME_MAX] = "hd";
 static uint32_t s_boot_biosdev = 0xFFu; /* BIOS drive we booted from (0xFF = unknown) */
 
 /* Resolve the cwd backing store for the calling context.  Pre-tasking
@@ -186,34 +191,49 @@ static int vfs_route(const char *abs, const char **drv_path)
         return VFS_FS_ROOT;
     }
 
-    /* Disk filesystems live under /mnt (Linux convention).  A bare "/hd"
-     * or "/cdrom" is kept as a transitional alias that resolves to the
-     * same driver, so existing scripts / muscle memory keep working.
+    /* Disk filesystems live under /mnt (Linux convention).  The FAT32
+     * volume mounts at a caller-chosen component under /mnt (default
+     * "hd", the OS drive); the CD-ROM is fixed at /mnt/cdrom.  A bare
+     * "/hd" / "/cdrom" remains a transitional alias to the same driver.
      *
-     * Strip an optional leading "/mnt" so the hd/cdrom matching below sees
-     * the same shape either way.  "/mnt" on its own lists the mounts. */
-    const char *p = abs;
+     * Under /mnt we split off the first path component and match it
+     * against the live mountpoints; the remainder becomes the
+     * driver-relative path. */
     if (memcmp(abs, VFS_MNT, VFS_MNT_LEN) == 0 &&
         (abs[VFS_MNT_LEN] == '/' || abs[VFS_MNT_LEN] == '\0')) {
         if (abs[VFS_MNT_LEN] == '\0') {
             *drv_path = "/";
             return VFS_FS_MNT;
         }
-        p = abs + VFS_MNT_LEN;   /* now p starts with "/hd" or "/cdrom"  */
+        const char *comp = abs + VFS_MNT_LEN + 1;   /* after "/mnt/"      */
+        const char *rest = comp;
+        while (*rest && *rest != '/') rest++;        /* end of component   */
+        size_t clen = (size_t)(rest - comp);
+        const char *dp = (*rest == '/') ? rest : "/";
+
+        if (clen == 5 && memcmp(comp, "cdrom", 5) == 0) {
+            *drv_path = dp;
+            return VFS_FS_CDROM;
+        }
+        if (clen == strlen(s_hd_mount) &&
+            memcmp(comp, s_hd_mount, clen) == 0) {
+            *drv_path = dp;
+            return VFS_FS_HD;
+        }
+        *drv_path = abs;
+        return VFS_FS_UNKNOWN;
     }
 
-    /* "/hd" or "/hd/…"  (canonical: /mnt/hd) */
-    if (p[1] == 'h' && p[2] == 'd' &&
-        (p[3] == '/' || p[3] == '\0')) {
-        *drv_path = (p[3] == '/') ? (p + 3) : "/";
+    /* Bare "/hd" / "/cdrom" aliases (resolve to the same driver). */
+    if (abs[1] == 'h' && abs[2] == 'd' &&
+        (abs[3] == '/' || abs[3] == '\0')) {
+        *drv_path = (abs[3] == '/') ? (abs + 3) : "/";
         return VFS_FS_HD;
     }
-
-    /* "/cdrom" or "/cdrom/…"  (canonical: /mnt/cdrom) */
-    if (p[1] == 'c' && p[2] == 'd' && p[3] == 'r' &&
-        p[4] == 'o' && p[5] == 'm' &&
-        (p[6] == '/' || p[6] == '\0')) {
-        *drv_path = (p[6] == '/') ? (p + 6) : "/";
+    if (abs[1] == 'c' && abs[2] == 'd' && abs[3] == 'r' &&
+        abs[4] == 'o' && abs[5] == 'm' &&
+        (abs[6] == '/' || abs[6] == '\0')) {
+        *drv_path = (abs[6] == '/') ? (abs + 6) : "/";
         return VFS_FS_CDROM;
     }
 
@@ -254,7 +274,11 @@ static void ls_root(void)
 /* List /mnt - the disk-filesystem mount container. */
 static void ls_mnt(void)
 {
-    if (fat32_mounted())    t_writestring("[hd]\n");
+    if (fat32_mounted()) {
+        t_putchar('[');
+        t_writestring(s_hd_mount);
+        t_writestring("]\n");
+    }
     if (s_cdrom_drive >= 0) t_writestring("[cdrom]\n");
     if (!fat32_mounted() && s_cdrom_drive < 0)
         t_writestring("(no disk filesystems mounted - use 'mount' to mount FAT32)\n");
@@ -290,6 +314,27 @@ const char *vfs_getcwd(void)
     return cwd_buf();
 }
 
+/* Set the /mnt component the FAT32 volume is reachable at.  `name` is a
+ * single component (no slashes); NULL/empty resets to the default "hd".
+ * Rejected silently if it contains a '/' or overflows the buffer. */
+void vfs_set_hd_mount(const char *name)
+{
+    if (!name || !*name) {
+        memcpy(s_hd_mount, "hd", 3);
+        return;
+    }
+    for (const char *q = name; *q; q++)
+        if (*q == '/') return;
+    if (strlen(name) >= VFS_MOUNT_NAME_MAX) return;
+    strncpy(s_hd_mount, name, VFS_MOUNT_NAME_MAX - 1);
+    s_hd_mount[VFS_MOUNT_NAME_MAX - 1] = '\0';
+}
+
+const char *vfs_hd_mount(void)
+{
+    return s_hd_mount;
+}
+
 /*
  * vfs_notify_hd_mounted / _unmounted / _cdrom_ejected
  *
@@ -303,16 +348,35 @@ const char *vfs_getcwd(void)
  * s_boot_cwd is rewritten directly so the same rules apply during the
  * vfs_init / vfs_auto_mount window.
  */
+/* Compose the canonical mount path "/mnt/<name>" into a small buffer. */
+static void hd_mount_path(char *out, size_t outsz)
+{
+    /* outsz is always >= sizeof("/mnt/") + VFS_MOUNT_NAME_MAX here. */
+    int n = 0;
+    const char *pre = "/mnt/";
+    while (pre[n] && n < (int)outsz - 1) { out[n] = pre[n]; n++; }
+    for (int i = 0; s_hd_mount[i] && n < (int)outsz - 1; i++)
+        out[n++] = s_hd_mount[i];
+    out[n] = '\0';
+}
+
 static void fixup_cwd_hd_mounted(char *cwd)
 {
-    if (strcmp(cwd, "/") == 0)
-        memcpy(cwd, "/mnt/hd", 8);  /* includes NUL */
+    if (strcmp(cwd, "/") == 0) {
+        char mp[VFS_MOUNT_NAME_MAX + 8];
+        hd_mount_path(mp, sizeof(mp));
+        memcpy(cwd, mp, strlen(mp) + 1);
+    }
 }
 
 static void fixup_cwd_hd_unmounted(char *cwd)
 {
-    /* Match the canonical /mnt/hd as well as the bare /hd alias. */
-    if (strcmp(cwd, "/mnt/hd") == 0 || strncmp(cwd, "/mnt/hd/", 8) == 0 ||
+    /* Match the canonical /mnt/<name> as well as the bare /hd alias. */
+    char mp[VFS_MOUNT_NAME_MAX + 8];
+    hd_mount_path(mp, sizeof(mp));
+    size_t mlen = strlen(mp);
+    if (strcmp(cwd, mp) == 0 ||
+        (strncmp(cwd, mp, mlen) == 0 && cwd[mlen] == '/') ||
         (cwd[1] == 'h' && cwd[2] == 'd' && (cwd[3] == '/' || cwd[3] == '\0'))) {
         cwd[0] = '/';
         cwd[1] = '\0';

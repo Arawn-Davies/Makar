@@ -77,8 +77,14 @@ void vfs_notify_cdrom_ejected(void);
  * Current working directory
  * ---------------------------------------------------------------------- */
 
-/* Return a pointer to the current VFS path (e.g. "/hd/boot/grub"). */
+/* Return a pointer to the current VFS path (e.g. "/mnt/hd/boot/grub"). */
 const char *vfs_getcwd(void);
+
+/* Get/set the /mnt component the single FAT32 volume is reachable at.
+ * Default "hd".  `mount /dev/hdaN /mnt/<name>` sets it; umount resets it.
+ * `name` must be a single component (no '/'); empty/NULL resets to "hd". */
+void        vfs_set_hd_mount(const char *name);
+const char *vfs_hd_mount(void);
 
 /* -------------------------------------------------------------------------
  * Filesystem operations

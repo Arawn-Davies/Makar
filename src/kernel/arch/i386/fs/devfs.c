@@ -136,6 +136,14 @@ int devfs_node_readonly(int idx)
     return s_nodes[idx].readonly ? 1 : 0;
 }
 
+int devfs_node_location(int idx, uint8_t *out_drive, uint32_t *out_base_lba)
+{
+    if (idx < 0 || idx >= s_count) return -1;
+    if (out_drive)    *out_drive    = s_nodes[idx].drive;
+    if (out_base_lba) *out_base_lba = s_nodes[idx].base_lba;
+    return 0;
+}
+
 /* ------------------------------------------------------------------------- */
 
 static int read_native_sector(const dev_node_t *n, uint32_t lba, void *sec)
