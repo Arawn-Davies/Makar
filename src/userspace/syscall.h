@@ -6,6 +6,9 @@
 #define SYS_FORK       2
 #define SYS_READ       3
 #define SYS_EXECVE     11
+#define SYS_WAIT4      114
+/* wait4 `options` flags */
+#define WNOHANG        1
 #define SYS_WRITE      4
 #define SYS_OPEN       5
 #define SYS_CLOSE      6
@@ -177,6 +180,27 @@ static inline int sys_fork(void)
     __asm__ volatile ("int $0x80"
         : "=a"(ret) : "0"((long)SYS_FORK) : "memory");
     return (int)ret;
+}
+
+/* wait4(2): block until a child task becomes a zombie; write its
+ * exit status into *status (if non-NULL) and return the child's pid.
+ *
+ *   pid > 0   -- wait for exactly that child
+ *   pid == -1 -- wait for any child
+ *   options   -- WNOHANG returns 0 immediately if no zombie is ready
+ *
+ * Returns child pid on success, 0 if WNOHANG and no zombie, or
+ * negative errno (-ECHILD if the caller has no children).  rusage is
+ * not implemented (always pass NULL / ignored). */
+static inline int sys_wait4(int pid, int *status, int options)
+{
+    return (int)syscall3(SYS_WAIT4, (long)pid, (long)status, (long)options);
+}
+
+/* wait(2): POSIX shorthand for wait4(-1, status, 0). */
+static inline int sys_wait(int *status)
+{
+    return sys_wait4(-1, status, 0);
 }
 
 /* execve(2): replace the calling task's address space with the ELF at

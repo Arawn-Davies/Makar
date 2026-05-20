@@ -233,6 +233,8 @@ task_t *task_create(const char *name, void (*entry)(void))
     t->name        = name;
     t->user_brk    = 0;
     t->pid         = next_pid++;
+    t->parent_pid  = current_task ? current_task->pid : 0;
+    t->exit_status = 0;
     t->kticks      = 0;
     t->unkillable  = 0;     /* default: ordinary task, no protection   */
     t->fb_touched  = 0;     /* clean slate even when reclaiming a DEAD slot
@@ -354,6 +356,8 @@ task_t *task_fork(registers_t *parent_regs)
     t->name        = current_task->name;     /* same image */
     t->user_brk    = current_task->user_brk;
     t->pid         = next_pid++;
+    t->parent_pid  = current_task->pid;       /* fork: parent is the caller */
+    t->exit_status = 0;
     t->kticks      = 0;
     t->unkillable  = 0;
     t->fb_touched  = current_task->fb_touched;
@@ -561,8 +565,29 @@ void task_yield(void)
 void __attribute__((noreturn)) task_exit(void)
 {
     disable_interrupts();
-    if (current_task)
-        current_task->state = TASK_DEAD;
+    if (current_task) {
+        /* Auto-reap any of our own zombie children -- they have no
+         * surviving wait4-er to clean them up. */
+        for (int i = 1; i < task_pool_count; i++) {
+            task_t *c = &task_pool[i];
+            if (c->state == TASK_ZOMBIE && c->parent_pid == current_task->pid)
+                c->state = TASK_DEAD;
+        }
+
+        /* Decide whether to leave a zombie behind for wait4.  Only
+         * makes sense when the parent is a live ring-3 task that
+         * could plausibly issue SYS_WAIT4.  Kernel-internal tasks
+         * (shell/idle, page_dir == kernel_pd) don't wait4, so their
+         * children go straight to DEAD and free their pool slot
+         * immediately on next task_create. */
+        int leave_zombie = 0;
+        if (current_task->parent_pid > 0) {
+            task_t *p = task_by_pid(current_task->parent_pid);
+            if (p && p->page_dir && p->page_dir != paging_kernel_pd())
+                leave_zombie = 1;
+        }
+        current_task->state = leave_zombie ? TASK_ZOMBIE : TASK_DEAD;
+    }
     enable_interrupts();
 
     /* Keep rescheduling until another runnable task takes over. */

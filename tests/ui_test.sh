@@ -671,9 +671,10 @@ sendkey ret" \
         "[forktest] PARENT-PRE sentinel=0xAA550000 p1=0x11110000 p2=0x22220000 p3=0x33330000 p4=0x44440000" \
         "[forktest] CHILD-SAW sentinel=0xAA550000 p1=0x11110000 p2=0x22220000 p3=0x33330000 p4=0x44440000" \
         "[forktest] CHILD-WROTE sentinel=0xC0DEBABE p1=0xDEAD0001 p2=0xDEAD0002 p3=0xDEAD0003 p4=0xDEAD0004" \
+        "[forktest] REAPED" \
+        "status=42" \
         "[forktest] PARENT-POST" \
-        "sentinel=0xAA550000 p1=0x11110000 p2=0x22220000 p3=0x33330000 p4=0x44440000" \
-        "status=42"
+        "sentinel=0xAA550000 p1=0x11110000 p2=0x22220000 p3=0x33330000 p4=0x44440000"
 }
 
 test_fork_execve() {
@@ -722,6 +723,8 @@ sendkey ret" \
     assert_serial_contains \
         "[execve-test] PRE-EXEC" \
         "Hello, execve-tester!" \
+        "[execve-test] REAPED" \
+        "status=0" \
         "[execve-test] POST-EXEC"
 }
 

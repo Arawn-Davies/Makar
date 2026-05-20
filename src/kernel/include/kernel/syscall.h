@@ -20,6 +20,7 @@
 #define SYS_CLOSE      6    /* int close(int fd)                                */
 #define SYS_EXECVE     11   /* int execve(const char *path, char *const argv[], char *const envp[]) */
 #define SYS_LSEEK      19   /* off_t lseek(int fd, off_t offset, int whence)   */
+#define SYS_WAIT4      114  /* pid_t wait4(pid, int *status, int options, void *rusage) */
 #define SYS_KILL       37   /* int kill(int pid, int signo)                     */
 #define SYS_BRK        45   /* void *brk(void *addr)                            */
 #define SYS_SIGNAL     48   /* sig_handler_t signal(int signo, sig_handler_t)   */

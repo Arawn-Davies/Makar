@@ -20,6 +20,12 @@ typedef enum {
     TASK_READY   = 0,
     TASK_RUNNING = 1,
     TASK_DEAD    = 2,
+    /* TASK_ZOMBIE -- task has called task_exit but its parent hasn't yet
+     * wait4'd it.  Slot is held with exit_status preserved; PD is
+     * reaped on the next schedule() (same logic as DEAD).  Distinguished
+     * from DEAD so task_create's reclaim path won't reuse the slot
+     * before the parent reads the status. */
+    TASK_ZOMBIE  = 3,
 } task_state_t;
 
 typedef struct task {
@@ -35,6 +41,12 @@ typedef struct task {
 
     /* --- identity --- */
     int           pid;       /* unique, monotonically increasing; idle task = 1   */
+    int           parent_pid;/* pid of creating task (0 = no parent / kernel)     */
+
+    /* --- exit ---
+     * Filled in by SYS_EXIT before transitioning to TASK_ZOMBIE; read by
+     * a wait4-ing parent via SYS_WAIT4. */
+    int           exit_status;
 
     /* --- user memory --- */
     uint32_t      user_brk;  /* current user-space heap break (0 = not a user process) */

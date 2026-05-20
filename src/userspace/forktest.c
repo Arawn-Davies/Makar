@@ -131,9 +131,17 @@ int main(int argc, char **argv, char **envp)
         sys_exit(CHILD_EXIT_STATUS);
     }
 
-    /* PARENT: yield a few times so the child can run + exit before we
-     * sample.  No wait(2) yet; this is good enough for the COW proof. */
-    for (int i = 0; i < 64; i++) sys_yield();
+    /* PARENT: wait4 the child instead of busy-yielding (slice 13b).
+     * Blocks until child becomes a zombie and writes its exit status
+     * into our local int.  Status should be CHILD_EXIT_STATUS (=42)
+     * round-tripped through SYS_EXIT -> task_t.exit_status -> wait4. */
+    int status = -1;
+    int rpid   = sys_wait4(pid, &status, 0);
+    write_str(2, "[forktest] REAPED pid=");
+    write_dec(2, rpid);
+    write_str(2, " status=");
+    write_dec(2, status);
+    write_str(2, "\n");
 
     write_str(2, "[forktest] PARENT-POST child_pid=");
     write_dec(2, pid);

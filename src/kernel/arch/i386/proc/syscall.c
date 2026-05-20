@@ -92,12 +92,72 @@ void syscall_dispatch(registers_t *regs)
      * ------------------------------------------------------------------ */
     case SYS_EXIT: {
         task_t *t = task_current();
+        if (t) t->exit_status = (int)regs->ebx;
         Serial_WriteString("[sys_exit] task pid=");
         Serial_WriteDec(t ? (uint32_t)t->pid : 0u);
         Serial_WriteString(" status=");
         Serial_WriteDec((uint32_t)regs->ebx);
         Serial_WriteString(" -> task_exit()\n");
         task_exit();   /* does not return */
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_WAIT4(114): reap a child task.
+     *   EBX = pid (-1 = any child, > 0 = specific child)
+     *   ECX = int *status (writable; may be NULL)
+     *   EDX = options (WNOHANG = 1)
+     *   ESI = rusage* (ignored)
+     *
+     * Behaviour:
+     *   - scan task pool for the caller's children (parent_pid == me->pid)
+     *   - if a matching ZOMBIE is found: copy out exit_status, transition
+     *     to DEAD (slot becomes reclaimable), return its pid
+     *   - if no zombies but caller has live children and !WNOHANG: yield
+     *     and retry
+     *   - if WNOHANG and no zombies: return 0
+     *   - if no children at all: return -ECHILD
+     * ------------------------------------------------------------------ */
+    case SYS_WAIT4: {
+        int   want_pid = (int)regs->ebx;
+        int  *ustatus  = (int *)(uintptr_t)regs->ecx;
+        int   options  = (int)regs->edx;
+
+        task_t *me = task_current();
+        if (!me) { regs->eax = (uint32_t)-1; break; }
+
+        for (;;) {
+            int has_children = 0;
+            int reaped       = 0;
+            for (int i = 0; i < task_count(); i++) {
+                task_t *c = task_get(i);
+                if (!c) continue;
+                if (c->parent_pid != me->pid) continue;
+                if (c->state == TASK_DEAD)    continue;
+                has_children = 1;
+                if (c->state == TASK_ZOMBIE &&
+                    (want_pid < 0 || c->pid == want_pid)) {
+                    if (ustatus)
+                        *ustatus = c->exit_status;
+                    int cpid = c->pid;
+                    c->state = TASK_DEAD;
+                    regs->eax = (uint32_t)cpid;
+                    Serial_WriteString("[sys_wait4] parent pid=");
+                    Serial_WriteDec((uint32_t)me->pid);
+                    Serial_WriteString(" reaped child pid=");
+                    Serial_WriteDec((uint32_t)cpid);
+                    Serial_WriteString(" status=");
+                    Serial_WriteDec((uint32_t)c->exit_status);
+                    Serial_WriteString("\n");
+                    reaped = 1;
+                    break;
+                }
+            }
+            if (reaped) break;
+            if (!has_children) { regs->eax = (uint32_t)-10; break; }   /* -ECHILD */
+            if (options & 1)   { regs->eax = 0; break; }               /* WNOHANG */
+            task_yield();
+        }
         break;
     }
 

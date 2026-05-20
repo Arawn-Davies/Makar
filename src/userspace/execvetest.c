@@ -66,9 +66,20 @@ int main(int argc, char **argv, char **envp)
         sys_exit(2);
     }
 
-    /* PARENT: yield until child has had a chance to load + run hello +
-     * exit.  Without wait4(2), this is the best we can do. */
-    for (int i = 0; i < 96; i++) sys_yield();
+    /* PARENT: wait4 the child.  Blocks until the child becomes a
+     * zombie (i.e. has called SYS_EXIT after execve'd hello.elf
+     * finishes), then writes the exit status into our local int and
+     * returns the child's pid.  Without slice 13b's wait4, we used
+     * to spin-yield here -- which mostly worked but couldn't observe
+     * the exit status.  */
+    int status = -1;
+    int rpid   = sys_wait4(pid, &status, 0);
+
+    write_str(2, "[execve-test] REAPED pid=");
+    write_dec(2, rpid);
+    write_str(2, " status=");
+    write_dec(2, status);
+    write_str(2, "\n");
 
     write_str(2, "[execve-test] POST-EXEC parent_pid_alive child_was=");
     write_dec(2, pid);
