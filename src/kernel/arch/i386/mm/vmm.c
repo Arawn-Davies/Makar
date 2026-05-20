@@ -86,6 +86,86 @@ void vmm_switch(uint32_t *pd)
  * only hands out frames within this identity-mapped window. */
 #define VMM_KERNEL_IDMAP_END 0x10000000u
 
+uint32_t *vmm_clone_pd_cow(uint32_t *parent_pd)
+{
+    uint32_t *kpd = paging_kernel_pd();
+
+    /* Child PD: zero, then mirror kernel PDEs.  User PDEs filled below. */
+    uint32_t child_phys = pmm_alloc_frame();
+    if (child_phys == PMM_ALLOC_ERROR)
+        return NULL;
+    uint32_t *child = (uint32_t *)child_phys;
+    memset(child, 0, PMM_FRAME_SIZE);
+    for (uint32_t i = 0; i < 1024; i++) {
+        if (kpd[i])
+            child[i] = kpd[i];
+    }
+
+    /* Walk parent's user PDEs and clone any that diverge from kpd. */
+    for (uint32_t pdi = 0; pdi < 1024; pdi++) {
+        uint32_t ppde = parent_pd[pdi];
+
+        if (!(ppde & PAGE_PRESENT) || (ppde & PAGE_LARGE))
+            continue;
+        /* PDE shared with kernel - already mirrored above, nothing to clone. */
+        if (ppde == kpd[pdi])
+            continue;
+
+        uint32_t parent_pt_phys = ppde & ~0xFFFu;
+        if (parent_pt_phys == 0 || parent_pt_phys >= VMM_KERNEL_IDMAP_END)
+            continue;  /* corrupt parent PDE - skip, same defence as vmm_free_pd */
+
+        uint32_t *parent_pt = (uint32_t *)parent_pt_phys;
+
+        /* Allocate child PT.  On failure, unwind everything allocated so far. */
+        uint32_t child_pt_phys = pmm_alloc_frame();
+        if (child_pt_phys == PMM_ALLOC_ERROR) {
+            vmm_free_pd(child);
+            return NULL;
+        }
+        uint32_t *child_pt = (uint32_t *)child_pt_phys;
+        memset(child_pt, 0, PMM_FRAME_SIZE);
+
+        for (uint32_t pti = 0; pti < 1024; pti++) {
+            uint32_t pte = parent_pt[pti];
+            if (!(pte & PAGE_PRESENT))
+                continue;
+
+            uint32_t frame = pte & ~0xFFFu;
+
+            if (pte & PAGE_USER) {
+                /* COW: parent + child share one frame, both read-only. */
+                pmm_inc_ref(frame);
+                uint32_t cow_pte = (pte & ~PAGE_WRITABLE) | VMM_PTE_COW;
+                parent_pt[pti] = cow_pte;
+                child_pt[pti]  = cow_pte;
+            } else {
+                /* Kernel-only mapping sitting inside a user PT - just mirror.
+                 * No refcount bump: the kernel never frees these via PMM
+                 * during normal task teardown.  (vmm_free_pd does call
+                 * pmm_free_frame on every present PTE, but kernel frames
+                 * never go through pmm_alloc so their refcount stays 0 and
+                 * pmm_free_frame becomes a no-op with a serial warning.
+                 * In practice this branch should be unreachable.) */
+                child_pt[pti] = pte;
+            }
+        }
+
+        /* PDE flags from the parent, pointing at child's new PT. */
+        child[pdi] = child_pt_phys | (ppde & 0xFFFu);
+    }
+
+    /* If parent is currently active, flush the TLB so the freshly-RO
+     * PTEs take effect (otherwise the next parent write would silently
+     * succeed against a cached writable TLB entry). */
+    uint32_t cr3;
+    asm volatile("mov %%cr3, %0" : "=r"(cr3));
+    if (cr3 == (uint32_t)parent_pd)
+        asm volatile("mov %0, %%cr3" :: "r"(cr3) : "memory");
+
+    return child;
+}
+
 void vmm_free_pd(uint32_t *pd)
 {
     uint32_t *kpd = paging_kernel_pd();

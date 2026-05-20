@@ -3,7 +3,12 @@
 
 /* Syscall numbers - Linux i386 ABI subset + Makar extensions. */
 #define SYS_EXIT       1
+#define SYS_FORK       2
 #define SYS_READ       3
+#define SYS_EXECVE     11
+#define SYS_WAIT4      114
+/* wait4 `options` flags */
+#define WNOHANG        1
 #define SYS_WRITE      4
 #define SYS_OPEN       5
 #define SYS_CLOSE      6
@@ -164,6 +169,52 @@ static inline void sys_exit(int status)
 {
     syscall1(SYS_EXIT, (long)status);
     __builtin_unreachable();
+}
+
+/* fork(2): clone the calling process via COW.  Returns child pid in the
+ * parent, 0 in the child, or a negative errno on failure (typically
+ * -EAGAIN if the task pool is full or PMM is exhausted). */
+static inline int sys_fork(void)
+{
+    long ret;
+    __asm__ volatile ("int $0x80"
+        : "=a"(ret) : "0"((long)SYS_FORK) : "memory");
+    return (int)ret;
+}
+
+/* wait4(2): block until a child task becomes a zombie; write its
+ * exit status into *status (if non-NULL) and return the child's pid.
+ *
+ *   pid > 0   -- wait for exactly that child
+ *   pid == -1 -- wait for any child
+ *   options   -- WNOHANG returns 0 immediately if no zombie is ready
+ *
+ * Returns child pid on success, 0 if WNOHANG and no zombie, or
+ * negative errno (-ECHILD if the caller has no children).  rusage is
+ * not implemented (always pass NULL / ignored). */
+static inline int sys_wait4(int pid, int *status, int options)
+{
+    return (int)syscall3(SYS_WAIT4, (long)pid, (long)status, (long)options);
+}
+
+/* wait(2): POSIX shorthand for wait4(-1, status, 0). */
+static inline int sys_wait(int *status)
+{
+    return sys_wait4(-1, status, 0);
+}
+
+/* execve(2): replace the calling task's address space with the ELF at
+ * `path`.  argv is a NULL-terminated array of pointers to argument
+ * strings (POSIX convention; argv[0] is the program name).  envp is
+ * currently ignored by the kernel -- pass NULL.
+ *
+ * On success this call does NOT return: control resumes at the new
+ * ELF's entry point with argc/argv/envp on the user stack.  On failure
+ * (file not found, malformed ELF, OOM) returns negative errno and the
+ * original address space is still active. */
+static inline int sys_execve(const char *path, char *const argv[], char *const envp[])
+{
+    return (int)syscall3(SYS_EXECVE, (long)path, (long)argv, (long)envp);
 }
 
 static inline long sys_read(int fd, void *buf, unsigned int len)

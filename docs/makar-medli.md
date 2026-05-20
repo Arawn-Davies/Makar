@@ -19,7 +19,7 @@ UX conventions, command vocabulary, and (eventually) binary formats.
 | **Target** | i686, ELF32, multiboot 2 (GRUB) | x86, Cosmos PE |
 | **Repo** | [Arawn-Davies/Makar](https://github.com/Arawn-Davies/Makar) | [Arawn-Davies/Medli](https://github.com/Arawn-Davies/Medli) |
 | **Path separator** | `/` (Unix) | `\` (DOS-style, `Paths.Separator = @"\"`) |
-| **Current version** | 0.6.0 | (see Medli repo) |
+| **Current version** | 0.7.0 | (see Medli repo) |
 
 The path-separator divergence is **intentional** — Makar follows
 Linux/Unix conventions because that is what the C tooling, FAT32 LFN
@@ -160,27 +160,34 @@ Mapped to Medli co-operation:
 - [x] **Serial console** — Linux-style: `console=ttyS0` cmdline opts
       into TTY-mirroring; default keeps COM1 quiet (dmesg-only).
 
-### In flight
+### Shipped (was in flight)
 
-- [ ] **Per-task FD table** — replace global keyboard owner +
-      placeholder `fd_table` with a real per-task array (Slice 14).
-      Prerequisite for pipe(2), dup(2), and any libc port.
-- [ ] **Linux-style signals** — `task->sig_pending` exists; need
-      sigaction table, `kill()` syscall, default disposition (Slice 8).
-- [ ] **VFS `task->cwd` authoritative** — drop the global `s_cwd` in
-      `vfs.c` (Slice 15).
+- [x] **Per-task FD table** — real per-task `fd_table_t` with fds
+      0/1/2 pre-bound (Slice 12).
+- [x] **Linux-style signals** — per-task sigaction table, `SYS_KILL`,
+      `SYS_SIGNAL`, ring-3 trampoline + `SYS_SIGRETURN` (Slice 9).
+- [x] **VFS `task->cwd` authoritative** — `s_cwd` global removed
+      from `vfs.c`; relative paths resolved against
+      `task_current()->cwd` (Slice 13).
+- [x] **fork() + execve + wait4** — copy-on-write page-table clone,
+      execve replaces caller's address space with a new ELF, wait4
+      reaps zombies and round-trips `exit_status` (Slices 15-16).
+      The "Slice 12" of the old roadmap; renumbered after slice
+      queue cleanup.
 
 ### Medium-term
 
 - [ ] **COM loader** — for cross-OS COM binaries.
 - [ ] **MXF executable format** — joint specification with Medli.
-- [ ] **fork() / posix_spawn** — COW page-table clone (Slice 12).
+- [ ] **Userland shell (`sh.elf`)** — lift the in-kernel shell into a
+      ring-3 ELF that uses fork+execve+wait4 (Slice 20, multi-PR;
+      paused pending scope re-confirmation).
 - [ ] **User accounts** — `root`, `guest` stored in
       `/System/Data/usrinfo.sys`, format compatible with Medli's
       `usrinfo.sys`.
 - [ ] **VGA-fallback per-TTY buffers** — route `tty.c` writes through
       `vt_buf` so VGA text mode gets the same per-TTY isolation as
-      VESA (Slice 16).
+      VESA (Slice 19).
 
 ### Long-term
 

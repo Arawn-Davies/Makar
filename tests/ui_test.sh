@@ -628,6 +628,106 @@ sendkey ret'
     assert_serial_contains "[makbox:pwd]"
 }
 
+test_fork_cow() {
+    # Slice 12d: SYS_FORK + COW.  forktest.elf snapshots a global sentinel,
+    # forks, child reads (must match parent's value -- proves COW visibility),
+    # child overwrites + exits, parent yields and reads its own view (must
+    # still be the original value -- proves the COW fault gave parent its
+    # own private frame).
+    reset_shell
+    it "fork-cow" \
+"sendkey e
+sendkey x
+sendkey e
+sendkey c
+sendkey spc
+sendkey slash
+sendkey c
+sendkey d
+sendkey r
+sendkey o
+sendkey m
+sendkey slash
+sendkey a
+sendkey p
+sendkey p
+sendkey s
+sendkey slash
+sendkey f
+sendkey o
+sendkey r
+sendkey k
+sendkey t
+sendkey e
+sendkey s
+sendkey t
+sendkey dot
+sendkey e
+sendkey l
+sendkey f
+sendkey ret" \
+        3.0
+    assert_serial_contains \
+        "[forktest] PARENT-PRE sentinel=0xAA550000 p1=0x11110000 p2=0x22220000 p3=0x33330000 p4=0x44440000" \
+        "[forktest] CHILD-SAW sentinel=0xAA550000 p1=0x11110000 p2=0x22220000 p3=0x33330000 p4=0x44440000" \
+        "[forktest] CHILD-WROTE sentinel=0xC0DEBABE p1=0xDEAD0001 p2=0xDEAD0002 p3=0xDEAD0003 p4=0xDEAD0004" \
+        "[forktest] REAPED" \
+        "status=42" \
+        "[forktest] PARENT-POST" \
+        "sentinel=0xAA550000 p1=0x11110000 p2=0x22220000 p3=0x33330000 p4=0x44440000"
+}
+
+test_fork_execve() {
+    # Slice 13a: SYS_EXECVE.  execvetest.elf forks, child execve's
+    # hello.elf with argv[1]="execve-tester".  Asserts:
+    #   - parent's PRE-EXEC marker prints (before fork)
+    #   - hello.elf's argv-driven greeting prints (inside child, after
+    #     execve replaced the address space)
+    #   - parent's POST-EXEC marker prints (parent's PD intact, lived
+    #     through the child's image swap)
+    reset_shell
+    it "fork-execve" \
+"sendkey e
+sendkey x
+sendkey e
+sendkey c
+sendkey spc
+sendkey slash
+sendkey c
+sendkey d
+sendkey r
+sendkey o
+sendkey m
+sendkey slash
+sendkey a
+sendkey p
+sendkey p
+sendkey s
+sendkey slash
+sendkey e
+sendkey x
+sendkey e
+sendkey c
+sendkey v
+sendkey e
+sendkey t
+sendkey e
+sendkey s
+sendkey t
+sendkey dot
+sendkey e
+sendkey l
+sendkey f
+sendkey ret" \
+        3.5
+    assert_serial_contains \
+        "[execve-test] PRE-EXEC" \
+        "Hello, execve-tester!" \
+        "[execve-test] REAPED" \
+        "status=0" \
+        "[execve-test] POST-EXEC"
+}
+
 test_user_sigusr1_handler() {
     # Slice 8 phase 4: ring-3 trampoline + sigreturn lets sys_signal(2)
     # actually invoke a user-installed handler.  sigtest.elf installs a
@@ -785,7 +885,7 @@ sendkey dot
 sendkey s
 sendkey h
 sendkey ret" \
-        12
+        25
     assert_serial_contains \
         "Makar shell-script demo" \
         "cwd-ok" \
@@ -1024,7 +1124,7 @@ sendkey ret'
 
 # --- Driver -----------------------------------------------------------------
 
-ALL_TESTS=(glob_proc tab_path exec_hello cd_root per_tty_cwd calc_brackets ctrlc_kills_child no_dead_in_proctasks typo_doesnt_clear vt_roundtrip_keeps_maktop_focused vt_all_roundtrips user_sigusr1_handler makbox_pwd shell_scripting_vars demo_script bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch)
+ALL_TESTS=(glob_proc tab_path exec_hello cd_root per_tty_cwd calc_brackets ctrlc_kills_child no_dead_in_proctasks typo_doesnt_clear vt_roundtrip_keeps_maktop_focused vt_all_roundtrips fork_cow fork_execve user_sigusr1_handler makbox_pwd shell_scripting_vars demo_script bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch)
 
 declare -a TO_RUN
 if [ $# -eq 0 ]; then

@@ -237,6 +237,32 @@ static void test_pmm(void)
     pmm_free_frame(f2);
     pmm_free_frame(f4);
 
+    /* --- refcount semantics (slice 12a, fork+COW prep) --- */
+    uint32_t rc_fc = pmm_free_count();
+    uint32_t rf = pmm_alloc_frame();
+    KTEST_ASSERT(rf != PMM_ALLOC_ERROR);
+    KTEST_ASSERT(pmm_ref_count(rf) == 1);
+    KTEST_ASSERT(pmm_free_count() == rc_fc - 1);
+
+    /* Bump to 3 owners. */
+    pmm_inc_ref(rf);
+    pmm_inc_ref(rf);
+    KTEST_ASSERT(pmm_ref_count(rf) == 3);
+
+    /* Two frees drop refcount to 1 but DON'T release the frame. */
+    pmm_free_frame(rf);
+    pmm_free_frame(rf);
+    KTEST_ASSERT(pmm_ref_count(rf) == 1);
+    KTEST_ASSERT(pmm_free_count() == rc_fc - 1);
+
+    /* Final free releases the frame and makes it re-allocatable. */
+    pmm_free_frame(rf);
+    KTEST_ASSERT(pmm_ref_count(rf) == 0);
+    KTEST_ASSERT(pmm_free_count() == rc_fc);
+    uint32_t rf2 = pmm_alloc_frame();
+    KTEST_ASSERT(rf2 == rf);
+    pmm_free_frame(rf2);
+
     ktest_summary();
 }
 
@@ -375,6 +401,132 @@ static void test_vmm(void)
     uint32_t fc_before = pmm_free_count();
     vmm_free_pd(pd);                           /* frees phys + PT + PD = 3 */
     KTEST_ASSERT(pmm_free_count() == fc_before + 3);
+
+    /* --- COW clone (slice 12b) ---
+     * Build a parent PD with one writable user page, clone it, and verify:
+     *   - both parent and child PTEs are now RO + COW-tagged
+     *   - the shared frame's refcount is 2
+     *   - freeing the child drops refcount to 1 (frame still owned by parent)
+     *   - freeing the parent drops refcount to 0 (frame actually released) */
+    uint32_t *parent = vmm_create_pd();
+    KTEST_ASSERT(parent != NULL);
+
+    uint32_t cow_phys = pmm_alloc_frame();
+    KTEST_ASSERT(cow_phys != PMM_ALLOC_ERROR);
+    KTEST_ASSERT(pmm_ref_count(cow_phys) == 1);
+
+    uint32_t cow_virt = 0x40002000u;
+    uint32_t cow_pdi  = cow_virt >> 22;
+    uint32_t cow_pti  = (cow_virt >> 12) & 0x3FFu;
+    vmm_map_page(parent, cow_virt, cow_phys, VMM_FLAG_USER | VMM_FLAG_WRITABLE);
+
+    uint32_t *child = vmm_clone_pd_cow(parent);
+    KTEST_ASSERT(child != NULL);
+    KTEST_ASSERT(child != parent);
+
+    uint32_t *p_pt = (uint32_t *)(parent[cow_pdi] & ~0xFFFu);
+    uint32_t *c_pt = (uint32_t *)(child[cow_pdi]  & ~0xFFFu);
+    KTEST_ASSERT(p_pt != c_pt);  /* child got a fresh PT frame */
+
+    /* Both PTEs lost WRITABLE and gained the COW bit. */
+    KTEST_ASSERT((p_pt[cow_pti] & 0x2u) == 0);
+    KTEST_ASSERT((p_pt[cow_pti] & VMM_PTE_COW) != 0);
+    KTEST_ASSERT((c_pt[cow_pti] & 0x2u) == 0);
+    KTEST_ASSERT((c_pt[cow_pti] & VMM_PTE_COW) != 0);
+
+    /* Both point at the same physical frame, now refcount=2. */
+    KTEST_ASSERT((p_pt[cow_pti] & ~0xFFFu) == cow_phys);
+    KTEST_ASSERT((c_pt[cow_pti] & ~0xFFFu) == cow_phys);
+    KTEST_ASSERT(pmm_ref_count(cow_phys) == 2);
+
+    /* Free child first: refcount drops to 1, frame still owned by parent. */
+    vmm_free_pd(child);
+    KTEST_ASSERT(pmm_ref_count(cow_phys) == 1);
+
+    /* Free parent: refcount drops to 0, frame released to the pool. */
+    vmm_free_pd(parent);
+    KTEST_ASSERT(pmm_ref_count(cow_phys) == 0);
+
+    /* --- COW #PF resolution (slice 12c) ---
+     * End-to-end: set up a parent PD with a writable user page, fill it
+     * with a sentinel, COW-clone, switch to the parent's PD, write to
+     * the shared page from kernel mode (which takes a #PF and goes
+     * through try_handle_cow_fault), then verify:
+     *   - the write succeeded (parent's page now holds the new value)
+     *   - the child's PTE still points at the original frame, unchanged
+     *   - refcount on the original frame is back to 1 (parent got a
+     *     fresh copy via the slow path)
+     *
+     * Note: this exercises the slow path because rc=2 at fault time.
+     * The fast path (rc==1, just flip RW) is taken implicitly whenever
+     * an exec'd ELF writes to its own data section after the page got
+     * COW-marked during a fork that the other side already exited from. */
+    uint32_t *cow_parent = vmm_create_pd();
+    KTEST_ASSERT(cow_parent != NULL);
+    uint32_t orig_phys = pmm_alloc_frame();
+    KTEST_ASSERT(orig_phys != PMM_ALLOC_ERROR);
+
+    /* Fill the frame with a sentinel via its kernel identity mapping. */
+    volatile uint32_t *orig_words = (volatile uint32_t *)orig_phys;
+    for (int i = 0; i < 1024; i++) orig_words[i] = 0xAA550000u | (uint32_t)i;
+
+    uint32_t cow_va = 0x40004000u;
+    vmm_map_page(cow_parent, cow_va, orig_phys, VMM_FLAG_USER | VMM_FLAG_WRITABLE);
+
+    uint32_t *cow_child = vmm_clone_pd_cow(cow_parent);
+    KTEST_ASSERT(cow_child != NULL);
+    KTEST_ASSERT(pmm_ref_count(orig_phys) == 2);
+
+    /* Switch into the parent's PD so a write through cow_va lands in
+     * the parent's PTE.  Save the original CR3 so we can switch back. */
+    uint32_t saved_cr3;
+    asm volatile("mov %%cr3, %0" : "=r"(saved_cr3));
+    vmm_switch(cow_parent);
+
+    /* This write triggers a #PF (page is RO + COW); the handler must
+     * allocate a fresh frame, copy the contents, and promote the PTE
+     * to RW.  If it doesn't, we'd panic right here. */
+    volatile uint32_t *p = (volatile uint32_t *)cow_va;
+    p[0] = 0xDEADBEEFu;
+    p[7] = 0xCAFEBABEu;
+
+    /* Restore the kernel's PD before walking the test PDs (we'll be
+     * touching their physical frames through their identity-mapped
+     * virtual addresses, which works regardless of CR3). */
+    asm volatile("mov %0, %%cr3" :: "r"(saved_cr3) : "memory");
+
+    uint32_t cow_pdi2 = cow_va >> 22;
+    uint32_t cow_pti2 = (cow_va >> 12) & 0x3FFu;
+    uint32_t *p_pt2 = (uint32_t *)(cow_parent[cow_pdi2] & ~0xFFFu);
+    uint32_t *c_pt2 = (uint32_t *)(cow_child[cow_pdi2]  & ~0xFFFu);
+    uint32_t new_phys = p_pt2[cow_pti2] & ~0xFFFu;
+
+    /* Parent now owns a different frame; child still points at the
+     * original. */
+    KTEST_ASSERT(new_phys != orig_phys);
+    KTEST_ASSERT((c_pt2[cow_pti2] & ~0xFFFu) == orig_phys);
+
+    /* Parent's PTE is writable, COW bit cleared. */
+    KTEST_ASSERT((p_pt2[cow_pti2] & 0x2u) != 0);
+    KTEST_ASSERT((p_pt2[cow_pti2] & VMM_PTE_COW) == 0);
+
+    /* Refcounts: parent's new private frame is 1, original frame
+     * still has one owner (the child). */
+    KTEST_ASSERT(pmm_ref_count(new_phys)  == 1);
+    KTEST_ASSERT(pmm_ref_count(orig_phys) == 1);
+
+    /* Parent's new frame holds the post-write values; original frame
+     * (still owned by child) holds the sentinel. */
+    volatile uint32_t *parent_view = (volatile uint32_t *)new_phys;
+    KTEST_ASSERT(parent_view[0] == 0xDEADBEEFu);
+    KTEST_ASSERT(parent_view[7] == 0xCAFEBABEu);
+    KTEST_ASSERT(orig_words[0]  == 0xAA550000u);
+    KTEST_ASSERT(orig_words[7]  == (0xAA550000u | 7u));
+
+    vmm_free_pd(cow_parent);
+    vmm_free_pd(cow_child);
+    KTEST_ASSERT(pmm_ref_count(new_phys)  == 0);
+    KTEST_ASSERT(pmm_ref_count(orig_phys) == 0);
 
     ktest_summary();
 }

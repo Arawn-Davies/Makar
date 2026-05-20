@@ -36,6 +36,41 @@ void fd_table_destroy(fd_table_t *tbl)
     kfree(tbl);
 }
 
+fd_table_t *fd_table_clone(const fd_table_t *src)
+{
+    if (!src)
+        return NULL;
+    fd_table_t *t = (fd_table_t *)kmalloc(sizeof(*t));
+    if (!t)
+        return NULL;
+    memcpy(t, src, sizeof(*t));
+
+    /* Each FILE slot needs its own buffer so writes/seeks in the child
+     * don't bleed back into the parent's view. */
+    for (int i = 0; i < TASK_MAX_FDS; i++) {
+        if (t->slots[i].kind == FD_KIND_FILE &&
+            t->slots[i].data && t->slots[i].size) {
+            uint8_t *buf = (uint8_t *)kmalloc(t->slots[i].size);
+            if (!buf) {
+                for (int j = 0; j < i; j++) {
+                    if (t->slots[j].kind == FD_KIND_FILE && t->slots[j].data)
+                        kfree(t->slots[j].data);
+                }
+                kfree(t);
+                return NULL;
+            }
+            memcpy(buf, t->slots[i].data, t->slots[i].size);
+            t->slots[i].data = buf;
+        } else if (t->slots[i].kind == FD_KIND_FILE) {
+            /* Defensive: a FILE slot with no buffer is malformed; sever
+             * the alias to the parent's data so close-on-OOM-unwind
+             * doesn't double-free anything. */
+            t->slots[i].data = NULL;
+        }
+    }
+    return t;
+}
+
 int fd_alloc(fd_table_t *tbl)
 {
     if (!tbl)

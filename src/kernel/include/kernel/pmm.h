@@ -17,9 +17,19 @@ void     pmm_init(uint32_t magic, multiboot2_info_t *mbi);
    no free frame is available. */
 uint32_t pmm_alloc_frame(void);
 
-/* Return the physical frame at addr to the free pool.
-   addr must be a value previously returned by pmm_alloc_frame(). */
+/* Drop one reference to the physical frame at addr.
+   When the refcount hits zero the frame is returned to the free pool.
+   addr must be a value previously returned by pmm_alloc_frame(); calling
+   this on a refcount-0 frame is a no-op (warned to serial in DEV_BUILD). */
 void     pmm_free_frame(uint32_t addr);
+
+/* Bump the refcount on a frame already owned by the caller.  Used by the
+ * COW clone path so parent and child share a single physical frame until
+ * one of them writes to it.  Must not be called on a refcount-0 frame. */
+void     pmm_inc_ref(uint32_t addr);
+
+/* Read the current refcount of a frame (0 = free).  Diagnostic / ktest. */
+uint8_t  pmm_ref_count(uint32_t addr);
 
 /* Return the number of frames currently in the free pool. */
 uint32_t pmm_free_count(void);

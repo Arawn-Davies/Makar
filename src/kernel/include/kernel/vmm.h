@@ -40,6 +40,34 @@ void vmm_unmap_page(uint32_t *pd, uint32_t virt);
  */
 void vmm_switch(uint32_t *pd);
 
+/* Software-defined PTE bit, signals a page is currently in COW state.
+ *
+ * The CPU ignores bits 9-11 of a PTE (the "available" bits in the Intel
+ * SDM), so we use bit 9 to remember that a page was made read-only purely
+ * for copy-on-write purposes -- the #PF handler distinguishes a real
+ * read-only-protection fault from a COW fault by checking this bit. */
+#define VMM_PTE_COW   0x200u
+
+/*
+ * vmm_clone_pd_cow – clone a page directory using copy-on-write.
+ *
+ * Allocates a fresh PD, mirrors kernel PDEs (shared, identity-mapped),
+ * and for each user-installed page table:
+ *   - allocates a fresh PT frame in the child
+ *   - for each present PTE in the parent's PT:
+ *       - bumps the frame's refcount via pmm_inc_ref
+ *       - clears PAGE_WRITABLE and sets VMM_PTE_COW in BOTH parent and
+ *         child PTEs (so a write from either task takes a #PF)
+ *       - mirrors the resulting PTE into the child's PT
+ *
+ * If the parent PD is currently loaded in CR3, the TLB is flushed so the
+ * new read-only bits take effect immediately.
+ *
+ * Returns the child PD (physical == virtual), or NULL on PMM exhaustion;
+ * on failure all partially-allocated frames are released.
+ */
+uint32_t *vmm_clone_pd_cow(uint32_t *parent_pd);
+
 /*
  * vmm_free_pd – release all resources owned by a process page directory.
  *

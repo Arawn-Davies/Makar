@@ -10,9 +10,9 @@ permalink: /internals
 This document is for readers who want the *why*. The per-subsystem reference
 pages (`docs/kernel/*.md`) explain *what* each module does; this one walks the
 machine top-to-bottom — CPU state at boot, paging, TLB management, per-task
-address spaces, the scheduler, ring-3 entry, the syscall ABI — and finishes
-with a frank assessment of what stands between the current model and a real
-POSIX/libc userspace (`fork()`, signals under fork, musl/dash).
+address spaces, the scheduler, ring-3 entry, the syscall ABI — and covers
+how Makar's POSIX surface (`fork`, `execve`, `wait4`, signals) is actually
+implemented today, plus what's still missing for a musl/dash port.
 
 i386 protected mode, 32-bit, single CPU. No SMP. No PAE. No long mode.
 The decisions below are pitched for that target.
@@ -382,12 +382,20 @@ their flag flipped under them.
 
 ### Reaper
 
-`task_exit` flips state to `TASK_DEAD` and yields. The next `schedule()`
-that runs on a different PD frees the dead task's PD via `pmm_free_frame`
-(plus the heap-allocated PT pages it owns). We deliberately don't free the
-PD inline because the current CR3 may *be* that PD; the CR3 switch in
-`vmm_switch` must happen before we hand the frame back to the PMM. This is
-exactly the "delayed reaper" pattern Linux uses for `free_task_struct`.
+`task_exit` flips state to `TASK_ZOMBIE` (if the parent is a live ring-3
+task that might `wait4`) or `TASK_DEAD` (otherwise — kernel-internal tasks,
+or orphans whose parent has died) and yields.  See §11.3 for the lifecycle
+state machine.  Either way the next `schedule()` that runs on a different
+PD frees the dead task's PD via `pmm_free_frame` (plus the heap-allocated
+PT pages it owns). We deliberately don't free the PD inline because the
+current CR3 may *be* that PD; the CR3 switch in `vmm_switch` must happen
+before we hand the frame back to the PMM. This is exactly the "delayed
+reaper" pattern Linux uses for `free_task_struct`.
+
+A `TASK_ZOMBIE` task continues to occupy its pool slot (preserving
+`exit_status` for the parent's `wait4`) but has its PD freed by the
+schedule-time reaper exactly the same way; only when the parent reaps it
+does the slot transition to `DEAD` and become reclaimable by `task_create`.
 
 ---
 
@@ -503,152 +511,208 @@ per-CPU timers (irrelevant pre-SMP) and per-IRQ programmable priorities
 
 ---
 
-## 11. The road to fork() and a POSIX libc
+## 11. fork(), execve(), wait4() — how they actually work
 
-This is the section where the hand-waving stops. Below is the actual sequence
-of things that would have to land, in order, for `dash` (or, eventually,
-`bash`) to run.
+This section used to be speculative ("the road to fork()"); slices 15 and 16
+shipped the lot.  What follows documents how each piece is implemented today,
+plus what's still missing for a musl/dash port.
 
-### 11.1 `fork()`: what's actually involved
+### 11.1 `fork()` via copy-on-write (slice 15)
 
-POSIX `fork()` semantics:
-1. Atomically create a child process that is a copy of the parent, except
-   for: a different PID, a different parent PID, copies of all open file
-   descriptors that share the underlying open-file descriptions (so seeks
-   in the child see the parent's seeks), the child sees `fork() == 0`,
-   the parent sees `fork() == child_pid`.
-2. The child's address space is a logical copy of the parent's — same
-   contents, **independent writes**. Almost universally implemented as
-   **copy-on-write**: both PDs share physical frames, both marked
-   read-only, the page-fault handler clones a frame on the first write.
+POSIX `fork()` creates a child that's a logical copy of the parent: same
+contents, independent writes.  The textbook implementation is **copy-on-write**
+— parent and child share physical frames marked read-only, and a `#PF` handler
+clones the frame on the first write.  That's what Makar does.
 
-On Makar today:
+**Per-frame refcounts** (slice 15a, `arch/i386/mm/pmm.c`).  The PMM bitmap
+gained a parallel `uint8_t refcount[PMM_MAX_FRAMES]`.  `pmm_alloc_frame` sets
+refcount=1; `pmm_free_frame` decrements and only releases the bitmap bit when
+the count hits zero; new `pmm_inc_ref` / `pmm_ref_count` complete the API.
+All pre-existing single-owner callers (heap, vmm) keep their behaviour for
+free — they alloc → free with the refcount cycling 0→1→0 just as before.
 
-- **PD clone.** Easy. Walk the parent PD, for each present PTE in the user
-  range allocate a new frame, copy the contents, install in the child PD.
-  CoW is an optimisation, not a correctness requirement.
-- **CoW.** Walk both PDs, set `WRITABLE=0` on every shared PTE, set a custom
-  software bit in the PTE flags (we have three reserved bits, `[11:9]`, that
-  the CPU ignores) marking it CoW. Add a page-fault handler that intercepts
-  W/R=1, P=1, our-cow-bit=1 faults: allocate a new frame, copy, install
-  writable in the faulting PD, decrement a refcount on the original frame,
-  free if zero. The refcount needs a `pmm_ref_inc`/`pmm_ref_dec` API. None
-  of this is novel; it's a 200-line patch with no architectural blockers.
-- **PID allocation.** Today PIDs are dense `pool_index + 2`. `fork()` needs
-  a monotonic counter that doesn't repeat for the lifetime of the system
-  (otherwise `waitpid` can race with PID reuse). Trivial: bump-allocate from
-  a `uint32_t s_next_pid`.
-- **fd-table dup.** The fd table is per-task (`kernel/fd.h`). `fork` must
-  duplicate it, sharing the *open-file descriptions* — i.e., the underlying
-  `vfs_node_t *` + offset state — rather than the descriptors. Today the
-  fd-table entry IS the (kind, vnode, off) tuple, with no separate
-  open-file struct. To make `seek` in the parent visible in the child after
-  fork (POSIX requirement), the open-file state needs to be heap-allocated
-  with a refcount, and the fd entry becomes a pointer to it. ~150 lines.
-- **Return-value split.** The parent returns the child PID; the child
-  returns 0. Our `task_create` returns `task_t *`; the caller of `fork` is
-  the parent (and will see the child PID). The child's first instruction
-  is whatever EIP we put in its saved-register frame; we set EAX=0 in the
-  frame and the saved-EIP to the instruction *after* the `int 0x80` from
-  `fork`. The cleanest model is to enter the child through a small assembly
-  trampoline that loads zero into EAX and jumps to the saved user EIP from
-  the fork-syscall sigframe. Linux does the same.
+**`vmm_clone_pd_cow()`** (slice 15b, `arch/i386/mm/vmm.c`).  Walks the parent
+PD; for each present user PTE: bumps the frame refcount, clears
+`PAGE_WRITABLE`, sets a software COW bit (`VMM_PTE_COW` = PTE bit 9 —
+hardware-ignored, one of the three OS-available bits), mirrors the resulting
+PTE into a freshly-allocated child PT.  Kernel PDEs (shared with `kpd[]`,
+identity-mapped) are passed through as-is.  Reloads CR3 if the parent is
+currently active so the freshly-RO PTEs take effect immediately (otherwise
+the next parent write would silently succeed against a cached writable TLB
+entry).
 
-Estimated effort: **a weekend, plus a week of test-suite hardening**.
+**COW `#PF` handler + `CR0.WP`** (slice 15c, `arch/i386/debug/debug.c`).  The
+page-fault handler now tries `try_handle_cow_fault` before falling through to
+the panic screen:
 
-### 11.2 vfork() vs posix_spawn()
+```
+write fault?  page present?  PTE has VMM_PTE_COW set?
+        ↓ all yes
+   pmm_ref_count(frame) <= 1
+        ├── yes → sole owner; just clear COW + set RW, invlpg
+        └── no  → alloc fresh frame, memcpy 4 KiB, pmm_free_frame(old),
+                  install fresh frame in this task's PTE as RW, invlpg
+```
 
-If you only need fork-then-immediately-exec (which is what the shell does
-~98% of the time), there are two cheaper alternatives:
+`CR0.WP` is enabled at `paging_init` so kernel writes to user RO pages also
+fault — required to make COW work uniformly when a syscall reads from / writes
+to a parent-shared user buffer (e.g., `SYS_READ` filling a buffer the child
+inherited).  Linux and ELKS both do this for the same reason.
 
-- **`vfork()`**: child shares the parent's address space and the parent is
-  *suspended* until the child execs or exits. Avoids the CoW dance entirely.
-  Used to be the standard "fast fork" before CoW. Still in POSIX.1-2001 as
-  legacy. We could implement it in an afternoon: child gets a fresh task_t
-  with the parent's PD borrowed (no clone), parent's `wait_for_child` flag
-  set, scheduler skips the parent until child exits or execs (which switches
-  to a new PD).
-- **`posix_spawn()`**: a single syscall that does fork+setup+exec in the
-  kernel. No address-space duplication needed at all — the kernel allocates
-  a fresh PD, loads the new image, installs file actions. This is what musl
-  ships and what Android's bionic relies on heavily. **This is the cheapest
-  path** to running `dash` and is the route I'd take first.
+**`SYS_FORK` (= 2)** (slice 15d, `arch/i386/proc/task.c` + `task_asm.S`).
+`task_fork()` clones a task pool slot, deep-copies the fd_table via
+`fd_table_clone` (FILE-kind slots get their own kmalloc'd buffers — non-POSIX
+shared-seek semantics, deferred to a refcounted `open_file_t` later), inherits
+cwd/tty/user_brk, clones the PD via `vmm_clone_pd_cow`, and resets the
+per-task signal handler table.  Then it hand-builds the child's kernel stack:
 
-The downside of starting with vfork/spawn rather than fork is that anything
-that calls `fork()` without an `exec()` (e.g., a shell that wants to run a
-function body in a subshell, or `python -c 'import os; os.fork()'`) breaks.
-For an interactive shell that's a real limitation. So: ship posix_spawn
-first to unblock dash; ship fork+CoW second to unblock the long tail.
+```
+[stack_top high addr]
+registers_t          ← copy of parent's at int 0x80 entry, EAX patched to 0
+fork_child_iret      ← task_switch ret target
+EFLAGS = 0x002       ← popf (IF=0 in kernel mode; user EFLAGS from iret frame)
+ebp / ebx / esi / edi ← all zero
+[t->esp]
+```
 
-### 11.3 Signals under fork
+`fork_child_iret` (in `task_asm.S`) is a 1:1 mirror of the
+`isr_common_stub` epilogue: pop ds + set data segments, popa, addl over
+`err_code + int_no`, iret to ring 3.  When the scheduler picks the child for
+the first time, `task_switch` pops the callee-saved frame and rets into
+`fork_child_iret`, which iret's back to ring 3 at exactly the same EIP where
+the parent's `int 0x80` returns, with EAX=0 so the child sees `fork() == 0`.
 
-We already have a per-task `sig_handlers[NSIG]` table and Linux-style mask /
-pending bitmaps. `fork()` must:
+The parent's syscall handler patches `regs->eax = child->pid` and returns
+normally — the parent sees `fork() == child_pid`.
 
-- Copy `sig_handlers` byte-for-byte (POSIX: child inherits dispositions).
-- Copy `sig_mask` (POSIX: child inherits mask).
-- **Clear `sig_pending`** (POSIX: pending signals are NOT inherited).
-- Inside the child, on first return-from-syscall, `sig_deliver` runs as
-  usual against the cleared pending set.
+`forktest.elf` in `src/userspace/` exercises the full path: a parent
+sentinel, a fork, child reads (proves COW visibility), child writes
+(triggers four independent COW faults across four 4 KiB-aligned BSS pages),
+child exits with status=42, parent's view of every sentinel still original
+(proves the parent took its own private copies on its post-yield write
+faults).
 
-Pretty mechanical. The non-trivial part is the *sigframe* on the user
-stack: if a signal handler is mid-flight at the moment of fork, the child
-inherits both the alternate ring-3 stack frame and the pending handler. We
-already build a sigframe in `signal.c` for `SYS_SIGNAL` user handlers; the
-trampoline (`SYS_SIGRETURN`) restores cleanly. Fork inherits it without
-modification.
+### 11.2 `execve()` (slice 16a)
 
-### 11.4 musl libc port
+Replaces the calling task's address space with a new ELF.  `arch/i386/proc/elf.c`'s
+`elf_exec` was extended to free the OLD user PD after the new one is loaded:
 
-musl is small, MIT-licensed, designed for embedded/static linking, and has
-a very thin syscall shim layer (`musl/arch/i386/syscall_arch.h`). The port:
+```c
+task_t *cur = task_current();
+uint32_t *old_pd = cur->page_dir;
+cur->page_dir = pd;                   /* new PD with the loaded ELF */
+tss_set_kernel_stack(...);
+vmm_switch(pd);                       /* CR3 swap */
+if (old_pd && old_pd != paging_kernel_pd())
+    vmm_free_pd(old_pd);              /* reclaim parent-fork inheritance */
+ring3_enter(ehdr->e_entry, initial_esp);   /* never returns */
+```
 
-1. **Static-only.** No dynamic linker yet (we'd need `ld-musl.so.1`,
-   `dlopen`, and rtld). Compile with `musl-gcc --static`.
-2. **Syscall surface.** musl uses ~110 Linux syscalls. We have ~30. The
-   list of gaps that block a static `dash` build (in priority order):
-   `dup2`, `pipe`, `wait4`, `waitpid`, `getpid`, `getppid`, `umask`,
-   `chdir` (we have `cd` builtin only — fix that),  `fstat`/`stat`,
-   `getdents` (we have `SYS_LS_DIR` which returns a pre-rendered blob; a
-   `getdents`-style streaming API is needed for `opendir`/`readdir`),
-   `ioctl` (at least `TIOCGWINSZ` for terminal size — we have `SYS_TERM_SIZE`
-   to plumb to that).
-3. **`brk`/`sbrk`.** Done (SYS_BRK 45). musl's allocator uses it directly.
-4. **`mmap` (anonymous).** musl's allocator falls back to `mmap` for large
-   allocations. We don't have it. Implementing `mmap(MAP_ANONYMOUS)` as a
-   call to `vmm_map_page` for an arbitrary range is straightforward; the
-   tricky bit is virtual-address allocation (we need a per-task "mmap arena"
-   with a free-region tree). A bump allocator from `0xC0000000` downward is
-   the laziest correct option.
-5. **TLS.** musl wants `set_thread_area` (i386's old-school per-task GDT
-   slot for FS). Set up GDT entry 6 as a per-task TLS slot, write its base
-   on context switch. ~50 lines.
+The `paging_kernel_pd()` guard preserves the older fresh-task path
+(`exec_task_entry`, where "old" PD is the kernel PD shared by all kernel
+tasks); only execve from an existing user task actually triggers
+`vmm_free_pd`.
 
-Estimated effort: **two weekends, plus a week of debugging static-linked
-dash booting cold**. The standard arithmetic on a libc port is that the
-first 80% takes 20% of the time and the last 20% (vfork-not-fork-special-
-cases, restartable syscalls, signal-safe libc primitives) takes the rest.
+The syscall handler (`case SYS_EXECVE` in `arch/i386/proc/syscall.c`) copies
+the path string and the argv string array into kernel-side static scratch
+*before* calling `elf_exec`, because those buffers live in the about-to-be-
+freed user PD.  Statics are safe because syscalls are serialised (cli at
+entry) — never two execves in flight.  POSIX requires execve to reset all
+caught signal handlers to defaults; this is `sig_task_init(task_current())`.
 
-### 11.5 Why dash before bash
+`execvetest.elf` does fork → child-execve `hello.elf` → parent-survives;
+the recipe a real userland shell will use.
 
-Both are POSIX shells. dash is ~150 KiB, no GNU extensions, no command-line
-editing, no job control beyond the POSIX minimum. bash is ~1 MiB, depends on
-readline (which depends on termcap, which depends on terminfo lookup —
-another two-day port), and uses ~20 more syscalls than dash (most around
-job control and signal-safety in interactive mode).
+### 11.3 `wait4()` + `TASK_ZOMBIE` (slice 16b)
 
-The realistic path: ship posix_spawn → port musl → build static dash → fix
-the gaps that dash exposes (there will be three or four) → declare victory.
-bash-on-Makar is a separate, larger project.
+`SYS_WAIT4` (= 114, Linux i386 ABI) reaps a child task and round-trips its
+exit status to the parent.  Required adding a fourth lifecycle state:
+
+```
+READY ──run──> RUNNING ──exit──> ZOMBIE ──wait4──> DEAD ──reclaim──> READY (new task)
+                              │                              ↑
+                              └── if parent is kernel-task ──┘  (skip ZOMBIE)
+```
+
+Three fields on `task_t`:
+
+- `parent_pid` — set by `task_create` and `task_fork`.
+- `exit_status` — written by `SYS_EXIT` (from EBX) before `task_exit`.
+- (existing) `state` — gained `TASK_ZOMBIE` between `RUNNING` and `DEAD`.
+
+`task_exit` chooses ZOMBIE vs DEAD based on whether the parent is a live
+ring-3 task (`parent->page_dir != paging_kernel_pd()`).  Kernel-internal
+tasks (whose parent is the kernel-PD idle/shell) go straight to DEAD —
+otherwise the four kernel shell tasks' children would pile up as
+unwait4'd zombies and fill the 8-slot pool.  `task_exit` also auto-reaps any
+of its own dying zombies (so orphans don't accumulate when their parent
+dies without waiting).
+
+`SYS_WAIT4` scans the task pool for the caller's children:
+
+- A matching `TASK_ZOMBIE` is found → copy `exit_status` into the user
+  `int *status`, transition the child to `TASK_DEAD` (slot now reclaimable
+  by `task_create`), return the child's pid.
+- No zombies but live children exist and `!WNOHANG` → `task_yield()` and retry.
+- `WNOHANG` and no zombies → return 0.
+- No children at all → return `-ECHILD`.
+
+The yield loop runs inside the syscall handler in kernel context; safe
+because `task_yield` is re-entrant and the syscall's own kernel stack is
+preserved across yields.
+
+`forktest.elf` and `execvetest.elf` were migrated off their original
+busy-yield-then-sample pattern to a real `sys_wait4` + status check; serial
+now shows:
+
+```
+[sys_exit]  task pid=14 status=42 -> task_exit()
+[sys_wait4] parent pid=13 reaped child pid=14 status=42
+[forktest] REAPED pid=14 status=42
+```
+
+### 11.4 What's still missing for musl + dash
+
+The fork/exec/wait triad is in.  The remaining blockers for a static musl
+build of `dash`:
+
+- **`SYS_READDIR`** (streaming `getdents`).  Today's `SYS_LS_DIR` returns a
+  pre-rendered text blob — fine for the in-kernel shell's `ls`, useless for
+  `opendir`/`readdir` (and for any userland shell's tab complete).
+- **`SYS_PIPE` + `dup2`**.  Both depend on a refcounted `open_file_t` layer
+  underneath `fd_table_t` so a forked child shares the parent's seek
+  position (POSIX requirement).  Today `fd_table_clone` deep-copies FILE
+  buffers per-fd, which is non-POSIX and rules out shared seeks.
+- **`SYS_MMAP(MAP_ANONYMOUS)`**.  musl's allocator falls back to mmap for
+  large allocations.  Implementing it as a `vmm_map_page` over an arbitrary
+  range is straightforward; the tricky bit is per-task virtual-address
+  allocation.  A bump allocator from `0xC0000000` downward is the laziest
+  correct option.
+- **TLS (`set_thread_area`)**.  musl wants i386's old per-task GDT slot for
+  FS.  GDT entry 6 written on context switch, ~50 lines.
+- **`fstat` / `stat` / `umask` / `getppid` / `getpid`**.  Mechanical.
+
+`getpid` and `getppid` are trivially available — `task_current()->pid` and
+`->parent_pid` — but no syscall exposes them yet.
+
+### 11.5 vfork() and posix_spawn() — no longer needed
+
+The original speculation in this section recommended `posix_spawn` as the
+shortcut to running dash without a full COW fork.  That recommendation was
+overtaken by reality: native fork-with-COW turned out to be a single weekend
+of work (slices 15a-e), and the resulting `task_fork` already covers ~98% of
+posix_spawn's use cases when paired with `execve`.  No reason to ship
+`vfork`; no need to ship `posix_spawn` either, unless a downstream consumer
+asks for it specifically.
 
 ### 11.6 An in-kernel C compiler
 
-`tcc` (the Tiny C Compiler, ~200 KiB) compiles C to ELF in memory and writes
-the output via `vfs_write_file`. No fork needed — it's a single-binary
-operation. Once musl is static, building tcc against it gives us a
+`tcc` (~200 KiB) compiles C to ELF in memory and writes the output via
+`vfs_write_file`.  No fork needed at all — it's a single-binary
+operation.  Once musl is static, building tcc against it gives a
 self-hosting "write source, compile, run" loop on bare metal — the CP/M
-target. This is the slice we'd actually demo to your manager once §11.1–11.4
-land.
+target.  Still on the roadmap as a future demo; no longer the most
+interesting piece now that fork+exec works.
 
 ---
 
@@ -688,6 +752,7 @@ land.
   *don't*), [TLB](https://wiki.osdev.org/TLB).
 - Linux source for sanity-checking the conventions: `arch/x86/include/asm/`
   for IDT, GDT, TSS layout; `kernel/fork.c` for the canonical CoW fork
-  implementation.
-- musl: `arch/i386/syscall_arch.h` and `src/process/posix_spawn*` for the
-  fast-path-without-fork model we'd port first.
+  implementation Makar's `task_fork` is modelled on; `arch/x86/entry/entry_32.S`
+  for the kernel-stack frame shape `fork_child_iret` mirrors.
+- musl: `arch/i386/syscall_arch.h` for the syscall shim conventions a future
+  port would slot into.

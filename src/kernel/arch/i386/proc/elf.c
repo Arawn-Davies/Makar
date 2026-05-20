@@ -16,6 +16,7 @@
 #include <kernel/elf.h>
 #include <kernel/vfs.h>
 #include <kernel/vmm.h>
+#include <kernel/paging.h>
 #include <kernel/pmm.h>
 #include <kernel/ring3.h>
 #include <kernel/descr_tbl.h>
@@ -264,9 +265,19 @@ int elf_exec(const char *path, int argc, const char *const *argv)
 
     uint32_t initial_esp = stack_virt + off;
 
-    /* 7. Activate the address space and enter ring 3. */
-    task_current()->page_dir = pd;
-    tss_set_kernel_stack((uint32_t)(task_current()->stack + TASK_STACK_SIZE));
+    /* 7. Activate the address space and enter ring 3.
+     *
+     * For execve from an existing user task, the calling task's page_dir
+     * is already a user PD that we must free after switching CR3 -- if
+     * we don't, fork+exec leaks every PD the child ever ran under.  For
+     * the fresh-task path (exec_task_entry) page_dir is paging_kernel_pd()
+     * and must NOT be freed.  The selector below handles both cases. */
+    task_t *cur = task_current();
+    uint32_t *old_pd = cur->page_dir;
+    cur->page_dir = pd;
+    tss_set_kernel_stack((uint32_t)(cur->stack + TASK_STACK_SIZE));
     vmm_switch(pd);
+    if (old_pd && old_pd != paging_kernel_pd())
+        vmm_free_pd(old_pd);
     ring3_enter(ehdr->e_entry, initial_esp);   /* never returns */
 }

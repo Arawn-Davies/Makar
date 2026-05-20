@@ -35,6 +35,7 @@
 #include <kernel/heap.h>
 #include <kernel/vmm.h>
 #include <kernel/pmm.h>
+#include <kernel/elf.h>
 #include <kernel/serial.h>
 #include <kernel/vga.h>
 #include <kernel/vesa_tty.h>
@@ -91,12 +92,151 @@ void syscall_dispatch(registers_t *regs)
      * ------------------------------------------------------------------ */
     case SYS_EXIT: {
         task_t *t = task_current();
+        if (t) t->exit_status = (int)regs->ebx;
         Serial_WriteString("[sys_exit] task pid=");
         Serial_WriteDec(t ? (uint32_t)t->pid : 0u);
         Serial_WriteString(" status=");
         Serial_WriteDec((uint32_t)regs->ebx);
         Serial_WriteString(" -> task_exit()\n");
         task_exit();   /* does not return */
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_WAIT4(114): reap a child task.
+     *   EBX = pid (-1 = any child, > 0 = specific child)
+     *   ECX = int *status (writable; may be NULL)
+     *   EDX = options (WNOHANG = 1)
+     *   ESI = rusage* (ignored)
+     *
+     * Behaviour:
+     *   - scan task pool for the caller's children (parent_pid == me->pid)
+     *   - if a matching ZOMBIE is found: copy out exit_status, transition
+     *     to DEAD (slot becomes reclaimable), return its pid
+     *   - if no zombies but caller has live children and !WNOHANG: yield
+     *     and retry
+     *   - if WNOHANG and no zombies: return 0
+     *   - if no children at all: return -ECHILD
+     * ------------------------------------------------------------------ */
+    case SYS_WAIT4: {
+        int   want_pid = (int)regs->ebx;
+        int  *ustatus  = (int *)(uintptr_t)regs->ecx;
+        int   options  = (int)regs->edx;
+
+        task_t *me = task_current();
+        if (!me) { regs->eax = (uint32_t)-1; break; }
+
+        for (;;) {
+            int has_children = 0;
+            int reaped       = 0;
+            for (int i = 0; i < task_count(); i++) {
+                task_t *c = task_get(i);
+                if (!c) continue;
+                if (c->parent_pid != me->pid) continue;
+                if (c->state == TASK_DEAD)    continue;
+                has_children = 1;
+                if (c->state == TASK_ZOMBIE &&
+                    (want_pid < 0 || c->pid == want_pid)) {
+                    if (ustatus)
+                        *ustatus = c->exit_status;
+                    int cpid = c->pid;
+                    c->state = TASK_DEAD;
+                    regs->eax = (uint32_t)cpid;
+                    Serial_WriteString("[sys_wait4] parent pid=");
+                    Serial_WriteDec((uint32_t)me->pid);
+                    Serial_WriteString(" reaped child pid=");
+                    Serial_WriteDec((uint32_t)cpid);
+                    Serial_WriteString(" status=");
+                    Serial_WriteDec((uint32_t)c->exit_status);
+                    Serial_WriteString("\n");
+                    reaped = 1;
+                    break;
+                }
+            }
+            if (reaped) break;
+            if (!has_children) { regs->eax = (uint32_t)-10; break; }   /* -ECHILD */
+            if (options & 1)   { regs->eax = 0; break; }               /* WNOHANG */
+            task_yield();
+        }
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_EXECVE(11): replace current task's address space with a new
+     * ELF.  EBX=path, ECX=argv (NULL-terminated), EDX=envp (ignored).
+     *
+     * On success, elf_exec swaps CR3, frees the old PD, and iret's to
+     * the new entry point -- this case never falls through.  Argv
+     * strings live in the caller's about-to-be-freed user PD, so we
+     * copy them into kernel scratch before invoking elf_exec.
+     *
+     * Static scratch buffers are safe because syscalls are serialised
+     * (cli at entry); we never have two execves in flight at once.
+     * ------------------------------------------------------------------ */
+    case SYS_EXECVE: {
+        const char  *upath = (const char *)(uintptr_t)regs->ebx;
+        char *const *uargv = (char *const *)(uintptr_t)regs->ecx;
+        /* envp deliberately ignored: Makar has no environment yet. */
+
+        if (!upath) { regs->eax = (uint32_t)-14; break; }   /* -EFAULT */
+
+        enum { EXECVE_MAX_ARGC = 16, EXECVE_ARG_MAX = 256 };
+        static char  s_path[256];
+        static char  s_argbuf[EXECVE_MAX_ARGC * EXECVE_ARG_MAX];
+        static char *s_argv[EXECVE_MAX_ARGC + 1];
+
+        /* Copy path. */
+        size_t pi = 0;
+        while (upath[pi] && pi < sizeof(s_path) - 1) { s_path[pi] = upath[pi]; pi++; }
+        s_path[pi] = '\0';
+
+        /* Copy argv strings.  argv[0] convention is the program name;
+         * shell-side exec already supplies it that way.  Stop on first
+         * NULL pointer (POSIX argv terminator). */
+        int kargc = 0;
+        if (uargv) {
+            for (; kargc < EXECVE_MAX_ARGC; kargc++) {
+                const char *us = uargv[kargc];
+                if (!us) break;
+                char *dst = s_argbuf + kargc * EXECVE_ARG_MAX;
+                size_t i = 0;
+                while (us[i] && i < EXECVE_ARG_MAX - 1) { dst[i] = us[i]; i++; }
+                dst[i] = '\0';
+                s_argv[kargc] = dst;
+            }
+        }
+        s_argv[kargc] = NULL;
+
+        /* POSIX: execve resets all caught signal handlers to SIG_DFL.
+         * SIG_IGN is also reset (Makar's sig_task_init clears everything,
+         * matching the simple-is-better choice). */
+        sig_task_init(task_current());
+
+        /* elf_exec swaps the PD and iret's to the new entry on success
+         * (never returns).  Any return value here means it failed; pass
+         * the negative errno back to the caller via EAX. */
+        int rc = elf_exec(s_path, kargc, (const char *const *)s_argv);
+        regs->eax = (uint32_t)(int32_t)rc;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_FORK(2): COW-clone the calling task.
+     * Returns child pid in parent, 0 in child, -EAGAIN on failure.
+     * Child returns through fork_child_iret, never through this dispatch.
+     * ------------------------------------------------------------------ */
+    case SYS_FORK: {
+        task_t *child = task_fork(regs);
+        if (!child) {
+            regs->eax = (uint32_t)-11;   /* -EAGAIN */
+        } else {
+            Serial_WriteString("[sys_fork] parent pid=");
+            Serial_WriteDec((uint32_t)task_current()->pid);
+            Serial_WriteString(" -> child pid=");
+            Serial_WriteDec((uint32_t)child->pid);
+            Serial_WriteString("\n");
+            regs->eax = (uint32_t)child->pid;
+        }
         break;
     }
 
@@ -194,8 +334,14 @@ void syscall_dispatch(registers_t *regs)
                 for (uint32_t i = 0; i < len; i++)
                     t_putchar(buf[i]);
             }
-            for (uint32_t i = 0; i < len; i++)
-                Serial_WriteChar(buf[i]);
+            /* t_putchar already mirrors to COM1 when verbose mode is on
+             * (default).  Only echo here when verbose is off so stderr
+             * always reaches the serial log -- otherwise we'd write the
+             * same bytes twice and the log shows every chunk doubled. */
+            if (!g_serial_verbose) {
+                for (uint32_t i = 0; i < len; i++)
+                    Serial_WriteChar(buf[i]);
+            }
             regs->eax = len;
         } else if (e->kind == FD_KIND_SERIAL) {
             for (uint32_t i = 0; i < len; i++)

@@ -112,6 +112,17 @@ for the full error-code description.
 - Separate kernel and user address spaces (higher-half kernel or full
   split-address mapping).
 - Demand paging: swap absent pages in from a backing store.
-- Copy-on-write support for future process forking.
 - A proper TLB shootdown mechanism for SMP.
 - Guard pages around the kernel stack to catch stack overflows early.
+
+## Shipped (was future work)
+
+- **Copy-on-write for `fork()`** (slice 15).  Per-frame refcounts in
+  `pmm.c`; the software `VMM_PTE_COW` bit (PTE bit 9) marks shared
+  pages read-only at clone time; the `#PF` handler in
+  `arch/i386/debug/debug.c` resolves the fault by either flipping
+  the bit back to RW (sole owner, refcount==1) or allocating a fresh
+  frame + memcpy + decrementing the shared refcount.  `CR0.WP` is
+  enabled at `paging_init` so kernel writes also honour the RO bit
+  (required to make COW work uniformly across user and kernel access
+  paths).  See `vmm_clone_pd_cow` in `arch/i386/mm/vmm.c`.

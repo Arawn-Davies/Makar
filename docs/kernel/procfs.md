@@ -19,7 +19,7 @@ caller's buffer. No on-disk storage; nothing is cached between reads.
 |---|---|---|
 | `/proc/cpuinfo` | CPUID leaves 0 + 1 | `vendor_id`, `cpu family`, `model`, `stepping`, `flags` (fpu/tsc/msr/pae/apic/cmov/mmx/sse/sse2/sse3/sse4_1/sse4_2), `arch i386 (protected mode)` |
 | `/proc/meminfo` | `pmm_managed_count()` + `pmm_free_count()` + `heap_used/free()` | Linux-style key/value: `MemTotal`, `MemFree`, `MemAvailable`, `MemUsed`, `Buffers` (0), `Cached` (0), `HeapTotal`, `HeapUsed`, `HeapFree`, `PageSize`, `FreeFrames`, `TotalFrames`.  `MemTotal` reflects the bootloader-available frame pool minus the null page + kernel image (cached at `pmm_init`). |
-| `/proc/tasks` | Walk `task_pool[]`, skip `TASK_DEAD` | `PID NAME STATE TTY TICKS CWD`.  Dead-but-not-yet-reclaimed slots are filtered so userspace tools (maktop / `cat /proc/tasks`) only see live work. |
+| `/proc/tasks` | Walk `task_pool[]`, skip `TASK_DEAD` | `PID NAME STATE TTY TICKS CWD`.  Dead-but-not-yet-reclaimed slots are filtered so userspace tools (maktop / `cat /proc/tasks`) only see live work; `TASK_ZOMBIE` slots (slice 16b: children awaiting parent `wait4`) DO appear so the parent can see them. |
 | `/proc/uname` | `MAKAR_VERSION` + build macros + `timer_get_ticks()` | `Makar <MAKAR_VERSION> (i386) built <date> <time>` + uptime ticks |
 
 ## VFS integration

@@ -40,7 +40,10 @@
 #include <kernel/vesa.h>
 #include <kernel/vesa_tty.h>
 #include <kernel/vesa_font.h>
+#include <kernel/pmm.h>
+#include <kernel/vmm.h>
 #include <stddef.h>
+#include <string.h>
 
 /* ============================================================
  * Pure formatting helpers - no I/O, no external dependencies
@@ -738,10 +741,87 @@ static void gpf_handler(registers_t *regs)
     kernel_panic("GENERAL PROTECTION FAULT", NULL, NULL, NULL, 0, 0, 0, regs);
 }
 
+/* COW fault handler (slice 12c, fork+COW).
+ *
+ * Returns 1 if the fault was a legitimate copy-on-write fault that we
+ * resolved by either flipping the PTE writable (sole owner) or by
+ * allocating a fresh frame and memcpy'ing the page; 0 if this isn't a
+ * COW fault and the caller should fall through to panic.
+ *
+ * Walks the currently-active PD via CR3 (which is the faulting task's
+ * PD by construction -- the #PF was taken from its context). */
+#define PF_ERR_PRESENT  0x1u
+#define PF_ERR_WRITE    0x2u
+#define PFE_PAGE_PRESENT  0x1u
+#define PFE_PAGE_WRITABLE 0x2u
+#define PFE_PAGE_LARGE    0x80u
+
+static int try_handle_cow_fault(uint32_t fault_addr, uint32_t err_code)
+{
+    /* Not a write fault?  Can't be COW.  (A read against a present
+     * RO+COW page wouldn't fault on i386 anyway -- RO blocks writes,
+     * not reads.) */
+    if (!(err_code & PF_ERR_WRITE) || !(err_code & PF_ERR_PRESENT))
+        return 0;
+
+    uint32_t cr3;
+    asm volatile("mov %%cr3, %0" : "=r"(cr3));
+    uint32_t *pd = (uint32_t *)(cr3 & ~0xFFFu);
+
+    uint32_t pdi = fault_addr >> 22;
+    uint32_t pde = pd[pdi];
+    if (!(pde & PFE_PAGE_PRESENT) || (pde & PFE_PAGE_LARGE))
+        return 0;
+
+    uint32_t *pt  = (uint32_t *)(pde & ~0xFFFu);
+    uint32_t pti  = (fault_addr >> 12) & 0x3FFu;
+    uint32_t pte  = pt[pti];
+
+    if (!(pte & PFE_PAGE_PRESENT) || !(pte & VMM_PTE_COW))
+        return 0;
+
+    uint32_t frame  = pte & ~0xFFFu;
+    uint32_t vbase  = fault_addr & ~0xFFFu;
+    uint32_t flags  = pte & 0xFFFu;
+
+    uint8_t rc = pmm_ref_count(frame);
+
+    if (rc <= 1) {
+        /* Sole owner -- no copy needed, just promote back to writable.
+         * (rc==1 is the normal case; rc==0 would indicate a refcount
+         * bug, but defensively we still flip the PTE so the task can
+         * make forward progress rather than panicking.) */
+        pt[pti] = (frame) | (((flags | PFE_PAGE_WRITABLE) & ~VMM_PTE_COW));
+    } else {
+        /* Shared frame -- allocate a private copy. */
+        uint32_t new_frame = pmm_alloc_frame();
+        if (new_frame == PMM_ALLOC_ERROR)
+            return 0;  /* OOM: fall through to panic */
+
+        /* Both frames are kernel-identity-mapped (< 256 MiB), so we
+         * can memcpy via their physical addresses directly. */
+        memcpy((void *)new_frame, (void *)frame, 0x1000);
+
+        /* Drop our reference to the shared frame; if other tasks
+         * still hold it the refcount just decrements. */
+        pmm_free_frame(frame);
+
+        pt[pti] = new_frame | (((flags | PFE_PAGE_WRITABLE) & ~VMM_PTE_COW));
+    }
+
+    /* Flush the stale RO entry from the TLB. */
+    asm volatile("invlpg (%0)" :: "r"(vbase) : "memory");
+    return 1;
+}
+
 static void page_fault_handler(registers_t *regs)
 {
     uint32_t fault_addr;
     asm volatile("mov %%cr2, %0" : "=r"(fault_addr));
+
+    if (try_handle_cow_fault(fault_addr, regs->err_code))
+        return;
+
     kernel_panic("PAGE FAULT", NULL, NULL, NULL, 0, fault_addr, 1, regs);
 }
 
