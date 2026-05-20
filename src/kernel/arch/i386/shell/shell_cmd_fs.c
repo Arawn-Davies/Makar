@@ -121,9 +121,39 @@ static void cmd_mount(int argc, char **argv)
     t_putchar('\n');
 }
 
+/* True if `target` names the CD-ROM mount (/mnt/cdrom, /cdrom, cdrom). */
+static int umount_target_is_cdrom(const char *t)
+{
+    return strcmp(t, "/mnt/cdrom") == 0 || strcmp(t, "/cdrom") == 0 ||
+           strcmp(t, "cdrom") == 0;
+}
+
+/* umount [/mnt/<name>]   default target is the FAT32 volume.
+ * umount /mnt/cdrom      eject the optical drive. */
 static void cmd_umount(int argc, char **argv)
 {
-    (void)argc; (void)argv;
+    if (argc >= 2 && umount_target_is_cdrom(argv[1])) {
+        int cd_drive = -1;
+        for (int i = 0; i < IDE_MAX_DRIVES; i++) {
+            const ide_drive_t *d = ide_get_drive((uint8_t)i);
+            if (d && d->present && d->type == IDE_TYPE_ATAPI) { cd_drive = i; break; }
+        }
+        if (cd_drive < 0) {
+            t_writestring("umount: no CD-ROM drive detected\n");
+            return;
+        }
+        vfs_notify_cdrom_ejected();
+        int err = ide_eject_atapi((uint8_t)cd_drive);
+        if (err) {
+            t_writestring("umount: ATAPI eject failed (err ");
+            t_dec((uint32_t)err);
+            t_writestring(")\n");
+            return;
+        }
+        t_writestring("CD-ROM unmounted and ejected.\n");
+        return;
+    }
+
     if (!fat32_mounted()) {
         t_writestring("umount: no volume mounted\n");
         return;

@@ -117,8 +117,9 @@ static const man_entry_t man_table[] = {
       "form still works.  /mnt/hd is currently the only supported mountpoint.\n"
     },
     { "umount",
-      "unmount the FAT32 volume",
-      "Usage: umount\n\nFlushes and unmounts the /mnt/hd FAT32 volume.\n"
+      "unmount a volume",
+      "Usage: umount [/mnt/<name>]\n\nWith no argument (or the FAT32 mountpoint) flushes and unmounts the\n"
+      "FAT32 volume.  `umount /mnt/cdrom` unmounts and ejects the CD-ROM.\n"
     },
     { "ls",
       "list directory contents",
