@@ -204,3 +204,30 @@ void vmm_free_pd(uint32_t *pd)
 
     pmm_free_frame((uint32_t)pd);
 }
+
+uint32_t vmm_count_user_pages(uint32_t *pd)
+{
+    if (!pd)
+        return 0;
+
+    uint32_t pages = 0;
+    for (uint32_t pdi = 0; pdi < 1024; pdi++) {
+        uint32_t pde = pd[pdi];
+        /* Kernel mappings use 4 MiB large pages (PAGE_LARGE) and are never
+         * PAGE_USER, so skipping them excludes the kernel window.  Only
+         * user page tables (allocated by vmm_map_page) are 4 KiB. */
+        if (!(pde & PAGE_PRESENT) || (pde & PAGE_LARGE))
+            continue;
+        uint32_t pt_phys = pde & ~0xFFFu;
+        if (pt_phys == 0 || pt_phys >= VMM_KERNEL_IDMAP_END)
+            continue;
+
+        uint32_t *pt = (uint32_t *)pt_phys;
+        for (uint32_t pti = 0; pti < 1024; pti++) {
+            uint32_t pte = pt[pti];
+            if ((pte & PAGE_PRESENT) && (pte & PAGE_USER))
+                pages++;
+        }
+    }
+    return pages;
+}

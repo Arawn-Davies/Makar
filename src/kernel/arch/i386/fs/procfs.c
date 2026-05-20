@@ -5,6 +5,7 @@
 #include <kernel/procfs.h>
 #include <kernel/tty.h>
 #include <kernel/pmm.h>
+#include <kernel/vmm.h>
 #include <kernel/heap.h>
 #include <kernel/task.h>
 #include <kernel/timer.h>
@@ -291,7 +292,7 @@ static const char *state_name(int s)
 
 static void render_tasks(pf_writer_t *w)
 {
-    pf_puts(w, "PID NAME            STATE TTY    TICKS CWD\n");
+    pf_puts(w, "PID NAME            STATE TTY    TICKS MEMKB CWD\n");
     int n = task_count();
     for (int i = 0; i < n; i++) {
         task_t *t = task_get(i);
@@ -313,6 +314,10 @@ static void render_tasks(pf_writer_t *w)
         else            pf_putu(w, (uint32_t)t->tty);
         pf_putc(w, ' ');
         pf_putu(w, t->kticks);
+        pf_putc(w, ' ');
+        /* Resident user memory (KiB): 0 for kernel-only tasks (shells,
+         * idle, ktest), non-zero for each ring-3 app instance. */
+        pf_putu(w, vmm_count_user_pages(t->page_dir) * 4u);
         pf_putc(w, ' ');
         pf_puts(w, t->cwd[0] ? t->cwd : "-");
         pf_putc(w, '\n');
