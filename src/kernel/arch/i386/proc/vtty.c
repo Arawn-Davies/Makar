@@ -218,16 +218,15 @@ void vtty_drain_pending(void)
                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
         return;
 
-    /* Repaint the text backing grid only when the draining task is the
-     * slot's shell.  A fullscreen ring-3 app (vix, maktop, basic) paints
-     * raw pixels the grid doesn't track, so painting the grid over it
-     * would wipe its display; let the app redraw itself instead.  Either
-     * way we refresh the status bar so its active-VT highlight is correct
-     * -- this is what lets the bar follow a switch back to a VT that's
-     * running a fullscreen app. */
-    if (me == vtty_owner(n)) {
-        vt_buf_t *vt = vtty_buf(n);
-        if (vt) vesa_tty_paint_buf(vt);
-    }
+    /* Always repaint the destination VT's text backing grid so its prior
+     * content and colour scheme are restored, and any raw pixels a
+     * fullscreen app left on the framebuffer are covered (keeping each
+     * VT's display isolated).  A continuously-drawing app (e.g. basic's
+     * lines) repaints its own graphics on the next frame; a one-shot
+     * graphics frame is intentionally not preserved across a switch.
+     * The pending flag was CAS'd to -1 above, so this fires exactly once
+     * per switch -- not on every yield. */
+    vt_buf_t *vt = vtty_buf(n);
+    if (vt) vesa_tty_paint_buf(vt);
     vesa_tty_paint_status(vtty_current, vtty_nslots);
 }
