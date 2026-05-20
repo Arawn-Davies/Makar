@@ -414,8 +414,8 @@ static void do_if(void)
     if (!kw("THEN")) { basic_error("SYNTAX ERROR"); return; }
     if (cond) {
         skipsp();
-        if (is_digit(*g_cur)) { do_goto(); }   /* IF .. THEN <line> */
-        /* else fall through: rest of line executes as statements */
+        if (is_digit(*g_cur)) do_goto();   /* IF .. THEN <line>  -> GOTO  */
+        else                  exec_line(); /* IF .. THEN <stmt>  -> run it */
     } else {
         /* condition false: skip the remainder of the line */
         while (*g_cur) g_cur++;
@@ -424,7 +424,9 @@ static void do_if(void)
 
 static void need_gfx_args(int *a, int n)
 {
-    for (int i=0;i<n;i++){ a[i]=expr(); skipsp(); if(*g_cur==',')g_cur++; }
+    /* Consume commas BETWEEN args only -- leave a trailing comma so the
+     * caller can detect the optional colour argument after the last. */
+    for (int i=0;i<n;i++){ a[i]=expr(); skipsp(); if(i<n-1 && *g_cur==',')g_cur++; }
 }
 
 static void do_plot(void)
@@ -596,8 +598,16 @@ static int load_and_run(const char *path)
     run_program();
     /* Keep a graphics frame on screen until a key is pressed -- otherwise
      * the shell's post-exit screen restore wipes our pixels instantly.
-     * Skip the wait if the user already broke out with Ctrl-C. */
-    if (g_used_gfx && !g_break) { puts_("\n-- press a key --\n"); sys_getkey(); }
+     * Skip the wait if the user already broke out with Ctrl-C.  Drain any
+     * stale input first (e.g. the Enter that launched us) so the wait
+     * isn't satisfied instantly. */
+    if (g_used_gfx && !g_break) {
+        sys_fcntl(0, F_SETFL, O_NONBLOCK);
+        char d; while (sys_read(0,&d,1)==1) { }
+        sys_fcntl(0, F_SETFL, 0);
+        puts_("\n-- press a key --\n");
+        sys_getkey();
+    }
     return 0;
 }
 
