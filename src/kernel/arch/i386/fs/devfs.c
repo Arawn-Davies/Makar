@@ -65,7 +65,11 @@ void devfs_init(void)
         if (!drv || !drv->present) continue;
 
         if (drv->type == IDE_TYPE_ATAPI) {
-            add_node("cdrom", d, DEV_CDROM, 1, 0, drv->size);
+            /* ATAPI IDENTIFY has no usable LBA range; query the medium. */
+            uint32_t cd_sectors = 0, cd_secsz = 0;
+            if (ide_atapi_capacity(d, &cd_sectors, &cd_secsz) != 0)
+                cd_sectors = 0;
+            add_node("cdrom", d, DEV_CDROM, 1, 0, cd_sectors);
             continue;
         }
         if (drv->type != IDE_TYPE_ATA) continue;

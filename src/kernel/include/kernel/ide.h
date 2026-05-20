@@ -65,6 +65,19 @@ int ide_read_atapi_sectors(uint8_t drive_num, uint32_t lba,
                            uint16_t count, void *buf);
 
 /*
+ * ide_atapi_capacity – query an ATAPI medium's capacity via READ
+ * CAPACITY(10).  Writes the sector count (last LBA + 1) and sector size
+ * (typically 2048) to the out pointers.
+ *
+ * Returns  0 on success.
+ * Returns -1 if drive_num is out of range or not present.
+ * Returns -2 if the drive is not ATAPI.
+ * Returns  positive on a protocol-level error.
+ */
+int ide_atapi_capacity(uint8_t drive_num, uint32_t *out_sectors,
+                       uint32_t *out_sec_size);
+
+/*
  * ide_eject_atapi – send an ATAPI START/STOP UNIT command that opens the
  * CD-ROM tray (eject).
  *

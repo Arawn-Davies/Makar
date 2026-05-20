@@ -25,6 +25,7 @@
 #include <kernel/timer.h>
 #include <kernel/elf.h>
 #include <kernel/vfs.h>
+#include <kernel/devfs.h>
 #include <kernel/asm.h>
 #include <kernel/keyboard.h>
 #include <string.h>
@@ -41,7 +42,7 @@ volatile int ktest_bg_done = 0;
  * inside the RUN macro in ktest_bg_task; total is fixed at compile time so
  * the bar length is known the moment shell_run starts. */
 volatile int ktest_bg_completed = 0;
-const    int ktest_bg_total     = 15;   /* keep in sync with RUN() calls below */
+const    int ktest_bg_total     = 16;   /* keep in sync with RUN() calls below */
 
 /* When set, suppress VGA output for pass lines and suite headers. */
 int ktest_muted = 0;
@@ -193,6 +194,48 @@ static void test_partition(void)
         0xBA, 0xBE, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01
     };
     KTEST_ASSERT(part_guid_type_name(unknown) != 0);
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
+ * Suite: devfs
+ *
+ * Exercises the /dev synthetic filesystem against the boot CD-ROM, which
+ * is always present on an ISO boot (the medium we booted from).  Verifies
+ * node lookup, the read-only flag, a real ATAPI sector read through the
+ * byte-addressed devfs_pread path, and negative lookups.  Disk-dependent
+ * assertions (hda/partitions) are intentionally omitted so the suite is
+ * stable on CD-only boots.
+ * ------------------------------------------------------------------------- */
+
+static void test_devfs(void)
+{
+    ktest_begin("devfs", "/dev block-device nodes: lookup, readonly, pread");
+
+    /* Unknown nodes resolve to -1 / not-exist. */
+    KTEST_ASSERT(devfs_lookup("/no_such_dev") < 0);
+    KTEST_ASSERT(devfs_file_exists("/no_such_dev") == 0);
+    /* The mount root itself is not a node. */
+    KTEST_ASSERT(devfs_lookup("/") < 0);
+
+    /* The CD-ROM we booted from is always registered. */
+    int cd = devfs_lookup("/cdrom");
+    KTEST_ASSERT(cd >= 0);
+    if (cd >= 0) {
+        KTEST_ASSERT(devfs_file_exists("/cdrom") == 1);
+        KTEST_ASSERT(devfs_node_readonly(cd) == 1);
+        KTEST_ASSERT(devfs_node_size(cd) > 0);
+
+        /* A byte-addressed read of the first sector must succeed and fill
+         * the request (offset 0, a full 2048-byte ATAPI sector). */
+        static uint8_t sec[2048];
+        long n = devfs_pread(cd, sec, sizeof(sec), 0);
+        KTEST_ASSERT(n == (long)sizeof(sec));
+
+        /* Writes to a read-only node are rejected. */
+        KTEST_ASSERT(devfs_pwrite(cd, sec, sizeof(sec), 0) < 0);
+    }
 
     ktest_summary();
 }
@@ -1832,6 +1875,10 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
+    test_devfs();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
     test_pmm();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
@@ -1943,6 +1990,7 @@ void ktest_bg_task(void)
     RUN(test_acpi_checksum);
     RUN(test_string);
     RUN(test_partition);
+    RUN(test_devfs);
     RUN(test_pmm);
     RUN(test_heap);
     RUN(test_vmm);

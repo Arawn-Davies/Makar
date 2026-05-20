@@ -52,6 +52,7 @@
 #define ATA_CMD_PACKET      0xA0  /* ATAPI PACKET command        */
 #define ATAPI_CMD_IDENTIFY  0xA1  /* Identify ATAPI device       */
 #define ATAPI_CMD_READ12    0xA8  /* ATAPI READ(12) command      */
+#define ATAPI_CMD_READ_CAP  0x25  /* ATAPI READ CAPACITY(10)     */
 
 /* CD-ROM sector size (2048 bytes per ISO9660 logical sector). */
 #define ATAPI_CD_SECTOR_SIZE  2048
@@ -455,6 +456,73 @@ int ide_read_atapi_sectors(uint8_t drive_num, uint32_t lba,
         p += ATAPI_CD_SECTOR_SIZE;
     }
 
+    return 0;
+}
+
+/* -------------------------------------------------------------------------
+ * ide_atapi_capacity – issue READ CAPACITY(10) and report the medium's
+ * sector count and sector size.  Lets devfs expose a real /dev/cdrom size
+ * (ATAPI IDENTIFY doesn't carry an LBA range like ATA does).
+ *
+ * Returns 0 on success (out_sectors = last_lba + 1, out_sec_size = block
+ * length, usually 2048), -1 on invalid/absent drive, -2 if not ATAPI,
+ * positive on a protocol error.
+ * ---------------------------------------------------------------------- */
+int ide_atapi_capacity(uint8_t drive_num, uint32_t *out_sectors,
+                       uint32_t *out_sec_size)
+{
+    if (drive_num >= IDE_MAX_DRIVES || !drives[drive_num].present)
+        return -1;
+    if (drives[drive_num].type != IDE_TYPE_ATAPI)
+        return -2;
+
+    uint8_t ch = drives[drive_num].channel;
+    uint8_t dr = drives[drive_num].drive;
+    uint8_t pkt[12] = {0};
+
+    ide_write(ch, ATA_REG_HDDEVSEL,
+              (dr == 0) ? ATA_SEL_MASTER : ATA_SEL_SLAVE);
+    ide_400ns_delay(ch);
+
+    /* READ CAPACITY returns an 8-byte parameter block. */
+    ide_write(ch, ATA_REG_FEATURES, 0x00);
+    ide_write(ch, ATA_REG_LBA1,     0x08);   /* byte count low  (8)  */
+    ide_write(ch, ATA_REG_LBA2,     0x00);   /* byte count high      */
+
+    ide_write(ch, ATA_REG_COMMAND, ATA_CMD_PACKET);
+    ide_400ns_delay(ch);
+    if (ide_poll(ch, 1))
+        return 1;
+
+    pkt[0] = ATAPI_CMD_READ_CAP;
+    for (int i = 0; i < 6; i++) {
+        uint16_t w = (uint16_t)pkt[i * 2] | ((uint16_t)pkt[i * 2 + 1] << 8);
+        outw(channels[ch].base + ATA_REG_DATA, w);
+    }
+
+    if (ide_poll(ch, 1))
+        return 1;
+
+    /* Read the 8-byte response as four 16-bit words. */
+    uint16_t resp[4];
+    for (int i = 0; i < 4; i++)
+        resp[i] = inw(channels[ch].base + ATA_REG_DATA);
+    ide_poll(ch, 0);
+
+    /* Bytes arrive little-endian-per-word but the fields are big-endian.
+     * Reassemble the byte stream first. */
+    uint8_t b[8];
+    for (int i = 0; i < 4; i++) {
+        b[i * 2]     = (uint8_t)(resp[i] & 0xFF);
+        b[i * 2 + 1] = (uint8_t)(resp[i] >> 8);
+    }
+    uint32_t last_lba = ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+                        ((uint32_t)b[2] << 8)  |  (uint32_t)b[3];
+    uint32_t blk_len  = ((uint32_t)b[4] << 24) | ((uint32_t)b[5] << 16) |
+                        ((uint32_t)b[6] << 8)  |  (uint32_t)b[7];
+
+    if (out_sectors)  *out_sectors  = last_lba + 1u;
+    if (out_sec_size) *out_sec_size = blk_len ? blk_len : ATAPI_CD_SECTOR_SIZE;
     return 0;
 }
 
