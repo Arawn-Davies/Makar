@@ -25,6 +25,7 @@
 #include <kernel/fat32.h>
 #include <kernel/iso9660.h>
 #include <kernel/procfs.h>
+#include <kernel/devfs.h>
 #include <kernel/ide.h>
 #include <kernel/partition.h>
 #include <kernel/tty.h>
@@ -63,6 +64,7 @@ static char *cwd_buf(void)
 #define VFS_FS_HD      1
 #define VFS_FS_CDROM   2
 #define VFS_FS_PROC    3
+#define VFS_FS_DEV     4
 #define VFS_FS_UNKNOWN (-1)
 
 /* -------------------------------------------------------------------------
@@ -202,6 +204,15 @@ static int vfs_route(const char *abs, const char **drv_path)
         return VFS_FS_PROC;
     }
 
+    /* /dev (synthetic block-device tree). */
+    if (memcmp(abs, DEVFS_MOUNT, DEVFS_MOUNT_LEN) == 0 &&
+        (abs[DEVFS_MOUNT_LEN] == '/' || abs[DEVFS_MOUNT_LEN] == '\0')) {
+        *drv_path = (abs[DEVFS_MOUNT_LEN] == '/')
+                        ? (abs + DEVFS_MOUNT_LEN)
+                        : "/";
+        return VFS_FS_DEV;
+    }
+
     *drv_path = abs;
     return VFS_FS_UNKNOWN;
 }
@@ -214,6 +225,7 @@ static void ls_root(void)
     if (fat32_mounted())    t_writestring("[hd]\n");
     if (s_cdrom_drive >= 0) t_writestring("[cdrom]\n");
     t_writestring("[proc]\n");   /* always present - synthesised */
+    t_writestring("[dev]\n");    /* always present - synthesised */
     if (!fat32_mounted() && s_cdrom_drive < 0)
         t_writestring("(no disk filesystems mounted - use 'mount' to mount FAT32)\n");
 }
@@ -238,6 +250,9 @@ void vfs_init(void)
             break;
         }
     }
+
+    /* Build the /dev node table from the just-scanned IDE bus. */
+    devfs_init();
 }
 
 const char *vfs_getcwd(void)
@@ -439,6 +454,9 @@ int vfs_ls(const char *path)
     case VFS_FS_PROC:
         return procfs_ls(drv);
 
+    case VFS_FS_DEV:
+        return devfs_ls(drv);
+
     default:
         t_writestring("ls: path not found\n");
         return -1;
@@ -498,6 +516,16 @@ int vfs_cd(const char *path)
         t_writestring("cd: not a directory\n");
         return -1;
 
+    case VFS_FS_DEV:
+        /* /dev is flat: only "/dev" itself is a directory. */
+        if (drv[0] == '/' && drv[1] == '\0') {
+            strncpy(cwd, abs, VFS_PATH_MAX - 1);
+            cwd[VFS_PATH_MAX - 1] = '\0';
+            return 0;
+        }
+        t_writestring("cd: not a directory\n");
+        return -1;
+
     default:
         t_writestring("cd: path not found\n");
         return -1;
@@ -547,6 +575,18 @@ int vfs_cat(const char *path)
     case VFS_FS_PROC:
         err = procfs_read_file(drv, buf, CAT_MAX, &got);
         break;
+
+    case VFS_FS_DEV: {
+        int idx = devfs_lookup(drv);
+        if (idx < 0) {
+            t_writestring("cat: no such device\n");
+            kfree(buf);
+            return -1;
+        }
+        long r = devfs_pread(idx, buf, CAT_MAX, 0);
+        if (r < 0) { err = -1; } else { got = (uint32_t)r; err = 0; }
+        break;
+    }
 
     default:
         t_writestring("cat: not a file\n");
@@ -608,6 +648,15 @@ int vfs_read_file(const char *path, void *buf, uint32_t bufsz, uint32_t *out_sz)
 
     case VFS_FS_PROC:
         return procfs_read_file(drv, buf, bufsz, out_sz);
+
+    case VFS_FS_DEV: {
+        int idx = devfs_lookup(drv);
+        if (idx < 0) return -1;
+        long r = devfs_pread(idx, buf, bufsz, 0);
+        if (r < 0) return -1;
+        if (out_sz) *out_sz = (uint32_t)r;
+        return 0;
+    }
 
     default:
         return -1;
@@ -679,9 +728,34 @@ int vfs_file_exists(const char *path)
         return iso9660_file_exists((uint8_t)s_cdrom_drive, drv);
     case VFS_FS_PROC:
         return procfs_file_exists(drv);
+    case VFS_FS_DEV:
+        return devfs_file_exists(drv);
     default:
         return 0;
     }
+}
+
+int vfs_blockdev_lookup(const char *path, uint32_t *size_out)
+{
+    char abs[VFS_PATH_MAX];
+    path_resolve(path, abs);
+
+    const char *drv;
+    if (vfs_route(abs, &drv) != VFS_FS_DEV) return -1;
+    int idx = devfs_lookup(drv);
+    if (idx < 0) return -1;
+    if (size_out) *size_out = devfs_node_size(idx);
+    return idx;
+}
+
+long vfs_blockdev_pread(int node, void *buf, uint32_t len, uint32_t off)
+{
+    return devfs_pread(node, buf, len, off);
+}
+
+long vfs_blockdev_pwrite(int node, const void *buf, uint32_t len, uint32_t off)
+{
+    return devfs_pwrite(node, buf, len, off);
 }
 
 /* -------------------------------------------------------------------------
@@ -711,6 +785,7 @@ int vfs_complete(const char *dir, const char *prefix,
             if (fat32_mounted())    cb("hd",    1, ctx);
             if (s_cdrom_drive >= 0) cb("cdrom", 1, ctx);
             cb("proc",  1, ctx);
+            cb("dev",   1, ctx);
         }
         return 0;
     }
@@ -722,6 +797,8 @@ int vfs_complete(const char *dir, const char *prefix,
         return iso9660_complete((uint8_t)s_cdrom_drive, drv, prefix, cb, ctx);
     case VFS_FS_PROC:
         return procfs_complete(drv, prefix, cb, ctx);
+    case VFS_FS_DEV:
+        return devfs_complete(drv, prefix, cb, ctx);
     default:
         return -1;
     }

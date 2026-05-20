@@ -294,6 +294,10 @@ void syscall_dispatch(registers_t *regs)
                 e->pos += n;
             }
             regs->eax = n;   /* 0 signals EOF when avail was 0 */
+        } else if (e->kind == FD_KIND_BLOCKDEV) {
+            long r = vfs_blockdev_pread(e->dev_node, buf, len, e->pos);
+            if (r < 0) { regs->eax = (uint32_t)-1; }
+            else { e->pos += (uint32_t)r; regs->eax = (uint32_t)r; }
         } else {
             regs->eax = (uint32_t)-1;   /* not a readable kind */
         }
@@ -347,6 +351,10 @@ void syscall_dispatch(registers_t *regs)
             for (uint32_t i = 0; i < len; i++)
                 Serial_WriteChar(buf[i]);
             regs->eax = len;
+        } else if (e->kind == FD_KIND_BLOCKDEV) {
+            long r = vfs_blockdev_pwrite(e->dev_node, buf, len, e->pos);
+            if (r < 0) { regs->eax = (uint32_t)-1; }
+            else { e->pos += (uint32_t)r; regs->eax = (uint32_t)r; }
         } else {
             /* KEYBOARD and FILE: not writable through this fd today. */
             regs->eax = (uint32_t)-1;
@@ -524,6 +532,22 @@ void syscall_dispatch(registers_t *regs)
         int fd = fd_alloc(cur->fd_table);
         if (fd < 0) { regs->eax = (uint32_t)-1; break; }  /* too many open files */
 
+        /* Block devices under /dev are not eager-buffered: a disk can be
+         * far larger than SYSCALL_FILE_MAX.  Bind the fd to the devfs node
+         * and serve reads/writes via sector I/O on demand. */
+        uint32_t dev_sz = 0;
+        int dev_node = vfs_blockdev_lookup(path, &dev_sz);
+        if (dev_node >= 0) {
+            fd_entry_t *de = &cur->fd_table->slots[fd];
+            de->kind     = FD_KIND_BLOCKDEV;
+            de->data     = NULL;
+            de->size     = dev_sz;
+            de->pos      = 0;
+            de->dev_node = dev_node;
+            regs->eax = (uint32_t)fd;
+            break;
+        }
+
         uint8_t *buf = (uint8_t *)kmalloc(SYSCALL_FILE_MAX);
         if (!buf)   { regs->eax = (uint32_t)-1; break; }
 
@@ -629,7 +653,9 @@ void syscall_dispatch(registers_t *regs)
         int     whence = (int)regs->edx;
         task_t *cur    = task_current();
         fd_entry_t *e  = fd_get(cur ? cur->fd_table : NULL, fd);
-        if (!e || e->kind != FD_KIND_FILE) { regs->eax = (uint32_t)-1; break; }
+        if (!e || (e->kind != FD_KIND_FILE && e->kind != FD_KIND_BLOCKDEV)) {
+            regs->eax = (uint32_t)-1; break;
+        }
         uint32_t new_pos;
         if (whence == 0)      new_pos = (uint32_t)offset;
         else if (whence == 1) new_pos = (uint32_t)((int)e->pos + offset);

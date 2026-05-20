@@ -110,6 +110,22 @@ int vfs_write_file(const char *path, const void *buf, uint32_t size);
 int vfs_file_exists(const char *path);
 
 /*
+ * vfs_blockdev_lookup – if path resolves to a /dev block device, return
+ * its devfs node index (>= 0) and write the device's byte size into
+ * *size_out.  Returns -1 if path is not a block device.  Lets the fd
+ * layer open /dev nodes without eager-buffering (FD_KIND_BLOCKDEV).
+ */
+int vfs_blockdev_lookup(const char *path, uint32_t *size_out);
+
+/*
+ * vfs_blockdev_pread / vfs_blockdev_pwrite – byte-addressed I/O against
+ * an open block-device node (as returned by vfs_blockdev_lookup).
+ * Return bytes transferred, or -1 on error.
+ */
+long vfs_blockdev_pread(int node, void *buf, uint32_t len, uint32_t off);
+long vfs_blockdev_pwrite(int node, const void *buf, uint32_t len, uint32_t off);
+
+/*
  * vfs_delete_file – delete a file (FAT32 only).
  * vfs_delete_dir  – delete an empty directory (FAT32 only).
  * vfs_rename      – move or rename a file or directory (FAT32 only).
