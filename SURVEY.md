@@ -20,9 +20,9 @@ All four phases run in parallel CI jobs (`.github/workflows/build-test.yml`).
 ## Shell Commands (Kernel Builtins)
 
 ### Filesystem Commands (`shell_cmd_fs.c`, `shell_cmd_fileops.c`)
-- **mount** - Mount a FAT32 partition to `/hd/` by drive and partition number
-- **umount** - Unmount the current FAT32 volume
-- **ls** - List directory contents (supports VFS paths: `/hd/`, `/cdrom/`)
+- **mount** - `mount /dev/hdaN /mnt/<name>` mounts a FAT32 partition at a chosen mountpoint under `/mnt` (default OS drive is `/mnt/hd`); legacy `mount <drive> <part#>` still works and lands at `/mnt/hd`
+- **umount** - `umount [/mnt/<name>]` flushes + unmounts the FAT32 volume; `umount /mnt/cdrom` unmounts and ejects the CD-ROM
+- **ls** - List directory contents (supports VFS paths: `/mnt/hd/`, `/mnt/cdrom/`, `/dev`, `/proc`)
 - **cat** - Print file contents to terminal
 - **cd** - Change current working directory
 - **mkdir** - Create a directory (FAT32 only)
@@ -56,8 +56,8 @@ All four phases run in parallel CI jobs (`.github/workflows/build-test.yml`).
 ### Application Commands (`shell_cmd_apps.c`, lines 26–192)
 - **vix** - Launch VIX interactive text editor on a file
 - **install** - Run OS installer from CD-ROM to HDD
-- **exec** - Execute userspace ELF from `/cdrom/apps/` or `/hd/apps/` (line 79)
-- **eject** - Eject HDD or CD-ROM
+- **exec** - Execute userspace ELF from a PATH directory (default `/mnt/cdrom/apps/` or `/mnt/hd/apps/`)
+- **eject** - Eject HDD or CD-ROM (`umount /mnt/cdrom` also ejects)
 - **ring3test** - Ring 3 test harness (defined in `proc/usertest.c`)
 
 ### Display Commands (`shell_cmd_display.c` - not fully read)
@@ -82,8 +82,8 @@ static const shell_cmd_entry_t * const cmd_modules[] = {
 };
 ```
 
-When a command is not found in built-ins, it falls back to **PATH lookup** (lines 485–502):
-- Searches `/cdrom/apps/<cmd>.elf` and `/hd/apps/<cmd>.elf`
+When a command is not found in built-ins, it falls back to **PATH lookup**:
+- Iterates the colon-separated `PATH` shell variable (settable like any var; default `/mnt/cdrom/apps:/mnt/hd/apps`), trying `<dir>/<cmd>.elf`
 - Calls `shell_exec_elf()` to spawn the app as a new kernel task
 
 ## Userspace Apps (ELF Executables)
@@ -174,15 +174,19 @@ All apps in `/Users/arawn/Makar/src/userspace/` compile to `.elf` files and are 
 ## VFS API (`src/kernel/include/kernel/vfs.h`)
 
 **Unified namespace:**
-- `/` - virtual root; `vfs_complete()` enumerates the mount points so `cd /<TAB>`, `cat /*`, and `ls /p*` all work
-- `/hd/…` - FAT32 hard disk (mounted via `mount` command)
-- `/cdrom/…` - ISO9660 CD-ROM (auto-detected at init)
-- `/proc/…` - synthetic, always-present read-only view of kernel state. Backed by `arch/i386/fs/procfs.c`; mount path is the `PROCFS_MOUNT` constant in `include/kernel/procfs.h`. Entries: `cpuinfo`, `meminfo`, `tasks`, `uname` (content generated on each read; no caching)
+- `/` - virtual root; lists `[mnt] [proc] [dev]`; `vfs_complete()` enumerates them so `cd /<TAB>`, `cat /*`, `ls /p*` all work
+- `/mnt` - disk-filesystem container; lists the live mounts (`[hd]` / `[cdrom]`)
+- `/mnt/hd/…` - FAT32 hard disk (default OS drive; mountpoint name configurable via `mount`).  Bare `/hd/…` is a transitional alias
+- `/mnt/cdrom/…` - ISO9660 CD-ROM (auto-detected at init).  Bare `/cdrom/…` is a transitional alias
+- `/proc/…` - synthetic, always-present read-only view of kernel state. Backed by `arch/i386/fs/procfs.c`; mount path is the `PROCFS_MOUNT` constant in `include/kernel/procfs.h`. Entries: `cpuinfo`, `meminfo`, `tasks`, `uname`, `rtc` (content generated on each read; no caching)
+- `/dev/…` - synthetic block-device tree (`arch/i386/fs/devfs.c`): `/dev/hda[N]` ATA disks/partitions, `/dev/cdrom` ATAPI. Byte-addressed read/write via `devfs_pread`/`devfs_pwrite` over native sector I/O; opened as `FD_KIND_BLOCKDEV`
 
 ### Lifecycle
-- `vfs_init()` - probe IDE for ISO9660; reset CWD to `/`
+- `vfs_init()` - probe IDE for ISO9660; reset CWD to `/`; build the `/dev` node table (`devfs_init`)
 - `vfs_set_boot_drive(biosdev)` - record BIOS boot device
-- `vfs_auto_mount()` - mount HDD or CD-ROM based on boot device
+- `vfs_auto_mount()` - mount HDD (at `/mnt/hd`) or CD-ROM based on boot device
+- `vfs_set_hd_mount(name)` / `vfs_hd_mount()` - get/set the `/mnt` component for the FAT32 volume (default `hd`)
+- `vfs_prepare_shutdown()` - flush + unmount before power-off/reset (called from `shutdown`/`reboot`)
 - `vfs_notify_hd_mounted/unmounted()` - called by mount/umount commands
 - `vfs_notify_cdrom_ejected()` - called after ATAPI eject
 

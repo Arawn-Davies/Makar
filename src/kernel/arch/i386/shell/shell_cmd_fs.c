@@ -15,42 +15,89 @@
 #include <kernel/iso9660.h>
 #include <kernel/partition.h>
 #include <kernel/ide.h>
+#include <kernel/devfs.h>
+#include <string.h>
 
 static disk_parts_t s_cmd_parts;
 
+/* Validate a mountpoint of the form "/mnt/<name>" and return <name>
+ * (a single component directly under /mnt), or NULL if malformed.
+ * /mnt/cdrom is reserved for the optical drive. */
+static const char *mountpoint_name(const char *mp)
+{
+    if (strncmp(mp, "/mnt/", 5) != 0) return NULL;
+    const char *name = mp + 5;
+    if (*name == '\0') return NULL;          /* "/mnt" itself              */
+    for (const char *q = name; *q; q++)
+        if (*q == '/') return NULL;          /* must be one level deep     */
+    if (strcmp(name, "cdrom") == 0) return NULL;  /* reserved              */
+    return name;
+}
+
+/* mount /dev/hdaN /mnt/<name>  -- device-path form (preferred).
+ * mount <drive> <part#>        -- legacy numeric form (mounts at /mnt/hd). */
 static void cmd_mount(int argc, char **argv)
 {
     if (argc < 3) {
-        t_writestring("Usage: mount <drive> <part>\n");
+        t_writestring("Usage: mount /dev/hdaN /mnt/<name>\n"
+                      "       mount <drive> <part#>   (legacy, -> /mnt/hd)\n");
         return;
     }
 
-    uint8_t drive    = (uint8_t)parse_uint(argv[1]);
-    int     part_num = (int)parse_uint(argv[2]);
+    uint8_t     drive;
+    uint32_t    lba;
+    const char *mount_name = "hd";   /* legacy form always lands at /mnt/hd */
 
-    int err = part_probe(drive, &s_cmd_parts);
-    if (err) {
-        t_writestring("mount: drive not accessible\n");
-        return;
-    }
-
-    int part_idx = part_num - 1;
-    if (part_idx < 0 || part_idx >= s_cmd_parts.count) {
-        t_writestring("mount: invalid partition number");
-        if (s_cmd_parts.count > 0) {
-            t_writestring(" (valid: 1-");
-            t_dec((uint32_t)s_cmd_parts.count);
-            t_putchar(')');
+    if (strncmp(argv[1], "/dev/", 5) == 0) {
+        /* Device-path form.  devfs_lookup wants the path relative to the
+         * /dev mount, i.e. starting at the node name's leading '/'. */
+        int node = devfs_lookup(argv[1] + 4);   /* "/dev/hda1" -> "/hda1" */
+        if (node < 0) {
+            t_writestring("mount: no such device: ");
+            t_writestring(argv[1]);
+            t_putchar('\n');
+            return;
         }
-        t_writestring("\n       (use lspart ");
-        t_dec(drive);
-        t_writestring(" to list partitions)\n");
-        return;
+        mount_name = mountpoint_name(argv[2]);
+        if (!mount_name) {
+            t_writestring("mount: bad mountpoint '");
+            t_writestring(argv[2]);
+            t_writestring("' (expected /mnt/<name>, one level deep; "
+                          "cdrom is reserved)\n");
+            return;
+        }
+        if (devfs_node_location(node, &drive, &lba) != 0) {
+            t_writestring("mount: cannot resolve device geometry\n");
+            return;
+        }
+    } else {
+        /* Legacy numeric form: mount <drive> <part#>. */
+        drive        = (uint8_t)parse_uint(argv[1]);
+        int part_num = (int)parse_uint(argv[2]);
+
+        int err = part_probe(drive, &s_cmd_parts);
+        if (err) {
+            t_writestring("mount: drive not accessible\n");
+            return;
+        }
+
+        int part_idx = part_num - 1;
+        if (part_idx < 0 || part_idx >= s_cmd_parts.count) {
+            t_writestring("mount: invalid partition number");
+            if (s_cmd_parts.count > 0) {
+                t_writestring(" (valid: 1-");
+                t_dec((uint32_t)s_cmd_parts.count);
+                t_putchar(')');
+            }
+            t_writestring("\n       (use lspart ");
+            t_dec(drive);
+            t_writestring(" to list partitions)\n");
+            return;
+        }
+        lba = s_cmd_parts.parts[part_idx].lba_start;
     }
 
-    uint32_t lba = s_cmd_parts.parts[part_idx].lba_start;
-
-    err = fat32_mount(drive, lba);
+    int err = fat32_mount(drive, lba);
     if (err) {
         t_writestring("mount: not a valid FAT32 volume (error ");
         t_dec((uint32_t)(-err));
@@ -58,28 +105,62 @@ static void cmd_mount(int argc, char **argv)
         return;
     }
 
+    /* Record the chosen mountpoint before notifying so the cwd fixup
+     * lands tasks at the new /mnt/<name>. */
+    vfs_set_hd_mount(mount_name);
     vfs_notify_hd_mounted();
 
     t_writestring("Mounted FAT32  drive ");
     t_dec(drive);
-    t_writestring("  partition ");
-    t_dec((uint32_t)part_num);
     t_writestring("  LBA ");
     t_dec(lba);
+    t_writestring("  at /mnt/");
+    t_writestring(vfs_hd_mount());
     t_writestring("\ncwd: ");
     t_writestring(vfs_getcwd());
     t_putchar('\n');
 }
 
+/* True if `target` names the CD-ROM mount (/mnt/cdrom, /cdrom, cdrom). */
+static int umount_target_is_cdrom(const char *t)
+{
+    return strcmp(t, "/mnt/cdrom") == 0 || strcmp(t, "/cdrom") == 0 ||
+           strcmp(t, "cdrom") == 0;
+}
+
+/* umount [/mnt/<name>]   default target is the FAT32 volume.
+ * umount /mnt/cdrom      eject the optical drive. */
 static void cmd_umount(int argc, char **argv)
 {
-    (void)argc; (void)argv;
+    if (argc >= 2 && umount_target_is_cdrom(argv[1])) {
+        int cd_drive = -1;
+        for (int i = 0; i < IDE_MAX_DRIVES; i++) {
+            const ide_drive_t *d = ide_get_drive((uint8_t)i);
+            if (d && d->present && d->type == IDE_TYPE_ATAPI) { cd_drive = i; break; }
+        }
+        if (cd_drive < 0) {
+            t_writestring("umount: no CD-ROM drive detected\n");
+            return;
+        }
+        vfs_notify_cdrom_ejected();
+        int err = ide_eject_atapi((uint8_t)cd_drive);
+        if (err) {
+            t_writestring("umount: ATAPI eject failed (err ");
+            t_dec((uint32_t)err);
+            t_writestring(")\n");
+            return;
+        }
+        t_writestring("CD-ROM unmounted and ejected.\n");
+        return;
+    }
+
     if (!fat32_mounted()) {
         t_writestring("umount: no volume mounted\n");
         return;
     }
     fat32_unmount();
     vfs_notify_hd_unmounted();
+    vfs_set_hd_mount(NULL);   /* reset mountpoint to the default "hd" */
     t_writestring("Volume unmounted.\n");
 }
 

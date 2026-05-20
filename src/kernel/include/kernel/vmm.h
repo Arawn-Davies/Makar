@@ -77,4 +77,14 @@ uint32_t *vmm_clone_pd_cow(uint32_t *parent_pd);
  */
 void vmm_free_pd(uint32_t *pd);
 
+/*
+ * vmm_count_user_pages – count resident user pages mapped in `pd`.
+ *
+ * Walks every 4 KiB (non-large) present PDE and counts PTEs that are both
+ * PRESENT and USER, i.e. the task's resident user memory (an RSS-style
+ * figure; COW-shared frames are counted in each sharing task).  Returns 0
+ * for a NULL pd or a kernel-only task.  Used by /proc/tasks and maktop.
+ */
+uint32_t vmm_count_user_pages(uint32_t *pd);
+
 #endif /* _KERNEL_VMM_H */

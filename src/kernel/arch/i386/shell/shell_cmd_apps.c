@@ -1,7 +1,10 @@
 /*
  * shell_cmd_apps.c -- application launcher shell commands.
  *
- * Commands: vix  install  exec  eject  ring3test
+ * Commands: install  exec  eject  ring3test
+ * (vix is no longer a builtin -- it ships as the userland vix.elf and is
+ *  reached via PATH lookup like clock/maktop, so it runs as its own task
+ *  and shows up in maktop with its own pid + memory.)
  */
 
 #include "shell_priv.h"
@@ -10,7 +13,6 @@
 #include <kernel/vtty.h>
 #include <kernel/tty.h>
 #include <kernel/vfs.h>
-#include <kernel/vix.h>
 #include <kernel/installer.h>
 #include <kernel/elf.h>
 #include <kernel/task.h>
@@ -28,39 +30,6 @@ void cmd_ring3test(int argc, char **argv);
 /* ---------------------------------------------------------------------------
  * Command handlers
  * --------------------------------------------------------------------------- */
-
-static void cmd_vix(int argc, char **argv)
-{
-    if (argc < 2) {
-        t_writestring("Usage: vix <filename>\n");
-        t_writestring("  Opens <filename> for editing. Creates the file on save if it does not exist.\n");
-        t_writestring("  Key bindings: Arrow keys navigate | Ctrl+S save | Ctrl+Q quit\n");
-        return;
-    }
-
-    const char *arg  = argv[1];
-    const char *cwd  = vfs_getcwd();
-    static char full_path[VFS_PATH_MAX];
-
-    if (arg[0] == '/') {
-        strncpy(full_path, arg, VFS_PATH_MAX - 1);
-        full_path[VFS_PATH_MAX - 1] = '\0';
-    } else {
-        size_t cwd_len = strlen(cwd);
-        size_t arg_len = strlen(arg);
-        if (cwd_len + 1 + arg_len >= VFS_PATH_MAX) {
-            t_writestring("vix: path too long\n");
-            return;
-        }
-        size_t off = 0;
-        memcpy(full_path, cwd, cwd_len); off += cwd_len;
-        if (cwd[cwd_len - 1] != '/')
-            full_path[off++] = '/';
-        memcpy(full_path + off, arg, arg_len + 1);
-    }
-
-    vix_edit(full_path, NULL);
-}
 
 static void cmd_install(int argc, char **argv)
 {
@@ -318,7 +287,6 @@ static void cmd_eject(int argc, char **argv)
  * --------------------------------------------------------------------------- */
 
 const shell_cmd_entry_t apps_cmds[] = {
-    { "vix",      cmd_vix,      1 },  /* paints FB directly */
     { "install",   cmd_install,   1 },  /* installer TUI paints FB */
     { "exec",      cmd_exec,      1 },  /* ELF child may paint FB */
     { "eject",     cmd_eject,     0 },

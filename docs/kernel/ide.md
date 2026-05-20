@@ -13,8 +13,8 @@ kernel.  It supports 28-bit LBA sector reads and writes over two ATA channels
 primary slave, secondary master, secondary slave).
 
 All transfers are polling-based - no DMA, no IRQ-driven I/O.  ATAPI (CD-ROM)
-devices are detected and labelled but sector read/write is not supported for
-them.
+devices are detected and read via the SCSI PACKET command set (READ(12),
+READ CAPACITY(10), START/STOP UNIT for eject); ATAPI writing is not supported.
 
 ---
 
@@ -102,6 +102,27 @@ Return values are identical to `ide_read_sectors`.
 
 ---
 
+### ATAPI (CD-ROM)
+
+```c
+int ide_read_atapi_sectors(uint8_t drive_num, uint32_t lba, uint16_t count, void *buf);
+int ide_atapi_capacity(uint8_t drive_num, uint32_t *out_sectors, uint32_t *out_sec_size);
+int ide_eject_atapi(uint8_t drive_num);
+```
+
+- `ide_read_atapi_sectors` reads `count` 2048-byte sectors via a READ(12)
+  command packet.
+- `ide_atapi_capacity` issues READ CAPACITY(10) (opcode `0x25`) and reports the
+  medium's sector count (`last_lba + 1`) and block size (usually 2048). ATAPI
+  IDENTIFY carries no usable LBA range, so [devfs](devfs.md) uses this to size
+  `/dev/cdrom`.
+- `ide_eject_atapi` sends START/STOP UNIT with the eject bit (opens the tray).
+
+All return `0` on success, `-1` invalid/absent drive, `-2` not ATAPI, positive
+on a protocol error.
+
+---
+
 ### `const ide_drive_t *ide_get_drive(uint8_t drive_num)`
 
 Returns a pointer to the drive descriptor for `drive_num` (0–3), or `NULL` if
@@ -164,4 +185,4 @@ Sector 0 of drive 0:
   first 128 GiB is accessible.
 * No DMA support.  PIO is slower than DMA for large transfers.
 * No IRQ-driven transfers; the driver busy-waits on status bits.
-* ATAPI (CD-ROM/DVD) drives are detected but not readable through this driver.
+* ATAPI is read-only (READ(12)); no ATAPI writing/burning.

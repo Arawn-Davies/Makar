@@ -52,6 +52,10 @@
                                 * packed (x << 16) | y.  Returns 0 on success,
                                 * (uint32_t)-1 if pixel mode unavailable.
                                 * Clipped to drawable area (status row excluded). */
+#define SYS_CARET_STYLE  218  /* uint32_t caret_style(uint32_t style) - set the
+                                * VESA caret style (0=line, 2=flashing block),
+                                * returns the previous style.  No-op (returns 0)
+                                * in VGA-text mode.  Used by vix.elf. */
 
 /* Back to Linux i386 ABI numbers for the next set. */
 #define SYS_FCNTL      55   /* int fcntl(int fd, int cmd, int arg) - F_GETFL/F_SETFL */

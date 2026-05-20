@@ -77,8 +77,19 @@ void vfs_notify_cdrom_ejected(void);
  * Current working directory
  * ---------------------------------------------------------------------- */
 
-/* Return a pointer to the current VFS path (e.g. "/hd/boot/grub"). */
+/* Return a pointer to the current VFS path (e.g. "/mnt/hd/boot/grub"). */
 const char *vfs_getcwd(void);
+
+/* Get/set the /mnt component the single FAT32 volume is reachable at.
+ * Default "hd".  `mount /dev/hdaN /mnt/<name>` sets it; umount resets it.
+ * `name` must be a single component (no '/'); empty/NULL resets to "hd". */
+void        vfs_set_hd_mount(const char *name);
+const char *vfs_hd_mount(void);
+
+/* Flush and unmount every writable volume in preparation for power-off
+ * or reset, so no dirty FAT/dir data is lost.  Safe to call when nothing
+ * is mounted.  Invoked from the shutdown / reboot paths. */
+void vfs_prepare_shutdown(void);
 
 /* -------------------------------------------------------------------------
  * Filesystem operations
@@ -108,6 +119,22 @@ int vfs_write_file(const char *path, const void *buf, uint32_t size);
 
 /* Return 1 if path exists and is readable, 0 otherwise. */
 int vfs_file_exists(const char *path);
+
+/*
+ * vfs_blockdev_lookup – if path resolves to a /dev block device, return
+ * its devfs node index (>= 0) and write the device's byte size into
+ * *size_out.  Returns -1 if path is not a block device.  Lets the fd
+ * layer open /dev nodes without eager-buffering (FD_KIND_BLOCKDEV).
+ */
+int vfs_blockdev_lookup(const char *path, uint32_t *size_out);
+
+/*
+ * vfs_blockdev_pread / vfs_blockdev_pwrite – byte-addressed I/O against
+ * an open block-device node (as returned by vfs_blockdev_lookup).
+ * Return bytes transferred, or -1 on error.
+ */
+long vfs_blockdev_pread(int node, void *buf, uint32_t len, uint32_t off);
+long vfs_blockdev_pwrite(int node, const void *buf, uint32_t len, uint32_t off);
 
 /*
  * vfs_delete_file – delete a file (FAT32 only).

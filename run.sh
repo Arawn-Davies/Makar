@@ -252,16 +252,16 @@ _run_qemu_interactive() {
     if [ -n "$_qemu" ]; then
         local _host_args="${_args//\/work\//$REPO_ROOT/}"
         # shellcheck disable=SC2086
-        "$_qemu" $_host_args
+        "$_qemu" -m 32 $_host_args
     elif [ "$(_build_ctx)" = "docker" ]; then
         echo "==> Host QEMU not found - running QEMU in Docker (serial stdio)..."
         "$DOCKER_BIN" run --rm -it \
             --platform "$DOCKER_PLATFORM" \
             -v "$REPO_ROOT:/work" -w /work \
             "$DOCKER_IMAGE" \
-            bash -lc "qemu-system-i386 $_args"
+            bash -lc "qemu-system-i386 -m 32 $_args"
     else
-        bash -lc "qemu-system-i386 $_args"
+        bash -lc "qemu-system-i386 -m 32 $_args"
     fi
 }
 
@@ -298,6 +298,7 @@ _run_ktest() {
         _drun --as-root --env "QEMU_ACCEL=$_accel" --env "KTEST_ISO_NAME=$_iso" -- \
             'timeout 120 qemu-system-i386 \
                  -cdrom /work/$KTEST_ISO_NAME \
+                 -m 32 \
                  -serial file:/work/ktest.log \
                  -display none \
                  -no-reboot \
@@ -437,7 +438,7 @@ _run_all() {
                 echo \"==> Phase 0: starting QEMU (frozen at reset, gdbstub on :1234)...\"
                 qemu-system-i386 \
                     -cdrom /work/makar.iso \
-                    -m 256 -vga std -display none \
+                    -m 32 -vga std -display none \
                     $QEMU_ACCEL \
                     -s -S \
                     -serial file:/work/all-serial.log \
@@ -514,7 +515,7 @@ _run_all() {
     # shellcheck disable=SC2086
     "$_qemu" \
         -cdrom "$REPO_ROOT/makar.iso" \
-        -m 256 -vga std \
+        -m 32 -vga std \
         $_display \
         $_accel \
         -s $_freeze \
@@ -610,6 +611,7 @@ _run_gdb_iso_test() {
     if [ -n "$_qemu" ] && [ -n "$_gdb" ]; then
         # shellcheck disable=SC2086
         "$_qemu" \
+            -m 32 \
             -drive "file=$REPO_ROOT/makar.iso,if=ide,index=2,media=cdrom" \
             -boot order=d \
             -serial "file:$REPO_ROOT/gdb-serial.log" \
@@ -630,6 +632,7 @@ _run_gdb_iso_test() {
         _drun --as-root --env "QEMU_ACCEL=$_accel" -- \
             'qemu-system-i386 \
                  -drive file=/work/makar.iso,if=ide,index=2,media=cdrom \
+                 -m 32 \
                  -boot order=d \
                  -serial file:/work/gdb-serial.log \
                  -display none -no-reboot -no-shutdown \
@@ -662,6 +665,7 @@ _run_gdb_hdd_test() {
         "$_qemu" \
             -drive "file=$REPO_ROOT/$_img,format=raw,if=ide,index=0" \
             -boot c \
+            -m 32 \
             -serial "file:$REPO_ROOT/hdd-test-serial.log" \
             -display none -no-reboot -no-shutdown \
             $_accel \
@@ -681,6 +685,7 @@ _run_gdb_hdd_test() {
             'qemu-system-i386 \
                  -drive file=/work/$HDD_IMG_NAME,format=raw,if=ide,index=0 \
                  -boot c \
+                 -m 32 \
                  -serial file:/work/hdd-test-serial.log \
                  -display none -no-reboot -no-shutdown \
                  $QEMU_ACCEL \

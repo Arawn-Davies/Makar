@@ -59,13 +59,40 @@ static const char *history_get(int ago)
 /* Forward declaration - defined later in this file. */
 static void shell_print_prompt(void);
 
-/* Search path for executables - also used by tab completion to enumerate
- * the available `*.elf` binaries when completing the first token. */
-static const char *const s_app_path[] = {
-    "/cdrom/apps/",
-    "/hd/apps/",
-    NULL,
-};
+/* Default executable search path, used when the PATH shell variable is
+ * unset.  Colon-separated, Unix-style.  The PATH variable (set like any
+ * other shell var, e.g. `PATH=/mnt/hd/bin:/mnt/cdrom/apps`) overrides it
+ * and is consulted by both command dispatch and tab completion. */
+#define SHELL_DEFAULT_PATH "/mnt/cdrom/apps:/mnt/hd/apps"
+
+/* Resolve the effective PATH string: the per-task PATH variable if set,
+ * else the built-in default. */
+static const char *shell_path_string(void)
+{
+    const char *p = sh_vars_get("PATH");
+    return (p && *p) ? p : SHELL_DEFAULT_PATH;
+}
+
+/* Write the idx-th PATH directory into `out`, guaranteeing a trailing
+ * '/'.  Returns 1 if that index exists (non-empty segment), 0 otherwise.
+ * Lets callers loop `for (i = 0; shell_path_dir(i, buf, n); i++)`. */
+static int shell_path_dir(int idx, char *out, size_t outsz)
+{
+    const char *p = shell_path_string();
+    for (int i = 0; i < idx; i++) {
+        const char *c = strchr(p, ':');
+        if (!c) return 0;
+        p = c + 1;
+    }
+    if (!*p) return 0;
+    const char *end = strchr(p, ':');
+    size_t len = end ? (size_t)(end - p) : strlen(p);
+    if (len == 0 || len + 2 > outsz) return 0;
+    memcpy(out, p, len);
+    if (out[len - 1] != '/') out[len++] = '/';   /* normalise trailing slash */
+    out[len] = '\0';
+    return 1;
+}
 
 /* makbox applets - tab completion advertises these as first-token
  * candidates even though no standalone <name>.elf exists on PATH. */
@@ -384,15 +411,14 @@ void shell_readline(char *buf, size_t max)
                  * what users expect of `ls`/`cat`/etc. */
                 for (int ai = 0; s_makbox_applets[ai] && vctx.n < 32; ai++)
                     tab_complete_cb(s_makbox_applets[ai], 0, &vctx);
-                /* PATH dirs.  s_app_path entries always end in '/'; trim it
-                 * before passing to vfs_complete for consistent normalisation. */
-                for (int p = 0; s_app_path[p] && vctx.n < 32; p++) {
-                    char dir[VFS_PATH_MAX];
-                    size_t dlen = strlen(s_app_path[p]);
-                    if (dlen >= sizeof(dir)) continue;
-                    memcpy(dir, s_app_path[p], dlen);
-                    if (dlen > 1 && dir[dlen - 1] == '/') dlen--;
-                    dir[dlen] = '\0';
+                /* PATH dirs (from the PATH variable or the default).
+                 * shell_path_dir yields a trailing '/'; trim it before
+                 * vfs_complete for consistent normalisation. */
+                char dir[VFS_PATH_MAX];
+                for (int p = 0; vctx.n < 32 &&
+                                shell_path_dir(p, dir, sizeof(dir)); p++) {
+                    size_t dlen = strlen(dir);
+                    if (dlen > 1 && dir[dlen - 1] == '/') dir[--dlen] = '\0';
                     vfs_complete(dir, word, tab_app_cb, &vctx);
                 }
                 /* CWD: pick up `./foo` style executables typed without the
@@ -652,14 +678,15 @@ int shell_dispatch_argv(int argc, char **argv)
         return 0;
     }
 
-    /* PATH lookup: try <dir><cmd>[.elf] for each entry in s_app_path. */
+    /* PATH lookup: try <dir><cmd>[.elf] for each PATH directory. */
     static char path_buf[VFS_PATH_MAX];
-    for (int p = 0; s_app_path[p]; p++) {
-        size_t dlen = strlen(s_app_path[p]);
+    static char dir_buf[VFS_PATH_MAX];
+    for (int p = 0; shell_path_dir(p, dir_buf, sizeof(dir_buf)); p++) {
+        size_t dlen = strlen(dir_buf);
         size_t nlen = strlen(argv[0]);
         if (dlen + nlen + 4 >= VFS_PATH_MAX)
             continue;
-        strncpy(path_buf, s_app_path[p], VFS_PATH_MAX - 1);
+        strncpy(path_buf, dir_buf, VFS_PATH_MAX - 1);
         strncpy(path_buf + dlen, argv[0], VFS_PATH_MAX - 1 - dlen);
         path_buf[dlen + nlen] = '\0';
         if (try_exec_path(path_buf, argc, argv)) {
@@ -681,11 +708,11 @@ int shell_dispatch_argv(int argc, char **argv)
     }
     if (is_makbox_applet) {
         static char makbox_argv0[] = "makbox";
-        for (int p = 0; s_app_path[p]; p++) {
-            size_t dlen = strlen(s_app_path[p]);
+        for (int p = 0; shell_path_dir(p, dir_buf, sizeof(dir_buf)); p++) {
+            size_t dlen = strlen(dir_buf);
             if (dlen + sizeof(makbox_argv0) >= VFS_PATH_MAX)
                 continue;
-            strncpy(path_buf, s_app_path[p], VFS_PATH_MAX - 1);
+            strncpy(path_buf, dir_buf, VFS_PATH_MAX - 1);
             strncpy(path_buf + dlen, makbox_argv0, VFS_PATH_MAX - 1 - dlen);
             path_buf[dlen + sizeof(makbox_argv0) - 1] = '\0';
 

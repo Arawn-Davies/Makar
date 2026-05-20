@@ -46,12 +46,27 @@ tick every 10 ms).
 Each IRQ 0 fires `timer_callback`, which:
 
 1. Increments the global `tick` counter.
-2. Calls `t_spinner_tick(tick)` to animate the terminal spinner.
+2. Invokes every registered **per-tick hook** with the current tick (see
+   below) - this is how the boot spinner and the status-bar clock get
+   driven without the timer knowing about the display layer.
 3. Every `SCHED_QUANTUM = 4` ticks (≈ 80 ms at 50 Hz), sends End-Of-Interrupt
    to the master PIC and calls `task_yield()`. This drives **preemptive task
    switching** - a busy-loop ring-0 task that never voluntarily yields will
    still surrender the CPU at the next quantum boundary. EOI is sent before
    the yield so further timer IRQs can fire while the new task runs.
+
+### Per-tick hooks
+
+```c
+typedef void (*timer_tick_fn)(uint32_t tick);
+void timer_register_tick_hook(timer_tick_fn fn);   /* up to TIMER_MAX_TICK_HOOKS */
+```
+
+So the timer IRQ stays display-agnostic (Linux's timer IRQ never reaches
+into the console), interested modules **subscribe** instead of the timer
+calling into them. `kernel_main` registers `t_spinner_tick` (boot spinner)
+and `vesa_tty_status_clock_tick` (Alt+F5 status-bar clock) right after
+`init_timer`. Hooks run in IRQ context, so they must be short.
 
 ---
 

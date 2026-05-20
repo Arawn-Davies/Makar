@@ -122,13 +122,6 @@ exposes Unix-style synthetic mounts so userspace tools have a uniform
 handle on drivers and devices.
 
 Open:
-- [#149 — fdisk/cfdisk-style partition tool](https://github.com/Arawn-Davies/Makar/issues/149)
-  (interactive create/delete/resize for MBR + GPT; unblocks "install
-  Makar onto a blank disk" end-to-end)
-- [#150 — `/dev/` synthetic VFS](https://github.com/Arawn-Davies/Makar/issues/150)
-  (raw block devices `/dev/sdaN`, character devices `/dev/ttyS0` /
-  `/dev/tty0`–`/dev/kbd`, plus `/dev/null|zero|random` — pairs with
-  `#149`, since `fdisk /dev/sda` reads/writes through this layer)
 - [#151 — Adopt Medli-compatible `/Users/` `/Apps/` `/System/` layout](https://github.com/Arawn-Davies/Makar/issues/151)
   (migrate today's flat `/apps/` to Medli's canonical FAT32 structure
   from [`Paths.cs`](https://github.com/Arawn-Davies/Medli/blob/main/Medli/Common/Paths.cs)
@@ -140,9 +133,15 @@ Open:
   it into a real installer — depends on #149/#150/#151)
 
 Already shipped:
-- `/proc/` synthetic filesystem with `cpuinfo`/`meminfo`/`tasks`/`uname`
+- `/proc/` synthetic filesystem with `cpuinfo`/`meminfo`/`tasks`/`uname`/`rtc`
   (#129)
-- FAT32 R/W with auto-mount, ISO 9660 (`/cdrom`)
+- FAT32 R/W; disk filesystems under `/mnt` (`/mnt/hd`, `/mnt/cdrom`), with
+  `/hd` and `/cdrom` aliases; `mount /dev/hdaN /mnt/<name>`; flush + unmount
+  on shutdown/reboot
+- **#150 — `/dev/` synthetic VFS**: raw block devices `/dev/hda[N]` +
+  `/dev/cdrom` ([devfs](kernel/devfs.md)); byte-addressed sector I/O
+- **#149 — fdisk**: `fdisk.elf` MBR editor reads/writes the partition table
+  through `/dev/hda`
 
 ### Display + terminal
 
@@ -171,11 +170,11 @@ See [history](history.md) for the changelog.  Highlights:
   `/proc`.
 - Userspace: ELF loader, ring-3 `iret`, full POSIX **fork + execve +
   wait4** (slices 15-16 with copy-on-write page-table clone), syscall
-  surface (Linux i386 subset + Makar extensions 200–217), `makbox`
-  busybox-style multicall, apps (`calc`, `vix`, `kbtester`, `forktest`,
-  `execvetest`, …).
+  surface (Linux i386 subset + Makar extensions 200–218), `makbox`
+  busybox-style multicall, apps (`calc`, `vix`, `fdisk`, `basic`,
+  `kbtester`, `forktest`, `execvetest`, …).
 - Display: VESA framebuffer (720p default), VGA 80×50 fallback, per-TTY
-  backing grids, tmux-style status bar, four independent TTYs with
+  backing grids, **makmux** status bar, four independent TTYs with
   Alt+F1–F4.
 - Tooling: single-entrypoint `run.sh`, ccache toolchain image,
   build-once fan-out CI (4 parallel jobs including a UI-test job).

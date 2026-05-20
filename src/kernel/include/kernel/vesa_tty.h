@@ -152,6 +152,14 @@ void vesa_tty_paint_status(int active, int count);
  * loading screen. */
 void vesa_tty_set_status_visible(int v);
 
+/* Toggle the status bar's left label between "Makar" and a live clock
+ * (HH:MM DD:MM:YY from the CMOS RTC).  Bound to Alt+F5. */
+void vesa_tty_toggle_clock(void);
+
+/* Per-PIT-tick clock refresh; repaints just the label once per second
+ * while the clock is showing.  Called from the timer IRQ. */
+void vesa_tty_status_clock_tick(uint32_t tick);
+
 /* ------------------------------------------------------------------ */
 /* Visible caret on the default pane                                   */
 /* ------------------------------------------------------------------ */

@@ -25,6 +25,7 @@ typedef enum {
     FD_KIND_VGA_SERIAL = 3,   /* stderr: VGA terminal + COM1               */
     FD_KIND_SERIAL     = 4,   /* COM1 only (write-only)                    */
     FD_KIND_FILE       = 5,   /* opened VFS file (eagerly buffered)        */
+    FD_KIND_BLOCKDEV   = 6,   /* /dev block device (no buffer; sector I/O) */
 } fd_kind_t;
 
 /* Per-fd flag bits, mirrored from Linux fcntl O_NONBLOCK.  Stored in
@@ -37,9 +38,10 @@ typedef struct {
     fd_kind_t kind;
     /* file-kind state (zero/NULL for other kinds) */
     uint8_t  *data;     /* kmalloc'd buffer, owned by this slot      */
-    uint32_t  size;     /* total bytes valid in data                  */
+    uint32_t  size;     /* total bytes valid in data (or device size) */
     uint32_t  pos;      /* current read/seek position                 */
     uint32_t  flags;    /* FD_FLAG_*; per-fd modes (e.g. O_NONBLOCK)  */
+    int       dev_node; /* FD_KIND_BLOCKDEV: devfs node index         */
 } fd_entry_t;
 
 typedef struct fd_table {

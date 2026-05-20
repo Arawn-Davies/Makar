@@ -26,9 +26,10 @@ Ctrl+C (aborts line, prints `^C`), history navigation (↑/↓ up to 16 entries)
 and Tab completion. First token completes against the union of built-in
 command names and `*.elf` basenames found in `s_app_path`. Subsequent
 tokens complete VFS paths via `vfs_complete()` - cross-filesystem, so
-`cd /<TAB>` enumerates mount points (`hd`, `cdrom`, `proc`),
-`cat /proc/c<TAB>` matches `cpuinfo`, and `ls /hd/<TAB>` walks the FAT32
-root. Globbing (`*`, `?`) on argv is expanded via `shell_glob.c`
+`cd /<TAB>` enumerates the root (`mnt`, `proc`, `dev`), `cd /mnt/<TAB>`
+lists the live disk mounts (`hd`, `cdrom`), `cat /proc/c<TAB>` matches
+`cpuinfo`, and `ls /mnt/hd/<TAB>` walks the FAT32 root. Globbing
+(`*`, `?`) on argv is expanded via `shell_glob.c`
 before dispatch using the same `vfs_complete()` enumerator.
 
 ### Parsing
@@ -49,7 +50,7 @@ static const shell_cmd_entry_t * const cmd_modules[] = {
 ```
 
 Each entry is `{ name, fn, fullscreen }`. The `fullscreen` bit marks
-handlers that paint directly to the framebuffer (vix, install, exec) -
+handlers that paint directly to the framebuffer (install, exec) -
 after such a handler returns, `shell_dispatch` calls
 `shell_restore_screen()` which repaints the focused VT's backing grid
 plus the status bar. That puts the shell's history back without
@@ -58,9 +59,14 @@ waiting for the next keystroke and removes the need for each
 
 If no built-in matches, the shell tries `try_exec_path()` on the
 literal argv[0] (if it's a path-style `/abs` or `./rel`), then walks
-the PATH list (`/cdrom/apps/`, `/hd/apps/`) appending `[.elf]`.
+the **PATH** directories appending `[.elf]`. PATH is the per-task
+`PATH` shell variable (settable like any var) and falls back to the
+built-in default `/mnt/cdrom/apps:/mnt/hd/apps`; both command dispatch
+and first-token tab completion iterate it via `shell_path_dir()`.
 Successful ELF execution is also followed by `shell_restore_screen()` -
-any ring-3 binary is treated as potentially-fullscreen.
+any ring-3 binary is treated as potentially-fullscreen. `vix` is no
+longer a builtin: it resolves through PATH to `vix.elf` and runs as its
+own ring-3 task (so it shows up in `maktop`).
 
 ---
 
@@ -70,12 +76,12 @@ any ring-3 binary is treated as potentially-fullscreen.
 
 | Command | Description |
 |---|---|
-| `ls [path]` | List directory; supports `/hd/` and `/cdrom/` paths |
+| `ls [path]` | List directory; supports `/mnt/hd/`, `/mnt/cdrom/`, `/dev`, `/proc` |
 | `cd <path>` | Change VFS working directory |
 | `cat <path>` | Print file contents |
 | `mkdir <path>` | Create directory (FAT32 only) |
-| `mount <drive> <part>` | Mount FAT32 partition to `/hd/` |
-| `umount` | Unmount the current FAT32 volume |
+| `mount /dev/hdaN /mnt/<name>` | Mount a FAT32 partition at a chosen mountpoint under `/mnt` (default OS drive is `/mnt/hd`). Legacy `mount <drive> <part#>` still works and lands at `/mnt/hd` |
+| `umount [/mnt/<name>]` | Flush + unmount the FAT32 volume; `umount /mnt/cdrom` unmounts + ejects the CD-ROM |
 | `mkfs <drive> <part>` | Format partition as FAT32 |
 | `isols [path]` | List ISO9660 directory (CD-ROM) |
 | `write <path> <text…>` | Create/overwrite file with text arguments |
@@ -103,8 +109,8 @@ any ring-3 binary is treated as potentially-fullscreen.
 | `meminfo` | Heap used/free in bytes |
 | `uptime` | Humanised h/m/s + raw 100 Hz tick count |
 | `tasks` | List kernel tasks and their states (`cat /proc/tasks` is the richer variant) |
-| `shutdown` | ACPI S5 power-off |
-| `reboot` | ACPI reboot |
+| `shutdown` | Flush + unmount the FAT32 volume, then ACPI S5 power-off |
+| `reboot` | Flush + unmount the FAT32 volume, then ACPI reboot |
 | `panic [msg]` | Trigger kernel panic |
 | `ktest` | Run all in-kernel unit tests interactively |
 | `verbose [on\|off]` | Toggle the `t_putchar` → COM1 mirror at runtime. Equivalent to flipping `console=ttyS0` on the kernel cmdline. Used by `tests/ui_test.sh` to grep shell output from serial. |
@@ -114,7 +120,6 @@ any ring-3 binary is treated as potentially-fullscreen.
 | Command | Description |
 |---|---|
 | `exec <path>` | Load and run a userspace ELF (Ctrl+C kills it) |
-| `vix <path>` | Launch VIX text editor |
 | `install` | Run OS installer from CD-ROM to HDD |
 | `eject` | Eject HDD or CD-ROM |
 | `ring3test` | Ring-3 test harness |

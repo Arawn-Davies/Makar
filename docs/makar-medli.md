@@ -63,7 +63,7 @@ Medli without either project's acronym becoming stale.
 | Line numbers | No | Yes (4-digit gutter, `~` past EOF) | Planned |
 | Word wrap | No | Yes (visual, in-pane) | Planned |
 | Cursor | Static block | Flashing block (`vesa_tty_set_caret_style(2)`) | Planned |
-| Source | Medli/Editors/Vics.cs | `src/userspace/vix.c`, `src/kernel/arch/i386/proc/vix.c` | — |
+| Source | Medli/Editors/Vics.cs | `src/userspace/vix.c` (userland ELF; the former in-kernel `proc/vix.c` was removed once the ELF reached parity) | — |
 
 When Medli's VICS is rewritten against VIX's behaviour the editor
 becomes identical on both OSes; the rename is the visible part of that
@@ -94,7 +94,7 @@ just presents `/` to the user instead of `\`.
 ```
 
 Makar currently uses a flatter `apps/` directory at FAT32 root (see
-`isodir/apps/` and `/hd/apps/` PATH lookup); the layout above is the
+`isodir/apps/` and `/mnt/hd/apps/` PATH lookup); the layout above is the
 target once the userspace catalogue grows past a handful of ELFs.
 
 ---
@@ -144,7 +144,7 @@ Mapped to Medli co-operation:
       `mkpart gpt`.
 - [x] **FAT32 R/W** — mount, ls, cat, cd, mkdir, mkfs, file
       delete/rename, directory delete (PR #120).
-- [x] **ISO 9660** — read-only auto-mount at `/cdrom` from ATAPI.
+- [x] **ISO 9660** — read-only auto-mount at `/mnt/cdrom` from ATAPI.
 - [x] **Process model** — preemptive round-robin scheduler at 100 Hz
       with `SCHED_QUANTUM = 4` ticks (40 ms slice), per-task page
       directory, dead-task PD reaper (PRs #123, #128).

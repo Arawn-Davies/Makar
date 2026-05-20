@@ -468,8 +468,11 @@ for `local_irq_enable()` inside its syscall path. The plumbing is there
 
 The full table lives at `src/kernel/include/kernel/syscall.h`. Numbers 1..49
 match Linux/i386 exactly (EXIT, READ, WRITE, OPEN, CLOSE, LSEEK, KILL, BRK,
-SIGNAL, FCNTL...). 100, 158, 200–217 are Makar-only extensions for terminal
-ops, signal returns, and the new pixel framebuffer API.
+SIGNAL, FCNTL...). 100, 158, 200–218 are Makar-only extensions for terminal
+ops, signal returns, the pixel framebuffer API (`SYS_DRAW_LINE` 217,
+`SYS_CARET_STYLE` 218), and `SYS_GETCWD`. `OPEN`/`READ`/`WRITE`/`LSEEK`
+also drive `/dev` block devices: a `/dev` node opens as `FD_KIND_BLOCKDEV`
+(no eager buffer) and read/write/seek do byte-addressed sector I/O.
 
 ### `int 0x80` vs `sysenter`
 

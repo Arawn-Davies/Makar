@@ -184,7 +184,7 @@ docker buildx build --platform linux/amd64 \
 
 `run.sh hdd boot` attaches only the HDD (`-boot c`, no CD-ROM).
 
-The ISO GDB test (`iso-test` phase 2) adds a 32 MiB FAT32 test disk on index 0 alongside the CD-ROM so the kernel can mount `/hd` and the `hdd_mount` GDB group can be verified on the ISO boot path.
+The ISO GDB test (`iso-test` phase 2) adds a 32 MiB FAT32 test disk on index 0 alongside the CD-ROM so the kernel can mount `/mnt/hd` and the `hdd_mount` GDB group can be verified on the ISO boot path.
 
 ---
 

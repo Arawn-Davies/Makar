@@ -5,6 +5,7 @@
 #include <kernel/procfs.h>
 #include <kernel/tty.h>
 #include <kernel/pmm.h>
+#include <kernel/vmm.h>
 #include <kernel/heap.h>
 #include <kernel/task.h>
 #include <kernel/timer.h>
@@ -244,13 +245,20 @@ static void render_meminfo(pf_writer_t *w)
     uint32_t free_frames  = pmm_free_count();
     uint32_t used_frames  = (total_frames > free_frames)
                              ? (total_frames - free_frames) : 0u;
-    uint32_t total_kb = total_frames * 4u;
-    uint32_t free_kb  = free_frames  * 4u;
-    uint32_t used_kb  = used_frames  * 4u;
 
     size_t heap_total = (size_t)(0x1800000u - 0x800000u); /* HEAP_MAX-HEAP_START */
     size_t heap_u     = heap_used();
     size_t heap_f     = heap_free();
+
+    /* The kernel heap is identity-mapped on top of PMM frames that the
+     * allocator never reserved, so heap usage is invisible to the PMM
+     * bitmap.  Fold heap_used into MemUsed (and out of MemFree) so
+     * /proc/meminfo reflects the real working set — otherwise MemUsed
+     * sits near zero on a freshly booted 32 MiB system. */
+    uint32_t heap_used_kb = (uint32_t)(heap_u / 1024u);
+    uint32_t total_kb = total_frames * 4u;
+    uint32_t used_kb  = used_frames  * 4u + heap_used_kb;
+    uint32_t free_kb  = (total_kb > used_kb) ? (total_kb - used_kb) : 0u;
 
     pf_puts(w, "MemTotal:        "); pf_putu(w, total_kb); pf_puts(w, " kB\n");
     pf_puts(w, "MemFree:         "); pf_putu(w, free_kb);  pf_puts(w, " kB\n");
@@ -284,7 +292,7 @@ static const char *state_name(int s)
 
 static void render_tasks(pf_writer_t *w)
 {
-    pf_puts(w, "PID NAME            STATE TTY    TICKS CWD\n");
+    pf_puts(w, "PID NAME            STATE TTY    TICKS MEMKB CWD\n");
     int n = task_count();
     for (int i = 0; i < n; i++) {
         task_t *t = task_get(i);
@@ -306,6 +314,13 @@ static void render_tasks(pf_writer_t *w)
         else            pf_putu(w, (uint32_t)t->tty);
         pf_putc(w, ' ');
         pf_putu(w, t->kticks);
+        pf_putc(w, ' ');
+        /* Per-task memory (KiB): every task owns an 8 KiB kernel stack;
+         * ring-3 tasks additionally have their resident user pages.  So
+         * shells/idle report their stack baseline and apps report stack +
+         * RSS, rather than kernel tasks reading as 0. */
+        pf_putu(w, (TASK_STACK_SIZE / 1024u)
+                   + vmm_count_user_pages(t->page_dir) * 4u);
         pf_putc(w, ' ');
         pf_puts(w, t->cwd[0] ? t->cwd : "-");
         pf_putc(w, '\n');

@@ -110,22 +110,26 @@ static const man_entry_t man_table[] = {
       "Formats the specified partition as FAT32.  DESTRUCTIVE - all data lost.\n"
     },
     { "mount",
-      "mount a FAT32 partition at /hd/",
-      "Usage: mount <drv> <part#>\n\nMounts the FAT32 partition at the /hd/ VFS mount point.\n"
+      "mount a FAT32 partition at /mnt/hd",
+      "Usage: mount /dev/hdaN /mnt/hd\n       mount <drv> <part#>   (legacy)\n\n"
+      "Mounts a FAT32 partition at /mnt/hd (the default OS drive).  Prefer the\n"
+      "device-path form, e.g. `mount /dev/hda1 /mnt/hd`; the legacy numeric\n"
+      "form still works.  /mnt/hd is currently the only supported mountpoint.\n"
     },
     { "umount",
-      "unmount the FAT32 volume",
-      "Usage: umount\n\nFlushes and unmounts the /hd/ FAT32 volume.\n"
+      "unmount a volume",
+      "Usage: umount [/mnt/<name>]\n\nWith no argument (or the FAT32 mountpoint) flushes and unmounts the\n"
+      "FAT32 volume.  `umount /mnt/cdrom` unmounts and ejects the CD-ROM.\n"
     },
     { "ls",
       "list directory contents",
       "Usage: ls [path]\n\n"
-      "Lists files and subdirectories.  Works on both /hd/ (FAT32)\n"
-      "and /cdrom/ (ISO 9660).\n"
+      "Lists files and subdirectories.  Works on both /mnt/hd (FAT32)\n"
+      "and /mnt/cdrom (ISO 9660).\n"
     },
     { "cd",
       "change working directory",
-      "Usage: cd <path>\n\nChanges the shell CWD.  Use /hd/ for the HDD, /cdrom/ for the CD.\n"
+      "Usage: cd <path>\n\nChanges the shell CWD.  Use /mnt/hd for the HDD, /mnt/cdrom for the CD.\n"
     },
     { "cat",
       "print file contents to terminal",
@@ -139,7 +143,7 @@ static const man_entry_t man_table[] = {
       "create/overwrite a file with text",
       "Usage: write <file> <text...>\n\n"
       "Writes all remaining arguments as a single line to the file.\n"
-      "Requires FAT32 volume mounted at /hd/.\n"
+      "Requires FAT32 volume mounted at /mnt/hd.\n"
     },
     { "touch",
       "create an empty file",
@@ -165,10 +169,10 @@ static const man_entry_t man_table[] = {
       "  Backspace    delete; join lines at col 0\n"
       "  Enter        split line at cursor\n"
       "  Tab          insert 4 spaces\n"
-      "  Ctrl+S       save (requires FAT32 volume at /hd/)\n"
+      "  Ctrl+S       save (requires FAT32 volume at /mnt/hd)\n"
       "  Ctrl+Q       quit (press twice to discard unsaved changes)\n\n"
-      "Note: files on /cdrom/ are read-only (ISO 9660).  Save will fail with an\n"
-      "error if the file path does not resolve to the FAT32 /hd/ volume.\n"
+      "Note: files on /mnt/cdrom are read-only (ISO 9660).  Save will fail with an\n"
+      "error if the file path does not resolve to the FAT32 /mnt/hd volume.\n"
     },
     { "kbtester",
       "press-all-keys keyboard tester (ring-3 ELF)",

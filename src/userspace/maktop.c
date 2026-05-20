@@ -65,6 +65,7 @@ typedef struct {
     int          tty;
     unsigned int kticks;
     unsigned int kticks_prev;
+    unsigned int mem_kb;     /* resident user memory (KiB), 0 for kernel tasks */
 } task_row_t;
 
 static task_row_t s_task_rows[MAX_TASKS_CAP];
@@ -207,6 +208,12 @@ static int parse_tasks_line(const char *line, task_row_t *r)
 
     if (!parse_uint(&p, &v)) return 0;
     r->kticks = v;
+    while (*p == ' ') p++;
+
+    /* MEMKB column (added alongside per-task RSS).  Tolerate its absence
+     * so a maktop built against an older kernel still parses. */
+    if (parse_uint(&p, &v)) r->mem_kb = v;
+    else                    r->mem_kb = 0;
     return 1;
 }
 
@@ -359,12 +366,17 @@ static void draw_header(void)
     put_str(0, HDR_ROW_MEM, "Mem", CLR_HDR_LABEL);
     char memval[24];
     {
+        /* Used memory is typically well under 1 MiB on Makar, so MiB
+         * rounding would always read "0M".  Show KiB below 1 MiB, MiB
+         * above; total stays in MiB. */
         char a[12], b[12];
-        uitoa(used_kb / 1024u, a);
+        char used_unit;
+        if (used_kb < 1024u) { uitoa(used_kb, a); used_unit = 'K'; }
+        else                 { uitoa(used_kb / 1024u, a); used_unit = 'M'; }
         uitoa(total_kb / 1024u, b);
         int o = 0;
         for (unsigned int i = 0; a[i]; i++) memval[o++] = a[i];
-        memval[o++] = 'M'; memval[o++] = '/';
+        memval[o++] = used_unit; memval[o++] = '/';
         for (unsigned int i = 0; b[i]; i++) memval[o++] = b[i];
         memval[o++] = 'M'; memval[o] = '\0';
     }
@@ -394,6 +406,7 @@ static void draw_column_headers(void)
     put_str(32, ROW_COL_HDR, "TTY",   CLR_COLHDR);
     put_str(38, ROW_COL_HDR, "TICKS", CLR_COLHDR);
     put_str(48, ROW_COL_HDR, "DELTA", CLR_COLHDR);
+    put_str(56, ROW_COL_HDR, "MEM",   CLR_COLHDR);
 }
 
 static void draw_rows(void)
@@ -420,6 +433,18 @@ static void draw_rows(void)
                              ? (r->kticks - r->kticks_prev) : 0u;
         uitoa(delta, tmp);
         put_str(48, row, tmp, clr);
+
+        /* MEM: per-task resident user memory.  0 for kernel tasks shows
+         * as a dash so ring-3 apps (each vix/clock/maktop instance) stand
+         * out with their own footprint. */
+        if (r->mem_kb == 0) {
+            put(56, row, '-', clr);
+        } else {
+            uitoa(r->mem_kb, tmp);
+            int e = 0; while (tmp[e]) e++;
+            tmp[e] = 'K'; tmp[e + 1] = '\0';
+            put_str(56, row, tmp, clr);
+        }
     }
 }
 

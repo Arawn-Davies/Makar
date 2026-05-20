@@ -218,10 +218,15 @@ void vtty_drain_pending(void)
                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
         return;
 
+    /* Always repaint the destination VT's text backing grid so its prior
+     * content and colour scheme are restored, and any raw pixels a
+     * fullscreen app left on the framebuffer are covered (keeping each
+     * VT's display isolated).  A continuously-drawing app (e.g. basic's
+     * lines) repaints its own graphics on the next frame; a one-shot
+     * graphics frame is intentionally not preserved across a switch.
+     * The pending flag was CAS'd to -1 above, so this fires exactly once
+     * per switch -- not on every yield. */
     vt_buf_t *vt = vtty_buf(n);
     if (vt) vesa_tty_paint_buf(vt);
-    /* paint_buf only walks vt->rows, which excludes the status row, so
-     * the bar survives a focus switch.  Repaint it anyway to update the
-     * "active" highlight. */
     vesa_tty_paint_status(vtty_current, vtty_nslots);
 }
