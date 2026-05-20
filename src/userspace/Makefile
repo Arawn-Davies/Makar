@@ -14,7 +14,7 @@ LDFLAGS=-T link.ld -nostdlib
 DESTDIR?=
 ISODIR?=$(CURDIR)/../../isodir
 
-PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf kbtester.elf makbox.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf fdisk.elf
+PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf kbtester.elf makbox.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf fdisk.elf basic.elf
 
 
 all: $(PROGS)
@@ -64,6 +64,9 @@ execvetest.elf: crt0.o execvetest.o
 fdisk.elf: crt0.o fdisk.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
+basic.elf: crt0.o basic.o
+	$(LD) $(LDFLAGS) -o $@ $^
+
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -77,6 +80,7 @@ install: all
 	      $(ISODIR)/apps/rm.elf $(ISODIR)/apps/echo.elf $(ISODIR)/apps/fsutil.elf
 	cp $(PROGS) $(ISODIR)/apps/
 	cp demo.sh $(ISODIR)/apps/
+	cp *.bas $(ISODIR)/apps/
 
 install-headers:
 
