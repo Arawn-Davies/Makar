@@ -41,6 +41,7 @@
 #include <kernel/vesa_tty.h>
 #include <kernel/vesa.h>
 #include <kernel/vtty.h>
+#include <kernel/vt.h>
 #include <kernel/ide.h>
 #include <kernel/timer.h>
 #include <string.h>
@@ -708,17 +709,23 @@ void syscall_dispatch(registers_t *regs)
          * SIGKILL (no chance to clean up) don't leave their last frame
          * underneath the next shell prompt. */
         { task_t *cur = task_current(); if (cur) cur->fb_touched = 1; }
-        /* Only paint the framebuffer when the calling task is on the
-         * focused VT.  A backgrounded fullscreen app (e.g. maktop on VT2
-         * while VT1 is visible) refreshes on its own timer; without this
-         * gate its cells bleed onto whatever VT is currently shown. */
-        if (!vtty_is_focused()) { regs->eax = n; break; }
+
+        /* Always record cells into the calling task's VT backing grid so
+         * the compositor can repaint the app's frame when the operator
+         * Alt+Fn's back to it.  Only paint the live framebuffer when the
+         * task is on the focused VT -- otherwise a backgrounded fullscreen
+         * app (e.g. maktop on VT2 while VT1 is visible) would bleed its
+         * cells onto whatever VT is currently shown. */
+        vt_buf_t *vt      = vtty_buf_current();
+        int       focused = vtty_is_focused();
+
         /* SYS_PUTCH_AT cells carry their own colour attribute, so writing
          * each cell mutates the default pane's fg/bg.  Save the pane
          * colours up-front and restore at the end so apps that paint
          * coloured chrome (kbtester, future status bars) don't leave the
          * shell stuck in their palette after exit. */
-        vesa_pane_t *dp = vesa_tty_is_ready() ? vesa_tty_default_pane() : NULL;
+        vesa_pane_t *dp = (focused && vesa_tty_is_ready())
+                              ? vesa_tty_default_pane() : NULL;
         uint32_t saved_fg = dp ? dp->fg : 0;
         uint32_t saved_bg = dp ? dp->bg : 0;
         for (uint32_t i = 0; i < n; i++) {
@@ -726,11 +733,19 @@ void syscall_dispatch(registers_t *regs)
             uint8_t row = cells[i].row;
             uint8_t ch  = cells[i].ch;
             uint8_t clr = cells[i].clr;
-            t_putentryat((char)ch, clr, col, row);
-            if (dp) {
-                vesa_tty_setcolor(s_vga_palette[clr & 0x0F],
-                                  s_vga_palette[(clr >> 4) & 0x0F]);
-                vesa_tty_put_at((char)ch, col, row);
+            uint32_t fg = s_vga_palette[clr & 0x0F];
+            uint32_t bg = s_vga_palette[(clr >> 4) & 0x0F];
+
+            if (vt) {
+                vt_set_color(vt, fg, bg);
+                vt_put_at(vt, (char)ch, col, row);
+            }
+            if (focused) {
+                t_putentryat((char)ch, clr, col, row);
+                if (dp) {
+                    vesa_tty_setcolor(fg, bg);
+                    vesa_tty_put_at((char)ch, col, row);
+                }
             }
         }
         if (dp) {
@@ -745,22 +760,35 @@ void syscall_dispatch(registers_t *regs)
      * SYS_SET_CURSOR(202): move cursor.
      * EBX = col, ECX = row.
      * ------------------------------------------------------------------ */
-    case SYS_SET_CURSOR:
-        /* Don't move the visible hardware cursor for a backgrounded app. */
+    case SYS_SET_CURSOR: {
+        /* Record into the backing grid so the cursor lands correctly on
+         * repaint; only move the visible hardware cursor when focused. */
+        vt_buf_t *vt = vtty_buf_current();
+        if (vt) vt_set_cursor(vt, regs->ebx, regs->ecx);
         if (vtty_is_focused())
             t_set_cursor((size_t)regs->ebx, (size_t)regs->ecx);
         break;
+    }
 
     /* ------------------------------------------------------------------
      * SYS_TTY_CLEAR(203): fill screen with spaces.
      * EBX = VGA colour attribute (e.g. 0x07 = white-on-black).
      * ------------------------------------------------------------------ */
-    case SYS_TTY_CLEAR:
+    case SYS_TTY_CLEAR: {
         { task_t *cur = task_current(); if (cur) cur->fb_touched = 1; }
-        /* Don't wipe the visible screen on behalf of a backgrounded app. */
+        /* Clear the backing grid to the requested attribute always; wipe
+         * the live screen only when focused. */
+        uint8_t clr  = (uint8_t)regs->ebx;
+        vt_buf_t *vt = vtty_buf_current();
+        if (vt) {
+            vt_set_color(vt, s_vga_palette[clr & 0x0F],
+                             s_vga_palette[(clr >> 4) & 0x0F]);
+            vt_clear(vt);
+        }
         if (vtty_is_focused())
-            t_fill((uint8_t)regs->ebx);
+            t_fill(clr);
         break;
+    }
 
     /* ------------------------------------------------------------------
      * SYS_TERM_SIZE(204): query terminal dimensions.
