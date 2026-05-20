@@ -507,7 +507,8 @@ void vesa_tty_paint_status(int active, int count)
 	/* TTY indicators starting at column 8. */
 	uint32_t col = 8;
 	for (int i = 0; i < count && col + 5 < tty_cols; i++) {
-		char label[6] = { ' ', 'V', 'T', (char)('0' + i), ' ', '\0' };
+		/* 1-based VT labels (VT1..VT4) to match Alt+F1..F4. */
+		char label[6] = { ' ', 'V', 'T', (char)('1' + i), ' ', '\0' };
 		if (i == active)
 			vesa_tty_paint_string_at(col, row, label, act_fg, act_bg);
 		else

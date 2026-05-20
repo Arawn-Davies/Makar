@@ -414,7 +414,12 @@ static unsigned char buf_pop(void)
     return c;
 }
 
-#define KB_TASK_SLOTS  4
+/* One keyboard ring per task that reads input.  Must cover every
+ * concurrent consumer: the 4 VT shells PLUS a ring-3 app on each VT
+ * (maktop/vix/clock all call keyboard_getchar).  4 was only enough for
+ * the bare shells, so launching an app on every VT starved the last one
+ * of a slot and silently dropped its keystrokes.  Sized to MAX_TASKS. */
+#define KB_TASK_SLOTS  8
 #define KB_SLOT_BUF    64
 #define KB_SLOT_MASK   (KB_SLOT_BUF - 1)
 
