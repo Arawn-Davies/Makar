@@ -58,7 +58,14 @@ static int         g_jumped;    /* a control statement set g_pc   */
 static int         g_resume;    /* >=0: resume current line here  */
 static int         g_stop;      /* END / STOP / error             */
 static int         g_err;       /* 1 once an error was reported   */
-static int         g_draw_rgb = 0xFFFFFF;  /* current COLOR        */
+static int          g_draw_rgb = 0xFFFFFF;  /* current COLOR        */
+static int          g_used_gfx = 0;          /* a PLOT/LINE/RECT ran */
+static volatile int g_break    = 0;          /* Ctrl-C / RUN-STOP    */
+
+/* SIGINT handler: Ctrl-C sets the break flag.  Installing a handler stops
+ * the kernel default-terminating us, so a running program can be broken
+ * back to the BASIC prompt instead of killing the interpreter. */
+static void on_sigint(int signo) { (void)signo; g_break = 1; }
 
 /* ---- tiny libc ----------------------------------------------------------- */
 
@@ -429,6 +436,7 @@ static void do_plot(void)
     int rgb=g_draw_rgb;
     if(*g_cur==','){ g_cur++; int c=expr(); rgb = (c>=0&&c<16)?PAL16[c]:(unsigned)c; }
     sys_draw_line(a[0],a[1],a[0],a[1],(unsigned)rgb);
+    g_used_gfx=1;
 }
 
 static void do_line(void)
@@ -438,11 +446,25 @@ static void do_line(void)
     int rgb=g_draw_rgb;
     skipsp(); if(*g_cur==','){ g_cur++; int c=expr(); rgb=(c>=0&&c<16)?PAL16[c]:(unsigned)c; }
     sys_draw_line(a[0],a[1],a[2],a[3],(unsigned)rgb);
+    g_used_gfx=1;
 }
 
 static void do_color(void)
 {
     int c=expr(); g_draw_rgb = (c>=0&&c<16)?PAL16[c]:(unsigned)c;
+}
+
+/* PAUSE n - wait n centiseconds (100 Hz tick).  Yields so the rest of the
+ * system keeps running, and honours Ctrl-C so a paused program still breaks. */
+static void do_pause(void)
+{
+    int cs = expr();
+    if (cs <= 0) return;
+    unsigned int start = sys_uptime();
+    while ((int)(sys_uptime() - start) < cs) {
+        if (g_break) return;
+        sys_yield();
+    }
 }
 
 /* RECT x0,y0,x1,y1[,c] - filled rectangle (one native hline per row). */
@@ -456,6 +478,7 @@ static void do_rect(void)
     if (y0>y1){ int t=y0; y0=y1; y1=t; }
     for (int y=y0; y<=y1; y++)
         sys_draw_line(a[0],y,a[2],y,(unsigned)rgb);
+    g_used_gfx=1;
 }
 
 static void stmt(void)
@@ -480,6 +503,7 @@ static void stmt(void)
     if (kw("LINE"))  { do_line(); return; }
     if (kw("RECT"))  { do_rect(); return; }
     if (kw("COLOR")) { do_color(); return; }
+    if (kw("PAUSE")) { do_pause(); return; }
     if (kw("LET"))   { /* fall through to assignment */ }
 
     /* assignment: VAR = expr */
@@ -500,11 +524,15 @@ static void run_program(void)
     /* yield budget so a tight BASIC loop still cooperates with the scheduler */
     int budget=0;
     while (g_pc>=0 && g_pc<g_nlines && !g_stop) {
+        if (g_break) {   /* Ctrl-C: break to the prompt, C64 RUN/STOP style */
+            puts_("\nBREAK IN "); put_int(g_prog[g_pc].num); putc_('\n');
+            g_stop=1; break;
+        }
         g_cur = g_prog[g_pc].text + (g_resume>=0 ? g_resume : 0);
         g_resume=-1; g_jumped=0;
         exec_line();
         if (!g_jumped && !g_stop) g_pc++;
-        if ((++budget & 0x3FF)==0) sys_yield();
+        if ((++budget & 0xFF)==0) sys_yield();
     }
 }
 
@@ -566,18 +594,35 @@ static int load_and_run(const char *path)
             if (c=='R'||c=='L'||c=='N'||c=='P'||c=='?'||is_alpha(ln[0])) feed_line(ln); }
     }
     run_program();
+    /* Keep a graphics frame on screen until a key is pressed -- otherwise
+     * the shell's post-exit screen restore wipes our pixels instantly.
+     * Skip the wait if the user already broke out with Ctrl-C. */
+    if (g_used_gfx && !g_break) { puts_("\n-- press a key --\n"); sys_getkey(); }
     return 0;
 }
 
 int main(int argc, char **argv)
 {
+    /* Catch Ctrl-C ourselves so it breaks the program instead of killing
+     * the interpreter. */
+    sys_signal(SIGINT, on_sigint);
+
     if (argc>=2) return load_and_run(argv[1]);
 
     puts_("Makar BASIC\n");
     puts_("READY.\n");
     static char line[LINE_CAP*2];
     for (;;) {
+        /* A Ctrl-C delivered at the prompt (not while a program runs)
+         * exits to the shell.  Checked before AND after the read because
+         * signal delivery can land just after sys_read returns. */
+        if (g_break) break;
         long n=sys_read(0,line,sizeof(line)-1);
+        /* A Ctrl-C during the read aborts the line (^C) but its SIGINT is
+         * only delivered on the next ring-3 return; yield once so the
+         * handler runs and g_break is current before we test it. */
+        sys_yield();
+        if (g_break) break;
         if (n<=0) continue;
         /* strip newline */
         int len=(int)n; while(len>0 && (line[len-1]=='\n'||line[len-1]=='\r')) len--;
@@ -586,6 +631,18 @@ int main(int argc, char **argv)
         char c0=up(line[0]),c1=up(line[1]);
         if ((c0=='E'&&c1=='X') || (c0=='B'&&c1=='Y') || (c0=='Q'&&c1=='U')) break;
         feed_line(line);
+        /* If a RUN was Ctrl-C'd, run_program already printed BREAK and
+         * dropped here.  Consume the flag (stay at the prompt) and drain
+         * the stale \x03 the kernel routed into our key ring during the
+         * break, so the next prompt read isn't pre-aborted by it.  The
+         * *next* Ctrl-C, at the prompt, is what exits. */
+        if (g_break) {
+            g_break = 0;
+            sys_fcntl(0, F_SETFL, O_NONBLOCK);
+            char d; while (sys_read(0,&d,1)==1) { }
+            sys_fcntl(0, F_SETFL, 0);
+            g_break = 0;
+        }
         if (!g_err) puts_("READY.\n");
     }
     return 0;

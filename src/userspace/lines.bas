@@ -1,14 +1,14 @@
-10 REM String-art / moire - bouncing line endpoints
+10 REM String-art / moire - runs until Ctrl-C
 20 REM run with:  basic /mnt/cdrom/apps/lines.bas
 30 CLS
 40 W=XMAX:H=YMAX
 50 AX=20:AY=20:BX=W-100:BY=H-80
-60 PX=7:PY=5:QX=-6:QY=8
-70 FOR T=1 TO 240
+60 PX=7:PY=5:QX=-6:QY=8:T=0
+70 T=T+1
 80 LINE AX,AY,BX,BY,1+(T MOD 15)
 90 AX=AX+PX:IF AX<0 OR AX>W THEN PX=-PX:AX=AX+PX
 100 AY=AY+PY:IF AY<0 OR AY>H THEN PY=-PY:AY=AY+PY
 110 BX=BX+QX:IF BX<0 OR BX>W THEN QX=-QX:BX=BX+QX
 120 BY=BY+QY:IF BY<0 OR BY>H THEN QY=-QY:BY=BY+QY
-130 NEXT T
-140 PRINT "DONE"
+130 PAUSE 3
+140 GOTO 70
