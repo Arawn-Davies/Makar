@@ -90,12 +90,14 @@ static void cmd_tasks(int argc, char **argv)
 static void cmd_shutdown(int argc, char **argv)
 {
     (void)argc; (void)argv;
+    vfs_prepare_shutdown();  /* flush + unmount before power-off */
     acpi_shutdown(); /* never returns */
 }
 
 static void cmd_reboot(int argc, char **argv)
 {
     (void)argc; (void)argv;
+    vfs_prepare_shutdown();  /* flush + unmount before reset */
     acpi_reboot(); /* never returns */
 }
 

@@ -86,6 +86,11 @@ const char *vfs_getcwd(void);
 void        vfs_set_hd_mount(const char *name);
 const char *vfs_hd_mount(void);
 
+/* Flush and unmount every writable volume in preparation for power-off
+ * or reset, so no dirty FAT/dir data is lost.  Safe to call when nothing
+ * is mounted.  Invoked from the shutdown / reboot paths. */
+void vfs_prepare_shutdown(void);
+
 /* -------------------------------------------------------------------------
  * Filesystem operations
  * ---------------------------------------------------------------------- */

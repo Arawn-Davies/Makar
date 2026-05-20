@@ -335,6 +335,19 @@ const char *vfs_hd_mount(void)
     return s_hd_mount;
 }
 
+void vfs_prepare_shutdown(void)
+{
+    /* fat32_unmount flushes the FAT + dirty directory sectors before
+     * clearing the mount, so this is a clean sync on the way down.
+     * No-op when nothing is mounted. */
+    if (fat32_mounted()) {
+        t_writestring("Syncing /mnt/");
+        t_writestring(s_hd_mount);
+        t_writestring(" ...\n");
+        fat32_unmount();
+    }
+}
+
 /*
  * vfs_notify_hd_mounted / _unmounted / _cdrom_ejected
  *
