@@ -757,11 +757,8 @@ int main(int argc, char **argv, char **envp)
     }
 
     sys_fcntl(0, F_SETFL, 0);
-    /* Restore the shell's default palette (same code path as the
-     * `clear` shell builtin and what vix uses on exit).  Our
-     * sys_tty_clear with our own bg colour leaves the screen black,
-     * which doesn't match the operator's expectation of returning to
-     * the shell colours. */
-    sys_shell_clear();
+    /* VT-layer responsibility: the shell's post-fullscreen restore path
+     * reapplies the per-VT palette and wipes the backing grid.  Apps no
+     * longer reach into VT state on exit. */
     return 0;
 }

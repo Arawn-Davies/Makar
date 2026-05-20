@@ -26,7 +26,9 @@ Makar's userspace design is informed by the work of several FOSS projects:
   Unix-like OS for small systems.  FUZIX's vi implementation and its approach
   to portable libc stubs across wildly different hardware influenced VIX.
 - **musl libc** (MIT, https://musl.libc.org) - the preferred libc target for
-  Makar once the fd table and fork() are in place.  Clean, auditable, and does
+  Makar.  Per-task fd tables shipped in slice 12; `fork()` + `execve()` +
+  `wait4()` shipped in slices 15-16; musl static linking is now unblocked
+  pending the remaining syscall gaps listed below.  Clean, auditable, and does
   not pull in glibc's dynamic-linker complexity.
 - **CP/M** - the philosophical ancestor: a small OS that got out of the way,
   let the shell own the terminal, and expected programs to be self-contained.
@@ -51,21 +53,28 @@ into `libk.a`.  User ELF binaries currently link against `libk.a` via
 | `SYS_WRITE(fd, buf, len)` | 4 | ✅ fd 1/2 = VGA terminal; file write NYI |
 | `SYS_OPEN(path, flags)` | 5 | ✅ reads whole file into heap buffer (max 64 KiB) |
 | `SYS_CLOSE(fd)` | 6 | ✅ |
+| `SYS_FORK` | 2 | ✅ COW page-table clone (slice 15) |
+| `SYS_EXECVE(path, argv, envp)` | 11 | ✅ replaces caller's address space with a new ELF (slice 16a); envp ignored |
 | `SYS_LSEEK(fd, off, whence)` | 19 | ✅ |
+| `SYS_KILL(pid, sig)` | 37 | ✅ |
 | `SYS_BRK(addr)` | 45 | ✅ maps pages via VMM on demand |
+| `SYS_SIGNAL(signo, handler)` | 48 | ✅ ring-3 trampoline + sigreturn |
+| `SYS_WAIT4(pid, status, options, rusage)` | 114 | ✅ slice 16b; `WNOHANG` honoured; rusage ignored |
+| `SYS_SIGRETURN` | 119 | ✅ (signal trampoline) |
 | `SYS_YIELD` | 158 | ✅ |
 | `SYS_DELETE_FILE(path)` | 208 | ✅ deletes FAT32 file |
 | `SYS_RENAME_FILE(old, new)` | 209 | ✅ renames/moves FAT32 file or directory |
 | `SYS_DELETE_DIR(path)` | 210 | ✅ deletes empty FAT32 directory |
+| `SYS_GETCWD(buf, size)` | 215 | ✅ slice 14 |
 
 What is **not** yet present:
 
 | Missing piece | Needed for |
 |---|---|
 | `SYS_WRITE(fd, buf, len)` to open files | Full file-write from userspace |
-| `SYS_GETCWD` | `getcwd()` in libc |
-| `SYS_READDIR` | `opendir()` / `readdir()` |
-| `fork()` / `posix_spawn()` | Multi-process apps and a userland shell |
+| `SYS_READDIR` (streaming `getdents`-style) | `opendir()` / `readdir()` and userland-shell tab complete |
+| `SYS_PIPE` / `SYS_DUP2` | Shell pipelines.  Needs a refcounted `open_file_t` layer underneath `fd_table_t` so a forked child shares the parent's seek position (today `fd_table_clone` deep-copies FILE buffers per-fd, non-POSIX). |
+| `SYS_MMAP(MAP_ANONYMOUS)` | musl's large-allocation fallback |
 
 ---
 
@@ -206,16 +215,23 @@ the bare metal.
 ## Roadmap dependency graph
 
 ```
-SYS_WRITE(fd,buf,len)
-    └── SYS_BRK
-            └── fd table (SYS_OPEN/CLOSE/READ)
-                    └── SYS_GETCWD + SYS_READDIR
-                            └── musl / uClibc-ng static link
-                                    ├── userland shell (dash/ash)
-                                    ├── tcc in-kernel compiler
-                                    └── fork() + posix_spawn
-                                                └── full process model
+SYS_WRITE(fd,buf,len)            ✅
+    └── SYS_BRK                  ✅
+            └── fd table          ✅ (slice 12)
+                    └── SYS_GETCWD ✅ (slice 14)
+                            └── fork + execve + wait4   ✅ (slices 15-16)
+                                    └── SYS_READDIR + SYS_PIPE + open_file_t  ⏭
+                                            └── musl / uClibc-ng static link
+                                                    ├── userland shell (dash/ash)
+                                                    └── tcc in-kernel compiler
 ```
+
+`fork + execve + wait4` landed earlier than this graph originally
+projected (the dependency arrow used to point the other way -- libc
+first, fork later).  In practice native fork was small enough to do
+directly against the cross-compiler, and now unblocks the streaming
+`SYS_READDIR` + `SYS_PIPE` work, which is the genuine blocker for a
+useful userland shell (whether home-grown or dash-via-musl).
 
 ---
 

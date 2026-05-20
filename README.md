@@ -18,7 +18,7 @@ managed runtime), booted via GRUB Multiboot 2. Makar is the
 **C / GCC sibling** of [Medli](https://github.com/Arawn-Davies/Medli) -
 two independent implementations of the same OS concept, sharing a
 command vocabulary, filesystem layout, and long-term binary format
-goals. Current version: **0.5.0** (see `include/kernel/version.h`).
+goals. Current version: **0.7.0** (see `include/kernel/version.h`).
 
 Self-contained: kernel, libc fragment, ring-3 userspace, ELF loader, **four
 independent TTYs (Alt+F1–F4 to switch)**, and an in-kernel `vi`-style

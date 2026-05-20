@@ -42,3 +42,46 @@ task_switch:
     /* Return into the new task's context (entry point for new tasks,
        or the caller of task_switch() for previously-running tasks). */
     ret
+
+/*
+ * fork_child_iret -- first-run entry for a task born of SYS_FORK.
+ *
+ * task_fork sets up the child's kernel stack so that when the scheduler
+ * first picks the child and task_switch's `ret` fires, control lands
+ * here with ESP pointing at a copy of the parent's `registers_t` frame
+ * (the same one isr_common_stub built on the parent's stack during the
+ * int $0x80, with EAX patched to 0 so fork() returns 0 in the child).
+ *
+ * This is byte-for-byte the same epilogue as isr_common_stub's tail
+ * (lines 103-112 of isr_asm.S) -- restore data segments, popa, drop
+ * the err_code/int_no padding, iret back to ring 3.
+ *
+ * Stack at entry (high → low):
+ *   ss           |
+ *   useresp      |  pushed by CPU at int $0x80
+ *   eflags       |
+ *   cs           |
+ *   eip          |
+ *   err_code (0) |  pushed by isr80 stub (err_code first → higher addr,
+ *   int_no  (128)|                        int_no second → lower addr)
+ *   eax = 0      |
+ *   ecx          |
+ *   edx          |
+ *   ebx          |  pusha (the saved esp slot is ignored on popa)
+ *   esp (ignored)|
+ *   ebp          |
+ *   esi          |
+ *   edi          |
+ *   ds           |  ← ESP
+ */
+.global fork_child_iret
+fork_child_iret:
+    popl %eax                    /* eax = ds */
+    movw %ax, %ds
+    movw %ax, %es
+    movw %ax, %fs
+    movw %ax, %gs
+
+    popa                         /* restores edi..eax (child sees eax=0) */
+    addl $8, %esp                /* skip err_code + int_no */
+    iret                         /* eip, cs, eflags, useresp, ss → ring 3 */

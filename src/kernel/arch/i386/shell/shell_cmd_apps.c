@@ -18,6 +18,9 @@
 #include <kernel/ide.h>
 #include <kernel/fat32.h>
 #include <kernel/keyboard.h>
+#include <kernel/vt.h>
+#include <kernel/vesa_tty.h>
+#include <string.h>
 
 /* cmd_ring3test is defined in proc/usertest.c. */
 void cmd_ring3test(int argc, char **argv);
@@ -175,6 +178,30 @@ void shell_exec_elf(const char *path, int argc, char **argv)
      * routes focus + KEY_FOCUS_GAIN back to the child, not the shell. */
     if (self) vtty_set_foreground(self->tty, t);
 
+    /* Snapshot the focused VT's backing grid BEFORE the child runs so we
+     * can hand the scrollback back when it exits.  This is the same idea
+     * as xterm's alternate-screen / smcup-rmcup pair (and what Linux's
+     * `console_save_state` does around curses apps): the operator should
+     * see their previous prompts and command history return, with the
+     * fullscreen app's drawing wiped.  Heap-allocated so this scales
+     * with the (cols x rows) grid; freed unconditionally after exit. */
+    vt_buf_t  *vt = vtty_buf_current();
+    vt_cell_t *snap_cells   = NULL;
+    uint32_t   snap_n       = 0;
+    uint32_t   snap_cur_col = 0, snap_cur_row = 0;
+    uint32_t   snap_fg      = 0, snap_bg      = 0;
+    if (vt && vt->cells) {
+        snap_n     = vt->cols * vt->rows;
+        snap_cells = (vt_cell_t *)kmalloc(snap_n * sizeof(vt_cell_t));
+        if (snap_cells) {
+            memcpy(snap_cells, vt->cells, snap_n * sizeof(vt_cell_t));
+            snap_cur_col = vt->cur_col;
+            snap_cur_row = vt->cur_row;
+            snap_fg      = vt->fg;
+            snap_bg      = vt->bg;
+        }
+    }
+
     /* Wait for the child to finish.  Ctrl+C is now delivered as SIGINT
      * straight to the focused task (the child); the kernel's default-
      * terminate action in sig_deliver kills it on the next schedule
@@ -197,14 +224,30 @@ void shell_exec_elf(const char *path, int argc, char **argv)
     keyboard_set_raw(0);
 
     /* Only clean up after FULLSCREEN apps (those that touched the
-     * framebuffer via SYS_PUTCH_AT / SYS_TTY_CLEAR).  Line-mode
-     * children like cat / hello / makbox-fallback-on-typo write only
-     * via SYS_WRITE which scrolls normally; clearing after them would
-     * wipe their output.  Fullscreen apps that exited cleanly already
-     * called sys_shell_clear themselves -- doing it again is a no-op
-     * cost but rescues SIGKILL'd ones that never got the chance. */
-    if (t->fb_touched)
+     * framebuffer via SYS_PUTCH_AT / SYS_TTY_CLEAR / SYS_DRAW_LINE).
+     * Line-mode children like cat / hello / makbox-fallback-on-typo
+     * write only via SYS_WRITE which scrolls normally; clearing after
+     * them would wipe their output.
+     *
+     * Restore the pre-exec backing grid so the user's shell scrollback
+     * comes back, with the app's drawing erased.  paint_buf (called
+     * from shell_dispatch_argv -> shell_restore_screen) does the actual
+     * pixel work; we just overwrite the cells.  We skip the old
+     * shell_clear_screen() call here because that wiped the grid -- the
+     * whole point of the snapshot is to keep the operator's history. */
+    if (t->fb_touched && vt && vt->cells && snap_cells && snap_n == vt->cols * vt->rows) {
+        memcpy(vt->cells, snap_cells, snap_n * sizeof(vt_cell_t));
+        vt->cur_col = snap_cur_col;
+        vt->cur_row = snap_cur_row;
+        vt->fg      = snap_fg;
+        vt->bg      = snap_bg;
+    } else if (t->fb_touched) {
+        /* No snapshot available (alloc failed or VT geometry changed
+         * mid-exec, e.g. setmode while a child was running) -- fall
+         * back to the old behaviour. */
         shell_clear_screen();
+    }
+    if (snap_cells) kfree(snap_cells);
 }
 
 static void cmd_exec(int argc, char **argv)

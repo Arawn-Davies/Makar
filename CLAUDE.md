@@ -159,14 +159,20 @@ Authoritative table in `src/kernel/include/kernel/syscall.h`. Selected entries:
 
 | EAX | Syscall          | Args |
 |-----|------------------|------|
-| 1   | SYS_EXIT         | EBX = status |
+| 1   | SYS_EXIT         | EBX = status.  Sets `task_current()->exit_status` before transitioning to ZOMBIE/DEAD (see SYS_WAIT4). |
+| 2   | SYS_FORK         | -.  COW-clone the calling task; returns child pid in parent, 0 in child, -EAGAIN on failure. (slice 15) |
 | 3   | SYS_READ         | EBX = fd (0=stdin keyboard, ≥3=VFS), ECX = buf, EDX = count |
 | 4   | SYS_WRITE        | EBX = fd, ECX = buf, EDX = count. fd 1 = VGA, fd 2 = VGA + COM1, ≥3 = VFS |
 | 5   | SYS_OPEN         | EBX = path, ECX = flags (returns fd) |
 | 6   | SYS_CLOSE        | EBX = fd |
+| 11  | SYS_EXECVE       | EBX = path, ECX = argv (NULL-terminated `char *const argv[]`), EDX = envp (ignored).  On success doesn't return.  (slice 16a) |
 | 19  | SYS_LSEEK        | EBX = fd, ECX = offset, EDX = whence |
+| 37  | SYS_KILL         | EBX = pid, ECX = signo |
 | 45  | SYS_BRK          | EBX = new break (returns current/new break) |
+| 48  | SYS_SIGNAL       | EBX = signo, ECX = handler (returns previous handler) |
 | 100 | SYS_DEBUG        | EBX = uint32 checkpoint (prints to VGA + serial) |
+| 114 | SYS_WAIT4        | EBX = pid (-1 = any child), ECX = `int *status`, EDX = options (WNOHANG=1), ESI = rusage ptr (ignored).  Returns child pid, 0 (WNOHANG no zombie), or -ECHILD.  (slice 16b) |
+| 119 | SYS_SIGRETURN    | - (sigframe trampoline, not for direct use) |
 | 158 | SYS_YIELD        | - |
 | 200 | SYS_GETKEY       | raw single-char keyboard read |
 | 201–204 | SYS_PUTCH_AT / SET_CURSOR / TTY_CLEAR / TERM_SIZE | direct TTY ops for full-screen apps (vix) |
@@ -198,6 +204,28 @@ Stack: PS/2 IRQ → scancode (set-1 + 0xE0 prefix) → keycode (HID-style abstra
 - Ctrl+C: abort current input line (prints `^C`, returns empty line to REPL).
 - Tab completion: first token completes command names; subsequent tokens complete VFS paths via `vfs_complete()` → `fat32_complete()`.
 - `exec <path>`: loads and runs an ELF binary from the VFS. Ctrl+C during exec force-kills the child task.
+- **makbox fallback is restricted**: bare command names route through makbox **only** if they match an actual applet (`ls cat cp mv rm rmdir echo pwd`). Anything else hits the shell's "Unknown command" path — typos no longer trigger makbox's usage banner.
+- `datetime` / `date` / `time` builtins — one-line `YYYY-MM-DD HH:MM:SS` from `/proc/rtc`.  Scriptable; for fullscreen use see `clock.elf`.
+
+### Shell scripting (sh-flavoured)
+The kernel shell exposes a per-shell-task scripting layer (`kernel/sh_script.h`, `arch/i386/shell/sh_script.c`):
+
+| Surface | Behaviour |
+|---|---|
+| `NAME=value` | Per-task assignment.  RHS shell-expanded.  Stored in `task_t.script_vars` (isolated per VT — VT0's vars don't leak into VT1, matching the per-VT palette model). |
+| `$VAR` / `${VAR}` / `$?` | Expansion at REPL or inside scripts.  `$?` is the last command's exit status (set after every dispatched line and every `[ TEST ]`). |
+| `env` / `unset NAME ...` | Dump table / remove vars. |
+| `read VAR` | Reads one line of input from the keyboard into VAR. |
+| `[ TEST ]` | String tests (`-z`/`-n`/`=`/`!=`) and integer tests (`-eq`/`-ne`/`-lt`/`-le`/`-gt`/`-ge`).  Non-numeric operand to integer ops fails with `[: integer expected`. |
+| `sh script.sh` / `./script.sh` | Run a script file (path ending in `.sh` dispatches through the script interpreter; arbitrary paths still try to ELF-exec). |
+| `# comment` | End-of-line comments (outside quotes). |
+| `if / elif / else / fi` | Chained, both multi-line and single-line `if [ X ]; then CMD; fi` forms. |
+| `while ... do ... done` | Multi-statement `do` bodies via `;`-split preprocessor. |
+| `for VAR in WORDS; do ... done` | Word-list iteration with `$VAR` expansion in the list. |
+| `sleep N` | Busy-yield until N seconds elapse (PIT-driven). |
+| `true` / `false` | POSIX status helpers. |
+
+Limitations: no command substitution (`$(cmd)`), no pipes, no subshells (needs `fork()` — see slice 12).  See `src/userspace/demo.sh` for a worked example exercising every surface.
 
 ### VMM (per-task page directories)
 - `vmm_create_pd()` - allocates a page directory and mirrors kernel PDEs (indices 0–63)
@@ -214,7 +242,8 @@ Freestanding ELF binaries built with the cross-compiler. Link against `crt0.S` +
 |--------|-------------|
 | `hello.elf` | Hello-world smoke test |
 | `calc.elf` | bc-style expression calculator - `+`, `-`, `*`, `/`, `%`, parentheses, recursive-descent parser |
-| `makbox.elf` | Makar busybox: multicall binary for `ls`, `cat`, `cp`, `mv`, `rm`, `rmdir`, `echo`, `pwd`. The shell PATH-resolves bare names against `*.elf` first, then falls back to `makbox <name>` — no symlinks needed (FAT32 has none). Replaces the former standalone `ls.elf`/`echo.elf`/`rm.elf`/`mv.elf`/`cp.elf`. |
+| `makbox.elf` | Makar busybox: multicall binary for `ls`, `cat`, `cp`, `mv`, `rm`, `rmdir`, `echo`, `pwd`. Shell dispatch falls back to `makbox <name>` **only for those specific applet names** — random typos no longer get routed into makbox just to surface its usage banner; they hit the shell's "Unknown command" path instead. Replaces the former standalone `ls.elf`/`echo.elf`/`rm.elf`/`mv.elf`/`cp.elf`. |
+| `clock.elf` | Fullscreen wall-clock display (CMOS RTC via `/proc/rtc`).  For scripted / one-line use see the `datetime`/`date`/`time` shell builtins instead. |
 | `diskinfo.elf` | partition table + FAT32 BPB dump via `SYS_DISK_INFO` |
 | `vix.elf` | pane-aware vi-style text editor; uses `SYS_PUTCH_AT` / `SYS_SET_CURSOR` / `SYS_TERM_SIZE` |
 | `kbtester.elf` | keyboard diagnostic — logs every event (scancode/keycode/sentinel/modifier) to serial via `SYS_WRITE_SERIAL` |
@@ -306,26 +335,49 @@ subsystems:
 
 Tracked here, pulled into branches one at a time so each PR stays focused.
 
+### Done
+
 | # | Slice | Status |
 |---|---|---|
 | 1 | **Reaper for dead-task user PDs** | ✅ shipped (`fcb8771`) |
 | 2 | **Per-task `task_t` plumbing** (pid/cwd/tty/fds/signals fields, no consumer migration) | ✅ shipped (`3a0ef78`) |
 | 3 | **Ring-3 lifecycle ktest** with serial proof | ✅ shipped (`f48d730`, `1a34c20`) |
 | 4 | **100 Hz timer + humanised uptime** + stderr→serial + `SYS_WRITE_SERIAL` | ✅ shipped (`5e40001`) |
-| 5 | **Keyboard rewrite** - full PS/2 set-1 + e0, layered decoder (scancode→keycode→ASCII/sentinel→router), IRQ-driven per-TTY rings with proper SPSC memory ordering, strict make/break separation, modifier state at decoder, key repeat / rollover / lost-IRQ recovery, `unsigned char` end-to-end (no sign-extension hazard for sentinel compares), escape-clean sentinels | ✅ shipped (#124) |
-| 5b | **Keyboard hardening** - `unsigned char` audit, typematic-repeat filter for modifiers, PS/2 LED sync, boot-time LED state read | ✅ shipped (#127) |
-| 6 | **Test-infra cleanup** - ccache, single-kernel/two-ISO, build-once fan-out CI, KVM gate | ✅ shipped (#125) |
-| 7 | **Per-task consumer migration** - vtty `task->tty` authoritative (drop `vtty_tasks[]` parallel array). FD table done (slice 14), cwd done (slice 15). | ✅ complete |
-| 8 | **Linux-style signal subsystem** - full sigaction table, `kill()` syscall, htop-style picker | ✅ shipped: per-task handler table + scheduler-driven default-terminate delivery (`signal.{h,c}`); `SYS_KILL(37)` + `SYS_SIGNAL(48)` + userspace stubs; Ctrl+C → SIGINT migration, `g_sigint` / `keyboard_sigint_consume` removed, shell tasks install `SIG_IGN`; ring-3 trampoline + `SYS_SIGRETURN(119)` so `signal(SIGUSR1, h)` actually invokes `h` in ring 3 (sigframe on user stack + magic-guarded sigreturn).  `sigtest.elf` ring-3 verifier + `user-sigusr1-handler` ui-test scenario.  Remaining polish: htop-style interactive signal picker. |
-| 9 | **Preemption hardening** - interrupt-safe `schedule()`, per-task tick accounting, runtime-tunable quantum, busy-loop ktest | ✅ shipped: `in_schedule` re-entrancy guard + `irq_save_disable`/`irq_restore` around `schedule()`; per-task `kticks` accounting in `timer_callback`, rendered in `/proc/tasks`, plus `test_preempt` ktest; runtime-tunable `g_sched_quantum` (1..100 PIT ticks) via `sched_quantum` shell builtin.  Concurrent-yield stress implicitly covered by the existing 4-shell + bg-ktest concurrent execution. |
-| 10 | **Per-TTY screen buffers** - `vt_buf_t` backing grid per TTY, write-through to FB only when focused, repaint on Alt+Fn (deferred out of IRQ). tmux-style status bar at bottom row. `/proc` synthetic FS with `cpuinfo/meminfo/tasks/uname`. VGA-text fallback path stays on shared buffer (deferred). | ✅ shipped (this PR) |
-| 11 | **`ps`-style task listing** with privilege/state/CWD/TTY columns | ⏭ (covered by `cat /proc/tasks` for now) |
-| 12 | **fork() readiness** - PD clone (CoW), fd dup, PID alloc, return-value split | ⏭ |
-| 13 | **UTF-8 terminal** with ASCII fallback / runtime mode switch | ⏭ deferred |
-| 14 | **Per-task FD table** - replace opaque `fd_table` placeholder with a real `fd_table_t` (kernel/fd.h); fds 0/1/2 pre-bound, SYS_READ/WRITE/OPEN/CLOSE/LSEEK route through the calling task's table. Foundation for pipe(2)/dup(2) and fork's fd dup. | ✅ shipped (this PR) |
-| 15 | **VFS `task->cwd` authoritative** - drop the `s_cwd` global in `vfs.c`; resolve relative paths against the calling task's cwd | ✅ shipped (this PR) |
-| 16 | **VGA-fallback per-TTY** - route `tty.c` writes through `vt_buf` so VGA-text mode gets the same per-TTY isolation that VESA already has | ⏭ |
-| 17 | **makbox multicall + `SYS_GETCWD` + exec race fix** - busybox-style consolidation: `ls`/`cat`/`cp`/`mv`/`rm`/`rmdir`/`echo`/`pwd` live as applets inside one `makbox.elf`; shell dispatch falls back to `makbox <name>` after PATH lookup misses. Added `SYS_GETCWD` (215) so userspace `pwd` works without argv injection. Per-task `exec_params` on `task_t` replaces the static argv/path globals in `shell_exec_elf` - closes a cross-TTY race that could land a child task at a garbage EIP (`CS=0x3F8` panic). Kernel `shell_readline` now drains `g_sigint` on Ctrl+C so a buffered SIGINT can't leak into the next exec. `ui-test` rebuilt as a shared-VM runner (`tests/ui_runner.sh` + `tests/ui_test.sh`) - 10× faster than per-scenario boots, 7/7 in ~33 s headless. | ✅ shipped (this PR) |
+| 5 | **Keyboard rewrite** — full PS/2 set-1 + e0, layered decoder (scancode→keycode→ASCII/sentinel→router), IRQ-driven per-TTY rings, strict make/break separation, `unsigned char` end-to-end | ✅ shipped (#124) |
+| 6 | **Keyboard hardening** — `unsigned char` audit, typematic-repeat filter for modifiers, PS/2 LED sync, boot-time LED state read | ✅ shipped (#127) |
+| 7 | **Test-infra cleanup** — ccache, single-kernel/two-ISO, build-once fan-out CI, KVM gate | ✅ shipped (#125) |
+| 8 | **Per-task consumer migration** — `vtty` routes via `task->tty` authoritatively; fd-table consumer migration (see slice 12); cwd authoritative (see slice 13). | ✅ |
+| 9 | **Linux-style signal subsystem** — per-task handler table + scheduler-driven default-terminate delivery; `SYS_KILL(37)` + `SYS_SIGNAL(48)` + `SYS_SIGRETURN(119)` + ring-3 trampoline; Ctrl+C → SIGINT migration; `sigtest.elf` + `user-sigusr1-handler` ui scenario.  Remaining polish: interactive signal picker. | ✅ |
+| 10 | **Preemption hardening** — `in_schedule` re-entrancy guard + IRQ-save around `schedule()`; per-task `kticks` in `/proc/tasks`; runtime-tunable `g_sched_quantum` via `sched_quantum` shell builtin; `test_preempt` ktest. | ✅ |
+| 11 | **Per-TTY screen buffers + /proc** — `vt_buf_t` backing grid per TTY, deferred FB repaint on Alt+Fn, tmux-style status bar, synthetic `/proc` with `cpuinfo` / `meminfo` / `tasks` / `uname`. | ✅ shipped (#129) |
+| 12 | **Per-task FD table** — real `fd_table_t` (kernel/fd.h); fds 0/1/2 pre-bound; SYS_READ/WRITE/OPEN/CLOSE/LSEEK route through the calling task's table.  Foundation for pipe/dup and fork's fd dup. | ✅ |
+| 13 | **VFS `task->cwd` authoritative** — `s_cwd` global removed from `vfs.c`; relative paths resolved against `task_current()->cwd`. | ✅ |
+| 14 | **makbox multicall + `SYS_GETCWD` + exec race fix** — busybox-style `makbox.elf` (ls/cat/cp/mv/rm/rmdir/echo/pwd); `SYS_GETCWD(215)`; per-task `exec_params` (closes the cross-TTY `CS=0x3F8` exec race); ui-test refactored to shared-VM runner. | ✅ |
+| 15 | **fork() + COW** — full Linux-style fork with copy-on-write.  See 15a..15e. | ✅ |
+| 15a | **PMM frame refcounts** — per-frame `uint8_t refcount` table; `pmm_alloc_frame` sets refcount=1, `pmm_free_frame` decrements and only releases at 0; `pmm_inc_ref` / `pmm_ref_count`.  Preserves single-owner caller behaviour. | ✅ |
+| 15b | **`vmm_clone_pd_cow()`** — walk parent PD, mark user PTEs RO + software COW bit (`VMM_PTE_COW`, PTE bit 9), `pmm_inc_ref` each frame, mirror into child PD; CR3 reload if parent active. | ✅ |
+| 15c | **COW `#PF` handler + `CR0.WP`** — write-fault on COW-tagged PTE: refcount==1 fast-path (clear COW + set RW), else alloc fresh frame + memcpy + dec old refcount.  `CR0.WP` enabled at `paging_init` so kernel writes honour user RO bits. | ✅ |
+| 15d | **`SYS_FORK` (EAX=2) + `fork_child_iret`** — `task_fork()` clones task slot, dups fd_table, inherits cwd/tty/user_brk, clones PD via 15b, resets sig handlers; child's kstack hand-built so first `task_switch` ret lands in `fork_child_iret` (mirror of isr_common_stub epilogue) and iret's to ring 3 with EAX=0. | ✅ |
+| 15e | **Multi-page COW + exit-code coverage** — `forktest.elf` exercises five independent BSS sentinels (single + 4 page-aligned), proves COW visibility + isolation across multiple pages; child exits with status=42 to confirm kernel logs propagation. | ✅ |
+| 16 | **execve + wait4** — POSIX child reaping completes the fork+exec story.  See 16a..16b. (local-only on `feat/its-posix-bitch`, not yet pushed.) | ✅ local |
+| 16a | **`SYS_EXECVE` (EAX=11)** — replaces caller's address space with a new ELF; `elf_exec` frees the old user PD on success; argv copied into kernel scratch before PD swap; sig handlers reset per POSIX.  `execvetest.elf` does fork→child-execve→parent-survives. | ✅ local |
+| 16b | **`SYS_WAIT4` (EAX=114) + `TASK_ZOMBIE` state** — child holds its pool slot + `exit_status` until parent reaps it; `parent_pid` + `exit_status` on `task_t`; orphan zombies auto-reaped by parent's `task_exit`.  `forktest.elf` + `execvetest.elf` now wait4 instead of busy-yielding. | ✅ local |
+
+### Open
+
+| # | Slice | Status |
+|---|---|---|
+| 17 | **UTF-8 terminal** with ASCII fallback / runtime mode switch | ⏭ deferred |
+| 18 | **`ps`-style task listing** with privilege/state/CWD/TTY columns (today's `cat /proc/tasks` covers this; promote only if richer column control is needed) | ⏭ deferred |
+| 19 | **VGA-fallback per-TTY** — route `tty.c` writes through `vt_buf` so VGA-text mode gets the same per-TTY isolation that VESA already has | ⏭ |
+| 20 | **Userland shell (full parity, multi-PR feature)** — lift the in-kernel shell (~4500 lines across shell.c + shell_cmd_*.c + sh_script.c + shell_glob.c + shell_help.c) into a ring-3 ELF (`sh.elf`).  Multi-PR feature, NOT a single slice.  Plan paused; do not start without re-confirming scope.  Each sub-PR is runnable in isolation; kernel shell stays the default until the final flip.  See 20a..20f. | ⏭ paused |
+| 20a | `sh.elf` skeleton — read-parse-fork-execve-wait4 loop; builtins `cd` / `pwd` / `exit`.  New kernel shell builtin `usermode` invokes `exec /apps/sh.elf` so it can be smoke-tested without touching the kernel shell. | ⏭ |
+| 20b | Inline editing + history (arrow keys via `SYS_GETKEY` raw mode + sentinels, backspace, `!!`).  Mirrors `shell.c`'s `shell_readline`. | ⏭ |
+| 20c | Variables + expansion: `NAME=value`, `$VAR` / `${VAR}` / `$?`, `env` / `unset` / `read` builtins.  Mirrors `sh_vars.c` + `sh_script.c`. | ⏭ |
+| 20d | Control flow: `if` / `elif` / `else` / `fi`, `while`, `for ... in`, `[ TEST ]`, `true`/`false`/`sleep`.  Mirrors the rest of `sh_script.c`. | ⏭ |
+| 20e | Tab complete + glob expansion.  Needs a streaming `SYS_READDIR` first (today's `SYS_LS_DIR` returns a pre-rendered text blob); that lands as its own micro-slice. | ⏭ |
+| 20f | Boot wires `sh.elf` per VT (replaces the four in-kernel `shell0..shell3` tasks).  Kernel shell stays in-tree as a `/apps/sh.elf` fallback for boots where the ELF is missing.  **The boot-path commit; everything before it leaves the existing shell untouched.** | ⏭ |
+| 21 | **COM2 serial-input mode for ui-test runner** — kernel reads stdin from COM2 (or COM1 with a flag) and pipes it into the focused shell's keyboard ring.  Eliminates the sendkey-drop flake class; ui_runner can `printf '...' > /dev/qemu-com2` instead of dripping 50 sendkeys at 100 ms each.  Linux `console=ttyS0` pattern. | ⏭ |
 
 ### Userspace / libc porting
 
@@ -346,7 +398,7 @@ The long-term goal is a self-hosting userspace. Prerequisites and approach:
    - Near-term stand-in: extend the existing Makar shell with more builtins (pipes, redirection, variables) rather than porting dash immediately.
 
 4. **File-descriptor layer**:
-   - ✅ Per-task fd table landed (slice 14): each task owns a `fd_table_t` with fds 0/1/2 pre-bound to keyboard/VGA/VGA+serial; SYS_OPEN allocates higher slots, kind-tagged (`FD_KIND_FILE`, etc.).
+   - ✅ Per-task fd table landed (slice 12): each task owns a `fd_table_t` with fds 0/1/2 pre-bound to keyboard/VGA/VGA+serial; SYS_OPEN allocates higher slots, kind-tagged (`FD_KIND_FILE`, etc.).
    - Still needed for a real POSIX layer: streaming file reads (drop the eager-buffer model), `dup`/`dup2`, and `pipe` (SYS_PIPE - sketchable once the table exists, since fd creation no longer has to round-trip through SYS_OPEN).
 
 5. **Process model**:

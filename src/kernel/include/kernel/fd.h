@@ -59,6 +59,16 @@ fd_table_t *fd_table_create_default(void);
 void fd_table_destroy(fd_table_t *tbl);
 
 /*
+ * fd_table_clone -- deep-copy a table for fork().  Each FILE-kind slot's
+ * data buffer is kmalloc'd separately so parent and child have independent
+ * seek/write state.  This diverges from POSIX (which shares one open-file
+ * description across forks); a refactor to refcounted open_file_t is on
+ * the slice list for pipe(2)/dup(2).  Returns NULL on OOM (and unwinds
+ * any partially-cloned slots).
+ */
+fd_table_t *fd_table_clone(const fd_table_t *src);
+
+/*
  * fd_alloc -- return the lowest free fd index, or -1 if the table is full.
  * The slot is left as FD_KIND_NONE; caller fills in kind/data/size/pos.
  */

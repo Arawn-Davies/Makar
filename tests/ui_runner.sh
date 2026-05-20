@@ -249,6 +249,12 @@ sendkey ret'
 
     # Mirror shell output to COM1 for the rest of the session.  The flag
     # is sticky so we only set it once for the whole shared-VM run.
+    # A wakeup <ret> first absorbs any first-post-boot keystroke-loss
+    # race -- without it the leading `v` of `verbose on` lands during
+    # the loading-screen-to-prompt handoff and gets dropped, leaving
+    # `erbose on` which makbox rejects.
+    send_script 'sendkey ret'
+    sleep 0.6
     send_script 'sendkey v
 sendkey e
 sendkey r

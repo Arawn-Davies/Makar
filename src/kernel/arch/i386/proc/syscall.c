@@ -35,9 +35,11 @@
 #include <kernel/heap.h>
 #include <kernel/vmm.h>
 #include <kernel/pmm.h>
+#include <kernel/elf.h>
 #include <kernel/serial.h>
 #include <kernel/vga.h>
 #include <kernel/vesa_tty.h>
+#include <kernel/vesa.h>
 #include <kernel/ide.h>
 #include <kernel/timer.h>
 #include <string.h>
@@ -90,6 +92,7 @@ void syscall_dispatch(registers_t *regs)
      * ------------------------------------------------------------------ */
     case SYS_EXIT: {
         task_t *t = task_current();
+        if (t) t->exit_status = (int)regs->ebx;
         Serial_WriteString("[sys_exit] task pid=");
         Serial_WriteDec(t ? (uint32_t)t->pid : 0u);
         Serial_WriteString(" status=");
@@ -100,13 +103,140 @@ void syscall_dispatch(registers_t *regs)
     }
 
     /* ------------------------------------------------------------------
-     * SYS_FORK(2): clone the calling task.  STUBBED: returns -ENOSYS
-     * until the COW + trap-frame + fd-dup work in fork.c lands.
-     * See kernel/fork.h for the design notes.
+     * SYS_WAIT4(114): reap a child task.
+     *   EBX = pid (-1 = any child, > 0 = specific child)
+     *   ECX = int *status (writable; may be NULL)
+     *   EDX = options (WNOHANG = 1)
+     *   ESI = rusage* (ignored)
+     *
+     * Behaviour:
+     *   - scan task pool for the caller's children (parent_pid == me->pid)
+     *   - if a matching ZOMBIE is found: copy out exit_status, transition
+     *     to DEAD (slot becomes reclaimable), return its pid
+     *   - if no zombies but caller has live children and !WNOHANG: yield
+     *     and retry
+     *   - if WNOHANG and no zombies: return 0
+     *   - if no children at all: return -ECHILD
+     * ------------------------------------------------------------------ */
+    case SYS_WAIT4: {
+        int   want_pid = (int)regs->ebx;
+        int  *ustatus  = (int *)(uintptr_t)regs->ecx;
+        int   options  = (int)regs->edx;
+
+        task_t *me = task_current();
+        if (!me) { regs->eax = (uint32_t)-1; break; }
+
+        for (;;) {
+            int has_children = 0;
+            int reaped       = 0;
+            for (int i = 0; i < task_count(); i++) {
+                task_t *c = task_get(i);
+                if (!c) continue;
+                if (c->parent_pid != me->pid) continue;
+                if (c->state == TASK_DEAD)    continue;
+                has_children = 1;
+                if (c->state == TASK_ZOMBIE &&
+                    (want_pid < 0 || c->pid == want_pid)) {
+                    if (ustatus)
+                        *ustatus = c->exit_status;
+                    int cpid = c->pid;
+                    c->state = TASK_DEAD;
+                    regs->eax = (uint32_t)cpid;
+                    Serial_WriteString("[sys_wait4] parent pid=");
+                    Serial_WriteDec((uint32_t)me->pid);
+                    Serial_WriteString(" reaped child pid=");
+                    Serial_WriteDec((uint32_t)cpid);
+                    Serial_WriteString(" status=");
+                    Serial_WriteDec((uint32_t)c->exit_status);
+                    Serial_WriteString("\n");
+                    reaped = 1;
+                    break;
+                }
+            }
+            if (reaped) break;
+            if (!has_children) { regs->eax = (uint32_t)-10; break; }   /* -ECHILD */
+            if (options & 1)   { regs->eax = 0; break; }               /* WNOHANG */
+            task_yield();
+        }
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_EXECVE(11): replace current task's address space with a new
+     * ELF.  EBX=path, ECX=argv (NULL-terminated), EDX=envp (ignored).
+     *
+     * On success, elf_exec swaps CR3, frees the old PD, and iret's to
+     * the new entry point -- this case never falls through.  Argv
+     * strings live in the caller's about-to-be-freed user PD, so we
+     * copy them into kernel scratch before invoking elf_exec.
+     *
+     * Static scratch buffers are safe because syscalls are serialised
+     * (cli at entry); we never have two execves in flight at once.
+     * ------------------------------------------------------------------ */
+    case SYS_EXECVE: {
+        const char  *upath = (const char *)(uintptr_t)regs->ebx;
+        char *const *uargv = (char *const *)(uintptr_t)regs->ecx;
+        /* envp deliberately ignored: Makar has no environment yet. */
+
+        if (!upath) { regs->eax = (uint32_t)-14; break; }   /* -EFAULT */
+
+        enum { EXECVE_MAX_ARGC = 16, EXECVE_ARG_MAX = 256 };
+        static char  s_path[256];
+        static char  s_argbuf[EXECVE_MAX_ARGC * EXECVE_ARG_MAX];
+        static char *s_argv[EXECVE_MAX_ARGC + 1];
+
+        /* Copy path. */
+        size_t pi = 0;
+        while (upath[pi] && pi < sizeof(s_path) - 1) { s_path[pi] = upath[pi]; pi++; }
+        s_path[pi] = '\0';
+
+        /* Copy argv strings.  argv[0] convention is the program name;
+         * shell-side exec already supplies it that way.  Stop on first
+         * NULL pointer (POSIX argv terminator). */
+        int kargc = 0;
+        if (uargv) {
+            for (; kargc < EXECVE_MAX_ARGC; kargc++) {
+                const char *us = uargv[kargc];
+                if (!us) break;
+                char *dst = s_argbuf + kargc * EXECVE_ARG_MAX;
+                size_t i = 0;
+                while (us[i] && i < EXECVE_ARG_MAX - 1) { dst[i] = us[i]; i++; }
+                dst[i] = '\0';
+                s_argv[kargc] = dst;
+            }
+        }
+        s_argv[kargc] = NULL;
+
+        /* POSIX: execve resets all caught signal handlers to SIG_DFL.
+         * SIG_IGN is also reset (Makar's sig_task_init clears everything,
+         * matching the simple-is-better choice). */
+        sig_task_init(task_current());
+
+        /* elf_exec swaps the PD and iret's to the new entry on success
+         * (never returns).  Any return value here means it failed; pass
+         * the negative errno back to the caller via EAX. */
+        int rc = elf_exec(s_path, kargc, (const char *const *)s_argv);
+        regs->eax = (uint32_t)(int32_t)rc;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_FORK(2): COW-clone the calling task.
+     * Returns child pid in parent, 0 in child, -EAGAIN on failure.
+     * Child returns through fork_child_iret, never through this dispatch.
      * ------------------------------------------------------------------ */
     case SYS_FORK: {
-        extern void sys_fork(registers_t *regs);
-        sys_fork(regs);
+        task_t *child = task_fork(regs);
+        if (!child) {
+            regs->eax = (uint32_t)-11;   /* -EAGAIN */
+        } else {
+            Serial_WriteString("[sys_fork] parent pid=");
+            Serial_WriteDec((uint32_t)task_current()->pid);
+            Serial_WriteString(" -> child pid=");
+            Serial_WriteDec((uint32_t)child->pid);
+            Serial_WriteString("\n");
+            regs->eax = (uint32_t)child->pid;
+        }
         break;
     }
 
@@ -204,8 +334,14 @@ void syscall_dispatch(registers_t *regs)
                 for (uint32_t i = 0; i < len; i++)
                     t_putchar(buf[i]);
             }
-            for (uint32_t i = 0; i < len; i++)
-                Serial_WriteChar(buf[i]);
+            /* t_putchar already mirrors to COM1 when verbose mode is on
+             * (default).  Only echo here when verbose is off so stderr
+             * always reaches the serial log -- otherwise we'd write the
+             * same bytes twice and the log shows every chunk doubled. */
+            if (!g_serial_verbose) {
+                for (uint32_t i = 0; i < len; i++)
+                    Serial_WriteChar(buf[i]);
+            }
             regs->eax = len;
         } else if (e->kind == FD_KIND_SERIAL) {
             for (uint32_t i = 0; i < len; i++)
@@ -283,6 +419,75 @@ void syscall_dispatch(registers_t *regs)
         if (cl + 1 > size) { regs->eax = (uint32_t)-1; break; }
         memcpy(buf, cwd, cl + 1);
         regs->eax = cl;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_FB_INFO(216): query framebuffer pixel geometry.
+     * Returns (width << 16) | height when VESA is up, 0 when VGA-only.
+     * Userspace uses this to pick pixel vs character-cell drawing.
+     * ------------------------------------------------------------------ */
+    case SYS_FB_INFO: {
+        const vesa_fb_t *fb = vesa_get_fb();
+        if (!fb || !vesa_tty_is_ready()) { regs->eax = 0; break; }
+        uint32_t w = fb->width  & 0xFFFFu;
+        uint32_t h = fb->height & 0xFFFFu;
+        regs->eax = (w << 16) | h;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_DRAW_LINE(217): Bresenham line in framebuffer pixels.
+     * EBX = (x0 << 16) | (y0 & 0xFFFF)
+     * ECX = (x1 << 16) | (y1 & 0xFFFF)
+     * EDX = 24-bit RGB
+     *
+     * Clipped to [0, fb->width) x [0, drawable_height) where
+     * drawable_height excludes the bottom status row -- the same
+     * carve-out SYS_TERM_SIZE reports in cell units, just expressed
+     * in pixels for graphical apps.  Returns 0 on success, (uint32_t)-1
+     * if no pixel framebuffer is available (VGA-only boot).
+     * ------------------------------------------------------------------ */
+    case SYS_DRAW_LINE: {
+        const vesa_fb_t *fb = vesa_get_fb();
+        if (!fb || !vesa_tty_is_ready()) { regs->eax = (uint32_t)-1; break; }
+        int32_t x0 = (int32_t)(int16_t)(regs->ebx >> 16);
+        int32_t y0 = (int32_t)(int16_t)(regs->ebx & 0xFFFFu);
+        int32_t x1 = (int32_t)(int16_t)(regs->ecx >> 16);
+        int32_t y1 = (int32_t)(int16_t)(regs->ecx & 0xFFFFu);
+        uint32_t rgb = regs->edx & 0xFFFFFFu;
+
+        /* Drawable area excludes the status row.  vesa_tty_get_rows()
+         * is in cell units; cell_h derives from the FB / row count so
+         * we honour whatever font scale the operator selected. */
+        uint32_t rows = vesa_tty_get_rows();
+        uint32_t cell_h = rows ? (fb->height / rows) : 0;
+        int32_t y_max = (int32_t)fb->height;
+        if (cell_h && y_max > (int32_t)cell_h
+            && VESA_TTY_STATUS_ROWS > 0)
+            y_max -= (int32_t)(cell_h * VESA_TTY_STATUS_ROWS);
+        int32_t x_max = (int32_t)fb->width;
+
+        int32_t dx =  (x1 > x0) ? (x1 - x0) : (x0 - x1);
+        int32_t dy = -((y1 > y0) ? (y1 - y0) : (y0 - y1));
+        int32_t sx = (x0 < x1) ? 1 : -1;
+        int32_t sy = (y0 < y1) ? 1 : -1;
+        int32_t err = dx + dy;
+        for (;;) {
+            if (x0 >= 0 && x0 < x_max && y0 >= 0 && y0 < y_max)
+                vesa_put_pixel((uint32_t)x0, (uint32_t)y0, rgb);
+            if (x0 == x1 && y0 == y1) break;
+            int32_t e2 = err * 2;
+            if (e2 >= dy) { err += dy; x0 += sx; }
+            if (e2 <= dx) { err += dx; y0 += sy; }
+        }
+
+        /* Mark fb_touched so the shell's post-exit cleanup wipes the
+         * FB and repaints the VT's backing grid.  Without this the
+         * stray pixels we just drew would persist under the next
+         * prompt. */
+        { task_t *cur = task_current(); if (cur) cur->fb_touched = 1; }
+        regs->eax = 0;
         break;
     }
 
@@ -509,10 +714,17 @@ void syscall_dispatch(registers_t *regs)
      * Returns EAX = (cols << 16) | rows.
      * ------------------------------------------------------------------ */
     case SYS_TERM_SIZE: {
+        /* Report the *drawable* area, not the full framebuffer.  The
+         * bottom VESA_TTY_STATUS_ROWS row is reserved for the tmux-style
+         * VT bar -- fullscreen apps (maktop, clock, vix) that paint up
+         * to (rows-1) would otherwise stomp the bar.  Resolution-aware
+         * because both vesa_tty_get_rows() and the constant scale with
+         * the chosen mode. */
         uint32_t cols, rows;
         if (vesa_tty_is_ready()) {
             cols = vesa_tty_get_cols();
             rows = vesa_tty_get_rows();
+            if (rows > VESA_TTY_STATUS_ROWS) rows -= VESA_TTY_STATUS_ROWS;
         } else {
             cols = VGA_WIDTH;
             rows = (uint32_t)t_get_rows();

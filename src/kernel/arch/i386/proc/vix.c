@@ -29,9 +29,8 @@
 #define VIX_CLR_STATUS  0x70u
 #define VIX_CLR_GUTTER  0x08u  /* dim grey on black */
 #define VIX_CLR_WARN    make_color(COLOR_LIGHT_RED, COLOR_BLACK)
-#define VIX_SHELL_VGA   0x1Fu
-#define VIX_SHELL_FG    0xFFFFFFu
-#define VIX_SHELL_BG    0x0000AAu
+/* VIX_SHELL_* removed: vix no longer owns the post-exit palette.
+ * shell_restore_screen reapplies the focused VT's scheme. */
 #define VIX_GUTTER_FG   0x808080u
 #define VIX_GUTTER_BG   0x000000u
 #define VIX_TEXT_FG     0xFFFFFFu
@@ -470,13 +469,10 @@ void vix_edit(const char *path, vesa_pane_t *pane)
         if (c >= ' ' && c <= '~')   { vix_insert_char(c); continue; }
     }
 
-    terminal_set_colorscheme(VIX_SHELL_VGA);
-    if (vesa_tty_is_ready()) {
-        vesa_tty_setcolor(VIX_SHELL_FG, VIX_SHELL_BG);
+    /* Palette restore is the VT layer's job: shell_restore_screen() is
+     * called by shell_dispatch after fullscreen commands return and now
+     * re-applies the per-VT colour scheme before repainting the backing
+     * grid.  vix only restores the caret style it tampered with. */
+    if (vesa_tty_is_ready())
         vesa_tty_set_caret_style(saved_caret);
-        /* No pane_clear / paint_buf / paint_status here - shell_dispatch
-         * calls shell_restore_screen() after any fullscreen command
-         * returns, which repaints the focused VT's backing grid and the
-         * status bar in one place. */
-    }
 }

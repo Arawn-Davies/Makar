@@ -10,6 +10,19 @@
 /* bit = 1 → frame used   bit = 0 → frame free */
 static uint32_t bitmap[PMM_BITMAP_WORDS];
 
+/* Per-frame reference count (slice 12a, fork+COW prep).
+ *
+ * Indexed by frame number = phys_addr / PMM_FRAME_SIZE.  refcount[f] == 0
+ * iff the frame is free (matches bit cleared in `bitmap`).  pmm_alloc_frame
+ * sets refcount to 1; pmm_inc_ref bumps it (used by COW clone); pmm_free_frame
+ * decrements and only physically releases the frame when refcount reaches 0.
+ *
+ * Storage: 1 MiB of BSS (uint8_t × 1 048 576).  Saturates at 255 -- a frame
+ * shared by more than 255 tasks is a pathological case we don't support; the
+ * inc path warns to serial rather than wrapping.  Pre-fork the kernel never
+ * shares user frames, so refcounts are always 0 (free) or 1 (allocated). */
+static uint8_t refcount[PMM_MAX_FRAMES];
+
 /* Total managed (= bootloader-available, minus null page + kernel image)
  * frames.  Constant after pmm_init.  Used by /proc/meminfo to expose
  * MemTotal so userspace tools (maktop) can show a memory bar. */
@@ -127,6 +140,7 @@ uint32_t pmm_alloc_frame(void)
 			if (!((bitmap[i] >> bit) & 1)) {
 				uint32_t frame = i * 32 + bit;
 				pmm_set_frame(frame);
+				refcount[frame] = 1;
 				return frame * PMM_FRAME_SIZE;
 			}
 		}
@@ -136,7 +150,43 @@ uint32_t pmm_alloc_frame(void)
 
 void pmm_free_frame(uint32_t addr)
 {
-	pmm_clear_frame(addr / PMM_FRAME_SIZE);
+	uint32_t frame = addr / PMM_FRAME_SIZE;
+	if (refcount[frame] == 0) {
+		/* Caller dropped a frame they didn't own.  Likely a double free
+		 * or a free of a kernel-image / BIOS frame that was never handed
+		 * out by pmm_alloc_frame.  Don't unbalance the bitmap. */
+		KLOG("pmm_free_frame: refcount underflow at frame ");
+		KLOG_HEX(frame);
+		KLOG("\n");
+		return;
+	}
+	if (--refcount[frame] == 0)
+		pmm_clear_frame(frame);
+}
+
+void pmm_inc_ref(uint32_t addr)
+{
+	uint32_t frame = addr / PMM_FRAME_SIZE;
+	if (refcount[frame] == 0) {
+		/* Sharing a frame that isn't actually allocated -- this is always
+		 * a bug in the caller (COW clone of a freed PTE, for example). */
+		KLOG("pmm_inc_ref: frame not allocated, refcount=0 at ");
+		KLOG_HEX(frame);
+		KLOG("\n");
+		return;
+	}
+	if (refcount[frame] == 0xFF) {
+		KLOG("pmm_inc_ref: refcount saturated at 255 for frame ");
+		KLOG_HEX(frame);
+		KLOG("\n");
+		return;
+	}
+	refcount[frame]++;
+}
+
+uint8_t pmm_ref_count(uint32_t addr)
+{
+	return refcount[addr / PMM_FRAME_SIZE];
 }
 
 uint32_t pmm_managed_count(void)

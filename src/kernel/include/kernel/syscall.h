@@ -20,7 +20,9 @@
 #define SYS_WRITE      4    /* ssize_t write(int fd, const void *buf, size_t)   */
 #define SYS_OPEN       5    /* int open(const char *path, int flags)            */
 #define SYS_CLOSE      6    /* int close(int fd)                                */
+#define SYS_EXECVE     11   /* int execve(const char *path, char *const argv[], char *const envp[]) */
 #define SYS_LSEEK      19   /* off_t lseek(int fd, off_t offset, int whence)   */
+#define SYS_WAIT4      114  /* pid_t wait4(pid, int *status, int options, void *rusage) */
 #define SYS_KILL       37   /* int kill(int pid, int signo)                     */
 #define SYS_BRK        45   /* void *brk(void *addr)                            */
 #define SYS_SIGNAL     48   /* sig_handler_t signal(int signo, sig_handler_t)   */
@@ -44,6 +46,14 @@
 #define SYS_SHELL_CLEAR  213  /* void shell_clear(void)     - same as `clear`     */
 #define SYS_UPTIME       214  /* uint32_t uptime_ticks(void) - 100 Hz timer ticks */
 #define SYS_GETCWD       215  /* int getcwd(char *buf, size_t size) - copy task cwd */
+#define SYS_FB_INFO      216  /* uint32_t fb_info(void) - VESA only; 0 if VGA-only.
+                                * Returns (width << 16) | height when available. */
+#define SYS_DRAW_LINE    217  /* int draw_line(uint32_t xy0, uint32_t xy1,
+                                *               uint32_t rgb)
+                                * Bresenham line in framebuffer pixels.  Coords
+                                * packed (x << 16) | y.  Returns 0 on success,
+                                * (uint32_t)-1 if pixel mode unavailable.
+                                * Clipped to drawable area (status row excluded). */
 
 /* Back to Linux i386 ABI numbers for the next set. */
 #define SYS_FCNTL      55   /* int fcntl(int fd, int cmd, int arg) - F_GETFL/F_SETFL */

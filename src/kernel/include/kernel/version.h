@@ -7,6 +7,6 @@
  * banner, the `version` builtin, /proc/uname, and anywhere else that
  * wants to report the kernel version.
  */
-#define MAKAR_VERSION "0.5.0"
+#define MAKAR_VERSION "0.7.0"
 
 #endif /* _KERNEL_VERSION_H */
