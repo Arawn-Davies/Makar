@@ -162,11 +162,11 @@ Authoritative table in `src/kernel/include/kernel/syscall.h`. Selected entries:
 | 1   | SYS_EXIT         | EBX = status.  Sets `task_current()->exit_status` before transitioning to ZOMBIE/DEAD (see SYS_WAIT4). |
 | 2   | SYS_FORK         | -.  COW-clone the calling task; returns child pid in parent, 0 in child, -EAGAIN on failure. (slice 15) |
 | 3   | SYS_READ         | EBX = fd (0=stdin keyboard, ≥3=VFS), ECX = buf, EDX = count |
-| 4   | SYS_WRITE        | EBX = fd, ECX = buf, EDX = count. fd 1 = VGA, fd 2 = VGA + COM1, ≥3 = VFS |
-| 5   | SYS_OPEN         | EBX = path, ECX = flags (returns fd) |
+| 4   | SYS_WRITE        | EBX = fd, ECX = buf, EDX = count. fd 1 = VGA, fd 2 = VGA + COM1, ≥3 = VFS.  A `FD_KIND_BLOCKDEV` fd writes via `devfs_pwrite` at the fd's byte offset. |
+| 5   | SYS_OPEN         | EBX = path, ECX = flags (returns fd).  A `/dev` block device binds as `FD_KIND_BLOCKDEV` (no eager buffer); other paths eager-buffer up to `SYSCALL_FILE_MAX`. |
 | 6   | SYS_CLOSE        | EBX = fd |
 | 11  | SYS_EXECVE       | EBX = path, ECX = argv (NULL-terminated `char *const argv[]`), EDX = envp (ignored).  On success doesn't return.  (slice 16a) |
-| 19  | SYS_LSEEK        | EBX = fd, ECX = offset, EDX = whence |
+| 19  | SYS_LSEEK        | EBX = fd, ECX = offset, EDX = whence (works on `FD_KIND_FILE` and `FD_KIND_BLOCKDEV`) |
 | 37  | SYS_KILL         | EBX = pid, ECX = signo |
 | 45  | SYS_BRK          | EBX = new break (returns current/new break) |
 | 48  | SYS_SIGNAL       | EBX = signo, ECX = handler (returns previous handler) |
@@ -245,6 +245,7 @@ Freestanding ELF binaries built with the cross-compiler. Link against `crt0.S` +
 | `makbox.elf` | Makar busybox: multicall binary for `ls`, `cat`, `cp`, `mv`, `rm`, `rmdir`, `echo`, `pwd`. Shell dispatch falls back to `makbox <name>` **only for those specific applet names** — random typos no longer get routed into makbox just to surface its usage banner; they hit the shell's "Unknown command" path instead. Replaces the former standalone `ls.elf`/`echo.elf`/`rm.elf`/`mv.elf`/`cp.elf`. |
 | `clock.elf` | Fullscreen wall-clock display (CMOS RTC via `/proc/rtc`).  For scripted / one-line use see the `datetime`/`date`/`time` shell builtins instead. |
 | `diskinfo.elf` | partition table + FAT32 BPB dump via `SYS_DISK_INFO` |
+| `fdisk.elf` | MBR partition editor — opens a `/dev` block device, edits the four primary entries (`p`/`n`/`d`/`t`/`a`/`w`/`q`).  `fdisk /dev/hda` (defaults to `/dev/hda`).  Writes the 512-byte MBR back through the block-device fd; devfs's read-modify-write preserves the bootstrap code |
 | `vix.elf` | pane-aware vi-style text editor; uses `SYS_PUTCH_AT` / `SYS_SET_CURSOR` / `SYS_TERM_SIZE` |
 | `kbtester.elf` | keyboard diagnostic — logs every event (scancode/keycode/sentinel/modifier) to serial via `SYS_WRITE_SERIAL` |
 | `help.elf` | replaced by `lsman` / `man <cmd>` shell builtins; kept for compatibility |
@@ -268,7 +269,7 @@ src/kernel/arch/i386/
   core/       GDT/IDT (descr_tbl.c), ISR stub (isr_asm.S), interrupt dispatch (isr.c)
   mm/         pmm.c (frame allocator), paging.c, vmm.c (per-task page dirs), heap.c
   drivers/    serial, keyboard, timer, IDE, ACPI, partition
-  fs/         fat32.c, iso9660.c, procfs.c (synthetic /proc), vfs.c
+  fs/         fat32.c, iso9660.c, procfs.c (synthetic /proc), devfs.c (synthetic /dev block devices), vfs.c
   display/    tty.c (VGA text), vesa.c + vesa_tty.c (VESA framebuffer), vt.c (per-TTY backing grid)
   proc/       task.c + task_asm.S (scheduler), syscall.c, ring3.S, usertest.c, ktest.c, vtty.c
   shell/      shell.c, shell_cmd_{display,disk,fs,apps,system,man}.c, shell_help.c
@@ -310,10 +311,11 @@ subsystems:
 - **Display**: VESA framebuffer (Bochs VBE, defaults to 720p), VGA text fallback (80×50). Pane abstraction (`vesa_pane_t`) used by VIX. Per-TTY logical character grid (`vt_buf_t` in `display/vt.c`) backs every shell — writes go to the grid first; the framebuffer is only painted when that TTY is focused. After any "fullscreen" shell command returns (vix, install, any ELF launched via `exec` or PATH), `shell_dispatch` calls `shell_restore_screen()` which repaints the focused VT's grid to the FB — so post-exit screen is never blank.
 - **Multi-TTY**: 4 shell tasks (`shell0`–`shell3`). `vtty.c` routes keyboard input via `task_t.tty` (authoritative) and tracks the focused slot. `vtty_switch()` defers the framebuffer repaint out of IRQ context to `vtty_drain_pending()`, which runs from the destination shell's `keyboard_getchar` poll loop. A tmux-style status bar lives in the reserved bottom row showing `Makar  VT0  VT1  VT2  VT3  ...  Alt+F1-F4` with the active slot highlighted.
 - **VIX**: Pane-aware text editor. Derives column/row counts from the active `vesa_pane_t` at runtime - works correctly at any VESA resolution. Modelled on ELKS/FUZIX vi: lightweight, stable, no heap after startup.
-- **Storage**: FAT32 (HDD/USB) + ISO 9660 (CD-ROM) via IDE PIO. VFS layer with CWD, auto-mount. Full read/write/delete/rename support on FAT32. Synthetic `/proc` mount exposes `cpuinfo`, `meminfo`, `tasks`, `uname` as read-only files generated on demand.
+- **Storage**: FAT32 (HDD/USB) + ISO 9660 (CD-ROM) via IDE PIO. VFS layer with CWD, auto-mount. Full read/write/delete/rename support on FAT32. Disk filesystems live under `/mnt` (Linux convention): the FAT32 volume at `/mnt/hd` (the default OS drive; mountpoint configurable via `mount`) and the CD-ROM at `/mnt/cdrom`. Bare `/hd` and `/cdrom` remain transitional aliases. Synthetic `/proc` mount exposes `cpuinfo`, `meminfo`, `tasks`, `uname`, `rtc` as read-only files generated on demand.
+- **Block devices (`/dev`)**: Synthetic devfs mount exposing raw IDE storage as byte-addressed nodes: `/dev/hda`, `/dev/hdb`… (whole ATA disks), `/dev/hdaN` (their MBR/GPT partitions, as offset windows), `/dev/cdrom` (ATAPI, read-only). Reads/writes translate to native sector I/O (512 B ATA / 2048 B ATAPI) with internal read-modify-write so callers can transfer arbitrary offset/length. Opening a `/dev` node binds the fd as `FD_KIND_BLOCKDEV` (no eager buffer); `SYS_READ`/`SYS_WRITE`/`SYS_LSEEK` route through `devfs_pread`/`devfs_pwrite`. Backs `fdisk.elf` and `mount /dev/hdaN /mnt/<name>`.
 - **Tasking**: Round-robin scheduler with timer-driven preemption (PIT 100 Hz, `SCHED_QUANTUM = 4` ticks → 40 ms slice). Per-task `pid`, `cwd`, `tty`, signal bitmasks, and real per-task fd table (`fd_table_t` in `kernel/fd.h`, 16 slots, fds 0/1/2 pre-bound to stdin/stdout/stderr). User PD reaped on task exit, fd table reaped on slot reuse. Background ktest harness runs before the shell prompt appears.
-- **Userspace**: Ring-3 protected mode via `iret`. ELF loader (`elf_exec`) with argc/argv. Syscalls: `SYS_EXIT`, `SYS_READ`, `SYS_WRITE` (fd 1 = VGA, fd 2 = VGA + COM1 serial), `SYS_OPEN`, `SYS_CLOSE`, `SYS_LSEEK`, `SYS_BRK`, `SYS_DEBUG`, `SYS_YIELD`, plus Makar extensions (200–214 - terminal/file ops + `SYS_WRITE_SERIAL`). Apps: `calc.elf`, `hello.elf`, `ls.elf`, `echo.elf`, `vix.elf`, `diskinfo.elf`, `rm.elf`, `mv.elf`, `cp.elf`, `kbtester.elf`.
-- **Shell**: Inline editing, history, tab completion, Ctrl+C sigint. `lsman` / `man <cmd>` replace `help`. Built-in file ops: `rm`, `rmdir`, `mv`. `uptime` shows humanised h/m/s. `cat /proc/<entry>` for system introspection.
+- **Userspace**: Ring-3 protected mode via `iret`. ELF loader (`elf_exec`) with argc/argv. Syscalls: `SYS_EXIT`, `SYS_READ`, `SYS_WRITE` (fd 1 = VGA, fd 2 = VGA + COM1 serial), `SYS_OPEN`, `SYS_CLOSE`, `SYS_LSEEK`, `SYS_BRK`, `SYS_DEBUG`, `SYS_YIELD`, plus Makar extensions (200–215 - terminal/file ops + `SYS_WRITE_SERIAL` + `SYS_GETCWD`). Apps: `calc.elf`, `hello.elf`, `makbox.elf` (ls/cat/cp/mv/rm/rmdir/echo/pwd multicall), `vix.elf`, `diskinfo.elf`, `fdisk.elf`, `clock.elf`, `maktop.elf`, `kbtester.elf`.
+- **Shell**: Inline editing, history, tab completion, Ctrl+C sigint. `lsman` / `man <cmd>` replace `help`. Built-in file ops: `rm`, `rmdir`, `mv`. `uptime` shows humanised h/m/s. `cat /proc/<entry>` for system introspection. `PATH` is a settable shell variable (default `/mnt/cdrom/apps:/mnt/hd/apps`) consulted by command dispatch + tab completion. `mount /dev/hdaN /mnt/<name>` mounts a FAT32 partition at a chosen mountpoint (legacy `mount <drv> <part#>` → `/mnt/hd`); `umount [/mnt/<name>]` flushes + unmounts the FAT32 volume, `umount /mnt/cdrom` ejects the CD. `shutdown`/`reboot` flush + unmount first.
 - **GRUB**: Two-entry menu (Makar OS + Next available device), 5-second timeout.
 
 ## Recently merged
@@ -328,6 +330,7 @@ subsystems:
 | #128 | `fix/reaper-uaf` | Reaper UAF (deferred PD free), keyboard IRQ-init order fix, loading-bar progress on startup, isolate ring-3 lifecycle suites from bg ktest |
 | #129 | `feat/per-tty-buffers` | Per-TTY `vt_buf_t` backing grids, deferred FB repaint on Alt+Fn switch, tmux-style status bar at bottom row, synthetic `/proc` filesystem, glob + tab completion across VFS, MAKAR_VERSION single-source, v0.5.0 |
 | #130 | `feat/vics-vim-polish` | VIX rename (was VICS, C-Sharp acronym is dead), vim-style gutter + word wrap + flashing block caret, root `/` enumeration in `vfs_complete`, linux-like serial (`g_serial_verbose`, `console=ttyS0`, `verbose` builtin), UI-test framework (`tests/ui_test.sh`) wired into CI as a 4th parallel job, shell-side FB restore after fullscreen commands |
+| (pending) | `feat/devfs-fdisk` | Synthetic `/dev` block devices (devfs, `FD_KIND_BLOCKDEV`), `fdisk.elf` MBR editor, ATAPI READ CAPACITY for `/dev/cdrom` sizing; disk filesystems moved under `/mnt` (`/mnt/hd`, `/mnt/cdrom`, `/hd`+`/cdrom` aliases); `mount /dev/hdaN /mnt/<name>`; `umount /mnt/cdrom` eject; flush+unmount on shutdown/reboot; settable `PATH` shell var; `/proc/meminfo MemUsed` folds in heap; QEMU `-m 32` everywhere; ktest `test_devfs` + ui scenarios `ls-dev`/`ls-mnt` |
 
 ## Future roadmap
 
