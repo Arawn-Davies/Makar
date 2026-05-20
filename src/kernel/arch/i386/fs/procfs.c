@@ -244,13 +244,20 @@ static void render_meminfo(pf_writer_t *w)
     uint32_t free_frames  = pmm_free_count();
     uint32_t used_frames  = (total_frames > free_frames)
                              ? (total_frames - free_frames) : 0u;
-    uint32_t total_kb = total_frames * 4u;
-    uint32_t free_kb  = free_frames  * 4u;
-    uint32_t used_kb  = used_frames  * 4u;
 
     size_t heap_total = (size_t)(0x1800000u - 0x800000u); /* HEAP_MAX-HEAP_START */
     size_t heap_u     = heap_used();
     size_t heap_f     = heap_free();
+
+    /* The kernel heap is identity-mapped on top of PMM frames that the
+     * allocator never reserved, so heap usage is invisible to the PMM
+     * bitmap.  Fold heap_used into MemUsed (and out of MemFree) so
+     * /proc/meminfo reflects the real working set — otherwise MemUsed
+     * sits near zero on a freshly booted 32 MiB system. */
+    uint32_t heap_used_kb = (uint32_t)(heap_u / 1024u);
+    uint32_t total_kb = total_frames * 4u;
+    uint32_t used_kb  = used_frames  * 4u + heap_used_kb;
+    uint32_t free_kb  = (total_kb > used_kb) ? (total_kb - used_kb) : 0u;
 
     pf_puts(w, "MemTotal:        "); pf_putu(w, total_kb); pf_puts(w, " kB\n");
     pf_puts(w, "MemFree:         "); pf_putu(w, free_kb);  pf_puts(w, " kB\n");
