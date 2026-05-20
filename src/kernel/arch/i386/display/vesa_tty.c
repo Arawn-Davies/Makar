@@ -5,6 +5,7 @@
 #include <kernel/serial.h>
 #include <kernel/vt.h>
 #include <kernel/vtty.h>
+#include <kernel/asm.h>   /* outb/inb for the CMOS RTC clock readout */
 #include <string.h>
 
 /* Scale factor applied to every glyph pixel.  2 makes each 8×8 glyph appear
@@ -487,6 +488,84 @@ void vesa_tty_set_status_visible(int v)
 	}
 }
 
+/* ---------------------------------------------------------------------------
+ * Status-bar left label: toggles between "Makar" and a live clock on Alt+F5.
+ *
+ * The label field is a fixed 15-column slot (cols 1..15) so the VT
+ * indicators after it never shift; the clock string "HH:MM DD:MM:YY" is
+ * 14 chars and fits.  The clock is refreshed once per second from the PIT
+ * tick (vesa_tty_status_clock_tick), the same IRQ that already drives the
+ * spinner, so only this small field is repainted -- never the whole bar.
+ * --------------------------------------------------------------------------- */
+
+#define STATUS_LABEL_COL  1
+#define STATUS_LABEL_W    18   /* fits "HH:MM:SS DD:MM:YY"; indicators at 19 */
+
+static int s_clock_mode = 0;
+/* Last (active, count) handed to paint_status, so the per-second clock
+ * tick can refresh just the label without re-deriving VT state. */
+static int s_status_active = 0;
+static int s_status_count  = 0;
+
+static const uint32_t STATUS_FG = 0xC0C0C0;   /* light grey */
+static const uint32_t STATUS_BG = 0x202020;   /* dark       */
+
+static inline uint8_t cmos_rd(uint8_t reg) { outb(0x70, reg); return inb(0x71); }
+static inline uint8_t bcd2bin(uint8_t v) { return (uint8_t)(((v >> 4) * 10) + (v & 0x0F)); }
+
+/* Format the CMOS RTC as "HH:MM:SS DD:MM:YY" into buf (>= 18 bytes). */
+static void format_clock(char *buf)
+{
+	for (int spin = 0; spin < 1000000; spin++)
+		if (!(cmos_rd(0x0A) & 0x80u)) break;   /* wait out update-in-progress */
+	uint8_t sec = cmos_rd(0x00), min = cmos_rd(0x02), hour = cmos_rd(0x04);
+	uint8_t day = cmos_rd(0x07), mon = cmos_rd(0x08), yr = cmos_rd(0x09);
+	uint8_t statB = cmos_rd(0x0B);
+	if (!(statB & 0x04u)) {   /* BCD encoding */
+		sec  = bcd2bin(sec);
+		min  = bcd2bin(min);
+		hour = bcd2bin((uint8_t)(hour & 0x7Fu));
+		day  = bcd2bin(day);
+		mon  = bcd2bin(mon);
+		yr   = bcd2bin(yr);
+	}
+	#define D2(p, v) do { (p)[0] = (char)('0' + ((v) / 10) % 10); (p)[1] = (char)('0' + (v) % 10); } while (0)
+	D2(buf + 0,  hour); buf[2]  = ':'; D2(buf + 3,  min); buf[5]  = ':';
+	D2(buf + 6,  sec);  buf[8]  = ' '; D2(buf + 9,  day); buf[11] = ':';
+	D2(buf + 12, mon);  buf[14] = ':'; D2(buf + 15, yr);  buf[17] = '\0';
+	#undef D2
+}
+
+/* Paint the left label field (Makar or the clock) at row `row`. */
+static void paint_status_label(uint32_t row)
+{
+	char buf[20];
+	if (s_clock_mode) format_clock(buf);
+	else { buf[0]='M';buf[1]='a';buf[2]='k';buf[3]='a';buf[4]='r';buf[5]='\0'; }
+	for (uint32_t c = 0; c < STATUS_LABEL_W; c++)
+		paint_cell(' ', compose_rgb(STATUS_FG), compose_rgb(STATUS_BG),
+		           STATUS_LABEL_COL + c, row);
+	vesa_tty_paint_string_at(STATUS_LABEL_COL, row, buf, STATUS_FG, STATUS_BG);
+}
+
+/* Toggle the Makar/clock label (Alt+F5).  Repaints the field immediately. */
+void vesa_tty_toggle_clock(void)
+{
+	s_clock_mode = !s_clock_mode;
+	if (tty_ready && s_status_visible)
+		paint_status_label(tty_rows - 1);
+}
+
+/* Per-PIT-tick clock refresh.  Repaints only the label field, once a
+ * second, when the clock is showing.  Cheap enough for the timer IRQ
+ * (same context that ticks the spinner). */
+void vesa_tty_status_clock_tick(uint32_t tick)
+{
+	if (!s_clock_mode || !tty_ready || !s_status_visible) return;
+	if (tick % 100u != 0u) return;   /* 100 Hz PIT -> once per second */
+	paint_status_label(tty_rows - 1);
+}
+
 void vesa_tty_paint_status(int active, int count)
 {
 	if (!tty_ready) return;
@@ -497,17 +576,23 @@ void vesa_tty_paint_status(int active, int count)
 	uint32_t act_fg = 0x000000;      /* black-on-yellow active marker  */
 	uint32_t act_bg = 0xFFC800;
 
+	/* Remember the VT state so the per-second clock tick can refresh just
+	 * the label without re-deriving it. */
+	s_status_active = active;
+	s_status_count  = count;
+
 	/* Wipe the row first. */
 	for (uint32_t c = 0; c < tty_cols; c++)
 		paint_cell(' ', compose_rgb(bar_fg), compose_rgb(bar_bg), c, row);
 
-	/* Left-aligned "Makar" label.  The VT multiplexer itself is called
-	 * makmux (the name it'll carry once lifted into a userspace daemon);
-	 * the bar just shows the OS name for now. */
-	vesa_tty_paint_string_at(1, row, "Makar", bar_fg, bar_bg);
+	/* Left label: "Makar", or a live clock when toggled with Alt+F5.  The
+	 * multiplexer itself is named makmux (the name it'll carry once lifted
+	 * into a userspace daemon); the bar shows the OS name / clock. */
+	paint_status_label(row);
 
-	/* TTY indicators starting at column 8. */
-	uint32_t col = 8;
+	/* TTY indicators start after the fixed-width label slot (col 16) so
+	 * the clock "HH:MM DD:MM:YY" never pushes them around. */
+	uint32_t col = STATUS_LABEL_COL + STATUS_LABEL_W;
 	for (int i = 0; i < count && col + 5 < tty_cols; i++) {
 		/* 1-based VT labels (VT1..VT4) to match Alt+F1..F4. */
 		char label[6] = { ' ', 'V', 'T', (char)('1' + i), ' ', '\0' };

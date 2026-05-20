@@ -118,6 +118,10 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	t_writestring("Starting timer (100 Hz)");
 	kprint_ok();
 	init_timer(100);
+	/* Subscribe the display's periodic widgets to the timer rather than
+	 * having the timer IRQ reach into the display layer directly. */
+	timer_register_tick_hook(t_spinner_tick);
+	timer_register_tick_hook(vesa_tty_status_clock_tick);
 	KLOG("timer: 100 Hz PIT started\n");
 
 	t_writestring("Registering PS/2 keyboard");

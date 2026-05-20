@@ -20,7 +20,6 @@
 
 #include <kernel/timer.h>
 #include <kernel/isr.h>
-#include <kernel/tty.h>
 #include <kernel/serial.h>
 #include <kernel/task.h>
 #include <stdbool.h>
@@ -40,11 +39,23 @@ volatile uint32_t g_sched_quantum = 4;
 
 static volatile uint32_t tick = 0;
 
+/* Per-tick hook table.  Modules subscribe via timer_register_tick_hook so
+ * the timer never has to know about the display (or any other) layer. */
+static timer_tick_fn s_tick_hooks[TIMER_MAX_TICK_HOOKS];
+static int           s_tick_nhooks = 0;
+
+void timer_register_tick_hook(timer_tick_fn fn)
+{
+	if (fn && s_tick_nhooks < TIMER_MAX_TICK_HOOKS)
+		s_tick_hooks[s_tick_nhooks++] = fn;
+}
+
 void timer_callback(registers_t *regs)
 {
 	(void)regs;
 	tick++;
-	t_spinner_tick(tick);
+	for (int i = 0; i < s_tick_nhooks; i++)
+		s_tick_hooks[i](tick);
 	/* Charge this tick to whichever task was executing.  Done before
 	 * the EOI / yield so a task that gets preempted on this very tick
 	 * still gets credit for it.  task_current() returns NULL pre-

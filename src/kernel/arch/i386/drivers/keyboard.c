@@ -930,6 +930,7 @@ static void on_make(kc_t kc)
                 case KC_F2: vtty_switch(1); return;
                 case KC_F3: vtty_switch(2); return;
                 case KC_F4: vtty_switch(3); return;
+                case KC_F5: vesa_tty_toggle_clock(); return;  /* Makar <-> clock */
                 default: break;
             }
         }
