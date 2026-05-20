@@ -531,8 +531,8 @@ static void format_clock(char *buf)
 	}
 	#define D2(p, v) do { (p)[0] = (char)('0' + ((v) / 10) % 10); (p)[1] = (char)('0' + (v) % 10); } while (0)
 	D2(buf + 0,  hour); buf[2]  = ':'; D2(buf + 3,  min); buf[5]  = ':';
-	D2(buf + 6,  sec);  buf[8]  = ' '; D2(buf + 9,  day); buf[11] = ':';
-	D2(buf + 12, mon);  buf[14] = ':'; D2(buf + 15, yr);  buf[17] = '\0';
+	D2(buf + 6,  sec);  buf[8]  = ' '; D2(buf + 9,  day); buf[11] = '/';
+	D2(buf + 12, mon);  buf[14] = '/'; D2(buf + 15, yr);  buf[17] = '\0';
 	#undef D2
 }
 
@@ -590,9 +590,13 @@ void vesa_tty_paint_status(int active, int count)
 	 * into a userspace daemon); the bar shows the OS name / clock. */
 	paint_status_label(row);
 
-	/* TTY indicators start after the fixed-width label slot (col 16) so
-	 * the clock "HH:MM DD:MM:YY" never pushes them around. */
-	uint32_t col = STATUS_LABEL_COL + STATUS_LABEL_W;
+	/* Centre the VT indicators across the bar.  Each marker is " VTn "
+	 * and advances 6 columns, so the block is count*6 wide; clamp the
+	 * start so it never overlaps the fixed-width label slot on the left. */
+	uint32_t label_end = STATUS_LABEL_COL + STATUS_LABEL_W;
+	uint32_t block = (uint32_t)count * 6u;
+	uint32_t col = (tty_cols > block) ? (tty_cols - block) / 2u : label_end;
+	if (col < label_end) col = label_end;
 	for (int i = 0; i < count && col + 5 < tty_cols; i++) {
 		/* 1-based VT labels (VT1..VT4) to match Alt+F1..F4. */
 		char label[6] = { ' ', 'V', 'T', (char)('1' + i), ' ', '\0' };
