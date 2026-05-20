@@ -643,6 +643,11 @@ void syscall_dispatch(registers_t *regs)
      * SYS_YIELD(158): voluntarily give up the CPU.
      * ------------------------------------------------------------------ */
     case SYS_YIELD:
+        /* Flush any pending VT-switch repaint here too.  A fullscreen app
+         * (basic/lines, maktop, ...) yields but never calls keyboard_getchar
+         * in its draw loop, so without this the status bar wouldn't follow
+         * a switch back to the app's VT. */
+        vtty_drain_pending();
         task_yield();
         break;
 

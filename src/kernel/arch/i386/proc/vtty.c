@@ -218,10 +218,16 @@ void vtty_drain_pending(void)
                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
         return;
 
-    vt_buf_t *vt = vtty_buf(n);
-    if (vt) vesa_tty_paint_buf(vt);
-    /* paint_buf only walks vt->rows, which excludes the status row, so
-     * the bar survives a focus switch.  Repaint it anyway to update the
-     * "active" highlight. */
+    /* Repaint the text backing grid only when the draining task is the
+     * slot's shell.  A fullscreen ring-3 app (vix, maktop, basic) paints
+     * raw pixels the grid doesn't track, so painting the grid over it
+     * would wipe its display; let the app redraw itself instead.  Either
+     * way we refresh the status bar so its active-VT highlight is correct
+     * -- this is what lets the bar follow a switch back to a VT that's
+     * running a fullscreen app. */
+    if (me == vtty_owner(n)) {
+        vt_buf_t *vt = vtty_buf(n);
+        if (vt) vesa_tty_paint_buf(vt);
+    }
     vesa_tty_paint_status(vtty_current, vtty_nslots);
 }
