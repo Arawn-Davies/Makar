@@ -40,6 +40,7 @@
 #include <kernel/vga.h>
 #include <kernel/vesa_tty.h>
 #include <kernel/vesa.h>
+#include <kernel/vtty.h>
 #include <kernel/ide.h>
 #include <kernel/timer.h>
 #include <string.h>
@@ -459,6 +460,12 @@ void syscall_dispatch(registers_t *regs)
     case SYS_DRAW_LINE: {
         const vesa_fb_t *fb = vesa_get_fb();
         if (!fb || !vesa_tty_is_ready()) { regs->eax = (uint32_t)-1; break; }
+        /* Suppress pixel drawing from a backgrounded app so it can't
+         * scribble over the visible VT. */
+        if (!vtty_is_focused()) {
+            task_t *cur = task_current(); if (cur) cur->fb_touched = 1;
+            regs->eax = 0; break;
+        }
         int32_t x0 = (int32_t)(int16_t)(regs->ebx >> 16);
         int32_t y0 = (int32_t)(int16_t)(regs->ebx & 0xFFFFu);
         int32_t x1 = (int32_t)(int16_t)(regs->ecx >> 16);
@@ -701,6 +708,11 @@ void syscall_dispatch(registers_t *regs)
          * SIGKILL (no chance to clean up) don't leave their last frame
          * underneath the next shell prompt. */
         { task_t *cur = task_current(); if (cur) cur->fb_touched = 1; }
+        /* Only paint the framebuffer when the calling task is on the
+         * focused VT.  A backgrounded fullscreen app (e.g. maktop on VT2
+         * while VT1 is visible) refreshes on its own timer; without this
+         * gate its cells bleed onto whatever VT is currently shown. */
+        if (!vtty_is_focused()) { regs->eax = n; break; }
         /* SYS_PUTCH_AT cells carry their own colour attribute, so writing
          * each cell mutates the default pane's fg/bg.  Save the pane
          * colours up-front and restore at the end so apps that paint
@@ -734,7 +746,9 @@ void syscall_dispatch(registers_t *regs)
      * EBX = col, ECX = row.
      * ------------------------------------------------------------------ */
     case SYS_SET_CURSOR:
-        t_set_cursor((size_t)regs->ebx, (size_t)regs->ecx);
+        /* Don't move the visible hardware cursor for a backgrounded app. */
+        if (vtty_is_focused())
+            t_set_cursor((size_t)regs->ebx, (size_t)regs->ecx);
         break;
 
     /* ------------------------------------------------------------------
@@ -742,8 +756,10 @@ void syscall_dispatch(registers_t *regs)
      * EBX = VGA colour attribute (e.g. 0x07 = white-on-black).
      * ------------------------------------------------------------------ */
     case SYS_TTY_CLEAR:
-        t_fill((uint8_t)regs->ebx);
         { task_t *cur = task_current(); if (cur) cur->fb_touched = 1; }
+        /* Don't wipe the visible screen on behalf of a backgrounded app. */
+        if (vtty_is_focused())
+            t_fill((uint8_t)regs->ebx);
         break;
 
     /* ------------------------------------------------------------------
