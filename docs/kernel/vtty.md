@@ -56,12 +56,14 @@ keeps the IRQ short.
 `vtty_init` shrinks each backing grid by `VTTY_STATUS_ROWS = 1` so the
 bottom framebuffer row is reserved for the status bar
 (`vesa_tty_paint_status` in vesa_tty.c). The multiplexer is named
-**makmux** (the name it'll carry once lifted into a userspace daemon);
-the bar shows `Makar  VT1 VT2 VT3 VT4  …  Alt+F1-F4` (1-based labels
-matching the Alt+Fn keys) with the active slot highlighted; it is
-repainted on
-`vtty_register`, `vtty_drain_pending`, and `vesa_tty_clear` so it survives
-focus changes and full-screen clears.
+**makmux** (the name it'll carry once lifted into a userspace daemon).
+The bar shows a fixed-width left label, the **centred** 1-based
+indicators `VT1 VT2 VT3 VT4` (matching the Alt+Fn keys) with the active
+slot highlighted, and an `Alt+F1-F4` hint on the right; it is repainted
+on `vtty_register`, `vtty_drain_pending`, and `vesa_tty_clear` so it
+survives focus changes and full-screen clears.  **Alt+F5** toggles the
+left label between `Makar` and a live RTC clock `HH:MM:SS DD/MM/YY` (see
+[vesa_tty](vesa_tty.md)).
 
 ## Display isolation for ring-3 apps
 
