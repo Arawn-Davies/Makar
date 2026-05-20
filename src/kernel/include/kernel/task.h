@@ -10,8 +10,12 @@
 /* Size of the private kernel stack allocated for each task. */
 #define TASK_STACK_SIZE  8192
 
-/* Maximum number of concurrent tasks (including the idle/kernel task). */
-#define MAX_TASKS        8
+/* Maximum number of concurrent tasks (including the idle/kernel task).
+ * Baseline runtime load is idle + 4 VT shells = 5; a ring-3 app on every
+ * VT adds 4 more, and boot briefly runs the ktest task too.  8 was too
+ * tight (a 4th concurrent app couldn't be created), so allow generous
+ * headroom. */
+#define MAX_TASKS        32
 
 /* TTY index meaning "not bound to any TTY". */
 #define TASK_TTY_NONE    (-1)

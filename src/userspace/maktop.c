@@ -366,12 +366,17 @@ static void draw_header(void)
     put_str(0, HDR_ROW_MEM, "Mem", CLR_HDR_LABEL);
     char memval[24];
     {
+        /* Used memory is typically well under 1 MiB on Makar, so MiB
+         * rounding would always read "0M".  Show KiB below 1 MiB, MiB
+         * above; total stays in MiB. */
         char a[12], b[12];
-        uitoa(used_kb / 1024u, a);
+        char used_unit;
+        if (used_kb < 1024u) { uitoa(used_kb, a); used_unit = 'K'; }
+        else                 { uitoa(used_kb / 1024u, a); used_unit = 'M'; }
         uitoa(total_kb / 1024u, b);
         int o = 0;
         for (unsigned int i = 0; a[i]; i++) memval[o++] = a[i];
-        memval[o++] = 'M'; memval[o++] = '/';
+        memval[o++] = used_unit; memval[o++] = '/';
         for (unsigned int i = 0; b[i]; i++) memval[o++] = b[i];
         memval[o++] = 'M'; memval[o] = '\0';
     }
