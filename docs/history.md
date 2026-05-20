@@ -12,9 +12,13 @@ Sections under each release: **Added / Changed / Fixed / Removed**.
 For what's queued up next, see the [roadmap](roadmap.md);
 this file is the trail of how the current state got there.
 
-## Unreleased
+## 0.7.0 — POSIX process model (PR #166)
 
-### Added — fork() + execve() + wait4() (PR #166, slices 15-16)
+Version bump: 0.6.0 → 0.7.0.  fork+execve+wait4 is a significant
+capability layer — the rest of the userland roadmap (musl, dash,
+pipes, userland shell) now has the kernel-side foundation it needs.
+
+### Added — fork() + execve() + wait4() (slices 15-16)
 
 POSIX process model on Makar.  Detailed implementation walkthrough in
 [internals §11](internals.md#11-fork-execve-wait4--how-they-actually-work);

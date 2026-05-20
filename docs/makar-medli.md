@@ -19,7 +19,7 @@ UX conventions, command vocabulary, and (eventually) binary formats.
 | **Target** | i686, ELF32, multiboot 2 (GRUB) | x86, Cosmos PE |
 | **Repo** | [Arawn-Davies/Makar](https://github.com/Arawn-Davies/Makar) | [Arawn-Davies/Medli](https://github.com/Arawn-Davies/Medli) |
 | **Path separator** | `/` (Unix) | `\` (DOS-style, `Paths.Separator = @"\"`) |
-| **Current version** | 0.6.0 | (see Medli repo) |
+| **Current version** | 0.7.0 | (see Medli repo) |
 
 The path-separator divergence is **intentional** — Makar follows
 Linux/Unix conventions because that is what the C tooling, FAT32 LFN
