@@ -1,4 +1,4 @@
-10 REM String-art / moire - runs until Ctrl-C (like lines.elf)
+10 REM String-art / moire - accumulates forever, runs until Ctrl-C
 20 REM run with:  basic /mnt/cdrom/apps/lines.bas
 30 CLS
 40 W=XMAX:H=YMAX
@@ -10,7 +10,6 @@
 100 AY=AY+PY:IF AY<0 OR AY>H THEN PY=-PY:AY=AY+PY
 110 BX=BX+QX:IF BX<0 OR BX>W THEN QX=-QX:BX=BX+QX
 120 BY=BY+QY:IF BY<0 OR BY>H THEN QY=-QY:BY=BY+QY
-130 IF T MOD 200=0 THEN CLS:GOSUB 200
 140 PAUSE 2
 150 GOTO 70
 200 REM reseed endpoints + velocities
