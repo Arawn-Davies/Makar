@@ -143,6 +143,8 @@ static int kw(const char *k)
 
 static int expr(void);   /* full expression incl. AND/OR (lowest prec) */
 static int rel(void);    /* relational level                           */
+static int fb_w(void);
+static int fb_h(void);
 
 static int primary(void)
 {
@@ -159,6 +161,10 @@ static int primary(void)
         if (kw("ABS")) { skipsp(); if(*g_cur=='('){g_cur++;} int v=expr(); skipsp(); if(*g_cur==')')g_cur++; return v<0?-v:v; }
         if (kw("SGN")) { skipsp(); if(*g_cur=='('){g_cur++;} int v=expr(); skipsp(); if(*g_cur==')')g_cur++; return v>0?1:(v<0?-1:0); }
         if (kw("RND")) { skipsp(); int v=0; if(*g_cur=='('){g_cur++; v=expr(); skipsp(); if(*g_cur==')')g_cur++;} return rnd(v); }
+        /* Screen geometry so programs can fill the display at any
+         * resolution (XMAX/YMAX = last drawable pixel column/row). */
+        if (kw("XMAX")) { int w=fb_w(); return w>0?w-1:0; }
+        if (kw("YMAX")) { int h=fb_h(); return h>0?h-1:0; }
         char nm[3]; var_key(&g_cur, nm); int *s=var_slot(nm); return s?*s:0;
     }
     basic_error("SYNTAX ERROR");
@@ -263,6 +269,21 @@ static void cmd_list(void)
 /* ---- statement execution ------------------------------------------------- */
 
 static int fb_w(void){ return (int)sys_fb_width(); }
+
+/* Drawable pixel height EXCLUDING the bottom makmux status row, so a
+ * program that fills 0..YMAX leaves the status bar intact (and isn't
+ * silently clipped by the kernel's draw-area clamp).  sys_term_rows()
+ * reports the cell rows above the status bar; the status bar is one
+ * more cell row, so cell_h = fb_h / (rows + 1). */
+static int fb_h(void)
+{
+    int h = (int)sys_fb_height();
+    if (h <= 0) return 0;
+    int rows = (int)sys_term_rows();
+    if (rows <= 0) return h;
+    int cell_h = h / (rows + 1);
+    return (cell_h > 0) ? (h - cell_h) : h;
+}
 
 /* 16-colour C64-ish palette → RGB. */
 static const unsigned int PAL16[16] = {
@@ -424,6 +445,19 @@ static void do_color(void)
     int c=expr(); g_draw_rgb = (c>=0&&c<16)?PAL16[c]:(unsigned)c;
 }
 
+/* RECT x0,y0,x1,y1[,c] - filled rectangle (one native hline per row). */
+static void do_rect(void)
+{
+    if (fb_w()<=0){ basic_error("NO GRAPHICS"); return; }
+    int a[4]; need_gfx_args(a,4);
+    int rgb=g_draw_rgb;
+    skipsp(); if(*g_cur==','){ g_cur++; int c=expr(); rgb=(c>=0&&c<16)?PAL16[c]:(unsigned)c; }
+    int y0=a[1], y1=a[3];
+    if (y0>y1){ int t=y0; y0=y1; y1=t; }
+    for (int y=y0; y<=y1; y++)
+        sys_draw_line(a[0],y,a[2],y,(unsigned)rgb);
+}
+
 static void stmt(void)
 {
     skipsp();
@@ -444,6 +478,7 @@ static void stmt(void)
     if (kw("CLS"))   { sys_tty_clear(VGA_CLR(VGA_LGREY,VGA_BLACK)); return; }
     if (kw("PLOT"))  { do_plot(); return; }
     if (kw("LINE"))  { do_line(); return; }
+    if (kw("RECT"))  { do_rect(); return; }
     if (kw("COLOR")) { do_color(); return; }
     if (kw("LET"))   { /* fall through to assignment */ }
 

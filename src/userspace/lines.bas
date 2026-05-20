@@ -1,8 +1,8 @@
 10 REM String-art / moire - bouncing line endpoints
 20 REM run with:  basic /mnt/cdrom/apps/lines.bas
 30 CLS
-40 W=1000:H=680
-50 AX=20:AY=20:BX=900:BY=600
+40 W=XMAX:H=YMAX
+50 AX=20:AY=20:BX=W-100:BY=H-80
 60 PX=7:PY=5:QX=-6:QY=8
 70 FOR T=1 TO 240
 80 LINE AX,AY,BX,BY,1+(T MOD 15)
