@@ -37,6 +37,7 @@
 #define SYS_GETCWD       215
 #define SYS_FB_INFO      216
 #define SYS_DRAW_LINE    217
+#define SYS_CARET_STYLE  218
 #define SYS_FCNTL        55
 
 /* fcntl cmds */
@@ -286,6 +287,14 @@ static inline int sys_draw_line(int x0, int y0, int x1, int y1, unsigned int rgb
     unsigned int xy0 = ((unsigned int)(x0 & 0xFFFF) << 16) | (unsigned int)(y0 & 0xFFFF);
     unsigned int xy1 = ((unsigned int)(x1 & 0xFFFF) << 16) | (unsigned int)(y1 & 0xFFFF);
     return (int)syscall3(SYS_DRAW_LINE, (long)xy0, (long)xy1, (long)rgb);
+}
+
+/* Set the VESA caret style (0 = underline/line, 2 = flashing block).
+ * Returns the previous style so callers can restore it on exit.  No-op
+ * returning 0 in VGA-text mode. */
+static inline unsigned int sys_set_caret_style(unsigned int style)
+{
+    return (unsigned int)syscall1(SYS_CARET_STYLE, (long)style);
 }
 
 static inline int sys_open(const char *path, int flags)

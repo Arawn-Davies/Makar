@@ -499,6 +499,17 @@ void syscall_dispatch(registers_t *regs)
         break;
     }
 
+    /* SYS_CARET_STYLE(218): set the VESA caret style (0=line, 2=flashing
+     * block), returning the previous style so the caller can restore it.
+     * No-op returning 0 in VGA-text mode. */
+    case SYS_CARET_STYLE: {
+        if (!vesa_tty_is_ready()) { regs->eax = 0; break; }
+        uint32_t prev = vesa_tty_get_caret_style();
+        vesa_tty_set_caret_style(regs->ebx);
+        regs->eax = prev;
+        break;
+    }
+
     case SYS_WRITE_SERIAL: {
         const char *buf = (const char *)(uintptr_t)regs->ebx;
         uint32_t    len = regs->ecx;
