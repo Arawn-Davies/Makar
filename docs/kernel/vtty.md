@@ -54,10 +54,12 @@ keeps the IRQ short.
 ## Status bar
 
 `vtty_init` shrinks each backing grid by `VTTY_STATUS_ROWS = 1` so the
-bottom framebuffer row is reserved for the **makmux** status bar
-(`vesa_tty_paint_status` in vesa_tty.c). The bar reads
-`makmux  VT1 VT2 VT3 VT4  …  Alt+F1-F4` (1-based labels matching the
-Alt+Fn keys) with the active slot highlighted; it is repainted on
+bottom framebuffer row is reserved for the status bar
+(`vesa_tty_paint_status` in vesa_tty.c). The multiplexer is named
+**makmux** (the name it'll carry once lifted into a userspace daemon);
+the bar shows `Makar  VT1 VT2 VT3 VT4  …  Alt+F1-F4` (1-based labels
+matching the Alt+Fn keys) with the active slot highlighted; it is
+repainted on
 `vtty_register`, `vtty_drain_pending`, and `vesa_tty_clear` so it survives
 focus changes and full-screen clears.
 

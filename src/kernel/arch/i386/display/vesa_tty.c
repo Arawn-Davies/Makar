@@ -501,11 +501,13 @@ void vesa_tty_paint_status(int active, int count)
 	for (uint32_t c = 0; c < tty_cols; c++)
 		paint_cell(' ', compose_rgb(bar_fg), compose_rgb(bar_bg), c, row);
 
-	/* Left-aligned "makmux" label (Makar's tmux-style VT multiplexer). */
-	vesa_tty_paint_string_at(1, row, "makmux", bar_fg, bar_bg);
+	/* Left-aligned "Makar" label.  The VT multiplexer itself is called
+	 * makmux (the name it'll carry once lifted into a userspace daemon);
+	 * the bar just shows the OS name for now. */
+	vesa_tty_paint_string_at(1, row, "Makar", bar_fg, bar_bg);
 
-	/* TTY indicators starting at column 9. */
-	uint32_t col = 9;
+	/* TTY indicators starting at column 8. */
+	uint32_t col = 8;
 	for (int i = 0; i < count && col + 5 < tty_cols; i++) {
 		/* 1-based VT labels (VT1..VT4) to match Alt+F1..F4. */
 		char label[6] = { ' ', 'V', 'T', (char)('1' + i), ' ', '\0' };

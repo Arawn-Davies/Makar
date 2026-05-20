@@ -110,8 +110,9 @@ Mirrors `t_spinner_tick()` on the VESA display.
 void vesa_tty_paint_status(int active, int count);
 ```
 
-Paints the **makmux** status bar on the reserved bottom row:
-`makmux  VT1 VT2 VT3 VT4  …  Alt+F1-F4`, with slot `active` highlighted
+Paints the status bar on the reserved bottom row (the multiplexer is named
+**makmux**; the bar shows the OS name):
+`Makar  VT1 VT2 VT3 VT4  …  Alt+F1-F4`, with slot `active` highlighted
 (black-on-yellow). Labels are 1-based to match the Alt+F1–F4 keys. Driven by
 [vtty](vtty.md) on register / switch-drain / clear. `vesa_tty_set_status_visible()`
 hides it during the boot loading screen.
