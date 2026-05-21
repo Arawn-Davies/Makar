@@ -90,6 +90,26 @@ static unsigned int parse_uint(const char *s)
     return v;
 }
 
+/* parse_hex - always interpret the token as hexadecimal (optional 0x prefix).
+ * Used for partition type codes, where the prompt advertises hex but operators
+ * type bare digits like "83" expecting 0x83 (Linux), not decimal 83 (= 0x53). */
+static unsigned int parse_hex(const char *s)
+{
+    unsigned int v = 0;
+    while (*s == ' ') s++;
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) s += 2;
+    while (*s) {
+        char c = *s++;
+        unsigned int d;
+        if (c >= '0' && c <= '9') d = (unsigned int)(c - '0');
+        else if (c >= 'a' && c <= 'f') d = (unsigned int)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') d = (unsigned int)(c - 'A' + 10);
+        else break;
+        v = v * 16 + d;
+    }
+    return v;
+}
+
 /* ---- MBR entry access (little-endian) --------------------------------- */
 
 static unsigned char *entry(int i) { return &mbr[PART_OFFSET + i * PART_ENTRY]; }
@@ -301,7 +321,7 @@ int main(int argc, char **argv)
             } else if (c == 't') {
                 puts_("Type (hex, e.g. 0c): ");
                 if (readline() == 0) continue;
-                e[4] = (unsigned char)parse_uint(line);
+                e[4] = (unsigned char)parse_hex(line);
                 dirty = 1;
                 puts_("Type set to ");
                 puthex2(e[4]);
