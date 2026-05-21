@@ -33,6 +33,7 @@ Per-driver and per-module reference documentation for Makar's kernel.
 | [keyboard](keyboard.md) | Layered PS/2 keyboard driver |
 | [ide](ide.md) | ATA/IDE PIO driver |
 | [partition](partition.md) | MBR + GPT partition tables |
+| [ext2](ext2.md) | ext2 filesystem driver (read + write + mkfs) |
 | [procfs](procfs.md) | Synthetic `/proc` filesystem |
 | [devfs](devfs.md) | Synthetic `/dev` block devices (disks, partitions, CD-ROM) |
 | [shell](shell.md) | Interactive multi-TTY kernel command shell |

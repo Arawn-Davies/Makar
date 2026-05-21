@@ -49,10 +49,10 @@ private kernel stack and (for ring-3 programs) its own page directory.
 | **Display** | VESA framebuffer (Bochs VBE, 720p default), VGA 80×50 fallback. Pane API (`vesa_pane_t`) for split-screen. |
 | **Multi-TTY** | 4 independent shell tasks (`shell0`–`shell3`), **Alt+F1–F4** to switch focus, per-pane redraws on `KEY_FOCUS_GAIN`. |
 | **VIX editor** | Pane-aware vi-style editor (FUZIX/ELKS-inspired). Resolution-agnostic. |
-| **Storage** | FAT32 (HDD/USB) + ISO 9660 (CD-ROM) via IDE PIO. Auto-mount at `/mnt/hd` and `/mnt/cdrom`. Read+write+delete+rename on FAT32. |
+| **Storage** | FAT32 + **ext2** (HDD/USB) + ISO 9660 (CD-ROM) via IDE PIO. Auto-mount FAT32 at `/mnt/hd`, CD-ROM at `/mnt/cdrom`. `mount /dev/hdaN /mnt/<name>` auto-detects FAT32 vs ext2; the two coexist at separate mountpoints. Read+write+delete+rename+mkdir on both; `mkfs.fat32` / `mkfs.ext2`. |
 | **Memory** | PMM bitmap allocator, paging (256 MiB identity + per-task 4 KiB user pages), kernel heap (`kmalloc`/`kfree`/`krealloc`). |
 | **Tasking** | **Preemptive** round-robin scheduler. PIT at **100 Hz**, `SCHED_QUANTUM = 4` ticks → 40 ms time slice. Per-task `pid`, `cwd`, `tty`, fd-table placeholder, signal bitmasks. |
-| **Userspace** | Ring-3 via `iret`. ELF loader with argc/argv. Apps: `hello`, `echo`, `calc`, `ls`, `vix`, `diskinfo`, `rm`, `mv`, `cp`. |
+| **Userspace** | Ring-3 via `iret`. ELF loader with argc/argv. Full POSIX fork + execve + wait4 (COW). Apps: `hello`, `calc`, `vix`, `diskinfo`, `fdisk`, `cfdisk`, `basic`, `clock`, `maktop`, `kbtester`, `makbox` (busybox-style `ls`/`cat`/`cp`/`mv`/`rm`/`rmdir`/`echo`/`pwd`). |
 | **Syscalls** | Linux i386 ABI subset over `int 0x80` - `SYS_EXIT`, `SYS_READ`, `SYS_WRITE` (fd 1 = VGA, fd 2 = VGA + COM1 serial), `SYS_OPEN`, `SYS_CLOSE`, `SYS_LSEEK`, `SYS_BRK`, `SYS_DEBUG`, `SYS_YIELD`, plus Makar extensions for terminal/file ops and `SYS_WRITE_SERIAL` (211). |
 | **Shell** | Inline editing, history (16 entries), tab completion, Ctrl+C. Built-ins: `ls`, `cd`, `cat`, `cp`, `mv`, `mkdir`, `rm`, `rmdir`, `mount`, `meminfo`, `uptime` (humanised h/m/s), `lsdisks`, `lspart`, `mkpart`, `readsector`, `exec`, `ktest`, `ring3test`, `vixtest`. `lsman` / `man <cmd>` for help. |
 | **Drivers** | Serial (16550 UART, 38400 baud), PIT, PS/2 keyboard (set 1 + e0 extended), ATA/IDE PIO (28-bit LBA, 4 drives), MBR + GPT partition tables. |
