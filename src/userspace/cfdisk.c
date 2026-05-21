@@ -77,6 +77,25 @@ static unsigned int parse_uint(const char *s)
     return v;
 }
 
+/* Always hex (optional 0x prefix).  Partition type codes are hex by
+ * convention (the prompt says so), but operators type bare "83" expecting
+ * 0x83 (Linux), not decimal 83 (= 0x53 "Unknown"). */
+static unsigned int parse_hex(const char *s)
+{
+    unsigned int v = 0;
+    while (*s == ' ') s++;
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) s += 2;
+    while (*s) {
+        char c = *s++; unsigned int d;
+        if (c >= '0' && c <= '9') d = (unsigned int)(c - '0');
+        else if (c >= 'a' && c <= 'f') d = (unsigned int)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') d = (unsigned int)(c - 'A' + 10);
+        else break;
+        v = v * 16u + d;
+    }
+    return v;
+}
+
 /* ---- MBR access (little-endian) ---------------------------------------- */
 
 static unsigned char mbr[SECTOR_SIZE];
@@ -465,7 +484,7 @@ static unsigned char type_from_token(const char *s)
         }
         if (eq) return tbl[i].t;
     }
-    return (unsigned char)parse_uint(s);   /* fall back to hex/decimal */
+    return (unsigned char)parse_hex(s);    /* fall back to hex */
 }
 
 static void act_type(void)
