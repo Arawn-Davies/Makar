@@ -38,6 +38,16 @@ int ext2_probe(uint8_t drive, uint32_t part_lba);
  */
 int ext2_mount(uint8_t drive, uint32_t part_lba);
 
+/*
+ * ext2_mkfs – format a partition as ext2 (1 KiB blocks, rev 1, FILETYPE).
+ *   drive        : IDE drive number
+ *   part_lba     : LBA of partition start
+ *   part_sectors : partition length in 512-byte sectors
+ * Creates the superblock, per-group descriptors/bitmaps/inode tables, the
+ * root directory and lost+found.  Returns 0, -6 (too small), or -2 (I/O).
+ */
+int ext2_mkfs(uint8_t drive, uint32_t part_lba, uint32_t part_sectors);
+
 /* Flush metadata and unmount the current volume. */
 void ext2_unmount(void);
 

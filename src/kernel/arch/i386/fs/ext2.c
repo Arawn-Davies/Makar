@@ -1056,3 +1056,201 @@ int ext2_rename_dir(const char *old_path, const char *new_path)
 {
     return e2_rename_common(old_path, new_path);
 }
+
+/* ---- mkfs --------------------------------------------------------------- */
+
+/* mkfs writes raw blocks before any volume is mounted, so it uses local
+ * block I/O rather than the mount-state helpers above.  Fixed 1 KiB blocks,
+ * rev 1, FILETYPE feature, super+GDT backup in every group (no sparse_super). */
+
+#define MKFS_BS    1024u
+#define MKFS_SPB   (MKFS_BS / SECTOR_SIZE)
+
+static uint8_t  mk_drive;
+static uint32_t mk_lba;
+
+static int mk_wb(uint32_t blk, const void *buf)
+{
+    return ide_write_sectors(mk_drive, mk_lba + blk * MKFS_SPB, MKFS_SPB, buf);
+}
+
+static uint32_t count_zero_bits(const uint8_t *bm, uint32_t nbits)
+{
+    uint32_t z = 0;
+    for (uint32_t i = 0; i < nbits; i++)
+        if (!(bm[i >> 3] & (1u << (i & 7)))) z++;
+    return z;
+}
+
+static void set_bit(uint8_t *bm, uint32_t i)  { bm[i >> 3] |= (uint8_t)(1u << (i & 7)); }
+
+int ext2_mkfs(uint8_t drive, uint32_t part_lba, uint32_t part_sectors)
+{
+    mk_drive = drive;
+    mk_lba   = part_lba;
+
+    const uint32_t bs   = MKFS_BS;
+    const uint32_t isize = EXT2_GOOD_OLD_INODE_SIZE;   /* 128 */
+    uint32_t total = part_sectors / MKFS_SPB;          /* total blocks */
+    if (total < 64) return -6;
+
+    uint32_t first_data = 1;                            /* 1 KiB blocks */
+    uint32_t bpg = 8u * bs;                             /* 8192 blocks/group */
+    uint32_t ipg = (bpg * bs) / 16384u;                 /* ~1 inode / 16 KiB */
+    ipg = (ipg + 7u) & ~7u;
+    if (ipg < 16u) ipg = 16u;
+    if (ipg > bs * 8u) ipg = bs * 8u;
+    uint32_t groups = (total - first_data + bpg - 1) / bpg;
+    uint32_t gdt_blocks = (groups * (uint32_t)sizeof(ext2_gd_t) + bs - 1) / bs;
+    uint32_t itb = (ipg * isize + bs - 1) / bs;         /* inode-table blocks */
+    uint32_t overhead = 1u + gdt_blocks + 1u + 1u + itb;
+    if (overhead + 4u >= bpg) return -6;                /* group too cramped */
+
+    uint8_t  blk[MKFS_BS];
+    ext2_gd_t *gd = (ext2_gd_t *)kmalloc(groups * sizeof(ext2_gd_t));
+    if (!gd) return -2;
+    memset(gd, 0, groups * sizeof(ext2_gd_t));
+
+    /* group0 data blocks for root dir and lost+found */
+    uint32_t root_block = first_data + overhead;
+    uint32_t lf_block   = root_block + 1;
+
+    /* ---- per-group bitmaps + inode tables ---- */
+    for (uint32_t g = 0; g < groups; g++) {
+        uint32_t fb = first_data + g * bpg;
+        uint32_t bbm = fb + 1 + gdt_blocks;
+        uint32_t ibm = bbm + 1;
+        uint32_t itab = ibm + 1;
+        gd[g].bg_block_bitmap = bbm;
+        gd[g].bg_inode_bitmap = ibm;
+        gd[g].bg_inode_table  = itab;
+
+        /* how many real blocks this group owns */
+        uint32_t remaining = total - first_data - g * bpg;
+        uint32_t gblocks = (remaining < bpg) ? remaining : bpg;
+
+        /* block bitmap */
+        memset(blk, 0, bs);
+        for (uint32_t i = 0; i < overhead; i++) set_bit(blk, i);     /* metadata */
+        if (g == 0) { set_bit(blk, overhead); set_bit(blk, overhead + 1); } /* root, l+f */
+        for (uint32_t i = gblocks; i < bpg; i++) set_bit(blk, i);    /* past EOF */
+        gd[g].bg_free_blocks_count = (uint16_t)count_zero_bits(blk, bpg);
+        if (mk_wb(bbm, blk) != 0) { kfree(gd); return -2; }
+
+        /* inode bitmap */
+        memset(blk, 0, bs);
+        if (g == 0) for (uint32_t i = 0; i < 11u; i++) set_bit(blk, i); /* ino 1..11 */
+        for (uint32_t i = ipg; i < bs * 8u; i++) set_bit(blk, i);       /* padding */
+        gd[g].bg_free_inodes_count = (uint16_t)count_zero_bits(blk, ipg);
+        if (mk_wb(ibm, blk) != 0) { kfree(gd); return -2; }
+
+        /* zero the inode table */
+        memset(blk, 0, bs);
+        for (uint32_t i = 0; i < itb; i++)
+            if (mk_wb(itab + i, blk) != 0) { kfree(gd); return -2; }
+    }
+    gd[0].bg_used_dirs_count = 2;   /* root + lost+found */
+
+    /* ---- root + lost+found inodes (group0 table) ---- */
+    {
+        uint32_t itab = gd[0].bg_inode_table;
+        /* table block 0 holds inodes 1..8; root = inode 2 at offset 128 */
+        memset(blk, 0, bs);
+        ext2_inode_t root;
+        memset(&root, 0, sizeof(root));
+        root.i_mode = EXT2_S_IFDIR | 0755;
+        root.i_size = bs;
+        root.i_links_count = 3;                 /* "."  ".."  l+f's ".." */
+        root.i_blocks = bs / SECTOR_SIZE;
+        root.i_block[0] = root_block;
+        memcpy(blk + 1 * isize, &root, sizeof(root));
+        if (mk_wb(itab + 0, blk) != 0) { kfree(gd); return -2; }
+
+        /* table block 1 holds inodes 9..16; lost+found = inode 11 at offset 256 */
+        memset(blk, 0, bs);
+        ext2_inode_t lf;
+        memset(&lf, 0, sizeof(lf));
+        lf.i_mode = EXT2_S_IFDIR | 0700;
+        lf.i_size = bs;
+        lf.i_links_count = 2;
+        lf.i_blocks = bs / SECTOR_SIZE;
+        lf.i_block[0] = lf_block;
+        memcpy(blk + 2 * isize, &lf, sizeof(lf));
+        if (mk_wb(itab + 1, blk) != 0) { kfree(gd); return -2; }
+    }
+
+    /* ---- root + lost+found directory blocks ---- */
+    {
+        /* root: ".", "..", "lost+found" */
+        memset(blk, 0, bs);
+        ext2_dirent_t *d = (ext2_dirent_t *)blk;
+        d->inode = EXT2_ROOT_INO; d->rec_len = 12; d->name_len = 1;
+        d->file_type = EXT2_FT_DIR; blk[8] = '.';
+        d = (ext2_dirent_t *)(blk + 12);
+        d->inode = EXT2_ROOT_INO; d->rec_len = 12; d->name_len = 2;
+        d->file_type = EXT2_FT_DIR; blk[20] = '.'; blk[21] = '.';
+        d = (ext2_dirent_t *)(blk + 24);
+        d->inode = 11; d->rec_len = (uint16_t)(bs - 24); d->name_len = 10;
+        d->file_type = EXT2_FT_DIR; memcpy(blk + 32, "lost+found", 10);
+        if (mk_wb(root_block, blk) != 0) { kfree(gd); return -2; }
+
+        /* lost+found: ".", ".." */
+        memset(blk, 0, bs);
+        d = (ext2_dirent_t *)blk;
+        d->inode = 11; d->rec_len = 12; d->name_len = 1;
+        d->file_type = EXT2_FT_DIR; blk[8] = '.';
+        d = (ext2_dirent_t *)(blk + 12);
+        d->inode = EXT2_ROOT_INO; d->rec_len = (uint16_t)(bs - 12); d->name_len = 2;
+        d->file_type = EXT2_FT_DIR; blk[20] = '.'; blk[21] = '.';
+        if (mk_wb(lf_block, blk) != 0) { kfree(gd); return -2; }
+    }
+
+    /* ---- superblock ---- */
+    ext2_super_t sb;
+    memset(&sb, 0, sizeof(sb));
+    uint32_t free_blocks = 0, free_inodes = 0;
+    for (uint32_t g = 0; g < groups; g++) {
+        free_blocks += gd[g].bg_free_blocks_count;
+        free_inodes += gd[g].bg_free_inodes_count;
+    }
+    sb.s_inodes_count      = ipg * groups;
+    sb.s_blocks_count      = total;
+    sb.s_r_blocks_count    = 0;
+    sb.s_free_blocks_count = free_blocks;
+    sb.s_free_inodes_count = free_inodes;
+    sb.s_first_data_block  = first_data;
+    sb.s_log_block_size    = 0;          /* 1024 << 0 */
+    sb.s_log_frag_size     = 0;
+    sb.s_blocks_per_group  = bpg;
+    sb.s_frags_per_group   = bpg;
+    sb.s_inodes_per_group  = ipg;
+    sb.s_magic             = EXT2_MAGIC;
+    sb.s_state             = 1;          /* clean */
+    sb.s_errors            = 1;          /* continue */
+    sb.s_rev_level         = EXT2_DYNAMIC_REV;
+    sb.s_first_ino         = 11;
+    sb.s_inode_size        = (uint16_t)isize;
+    sb.s_feature_incompat  = EXT2_FEATURE_INCOMPAT_FILETYPE;
+    memcpy(sb.s_volume_name, "makar", 5);
+
+    /* Write super + GDT backups into every group (no sparse_super). */
+    for (uint32_t g = 0; g < groups; g++) {
+        uint32_t fb = first_data + g * bpg;
+        memset(blk, 0, bs);
+        sb.s_block_group_nr = (uint16_t)g;
+        memcpy(blk, &sb, sizeof(sb));
+        if (mk_wb(fb, blk) != 0) { kfree(gd); return -2; }   /* group0: primary @ blk1 */
+
+        for (uint32_t i = 0; i < gdt_blocks; i++) {
+            memset(blk, 0, bs);
+            uint32_t off = i * bs;
+            uint32_t chunk = groups * (uint32_t)sizeof(ext2_gd_t) - off;
+            if (chunk > bs) chunk = bs;
+            memcpy(blk, (uint8_t *)gd + off, chunk);
+            if (mk_wb(fb + 1 + i, blk) != 0) { kfree(gd); return -2; }
+        }
+    }
+
+    kfree(gd);
+    return 0;
+}

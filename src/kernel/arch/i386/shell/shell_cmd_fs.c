@@ -11,6 +11,7 @@
 
 #include <kernel/tty.h>
 #include <kernel/fat32.h>
+#include <kernel/ext2.h>
 #include <kernel/vfs.h>
 #include <kernel/iso9660.h>
 #include <kernel/partition.h>
@@ -276,6 +277,49 @@ static void cmd_mkfs(int argc, char **argv)
     t_putchar('\n');
 }
 
+/* Resolve a /dev/hdaN path to (drive, lba, sectors).  Returns 0 on success. */
+static int resolve_dev(const char *path, uint8_t *drive, uint32_t *lba,
+                       uint32_t *sectors)
+{
+    if (strncmp(path, "/dev/", 5) != 0) return -1;
+    int node = devfs_lookup(path + 4);
+    if (node < 0) return -1;
+    if (devfs_node_location(node, drive, lba) != 0) return -1;
+    *sectors = devfs_node_size(node) / 512u;
+    return 0;
+}
+
+/* mkfs.ext2 /dev/hdaN  /  mkfs.fat32 /dev/hdaN */
+static void cmd_mkfs_typed(int argc, char **argv, int ext2)
+{
+    if (argc < 2) {
+        t_writestring(ext2 ? "Usage: mkfs.ext2 /dev/hdaN\n"
+                           : "Usage: mkfs.fat32 /dev/hdaN\n");
+        return;
+    }
+    uint8_t drive; uint32_t lba, sectors;
+    if (resolve_dev(argv[1], &drive, &lba, &sectors) != 0) {
+        t_writestring("mkfs: no such device (expected /dev/hdaN)\n");
+        return;
+    }
+    t_writestring("Formatting ");
+    t_writestring(argv[1]);
+    t_writestring(" (");
+    t_dec(sectors / 2048u);
+    t_writestring(ext2 ? " MiB) as ext2...\n" : " MiB) as FAT32...\n");
+
+    int err = ext2 ? ext2_mkfs(drive, lba, sectors)
+                   : fat32_mkfs(drive, lba, sectors);
+    if (err == -6) { t_writestring("mkfs: partition too small\n"); return; }
+    if (err)       { t_writestring("mkfs: I/O error\n"); return; }
+    t_writestring("Done.  Mount with: mount ");
+    t_writestring(argv[1]);
+    t_writestring(" /mnt/<name>\n");
+}
+
+static void cmd_mkfs_ext2(int argc, char **argv)  { cmd_mkfs_typed(argc, argv, 1); }
+static void cmd_mkfs_fat32(int argc, char **argv) { cmd_mkfs_typed(argc, argv, 0); }
+
 static void cmd_isols(int argc, char **argv)
 {
     if (argc < 2) {
@@ -382,7 +426,9 @@ const shell_cmd_entry_t fs_cmds[] = {
     { "umount", cmd_umount },
     { "cd",     cmd_cd     },
     { "mkdir",  cmd_mkdir  },
-    { "mkfs",   cmd_mkfs   },
+    { "mkfs",       cmd_mkfs       },
+    { "mkfs.ext2",  cmd_mkfs_ext2  },
+    { "mkfs.fat32", cmd_mkfs_fat32 },
     { "isols",  cmd_isols  },
     { "write",  cmd_write  },
     { "touch",  cmd_touch  },
