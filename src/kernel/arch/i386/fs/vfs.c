@@ -23,6 +23,7 @@
 
 #include <kernel/vfs.h>
 #include <kernel/fat32.h>
+#include <kernel/ext2.h>
 #include <kernel/iso9660.h>
 #include <kernel/procfs.h>
 #include <kernel/devfs.h>
@@ -47,11 +48,58 @@
 static char s_boot_cwd[VFS_PATH_MAX] = "/";
 static int  s_cdrom_drive = -1;    /* IDE drive index of CD-ROM, -1 = none */
 
-/* Component name under /mnt where the single FAT32 volume is mounted.
- * Default "hd" (the OS drive); `mount /dev/hdaN /mnt/<name>` changes it. */
+/* Max length of a /mnt/<name> mountpoint component (see s_mounts below). */
 #define VFS_MOUNT_NAME_MAX 32
-static char s_hd_mount[VFS_MOUNT_NAME_MAX] = "hd";
 static uint32_t s_boot_biosdev = 0xFFu; /* BIOS drive we booted from (0xFF = unknown) */
+
+/* Hard-disk mount table.  Each entry maps a /mnt/<name> mountpoint to a
+ * backend filesystem.  FAT32 (kernel + bootloader modules + root, EFI-style)
+ * and ext2 (apps / user directories) coexist at separate mountpoints.  The
+ * single-volume drivers mean at most one FAT32 + one ext2 are active at once
+ * (one per backend); the table enforces that. */
+#define HD_FS_NONE   0
+#define HD_FS_FAT32  1
+#define HD_FS_EXT2   2
+#define MAX_HD_MOUNTS 4
+
+typedef struct { char name[VFS_MOUNT_NAME_MAX]; int fs; } hd_mount_t;
+static hd_mount_t s_mounts[MAX_HD_MOUNTS];
+static int        s_nmounts;
+
+/* Find the mount whose name matches comp[0..clen).  Returns index or -1. */
+static int hd_find(const char *comp, size_t clen)
+{
+    for (int i = 0; i < s_nmounts; i++)
+        if (strlen(s_mounts[i].name) == clen &&
+            memcmp(s_mounts[i].name, comp, clen) == 0)
+            return i;
+    return -1;
+}
+
+/* True if a backend already drives a mount (drivers are single-volume). */
+static int backend_in_use(int fs)
+{
+    for (int i = 0; i < s_nmounts; i++) if (s_mounts[i].fs == fs) return 1;
+    return 0;
+}
+
+/* True if any HD volume is mounted. */
+static int hd_mounted(void) { return s_nmounts > 0; }
+
+/* Dispatch HD-volume operations to the backend selected by 'fs'. */
+static int hd_ls(int fs, const char *p)        { return (fs == HD_FS_EXT2) ? ext2_ls(p) : fat32_ls(p); }
+static int hd_cd(int fs, const char *p)        { return (fs == HD_FS_EXT2) ? ext2_cd(p) : fat32_cd(p); }
+static int hd_mkdir(int fs, const char *p)     { return (fs == HD_FS_EXT2) ? ext2_mkdir(p) : fat32_mkdir(p); }
+static int hd_read_file(int fs, const char *p, void *b, uint32_t n, uint32_t *o)
+                                               { return (fs == HD_FS_EXT2) ? ext2_read_file(p, b, n, o) : fat32_read_file(p, b, n, o); }
+static int hd_write_file(int fs, const char *p, const void *b, uint32_t n)
+                                               { return (fs == HD_FS_EXT2) ? ext2_write_file(p, b, n) : fat32_write_file(p, b, n); }
+static int hd_delete_file(int fs, const char *p){ return (fs == HD_FS_EXT2) ? ext2_delete_file(p) : fat32_delete_file(p); }
+static int hd_delete_dir(int fs, const char *p) { return (fs == HD_FS_EXT2) ? ext2_delete_dir(p) : fat32_delete_dir(p); }
+static int hd_file_exists(int fs, const char *p){ return (fs == HD_FS_EXT2) ? ext2_file_exists(p) : fat32_file_exists(p); }
+static int hd_complete(int fs, const char *d, const char *pre, fat32_complete_cb_t cb, void *ctx)
+                                               { return (fs == HD_FS_EXT2) ? ext2_complete(d, pre, cb, ctx) : fat32_complete(d, pre, cb, ctx); }
+static const char *hd_fsname(int fs) { return (fs == HD_FS_EXT2) ? "ext2" : (fs == HD_FS_FAT32) ? "FAT32" : "none"; }
 
 /* Resolve the cwd backing store for the calling context.  Pre-tasking
  * (vfs_init, vfs_auto_mount) returns the boot scratch buffer; once tasking
@@ -183,8 +231,10 @@ static void path_resolve(const char *path, char *out)
  *
  * Returns VFS_FS_ROOT, VFS_FS_HD, VFS_FS_CDROM, or VFS_FS_UNKNOWN.
  * ---------------------------------------------------------------------- */
-static int vfs_route(const char *abs, const char **drv_path)
+static int vfs_route(const char *abs, const char **drv_path, int *out_fs)
 {
+    if (out_fs) *out_fs = HD_FS_NONE;
+
     /* Root "/" */
     if (abs[0] == '/' && abs[1] == '\0') {
         *drv_path = "/";
@@ -214,9 +264,10 @@ static int vfs_route(const char *abs, const char **drv_path)
             *drv_path = dp;
             return VFS_FS_CDROM;
         }
-        if (clen == strlen(s_hd_mount) &&
-            memcmp(comp, s_hd_mount, clen) == 0) {
+        int mi = hd_find(comp, clen);
+        if (mi >= 0) {
             *drv_path = dp;
+            if (out_fs) *out_fs = s_mounts[mi].fs;
             return VFS_FS_HD;
         }
         *drv_path = abs;
@@ -260,14 +311,14 @@ static void ls_root(void)
 /* List /mnt - the disk-filesystem mount container. */
 static void ls_mnt(void)
 {
-    if (fat32_mounted()) {
+    for (int i = 0; i < s_nmounts; i++) {
         t_putchar('[');
-        t_writestring(s_hd_mount);
+        t_writestring(s_mounts[i].name);
         t_writestring("]\n");
     }
     if (s_cdrom_drive >= 0) t_writestring("[cdrom]\n");
-    if (!fat32_mounted() && s_cdrom_drive < 0)
-        t_writestring("(no disk filesystems mounted - use 'mount' to mount FAT32)\n");
+    if (s_nmounts == 0 && s_cdrom_drive < 0)
+        t_writestring("(no disk filesystems mounted - use 'mount')\n");
 }
 
 /* =========================================================================
@@ -300,78 +351,36 @@ const char *vfs_getcwd(void)
     return cwd_buf();
 }
 
-/* Set the /mnt component the FAT32 volume is reachable at.  `name` is a
- * single component (no slashes); NULL/empty resets to the default "hd".
- * Rejected silently if it contains a '/' or overflows the buffer. */
-void vfs_set_hd_mount(const char *name)
-{
-    if (!name || !*name) {
-        memcpy(s_hd_mount, "hd", 3);
-        return;
-    }
-    for (const char *q = name; *q; q++)
-        if (*q == '/') return;
-    if (strlen(name) >= VFS_MOUNT_NAME_MAX) return;
-    strncpy(s_hd_mount, name, VFS_MOUNT_NAME_MAX - 1);
-    s_hd_mount[VFS_MOUNT_NAME_MAX - 1] = '\0';
-}
-
-const char *vfs_hd_mount(void)
-{
-    return s_hd_mount;
-}
-
-void vfs_prepare_shutdown(void)
-{
-    /* fat32_unmount flushes the FAT + dirty directory sectors before
-     * clearing the mount, so this is a clean sync on the way down.
-     * No-op when nothing is mounted. */
-    if (fat32_mounted()) {
-        t_writestring("Syncing /mnt/");
-        t_writestring(s_hd_mount);
-        t_writestring(" ...\n");
-        fat32_unmount();
-    }
-}
-
 /*
- * vfs_notify_hd_mounted / _unmounted / _cdrom_ejected
- *
- * Mount-state transitions can leave individual tasks parked under a mount
- * point that just disappeared (or, for the hd-mounted case, sitting on "/"
- * when /mnt/hd just became browsable).  Walk every live task and fix up each
- * one's cwd independently - using cwd_buf() here would only mutate the
- * caller's cwd, which is rarely the task that needs the adjustment.
- *
- * Pre-tasking-init this loop is a no-op (task_get returns NULL), and
- * s_boot_cwd is rewritten directly so the same rules apply during the
- * vfs_init / vfs_auto_mount window.
+ * cwd fixups.  Mount-state transitions can leave tasks parked under a mount
+ * point that just disappeared (or sitting on "/" when a volume just became
+ * browsable).  apply_cwd_fixup walks the boot scratch cwd plus every live
+ * task's cwd; the helper reads s_fixup_name for the affected mountpoint.
  */
-/* Compose the canonical mount path "/mnt/<name>" into a small buffer. */
-static void hd_mount_path(char *out, size_t outsz)
+static const char *s_fixup_name;   /* mountpoint name for the current pass */
+
+static void mount_path_of(const char *name, char *out, size_t outsz)
 {
-    /* outsz is always >= sizeof("/mnt/") + VFS_MOUNT_NAME_MAX here. */
     int n = 0;
     const char *pre = "/mnt/";
     while (pre[n] && n < (int)outsz - 1) { out[n] = pre[n]; n++; }
-    for (int i = 0; s_hd_mount[i] && n < (int)outsz - 1; i++)
-        out[n++] = s_hd_mount[i];
+    for (int i = 0; name[i] && n < (int)outsz - 1; i++) out[n++] = name[i];
     out[n] = '\0';
 }
 
-static void fixup_cwd_hd_mounted(char *cwd)
+static void fixup_cwd_mounted(char *cwd)
 {
     if (strcmp(cwd, "/") == 0) {
         char mp[VFS_MOUNT_NAME_MAX + 8];
-        hd_mount_path(mp, sizeof(mp));
+        mount_path_of(s_fixup_name, mp, sizeof(mp));
         memcpy(cwd, mp, strlen(mp) + 1);
     }
 }
 
-static void fixup_cwd_hd_unmounted(char *cwd)
+static void fixup_cwd_unmounted(char *cwd)
 {
     char mp[VFS_MOUNT_NAME_MAX + 8];
-    hd_mount_path(mp, sizeof(mp));
+    mount_path_of(s_fixup_name, mp, sizeof(mp));
     size_t mlen = strlen(mp);
     if (strcmp(cwd, mp) == 0 ||
         (strncmp(cwd, mp, mlen) == 0 && cwd[mlen] == '/')) {
@@ -400,8 +409,105 @@ static void apply_cwd_fixup(cwd_fixup_fn fn)
     }
 }
 
-void vfs_notify_hd_mounted(void)   { apply_cwd_fixup(fixup_cwd_hd_mounted); }
-void vfs_notify_hd_unmounted(void) { apply_cwd_fixup(fixup_cwd_hd_unmounted); }
+/* Mount the HD volume at (drive, lba) at /mnt/<name>, auto-selecting the
+ * backend (ext2 superblock preferred, else FAT32).  Returns 0 and (if
+ * out_fs) the chosen backend, or a negative code:
+ *   -1  bad name        -10 name already mounted   -11 backend already in use
+ *   -12 mount table full -13 'cdrom' reserved       <0  backend mount error */
+int vfs_mount_hd(uint8_t drive, uint32_t lba, const char *name, int *out_fs)
+{
+    if (!name || !*name) name = "hd";
+    for (const char *q = name; *q; q++) if (*q == '/') return -1;
+    if (strlen(name) >= VFS_MOUNT_NAME_MAX) return -1;
+    if (strcmp(name, "cdrom") == 0) return -13;
+    if (hd_find(name, strlen(name)) >= 0) return -10;
+    if (s_nmounts >= MAX_HD_MOUNTS) return -12;
+
+    int fs = ext2_probe(drive, lba) ? HD_FS_EXT2 : HD_FS_FAT32;
+    if (backend_in_use(fs)) return -11;   /* drivers are single-volume */
+
+    int r = (fs == HD_FS_EXT2) ? ext2_mount(drive, lba)
+                               : fat32_mount(drive, lba);
+    if (r != 0) return r;
+
+    hd_mount_t *m = &s_mounts[s_nmounts++];
+    strncpy(m->name, name, VFS_MOUNT_NAME_MAX - 1);
+    m->name[VFS_MOUNT_NAME_MAX - 1] = '\0';
+    m->fs = fs;
+    s_fixup_name = m->name;
+    apply_cwd_fixup(fixup_cwd_mounted);
+    if (out_fs) *out_fs = fs;
+    return 0;
+}
+
+/* Unmount the /mnt/<name> volume (flushing metadata).  NULL/empty unmounts
+ * the sole mount if exactly one exists.  Returns 0, -1 (no such mount), or
+ * -20 (ambiguous: name required). */
+int vfs_umount_hd(const char *name)
+{
+    if (!name || !*name) {
+        if (s_nmounts == 1) name = s_mounts[0].name;
+        else return -20;
+    }
+    int mi = hd_find(name, strlen(name));
+    if (mi < 0) return -1;
+    if (s_mounts[mi].fs == HD_FS_EXT2) ext2_unmount();
+    else                               fat32_unmount();
+    s_fixup_name = s_mounts[mi].name;
+    apply_cwd_fixup(fixup_cwd_unmounted);
+    for (int i = mi; i < s_nmounts - 1; i++) s_mounts[i] = s_mounts[i + 1];
+    s_nmounts--;
+    return 0;
+}
+
+int vfs_hd_mounted(void) { return hd_mounted(); }
+
+const char *vfs_hd_fsname(const char *name)
+{
+    int mi = name ? hd_find(name, strlen(name)) : -1;
+    return (mi >= 0) ? hd_fsname(s_mounts[mi].fs) : "none";
+}
+
+void vfs_prepare_shutdown(void)
+{
+    /* Each backend's unmount flushes dirty metadata before clearing the
+     * mount, so this is a clean sync on the way down. */
+    for (int i = s_nmounts - 1; i >= 0; i--) {
+        t_writestring("Syncing /mnt/");
+        t_writestring(s_mounts[i].name);
+        t_writestring(" ...\n");
+        if (s_mounts[i].fs == HD_FS_EXT2) ext2_unmount();
+        else                              fat32_unmount();
+    }
+    s_nmounts = 0;
+}
+
+/*
+ * vfs_notify_hd_mounted / _unmounted - compatibility shims for callers that
+ * drive the FAT32 backend directly (auto-mount, installer): keep the canonical
+ * "hd" FAT32 entry in the mount table in sync and run the cwd fixup.
+ */
+void vfs_notify_hd_mounted(void)
+{
+    if (hd_find("hd", 2) < 0 && s_nmounts < MAX_HD_MOUNTS) {
+        hd_mount_t *m = &s_mounts[s_nmounts++];
+        memcpy(m->name, "hd", 3);
+        m->fs = HD_FS_FAT32;
+    }
+    s_fixup_name = "hd";
+    apply_cwd_fixup(fixup_cwd_mounted);
+}
+
+void vfs_notify_hd_unmounted(void)
+{
+    s_fixup_name = "hd";
+    apply_cwd_fixup(fixup_cwd_unmounted);
+    int mi = hd_find("hd", 2);
+    if (mi >= 0) {
+        for (int i = mi; i < s_nmounts - 1; i++) s_mounts[i] = s_mounts[i + 1];
+        s_nmounts--;
+    }
+}
 
 void vfs_notify_cdrom_ejected(void)
 {
@@ -522,7 +628,8 @@ int vfs_ls(const char *path)
     path_resolve(path, abs);
 
     const char *drv;
-    switch (vfs_route(abs, &drv)) {
+    int fs;
+    switch (vfs_route(abs, &drv, &fs)) {
     case VFS_FS_ROOT:
         ls_root();
         return 0;
@@ -532,11 +639,7 @@ int vfs_ls(const char *path)
         return 0;
 
     case VFS_FS_HD:
-        if (!fat32_mounted()) {
-            t_writestring("ls: /mnt/hd is not mounted (use: mount <drv> <part>)\n");
-            return -1;
-        }
-        return fat32_ls(drv);
+        return hd_ls(fs, drv);
 
     case VFS_FS_CDROM:
         if (s_cdrom_drive < 0) {
@@ -566,7 +669,8 @@ int vfs_cd(const char *path)
     path_resolve(path, abs);
 
     const char *drv;
-    int fs = vfs_route(abs, &drv);
+    int hdfs;
+    int fs = vfs_route(abs, &drv, &hdfs);
     char *cwd = cwd_buf();
 
     switch (fs) {
@@ -577,12 +681,8 @@ int vfs_cd(const char *path)
         return 0;
 
     case VFS_FS_HD:
-        if (!fat32_mounted()) {
-            t_writestring("cd: /mnt/hd is not mounted\n");
-            return -1;
-        }
-        /* Use fat32_cd for validation; it updates FAT32's internal CWD too. */
-        if (fat32_cd(drv) != 0) {
+        /* Validate via the backend (FAT32 also updates its internal CWD). */
+        if (hd_cd(hdfs, drv) != 0) {
             t_writestring("cd: directory not found\n");
             return -1;
         }
@@ -636,7 +736,8 @@ int vfs_cat(const char *path)
     path_resolve(path, abs);
 
     const char *drv;
-    int fs = vfs_route(abs, &drv);
+    int hdfs;
+    int fs = vfs_route(abs, &drv, &hdfs);
 
     enum { CAT_MAX = 64u * 1024u };
     uint8_t *buf = (uint8_t *)kmalloc(CAT_MAX);
@@ -650,12 +751,7 @@ int vfs_cat(const char *path)
 
     switch (fs) {
     case VFS_FS_HD:
-        if (!fat32_mounted()) {
-            t_writestring("cat: /mnt/hd is not mounted\n");
-            kfree(buf);
-            return -1;
-        }
-        err = fat32_read_file(drv, buf, CAT_MAX, &got);
+        err = hd_read_file(hdfs, drv, buf, CAT_MAX, &got);
         break;
 
     case VFS_FS_CDROM:
@@ -712,15 +808,12 @@ int vfs_mkdir(const char *path)
     path_resolve(path, abs);
 
     const char *drv;
-    if (vfs_route(abs, &drv) != VFS_FS_HD) {
-        t_writestring("mkdir: only supported under /mnt/hd\n");
+    int hdfs;
+    if (vfs_route(abs, &drv, &hdfs) != VFS_FS_HD) {
+        t_writestring("mkdir: only supported under a /mnt disk volume\n");
         return -1;
     }
-    if (!fat32_mounted()) {
-        t_writestring("mkdir: /mnt/hd is not mounted\n");
-        return -1;
-    }
-    return fat32_mkdir(drv);
+    return hd_mkdir(hdfs, drv);
 }
 
 /* -------------------------------------------------------------------------
@@ -732,10 +825,10 @@ int vfs_read_file(const char *path, void *buf, uint32_t bufsz, uint32_t *out_sz)
     path_resolve(path, abs);
 
     const char *drv;
-    switch (vfs_route(abs, &drv)) {
+    int hdfs;
+    switch (vfs_route(abs, &drv, &hdfs)) {
     case VFS_FS_HD:
-        if (!fat32_mounted()) return -1;
-        return fat32_read_file(drv, buf, bufsz, out_sz);
+        return hd_read_file(hdfs, drv, buf, bufsz, out_sz);
 
     case VFS_FS_CDROM:
         if (s_cdrom_drive < 0) return -1;
@@ -764,9 +857,9 @@ int vfs_write_file(const char *path, const void *buf, uint32_t size)
     path_resolve(path, abs);
 
     const char *drv;
-    if (vfs_route(abs, &drv) != VFS_FS_HD) return -1;
-    if (!fat32_mounted()) return -1;
-    return fat32_write_file(drv, buf, size);
+    int hdfs;
+    if (vfs_route(abs, &drv, &hdfs) != VFS_FS_HD) return -1;
+    return hd_write_file(hdfs, drv, buf, size);
 }
 
 int vfs_delete_file(const char *path)
@@ -775,9 +868,9 @@ int vfs_delete_file(const char *path)
     path_resolve(path, abs);
 
     const char *drv;
-    if (vfs_route(abs, &drv) != VFS_FS_HD) return -1;
-    if (!fat32_mounted()) return -1;
-    return fat32_delete_file(drv);
+    int hdfs;
+    if (vfs_route(abs, &drv, &hdfs) != VFS_FS_HD) return -1;
+    return hd_delete_file(hdfs, drv);
 }
 
 int vfs_delete_dir(const char *path)
@@ -786,9 +879,9 @@ int vfs_delete_dir(const char *path)
     path_resolve(path, abs);
 
     const char *drv;
-    if (vfs_route(abs, &drv) != VFS_FS_HD) return -1;
-    if (!fat32_mounted()) return -1;
-    return fat32_delete_dir(drv);
+    int hdfs;
+    if (vfs_route(abs, &drv, &hdfs) != VFS_FS_HD) return -1;
+    return hd_delete_dir(hdfs, drv);
 }
 
 int vfs_rename(const char *old_path, const char *new_path)
@@ -798,11 +891,15 @@ int vfs_rename(const char *old_path, const char *new_path)
     path_resolve(new_path, new_abs);
 
     const char *old_drv, *new_drv;
-    if (vfs_route(old_abs, &old_drv) != VFS_FS_HD) return -1;
-    if (vfs_route(new_abs, &new_drv) != VFS_FS_HD) return -1;
-    if (!fat32_mounted()) return -1;
+    int ofs, nfs;
+    if (vfs_route(old_abs, &old_drv, &ofs) != VFS_FS_HD) return -1;
+    if (vfs_route(new_abs, &new_drv, &nfs) != VFS_FS_HD) return -1;
+    if (ofs != nfs) return -1;   /* cross-filesystem rename unsupported */
 
     /* Check if source is a file or directory, then call appropriate rename. */
+    if (ofs == HD_FS_EXT2)
+        return hd_file_exists(ofs, old_drv) ? ext2_rename_file(old_drv, new_drv)
+                                            : ext2_rename_dir(old_drv, new_drv);
     if (fat32_file_exists(old_drv))
         return fat32_rename_file(old_drv, new_drv);
     return fat32_rename_dir(old_drv, new_drv);
@@ -814,10 +911,10 @@ int vfs_file_exists(const char *path)
     path_resolve(path, abs);
 
     const char *drv;
-    switch (vfs_route(abs, &drv)) {
+    int hdfs;
+    switch (vfs_route(abs, &drv, &hdfs)) {
     case VFS_FS_HD:
-        if (!fat32_mounted()) return 0;
-        return fat32_file_exists(drv);
+        return hd_file_exists(hdfs, drv);
     case VFS_FS_CDROM:
         if (s_cdrom_drive < 0) return 0;
         return iso9660_file_exists((uint8_t)s_cdrom_drive, drv);
@@ -836,7 +933,7 @@ int vfs_blockdev_lookup(const char *path, uint32_t *size_out)
     path_resolve(path, abs);
 
     const char *drv;
-    if (vfs_route(abs, &drv) != VFS_FS_DEV) return -1;
+    if (vfs_route(abs, &drv, NULL) != VFS_FS_DEV) return -1;
     int idx = devfs_lookup(drv);
     if (idx < 0) return -1;
     if (size_out) *size_out = devfs_node_size(idx);
@@ -870,7 +967,8 @@ int vfs_complete(const char *dir, const char *prefix,
     path_resolve(dir ? dir : cwd_buf(), abs);
 
     const char *drv;
-    switch (vfs_route(abs, &drv)) {
+    int hdfs;
+    switch (vfs_route(abs, &drv, &hdfs)) {
     case VFS_FS_ROOT: {
         /* Root holds the synthetic trees plus the /mnt disk container.
          * Mirrors ls_root(). */
@@ -884,14 +982,13 @@ int vfs_complete(const char *dir, const char *prefix,
     case VFS_FS_MNT: {
         /* /mnt enumerates the live disk filesystems (Mirrors ls_mnt()). */
         if (cb) {
-            if (fat32_mounted())    cb("hd",    1, ctx);
+            for (int i = 0; i < s_nmounts; i++) cb(s_mounts[i].name, 1, ctx);
             if (s_cdrom_drive >= 0) cb("cdrom", 1, ctx);
         }
         return 0;
     }
     case VFS_FS_HD:
-        if (!fat32_mounted()) return -1;
-        return fat32_complete(drv, prefix, cb, ctx);
+        return hd_complete(hdfs, drv, prefix, cb, ctx);
     case VFS_FS_CDROM:
         if (s_cdrom_drive < 0) return -1;
         return iso9660_complete((uint8_t)s_cdrom_drive, drv, prefix, cb, ctx);

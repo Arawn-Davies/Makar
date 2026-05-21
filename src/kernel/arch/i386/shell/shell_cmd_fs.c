@@ -97,25 +97,31 @@ static void cmd_mount(int argc, char **argv)
         lba = s_cmd_parts.parts[part_idx].lba_start;
     }
 
-    int err = fat32_mount(drive, lba);
+    int fs = 0;
+    int err = vfs_mount_hd(drive, lba, mount_name, &fs);
     if (err) {
-        t_writestring("mount: not a valid FAT32 volume (error ");
-        t_dec((uint32_t)(-err));
-        t_writestring(")\n");
+        switch (err) {
+        case -10: t_writestring("mount: /mnt/"); t_writestring(mount_name);
+                  t_writestring(" already mounted\n"); break;
+        case -11: t_writestring("mount: that filesystem type is already "
+                                "mounted elsewhere (one FAT32 + one ext2 max)\n"); break;
+        case -12: t_writestring("mount: mount table full\n"); break;
+        case -13: t_writestring("mount: 'cdrom' is reserved\n"); break;
+        default:  t_writestring("mount: not a recognised FAT32 or ext2 volume "
+                                "(error "); t_dec((uint32_t)(-err));
+                  t_writestring(")\n"); break;
+        }
         return;
     }
 
-    /* Record the chosen mountpoint before notifying so the cwd fixup
-     * lands tasks at the new /mnt/<name>. */
-    vfs_set_hd_mount(mount_name);
-    vfs_notify_hd_mounted();
-
-    t_writestring("Mounted FAT32  drive ");
+    t_writestring("Mounted ");
+    t_writestring(vfs_hd_fsname(mount_name));
+    t_writestring("  drive ");
     t_dec(drive);
     t_writestring("  LBA ");
     t_dec(lba);
     t_writestring("  at /mnt/");
-    t_writestring(vfs_hd_mount());
+    t_writestring(mount_name);
     t_writestring("\ncwd: ");
     t_writestring(vfs_getcwd());
     t_putchar('\n');
@@ -153,13 +159,20 @@ static void cmd_umount(int argc, char **argv)
         return;
     }
 
-    if (!fat32_mounted()) {
-        t_writestring("umount: no volume mounted\n");
+    /* umount [/mnt/<name>] - default to the sole HD mount when unambiguous. */
+    const char *name = NULL;
+    if (argc >= 2) {
+        name = (strncmp(argv[1], "/mnt/", 5) == 0) ? argv[1] + 5 : argv[1];
+    }
+    int err = vfs_umount_hd(name);
+    if (err == -20) {
+        t_writestring("umount: multiple volumes mounted - specify /mnt/<name>\n");
         return;
     }
-    fat32_unmount();
-    vfs_notify_hd_unmounted();
-    vfs_set_hd_mount(NULL);   /* reset mountpoint to the default "hd" */
+    if (err) {
+        t_writestring("umount: no such mount\n");
+        return;
+    }
     t_writestring("Volume unmounted.\n");
 }
 

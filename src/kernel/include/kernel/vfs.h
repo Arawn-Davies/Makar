@@ -80,11 +80,22 @@ void vfs_notify_cdrom_ejected(void);
 /* Return a pointer to the current VFS path (e.g. "/mnt/hd/boot/grub"). */
 const char *vfs_getcwd(void);
 
-/* Get/set the /mnt component the single FAT32 volume is reachable at.
- * Default "hd".  `mount /dev/hdaN /mnt/<name>` sets it; umount resets it.
- * `name` must be a single component (no '/'); empty/NULL resets to "hd". */
-void        vfs_set_hd_mount(const char *name);
-const char *vfs_hd_mount(void);
+/*
+ * Hard-disk mount table.  FAT32 (kernel + bootloader + root, EFI-style) and
+ * ext2 (apps / user directories) coexist at separate /mnt/<name> mountpoints.
+ *
+ * vfs_mount_hd  – mount (drive, lba) at /mnt/<name>, auto-selecting the
+ *                 backend (ext2 superblock preferred, else FAT32).  Returns 0
+ *                 and writes the chosen backend id to *out_fs (may be NULL),
+ *                 or a negative error code.
+ * vfs_umount_hd – unmount /mnt/<name> (NULL/empty = the sole mount if unique).
+ * vfs_hd_mounted – 1 if any HD volume is mounted.
+ * vfs_hd_fsname  – backend name ("FAT32"/"ext2"/"none") for /mnt/<name>.
+ */
+int         vfs_mount_hd(uint8_t drive, uint32_t lba, const char *name, int *out_fs);
+int         vfs_umount_hd(const char *name);
+int         vfs_hd_mounted(void);
+const char *vfs_hd_fsname(const char *name);
 
 /* Flush and unmount every writable volume in preparation for power-off
  * or reset, so no dirty FAT/dir data is lost.  Safe to call when nothing
