@@ -1,9 +1,26 @@
 /*
- * installer.c - interactive OS-to-disk installer.
+ * installer.c - interactive OS-to-disk installer (TUI).
  *
- * Implements the full installation sequence documented in installer.h.
- * All sector-level buffers are declared at file scope to avoid large
- * kernel-stack allocations.
+ * Full-screen wizard that:
+ *   1. lists the ATA target drives and lets the user pick one (arrow keys);
+ *   2. asks for the root filesystem (ext2 or FAT32);
+ *   3. partitions the disk - "use entire disk" (auto, one partition spanning
+ *      the drive) or "advanced" (drop into cfdisk... handled by the caller);
+ *   4. formats the partition (ext2_mkfs / fat32_mkfs);
+ *   5. installs limine: boot sector -> MBR (preserving the partition table),
+ *      stage 2 -> post-MBR embedding gap, stage-2 location patched at 0x1a4;
+ *   6. copies the kernel, /apps, /docs and /src trees from the ISO, and drops
+ *      limine-bios.sys + a generated limine.conf into /limine on the rootfs;
+ *   7. unmounts and reports success.
+ *
+ * Rendering uses the VESA TTY paint primitives (vesa_tty_*), reserving the
+ * bottom makmux status row.  In VGA-text fallback it degrades to a plain
+ * numbered-prompt flow.  The shell repaints the screen (shell_restore_screen)
+ * after installer_run() returns.
+ *
+ * The host build still boots via GRUB; this deploys limine at runtime, reading
+ * the vendored limine-bios.sys off the CD (staged at /limine/limine-bios.sys
+ * by iso.sh).
  */
 
 #include <kernel/installer.h>
@@ -11,456 +28,687 @@
 #include <kernel/iso9660.h>
 #include <kernel/partition.h>
 #include <kernel/fat32.h>
+#include <kernel/ext2.h>
 #include <kernel/vfs.h>
 #include <kernel/heap.h>
 #include <kernel/tty.h>
+#include <kernel/vesa_tty.h>
 #include <kernel/keyboard.h>
 #include <string.h>
 #include <stddef.h>
+#include <stdint.h>
 
-/* -------------------------------------------------------------------------
- * Tunables
- * ---------------------------------------------------------------------- */
+/* ------------------------------------------------------------------------- */
+/* Tunables / disk layout constants                                          */
+/* ------------------------------------------------------------------------- */
 
-/* First partition starts at LBA 2048 (1 MiB aligned, GRUB-safe). */
-#define INST_PART_START_LBA    2048u
+#define INST_PART_START_LBA   2048u          /* 1 MiB aligned first partition */
+#define INST_MAX_FILE_SIZE    (8u * 1024u * 1024u)
+#define MBR_PART_TABLE_OFF    0x1BEu
+#define MBR_SIG_OFF           0x1FEu
+#define LIMINE_STAGE2_LOC_OFF 0x1A4u          /* u64 stage-2 byte offset       */
+#define LIMINE_SYS_ISO_PATH   "/limine/limine-bios.sys"
 
-/*
- * Maximum file size the installer will copy in a single operation (8 MiB).
- * The kernel is typically 1–3 MiB; GRUB modules are generally < 512 KiB.
- */
-#define INST_MAX_FILE_SIZE     (8u * 1024u * 1024u)
+#define ROOTFS_EXT2  0
+#define ROOTFS_FAT32 1
 
-/* Offset within boot.img of the 64-bit LE LBA address of core.img. */
-#define BOOT_IMG_CORE_LBA_OFF  0x5Cu
+/* ------------------------------------------------------------------------- */
+/* TUI colours (framebuffer RGB)                                             */
+/* ------------------------------------------------------------------------- */
 
-/* Byte offset of the four 16-byte MBR partition entries. */
-#define MBR_PART_TABLE_OFF     0x1BEu
+#define C_BG     0x00102040u   /* deep blue backdrop  */
+#define C_FG     0x00FFFFFFu   /* white text          */
+#define C_DIM    0x00A0B0C0u   /* muted text          */
+#define C_TITLE  0x0040E0FFu   /* cyan title          */
+#define C_SELFG  0x00102040u   /* selected text (dark)*/
+#define C_SELBG  0x0040E0FFu   /* selected row (cyan) */
+#define C_WARN   0x00FF6060u   /* red warning         */
+#define C_OK     0x0060FF80u   /* green success       */
 
-/* Byte offset of the MBR boot signature (0x55, 0xAA). */
-#define MBR_SIG_OFF            0x1FEu
+/* ------------------------------------------------------------------------- */
+/* File-scope scratch (never on the kernel stack)                            */
+/* ------------------------------------------------------------------------- */
 
-/* -------------------------------------------------------------------------
- * File-scope buffers - never on the kernel stack
- * ---------------------------------------------------------------------- */
-static uint8_t s_mbr[512];        /* scratch sector for the MBR           */
-static uint8_t s_boot_img[512];   /* boot.img read from the ISO           */
+static uint8_t  s_boot[512];      /* boot sector being assembled / read     */
+static uint8_t  s_pt[70];         /* saved partition table bytes [440..510) */
+static uint8_t *s_filebuf;        /* shared transfer buffer (kmalloc'd)     */
 
-/* -------------------------------------------------------------------------
- * inst_readline – read a line from the PS/2 keyboard into buf[0..max-1].
- * Echoes characters, handles backspace, terminates on Enter.
- * ---------------------------------------------------------------------- */
-static void inst_readline(char *buf, size_t max)
+/* BFS work queue + per-directory entry list for the recursive tree copy.
+ * Collected non-reentrantly: enumerate a whole directory into s_ents, then
+ * act on it, so iso9660_read_file is never called from inside an
+ * iso9660_complete callback. */
+#define COPYQ_MAX  256
+#define PATH_MAX_   192
+static char s_copyq[COPYQ_MAX][PATH_MAX_];
+static int  s_q_head, s_q_tail;
+
+#define ENTS_MAX 160
+static struct { char name[64]; int is_dir; } s_ents[ENTS_MAX];
+static int s_nents;
+
+/* ------------------------------------------------------------------------- */
+/* Geometry                                                                  */
+/* ------------------------------------------------------------------------- */
+
+static int g_gui;        /* 1 = VESA TUI, 0 = VGA text fallback */
+static uint32_t g_cols, g_rows;   /* usable area (status row excluded)       */
+
+static void tui_geometry(void)
+{
+    g_gui = vesa_tty_is_ready();
+    if (g_gui) {
+        g_cols = vesa_tty_get_cols();
+        uint32_t r = vesa_tty_get_rows();
+        g_rows = (r > VESA_TTY_STATUS_ROWS) ? (r - VESA_TTY_STATUS_ROWS) : r;
+    } else {
+        g_cols = 80;
+        g_rows = 49;   /* 80x50 VGA text, minus status row */
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/* Low-level paint helpers (GUI mode only)                                   */
+/* ------------------------------------------------------------------------- */
+
+static void paint_fill(uint32_t bg)
+{
+    char blank[256];
+    uint32_t n = (g_cols < 255) ? g_cols : 255;
+    for (uint32_t i = 0; i < n; i++) blank[i] = ' ';
+    blank[n] = '\0';
+    for (uint32_t r = 0; r < g_rows; r++)
+        vesa_tty_paint_string_at(0, r, blank, C_FG, bg);
+}
+
+static void tui_at(uint32_t col, uint32_t row, const char *s,
+                   uint32_t fg, uint32_t bg)
+{
+    if (g_gui)
+        vesa_tty_paint_string_at(col, row, s, fg, bg);
+}
+
+/* Centre a string on 'row'. */
+static void tui_center(uint32_t row, const char *s, uint32_t fg, uint32_t bg)
+{
+    size_t len = strlen(s);
+    uint32_t col = (len < g_cols) ? (uint32_t)((g_cols - len) / 2) : 0;
+    tui_at(col, row, s, fg, bg);
+}
+
+/* Common header (title bar + footer hint) for every wizard screen. */
+static void tui_frame(const char *title, const char *hint)
+{
+    paint_fill(C_BG);
+    char bar[256];
+    uint32_t n = (g_cols < 255) ? g_cols : 255;
+    for (uint32_t i = 0; i < n; i++) bar[i] = ' ';
+    bar[n] = '\0';
+    vesa_tty_paint_string_at(0, 0, bar, C_SELFG, C_TITLE);
+    tui_center(0, title, C_SELFG, C_TITLE);
+    if (hint)
+        tui_at(2, g_rows - 1, hint, C_DIM, C_BG);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Keyboard helpers                                                          */
+/* ------------------------------------------------------------------------- */
+
+static unsigned char getkey(void) { return keyboard_getchar(); }
+
+/* Read a line (VGA fallback prompts / "type yes" confirm). Echoes to VGA. */
+static void readline(char *buf, size_t max)
 {
     size_t len = 0;
-
     while (1) {
-        unsigned char c = keyboard_getchar();
-
-        if (c == '\n' || c == '\r') {
-            t_putchar('\n');
-            break;
-        }
-        if (c == '\b') {
-            if (len > 0) {
-                len--;
-                t_backspace();
-            }
-            continue;
-        }
-        if (c < 0x20 || c > 0x7E)
-            continue;
-        if (len < max - 1) {
-            buf[len++] = (char)c;
-            t_putchar((char)c);
-        }
+        unsigned char c = getkey();
+        if (c == '\n' || c == '\r') { t_putchar('\n'); break; }
+        if (c == '\b') { if (len) { len--; t_backspace(); } continue; }
+        if (c < 0x20 || c > 0x7E) continue;
+        if (len < max - 1) { buf[len++] = (char)c; t_putchar((char)c); }
     }
-
     buf[len] = '\0';
 }
 
-/* -------------------------------------------------------------------------
- * inst_wr32 – write a 32-bit value in little-endian byte order.
- * ---------------------------------------------------------------------- */
-static void inst_wr32(uint8_t *b, int off, uint32_t v)
-{
-    b[off]     = (uint8_t)(v);
-    b[off + 1] = (uint8_t)(v >>  8);
-    b[off + 2] = (uint8_t)(v >> 16);
-    b[off + 3] = (uint8_t)(v >> 24);
-}
+/* ------------------------------------------------------------------------- */
+/* Menu - arrow-selectable list (GUI) or numbered prompt (VGA)               */
+/* Returns the chosen index, or -1 if cancelled (Esc).                       */
+/* ------------------------------------------------------------------------- */
 
-/* -------------------------------------------------------------------------
- * copy_file – copy one file from ISO9660 to the mounted FAT32 volume.
- *
- * cd_drive : IDE drive index of the ATAPI CD-ROM
- * src_path : absolute path on the ISO  (e.g. "/boot/makar.kernel")
- * dst_path : absolute path on the FAT32 (e.g. "/boot/makar.kernel")
- * file_buf : caller-allocated buffer of at least INST_MAX_FILE_SIZE bytes
- *
- * Returns  0 on success.
- * Returns -1 on ISO read error.
- * Returns -2 on FAT32 write error.
- * ---------------------------------------------------------------------- */
-static int copy_file(uint8_t cd_drive,
-                     const char *src_path, const char *dst_path,
-                     uint8_t *file_buf)
+static int tui_menu(const char *title, const char *hint,
+                    const char *const *items, int n,
+                    const char *const *descs)
 {
-    t_writestring("  ");
-    t_writestring(src_path);
-    t_writestring(" -> ");
-    t_writestring(dst_path);
-    t_writestring(" ... ");
-
-    uint32_t sz = 0;
-    int err = iso9660_read_file(cd_drive, src_path,
-                                file_buf, INST_MAX_FILE_SIZE, &sz);
-    if (err) {
-        t_writestring("read error\n");
-        return -1;
+    if (!g_gui) {
+        /* VGA fallback: numbered list + readline. */
+        t_writestring("\n=== ");
+        t_writestring(title);
+        t_writestring(" ===\n");
+        for (int i = 0; i < n; i++) {
+            t_putchar(' '); t_dec((uint32_t)(i + 1)); t_writestring(") ");
+            t_writestring(items[i]);
+            if (descs && descs[i]) { t_writestring("  - "); t_writestring(descs[i]); }
+            t_putchar('\n');
+        }
+        char in[8];
+        while (1) {
+            t_writestring("Choice (number, or q to cancel): ");
+            readline(in, sizeof(in));
+            if (in[0] == 'q') return -1;
+            int v = 0; const char *p = in;
+            while (*p >= '0' && *p <= '9') v = v * 10 + (*p++ - '0');
+            if (v >= 1 && v <= n) return v - 1;
+            t_writestring("Invalid choice.\n");
+        }
     }
 
-    err = fat32_write_file(dst_path, file_buf, sz);
-    if (err) {
+    int sel = 0;
+    uint32_t top = 4;
+    while (1) {
+        tui_frame(title, hint ? hint : "Up/Down to move  Enter to select  Esc to cancel");
+        for (int i = 0; i < n; i++) {
+            uint32_t row = top + (uint32_t)i * 2;
+            char line[128];
+            /* "  > label" with left padding; pad the rest with spaces so the
+             * selected highlight spans a fixed width. */
+            int o = 0;
+            line[o++] = ' '; line[o++] = ' ';
+            line[o++] = (i == sel) ? '>' : ' ';
+            line[o++] = ' ';
+            const char *t = items[i];
+            while (*t && o < (int)sizeof(line) - 1) line[o++] = *t++;
+            while (o < 40 && o < (int)sizeof(line) - 1) line[o++] = ' ';
+            line[o] = '\0';
+            if (i == sel)
+                tui_at(4, row, line, C_SELFG, C_SELBG);
+            else
+                tui_at(4, row, line, C_FG, C_BG);
+            if (descs && descs[i])
+                tui_at(8, row + 1, descs[i], C_DIM, C_BG);
+        }
+        unsigned char c = getkey();
+        if (c == KEY_ARROW_UP)        sel = (sel == 0) ? n - 1 : sel - 1;
+        else if (c == KEY_ARROW_DOWN) sel = (sel == n - 1) ? 0 : sel + 1;
+        else if (c == '\n' || c == '\r') return sel;
+        else if (c == 0x1B) return -1;   /* Esc */
+    }
+}
+
+/* Modal yes/no confirmation.  Requires typing "yes" to proceed. */
+static int tui_confirm(const char *title, const char *l1, const char *l2)
+{
+    if (g_gui) {
+        tui_frame(title, "Type 'yes' then Enter to proceed, anything else cancels");
+        tui_at(4, 5, l1, C_WARN, C_BG);
+        if (l2) tui_at(4, 6, l2, C_WARN, C_BG);
+        tui_at(4, 9, "Confirm: ", C_FG, C_BG);
+        /* Echo into a known cell region. */
+        vesa_tty_set_cursor(13, 9);
+    } else {
+        t_writestring("\n");
+        t_writestring(l1); t_putchar('\n');
+        if (l2) { t_writestring(l2); t_putchar('\n'); }
+        t_writestring("Type 'yes' to proceed: ");
+    }
+    char in[8];
+    /* In GUI mode we still read via readline but echo goes to the (hidden)
+     * VGA path; accept the typed string regardless of where it shows. */
+    readline(in, sizeof(in));
+    return strcmp(in, "yes") == 0;
+}
+
+/* Progress / log line painter used during the execution phase.  In GUI mode
+ * we clear to the backdrop and write scrolling status via the normal TTY
+ * (which already excludes the makmux row), so long copy logs scroll cleanly. */
+static void exec_screen(const char *title)
+{
+    if (g_gui) {
+        tui_frame(title, NULL);
+        vesa_tty_set_cursor(0, 2);
+    } else {
+        t_writestring("\n=== ");
+        t_writestring(title);
+        t_writestring(" ===\n");
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/* Little-endian writers                                                     */
+/* ------------------------------------------------------------------------- */
+
+static void wr32(uint8_t *b, int off, uint32_t v)
+{
+    b[off] = (uint8_t)v; b[off+1] = (uint8_t)(v>>8);
+    b[off+2] = (uint8_t)(v>>16); b[off+3] = (uint8_t)(v>>24);
+}
+static void wr64(uint8_t *b, int off, uint64_t v)
+{
+    for (int i = 0; i < 8; i++) b[off+i] = (uint8_t)(v >> (8*i));
+}
+
+/* ------------------------------------------------------------------------- */
+/* File / tree copy (ISO -> rootfs)                                          */
+/* ------------------------------------------------------------------------- */
+
+static int g_root_fs;    /* ROOTFS_EXT2 / ROOTFS_FAT32 (selected backend)    */
+static uint8_t g_cd;     /* CD-ROM IDE drive index                          */
+
+static int rfs_mkdir(const char *p)
+{ return (g_root_fs == ROOTFS_EXT2) ? ext2_mkdir(p) : fat32_mkdir(p); }
+static int rfs_write(const char *p, const void *b, uint32_t n)
+{ return (g_root_fs == ROOTFS_EXT2) ? ext2_write_file(p, b, n)
+                                    : fat32_write_file(p, b, n); }
+
+static int copy_file(const char *src, const char *dst)
+{
+    t_writestring("  "); t_writestring(dst); t_writestring(" ... ");
+    uint32_t sz = 0;
+    if (iso9660_read_file(g_cd, src, s_filebuf, INST_MAX_FILE_SIZE, &sz) != 0) {
+        t_writestring("(skip)\n");
+        return -1;
+    }
+    if (rfs_write(dst, s_filebuf, sz) != 0) {
         t_writestring("write error\n");
         return -2;
     }
-
-    t_dec(sz);
-    t_writestring(" B\n");
+    t_dec(sz); t_writestring(" B\n");
     return 0;
 }
 
-/* -------------------------------------------------------------------------
- * installer_run
- * ---------------------------------------------------------------------- */
+/* iso9660_complete callback - record entries (no I/O here). */
+static void enum_cb(const char *name, int is_dir, void *ctx)
+{
+    (void)ctx;
+    if (name[0] == '.' && (name[1] == '\0' || (name[1] == '.' && name[2] == '\0')))
+        return;
+    if (s_nents >= ENTS_MAX) return;
+    size_t i = 0;
+    while (name[i] && i < sizeof(s_ents[0].name) - 1) { s_ents[s_nents].name[i] = name[i]; i++; }
+    s_ents[s_nents].name[i] = '\0';
+    s_ents[s_nents].is_dir = is_dir;
+    s_nents++;
+}
+
+static void q_reset(void) { s_q_head = s_q_tail = 0; }
+static int  q_empty(void) { return s_q_head == s_q_tail; }
+static void q_push(const char *p)
+{
+    int nxt = (s_q_tail + 1) % COPYQ_MAX;
+    if (nxt == s_q_head) return;   /* full - drop (bounded) */
+    size_t i = 0;
+    while (p[i] && i < PATH_MAX_ - 1) { s_copyq[s_q_tail][i] = p[i]; i++; }
+    s_copyq[s_q_tail][i] = '\0';
+    s_q_tail = nxt;
+}
+static const char *q_pop(void)
+{
+    const char *p = s_copyq[s_q_head];
+    s_q_head = (s_q_head + 1) % COPYQ_MAX;
+    return p;
+}
+
+/* Recursively mirror an ISO directory tree onto the rootfs (BFS).  Paths are
+ * identical on both sides (same layout), so one path serves source + dest. */
+static void copy_tree(const char *root)
+{
+    rfs_mkdir(root);
+    q_reset();
+    q_push(root);
+    while (!q_empty()) {
+        char dir[PATH_MAX_];
+        strncpy(dir, q_pop(), PATH_MAX_ - 1);
+        dir[PATH_MAX_ - 1] = '\0';
+
+        s_nents = 0;
+        iso9660_complete(g_cd, dir, "", enum_cb, NULL);
+
+        for (int i = 0; i < s_nents; i++) {
+            char child[PATH_MAX_];
+            int o = 0;
+            const char *d = dir;
+            while (*d && o < PATH_MAX_ - 1) child[o++] = *d++;
+            if (!(o == 1 && child[0] == '/') && o < PATH_MAX_ - 1)
+                child[o++] = '/';
+            const char *nm = s_ents[i].name;
+            while (*nm && o < PATH_MAX_ - 1) child[o++] = *nm++;
+            child[o] = '\0';
+
+            if (s_ents[i].is_dir) {
+                rfs_mkdir(child);
+                q_push(child);
+            } else {
+                copy_file(child, child);
+            }
+        }
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/* limine MBR install (mirrors host/limine.c::bios_install, MBR path, v12.x) */
+/* ------------------------------------------------------------------------- */
+
+static int write_sectors_batched(uint8_t drive, uint32_t lba,
+                                 const uint8_t *buf, uint32_t sectors)
+{
+    uint32_t done = 0;
+    while (done < sectors) {
+        uint32_t batch = sectors - done;
+        if (batch > 127u) batch = 127u;
+        if (ide_write_sectors(drive, lba + done, (uint8_t)batch,
+                              (void *)(buf + done * 512u)) != 0)
+            return -1;
+        done += batch;
+    }
+    return 0;
+}
+
+static int limine_install_mbr(uint8_t drive, uint8_t *sys, uint32_t sys_sz)
+{
+    if (sys_sz <= 512u) return -1;
+    uint32_t stage2_sz    = sys_sz - 512u;
+    uint32_t stage2_sects = (stage2_sz + 511u) / 512u;
+
+    /* Stage 2 lives in the post-MBR gap; it must end before the first
+     * partition (LBA 2048). */
+    if (1u + stage2_sects > INST_PART_START_LBA) return -2;
+
+    /* Read the current MBR to preserve its partition table + timestamp. */
+    if (ide_read_sectors(drive, 0u, 1u, s_boot) != 0) return -3;
+    uint8_t save_ts[6];
+    memcpy(save_ts, s_boot + 218, 6);
+    memcpy(s_pt, s_boot + 440, 70);
+
+    /* Build the new boot sector from limine's first 512 bytes, then restore
+     * the disk's partition table + timestamp on top (exactly as bios-install
+     * does), and patch the stage-2 location. */
+    memcpy(s_boot, sys, 512);
+    memcpy(s_boot + 218, save_ts, 6);
+    memcpy(s_boot + 440, s_pt, 70);
+    wr64(s_boot, LIMINE_STAGE2_LOC_OFF, 512ull);   /* stage2 at byte 512      */
+
+    /* Write stage 2 into the gap (sector 1..), zero-padding the last sector. */
+    uint32_t padded = stage2_sects * 512u;
+    if (padded > stage2_sz)
+        memset(sys + 512u + stage2_sz, 0, padded - stage2_sz);
+    if (write_sectors_batched(drive, 1u, sys + 512u, stage2_sects) != 0) return -4;
+
+    /* Write the patched boot sector last. */
+    if (ide_write_sectors(drive, 0u, 1u, s_boot) != 0) return -5;
+    return 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Disk / source discovery                                                   */
+/* ------------------------------------------------------------------------- */
+
+static int find_cdrom(void)
+{
+    for (int i = 0; i < IDE_MAX_DRIVES; i++) {
+        const ide_drive_t *d = ide_get_drive((uint8_t)i);
+        if (d && d->present && d->type == IDE_TYPE_ATAPI &&
+            iso9660_probe((uint8_t)i) == 0)
+            return i;
+    }
+    return -1;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Whole-disk partition (one rootfs partition spanning the drive)            */
+/* ------------------------------------------------------------------------- */
+
+static int partition_whole_disk(uint8_t drive, uint32_t disk_sectors,
+                                int fs, uint32_t *out_lba, uint32_t *out_count)
+{
+    uint32_t start = INST_PART_START_LBA;
+    if (disk_sectors <= start) return -1;
+    uint32_t count = disk_sectors - start;
+
+    memset(s_boot, 0, sizeof(s_boot));
+    uint8_t *pe = s_boot + MBR_PART_TABLE_OFF;
+    pe[0] = 0x80;                 /* bootable */
+    pe[1] = 0xFE; pe[2] = 0xFF; pe[3] = 0xFF;     /* CHS start (LBA fallback) */
+    pe[4] = (fs == ROOTFS_EXT2) ? 0x83 : PART_MBR_FAT32_LBA;
+    pe[5] = 0xFE; pe[6] = 0xFF; pe[7] = 0xFF;     /* CHS end                  */
+    wr32(pe, 8, start);
+    wr32(pe, 12, count);
+    s_boot[MBR_SIG_OFF] = 0x55; s_boot[MBR_SIG_OFF + 1] = 0xAA;
+
+    if (ide_write_sectors(drive, 0u, 1u, s_boot) != 0) return -2;
+    *out_lba = start;
+    *out_count = count;
+    return 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Execution phase                                                           */
+/* ------------------------------------------------------------------------- */
+
+static const char limine_conf[] =
+    "# Generated by the Makar installer.\n"
+    "timeout: 3\n"
+    "\n"
+    "/Makar OS\n"
+    "    protocol: multiboot2\n"
+    "    path: boot():/boot/makar.kernel\n";
+
+static int do_install(uint8_t drive, uint32_t disk_sectors, int fs)
+{
+    uint32_t lba = 0, count = 0;
+
+    exec_screen("Installing Makar");
+
+    t_writestring("Partitioning drive...\n");
+    if (partition_whole_disk(drive, disk_sectors, fs, &lba, &count) != 0) {
+        t_writestring("  ERROR: failed to write partition table.\n");
+        return -1;
+    }
+
+    t_writestring(fs == ROOTFS_EXT2 ? "Formatting ext2...\n"
+                                    : "Formatting FAT32...\n");
+    int mk = (fs == ROOTFS_EXT2) ? ext2_mkfs(drive, lba, count)
+                                  : fat32_mkfs(drive, lba, count);
+    if (mk != 0) { t_writestring("  ERROR: mkfs failed.\n"); return -2; }
+
+    t_writestring("Mounting new root filesystem...\n");
+    if (fat32_mounted()) fat32_unmount();
+    int mnt = (fs == ROOTFS_EXT2) ? ext2_mount(drive, lba)
+                                   : fat32_mount(drive, lba);
+    if (mnt != 0) { t_writestring("  ERROR: mount failed.\n"); return -3; }
+    g_root_fs = fs;
+
+    t_writestring("Creating directory tree...\n");
+    rfs_mkdir("/boot");
+    rfs_mkdir("/limine");
+
+    t_writestring("Copying kernel...\n");
+    copy_file("/boot/makar.kernel", "/boot/makar.kernel");
+
+    t_writestring("Copying limine-bios.sys...\n");
+    copy_file(LIMINE_SYS_ISO_PATH, "/limine/limine-bios.sys");
+
+    t_writestring("Writing limine.conf...\n");
+    if (rfs_write("/limine/limine.conf", limine_conf,
+                  (uint32_t)(sizeof(limine_conf) - 1)) != 0)
+        t_writestring("  WARNING: failed to write limine.conf.\n");
+
+    t_writestring("Copying /apps ...\n");  copy_tree("/apps");
+    t_writestring("Copying /docs ...\n");  copy_tree("/docs");
+    t_writestring("Copying /src ...\n");   copy_tree("/src");
+
+    /* Flush rootfs metadata before touching the bootloader. */
+    if (fs == ROOTFS_EXT2) ext2_unmount(); else fat32_unmount();
+    vfs_notify_hd_unmounted();
+
+    t_writestring("Installing limine bootloader...\n");
+    uint32_t sys_sz = 0;
+    if (iso9660_read_file(g_cd, LIMINE_SYS_ISO_PATH, s_filebuf,
+                          INST_MAX_FILE_SIZE, &sys_sz) != 0 || sys_sz <= 512) {
+        t_writestring("  ERROR: cannot read limine-bios.sys from CD.\n");
+        return -4;
+    }
+    int li = limine_install_mbr(drive, s_filebuf, sys_sz);
+    if (li != 0) {
+        t_writestring("  ERROR: limine install failed (");
+        t_dec((uint32_t)(-li)); t_writestring(").\n");
+        return -5;
+    }
+
+    return 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Drive picker                                                              */
+/* ------------------------------------------------------------------------- */
+
+/* Builds the menu label arrays from the live ATA drive list.  Returns the
+ * count, fills idx_map[] with the IDE indices. */
+#define MAX_PICK 4
+static char        s_pick_lbl[MAX_PICK][64];
+static const char *s_pick_ptr[MAX_PICK];
+static int         s_pick_idx[MAX_PICK];
+
+static int build_drive_list(void)
+{
+    int n = 0;
+    for (int i = 0; i < IDE_MAX_DRIVES && n < MAX_PICK; i++) {
+        const ide_drive_t *d = ide_get_drive((uint8_t)i);
+        if (!d || !d->present || d->type != IDE_TYPE_ATA) continue;
+        /* "hdX  (NNN MiB)  model" */
+        char *L = s_pick_lbl[n];
+        int o = 0;
+        L[o++] = 'h'; L[o++] = 'd'; L[o++] = (char)('a' + n); L[o++] = ' '; L[o++] = ' ';
+        L[o++] = '(';
+        uint32_t mib = d->size / 2048u;
+        char num[12]; int ni = 0;
+        if (mib == 0) num[ni++] = '0';
+        while (mib) { num[ni++] = (char)('0' + mib % 10); mib /= 10; }
+        while (ni) L[o++] = num[--ni];
+        L[o++] = ' '; L[o++] = 'M'; L[o++] = 'i'; L[o++] = 'B'; L[o++] = ')';
+        L[o++] = ' '; L[o++] = ' ';
+        const char *m = d->model;
+        while (*m && o < 60) L[o++] = *m++;
+        L[o] = '\0';
+        s_pick_ptr[n] = L;
+        s_pick_idx[n] = i;
+        n++;
+    }
+    return n;
+}
+
+/* ------------------------------------------------------------------------- */
+/* installer_run                                                             */
+/* ------------------------------------------------------------------------- */
+
 void installer_run(void)
 {
-    static char inbuf[16];
+    tui_geometry();
 
-    t_writestring("\n=== Makar OS Installer ===\n\n");
+    /* Welcome. */
+    if (g_gui) {
+        tui_frame("Makar OS Installer", "Press Enter to begin, Esc to cancel");
+        tui_center(6,  "Install Makar to a hard disk.", C_FG, C_BG);
+        tui_center(8,  "This will ERASE the drive you choose.", C_WARN, C_BG);
+        tui_center(10, "limine bootloader + kernel + apps + docs + src", C_DIM, C_BG);
+        unsigned char c = getkey();
+        if (c == 0x1B) return;
+    } else {
+        t_writestring("\n=== Makar OS Installer ===\n");
+    }
 
-    /* ------------------------------------------------------------------
-     * Step 1: Find the source ISO9660 CD-ROM.
-     * ------------------------------------------------------------------ */
-    t_writestring("Scanning for ISO9660 CD-ROM source...\n");
+    int cd = find_cdrom();
+    if (cd < 0) {
+        if (g_gui) { tui_frame("Installer", "Press a key"); tui_center(6, "No ISO9660 CD-ROM source found.", C_WARN, C_BG); getkey(); }
+        else t_writestring("Error: no ISO9660 CD-ROM source found.\n");
+        return;
+    }
+    g_cd = (uint8_t)cd;
 
-    int cd_drive = -1;
-    for (int i = 0; i < IDE_MAX_DRIVES; i++) {
-        const ide_drive_t *d = ide_get_drive((uint8_t)i);
-        if (!d || !d->present || d->type != IDE_TYPE_ATAPI)
-            continue;
-        if (iso9660_probe((uint8_t)i) == 0) {
-            cd_drive = i;
-            t_writestring("  found ISO9660 on drive ");
-            t_dec((uint32_t)i);
-            t_writestring(" (");
-            t_writestring(d->model);
-            t_writestring(")\n");
-            break;
+    int n = build_drive_list();
+    if (n == 0) {
+        if (g_gui) { tui_frame("Installer", "Press a key"); tui_center(6, "No ATA target drives found.", C_WARN, C_BG); getkey(); }
+        else t_writestring("Error: no ATA target drives found.\n");
+        return;
+    }
+
+    int pick = tui_menu("Select target drive", NULL,
+                        s_pick_ptr, n, NULL);
+    if (pick < 0) return;
+    int drive = s_pick_idx[pick];
+    const ide_drive_t *hdd = ide_get_drive((uint8_t)drive);
+    if (!hdd) return;
+
+    /* Filesystem choice. */
+    static const char *fs_items[] = { "ext2  (Unix-style root)", "FAT32 (EFI-style)" };
+    static const char *fs_descs[] = {
+        "Recommended root filesystem; limine reads ext2.",
+        "FAT-based; simpler, what older installs used." };
+    int fs_pick = tui_menu("Root filesystem", NULL, fs_items, 2, fs_descs);
+    if (fs_pick < 0) return;
+    int fs = (fs_pick == 0) ? ROOTFS_EXT2 : ROOTFS_FAT32;
+
+    /* Partition mode. */
+    static const char *pm_items[] = { "Use entire disk (recommended)",
+                                       "Advanced: edit layout in cfdisk" };
+    static const char *pm_descs[] = {
+        "Wipe the drive and create one partition spanning it.",
+        "Quit here and run 'cfdisk' yourself, then re-run install." };
+    int pm = tui_menu("Partitioning", NULL, pm_items, 2, pm_descs);
+    if (pm < 0) return;
+    if (pm == 1) {
+        /* Advanced: defer to cfdisk.  We don't drive it here; instruct the
+         * user and bail (re-running install with a partitioned disk picks up
+         * the existing layout in a future revision). */
+        if (g_gui) {
+            tui_frame("Advanced partitioning", "Press a key to exit the installer");
+            tui_center(6, "Run 'cfdisk' to lay out partitions,", C_FG, C_BG);
+            tui_center(7, "then re-run 'install' and choose 'Use entire disk'", C_DIM, C_BG);
+            tui_center(8, "is not yet wired for custom partitions.", C_DIM, C_BG);
+            getkey();
+        } else {
+            t_writestring("Run 'cfdisk' to partition, then re-run install.\n");
         }
-    }
-
-    if (cd_drive < 0) {
-        t_writestring("Error: no ISO9660 CD-ROM found.\n");
         return;
     }
 
-    /* ------------------------------------------------------------------
-     * Step 2: List ATA target drives and prompt for selection.
-     * ------------------------------------------------------------------ */
-    t_writestring("\nAvailable ATA target drives:\n");
-
-    int ata_count = 0;
-    for (int i = 0; i < IDE_MAX_DRIVES; i++) {
-        const ide_drive_t *d = ide_get_drive((uint8_t)i);
-        if (!d || !d->present || d->type != IDE_TYPE_ATA)
-            continue;
-        t_writestring("  drive ");
-        t_dec((uint32_t)i);
-        t_writestring(": ");
-        t_dec(d->size / 2048u);
-        t_writestring(" MiB  \"");
-        t_writestring(d->model);
-        t_writestring("\"\n");
-        ata_count++;
+    /* Confirm destruction. */
+    char w1[80];
+    {
+        int o = 0; const char *p = "WARNING: ALL DATA on ";
+        while (*p) w1[o++] = *p++;
+        w1[o++] = 'h'; w1[o++] = 'd'; w1[o++] = (char)('a' + pick);
+        p = " will be ERASED."; while (*p) w1[o++] = *p++;
+        w1[o] = '\0';
     }
-
-    if (ata_count == 0) {
-        t_writestring("Error: no ATA target drives found.\n");
+    if (!tui_confirm("Confirm install", w1, NULL)) {
+        if (!g_gui) t_writestring("Installation cancelled.\n");
         return;
     }
 
-    int hdd_drive = -1;
-    while (hdd_drive < 0) {
-        t_writestring("Enter target drive number: ");
-        inst_readline(inbuf, sizeof(inbuf));
-
-        int n = 0;
-        const char *cp = inbuf;
-        while (*cp >= '0' && *cp <= '9')
-            n = n * 10 + (*cp++ - '0');
-
-        if (n >= 0 && n < IDE_MAX_DRIVES) {
-            const ide_drive_t *d = ide_get_drive((uint8_t)n);
-            if (d && d->present && d->type == IDE_TYPE_ATA)
-                hdd_drive = n;
-        }
-        if (hdd_drive < 0)
-            t_writestring("  Invalid selection - try again.\n");
-    }
-
-    const ide_drive_t *hdd = ide_get_drive((uint8_t)hdd_drive);
-
-    /* ------------------------------------------------------------------
-     * Step 3: Confirm destructive write.
-     * ------------------------------------------------------------------ */
-    t_writestring("\nWARNING: ALL DATA on drive ");
-    t_dec((uint32_t)hdd_drive);
-    t_writestring(" (\"");
-    t_writestring(hdd->model);
-    t_writestring("\", ");
-    t_dec(hdd->size / 2048u);
-    t_writestring(" MiB) will be DESTROYED.\n");
-    t_writestring("Type 'yes' to continue: ");
-    inst_readline(inbuf, sizeof(inbuf));
-
-    if (strcmp(inbuf, "yes") != 0) {
-        t_writestring("Installation cancelled.\n");
-        return;
-    }
-
-    /* Allocate the shared file-copy buffer once, reuse for all transfers. */
-    uint8_t *file_buf = (uint8_t *)kmalloc(INST_MAX_FILE_SIZE);
-    if (!file_buf) {
+    s_filebuf = (uint8_t *)kmalloc(INST_MAX_FILE_SIZE);
+    if (!s_filebuf) {
         t_writestring("Error: out of memory for transfer buffer.\n");
         return;
     }
 
-    /* ------------------------------------------------------------------
-     * Steps 4–5: Read boot.img and core.img from ISO; install GRUB.
-     * ------------------------------------------------------------------ */
-    t_writestring("\nInstalling GRUB bootloader...\n");
+    int rc = do_install((uint8_t)drive, hdd->size, fs);
+    kfree(s_filebuf);
+    s_filebuf = NULL;
 
-    /* Read boot.img (512 bytes) from the ISO. */
-    uint32_t boot_sz = 0;
-    if (iso9660_read_file((uint8_t)cd_drive,
-                          "/boot/grub/i386-pc/boot.img",
-                          s_boot_img, sizeof(s_boot_img), &boot_sz) != 0
-        || boot_sz < 446u)
-    {
-        t_writestring("Error: failed to read /boot/grub/i386-pc/boot.img.\n");
-        kfree(file_buf);
-        return;
-    }
+    /* Serial-visible result marker (the GUI "done" screen below is painted
+     * directly to the framebuffer and does not mirror to COM1). */
+    t_writestring(rc == 0 ? "INSTALL: complete ok\n" : "INSTALL: failed\n");
 
-    /* Read core.img from the ISO into the shared buffer. */
-    uint32_t core_sz = 0;
-    if (iso9660_read_file((uint8_t)cd_drive,
-                          "/boot/grub/i386-pc/core.img",
-                          file_buf, INST_MAX_FILE_SIZE, &core_sz) != 0
-        || core_sz == 0)
-    {
-        t_writestring("Error: failed to read /boot/grub/i386-pc/core.img.\n");
-        kfree(file_buf);
-        return;
-    }
-
-    /*
-     * Patch boot.img: set the 64-bit LE LBA of core.img to 1
-     * (core.img will live at sector 1 of the target HDD).
-     */
-    inst_wr32(s_boot_img, BOOT_IMG_CORE_LBA_OFF,     1u);  /* low  32 bits */
-    inst_wr32(s_boot_img, BOOT_IMG_CORE_LBA_OFF + 4,  0u); /* high 32 bits */
-
-    /*
-     * Build the 512-byte MBR:
-     *   bytes   0–445 : GRUB boot code from boot.img
-     *   bytes 446–509 : partition table (one FAT32 LBA entry, bootable)
-     *   bytes 510–511 : boot signature 0x55AA
-     */
-    memset(s_mbr, 0, sizeof(s_mbr));
-    memcpy(s_mbr, s_boot_img, 446u);
-
-    uint32_t disk_sectors = hdd->size;
-    uint32_t part_start   = INST_PART_START_LBA;
-    uint32_t part_count   = disk_sectors - part_start;
-
-    /* First (and only) partition entry at byte 0x1BE. */
-    uint8_t *pe = s_mbr + MBR_PART_TABLE_OFF;
-    pe[0] = 0x80u;              /* bootable flag                           */
-    pe[1] = 0xFEu;              /* CHS start - beyond range, use LBA       */
-    pe[2] = 0xFFu;
-    pe[3] = 0xFFu;
-    pe[4] = PART_MBR_FAT32_LBA; /* partition type 0x0C                    */
-    pe[5] = 0xFEu;              /* CHS end - beyond range                  */
-    pe[6] = 0xFFu;
-    pe[7] = 0xFFu;
-    inst_wr32(pe,  8, part_start);
-    inst_wr32(pe, 12, part_count);
-
-    /* Boot signature. */
-    s_mbr[MBR_SIG_OFF]     = 0x55u;
-    s_mbr[MBR_SIG_OFF + 1] = 0xAAu;
-
-    /* Write the MBR to sector 0 of the target HDD. */
-    if (ide_write_sectors((uint8_t)hdd_drive, 0u, 1u, s_mbr)) {
-        t_writestring("Error: failed to write MBR to target drive.\n");
-        kfree(file_buf);
-        return;
-    }
-
-    /*
-     * Write core.img to sectors 1..N (the GRUB embedding area between the
-     * MBR and the first partition at LBA 2048).
-     * Round up to a 512-byte sector boundary; zero-pad the last sector.
-     */
-    uint32_t core_sectors = (core_sz + 511u) / 512u;
-
-    if (core_sectors + 1u > INST_PART_START_LBA) {
-        t_writestring("Error: core.img too large for the embedding area.\n");
-        kfree(file_buf);
-        return;
-    }
-
-    /* Zero-pad the buffer to a full sector boundary. */
-    uint32_t core_padded = core_sectors * 512u;
-    if (core_padded > core_sz)
-        memset(file_buf + core_sz, 0, core_padded - core_sz);
-
-    /*
-     * ide_write_sectors() takes a uint8_t sector count (max 255 per call).
-     * Write core.img in batches of up to 127 sectors.
-     */
-    uint32_t written = 0;
-    while (written < core_sectors) {
-        uint32_t batch = core_sectors - written;
-        if (batch > 127u)
-            batch = 127u;
-        if (ide_write_sectors((uint8_t)hdd_drive,
-                              1u + written, (uint8_t)batch,
-                              file_buf + written * 512u)) {
-            t_writestring("Error: failed to write core.img sectors.\n");
-            kfree(file_buf);
-            return;
+    if (g_gui) {
+        tui_frame("Installer", "Press a key to return to the shell");
+        if (rc == 0) {
+            tui_center(6, "Installation complete!", C_OK, C_BG);
+            tui_center(8, "Remove the CD and reboot to start Makar from disk.", C_FG, C_BG);
+        } else {
+            tui_center(6, "Installation FAILED.", C_WARN, C_BG);
+            tui_center(8, "See the messages above; nothing was finalised.", C_DIM, C_BG);
         }
-        written += batch;
+        getkey();
+    } else {
+        t_writestring(rc == 0 ? "\n=== Installation complete! ===\n"
+                              : "\n=== Installation FAILED ===\n");
     }
-
-    t_writestring("  boot.img written to MBR, core.img written to sectors 1–");
-    t_dec(core_sectors);
-    t_writestring("\n");
-
-    /* ------------------------------------------------------------------
-     * Step 6: Format the partition as FAT32.
-     * ------------------------------------------------------------------ */
-    t_writestring("Formatting FAT32 partition...\n");
-
-    if (fat32_mkfs((uint8_t)hdd_drive, part_start, part_count) != 0) {
-        t_writestring("Error: FAT32 format failed.\n");
-        kfree(file_buf);
-        return;
-    }
-    t_writestring("  done.\n");
-
-    /* ------------------------------------------------------------------
-     * Step 7: Mount the FAT32 volume.
-     * ------------------------------------------------------------------ */
-    if (fat32_mounted())
-        fat32_unmount();
-
-    if (fat32_mount((uint8_t)hdd_drive, part_start) != 0) {
-        t_writestring("Error: failed to mount the new FAT32 volume.\n");
-        kfree(file_buf);
-        return;
-    }
-
-    /* ------------------------------------------------------------------
-     * Step 8: Create directory tree.
-     * ------------------------------------------------------------------ */
-    t_writestring("Creating directory tree...\n");
-    fat32_mkdir("/boot");
-    fat32_mkdir("/boot/grub");
-    fat32_mkdir("/boot/grub/i386-pc");
-
-    /* ------------------------------------------------------------------
-     * Step 9: Copy the kernel.
-     * ------------------------------------------------------------------ */
-    t_writestring("Copying kernel...\n");
-    if (copy_file((uint8_t)cd_drive,
-                  "/boot/makar.kernel", "/boot/makar.kernel",
-                  file_buf) != 0) {
-        t_writestring("Warning: kernel copy failed - installation may be incomplete.\n");
-    }
-
-    /* ------------------------------------------------------------------
-     * Step 10: Copy essential GRUB modules.
-     * ------------------------------------------------------------------ */
-    t_writestring("Copying GRUB modules...\n");
-
-    static const char * const modules[] = {
-        "normal.mod",
-        "part_msdos.mod",
-        "fat.mod",
-        "multiboot2.mod",
-        "linux.mod",
-        NULL
-    };
-
-    static const char grub_mod_dir[] = "/boot/grub/i386-pc/";
-    size_t pflen = sizeof(grub_mod_dir) - 1u;  /* length without NUL */
-
-    for (int i = 0; modules[i] != NULL; i++) {
-        char src[128];
-        char dst[128];
-        size_t mlen = strlen(modules[i]);
-
-        if (pflen + mlen >= sizeof(src))
-            continue;
-
-        memcpy(src, grub_mod_dir, pflen);
-        memcpy(src + pflen, modules[i], mlen + 1u);
-        memcpy(dst, grub_mod_dir, pflen);
-        memcpy(dst + pflen, modules[i], mlen + 1u);
-
-        /* A missing module is not fatal - skip silently on error. */
-        copy_file((uint8_t)cd_drive, src, dst, file_buf);
-    }
-
-    /* ------------------------------------------------------------------
-     * Step 11: Write /boot/grub/grub.cfg.
-     * ------------------------------------------------------------------ */
-    t_writestring("Writing grub.cfg...\n");
-
-    /*
-     * HDD grub.cfg differs from the CD grub.cfg in two key ways:
-     *   1. set timeout=0  - boot immediately with no user interaction required.
-     *   2. Explicit 'boot' command inside the menuentry so the kernel loads
-     *      correctly even when GRUB is invoked manually from its command line.
-     * The CD grub.cfg uses the same multiboot2 path because the ISO9660 and
-     * the FAT32 partition share the same /boot/makar.kernel layout.
-     */
-    static const char grub_cfg[] =
-        "set default=0\n"
-        "set timeout=0\n"
-        "\n"
-        "menuentry \"Makar OS\" {\n"
-        "\tmultiboot2 /boot/makar.kernel\n"
-        "\tboot\n"
-        "}\n";
-
-    if (fat32_write_file("/boot/grub/grub.cfg",
-                         grub_cfg, (uint32_t)(sizeof(grub_cfg) - 1u)) != 0) {
-        t_writestring("Warning: failed to write grub.cfg.\n");
-    }
-
-    /* ------------------------------------------------------------------
-     * Step 12: Unmount and report success.
-     * ------------------------------------------------------------------ */
-    fat32_unmount();
-    vfs_notify_hd_unmounted();
-    kfree(file_buf);
-
-    t_writestring("\n=== Installation complete! ===\n");
-    t_writestring("Remove the CD-ROM and reboot to start Makar from the hard drive.\n\n");
 }
