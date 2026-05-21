@@ -14,6 +14,7 @@
 #include <kernel/keyboard.h>
 #include <kernel/vtty.h>
 #include <kernel/tty.h>
+#include <kernel/version.h>
 #include <kernel/vga.h>
 #include <kernel/vesa.h>
 #include <kernel/vesa_tty.h>
@@ -601,7 +602,7 @@ static const shell_cmd_entry_t * const cmd_modules[] = {
 
 /* Try to exec at `path`; if that fails, try with ".elf" appended.  Returns
  * 1 if a binary was launched, 0 otherwise.  Used by both the path-prefix
- * branch (./foo, /cdrom/apps/foo) and the PATH lookup. */
+ * branch (./foo, /mnt/cdrom/apps/foo) and the PATH lookup. */
 static int try_exec_path(const char *path, int argc, char **argv)
 {
     static char with_ext[VFS_PATH_MAX];
@@ -736,7 +737,7 @@ int shell_dispatch_argv(int argc, char **argv)
 /* ---------------------------------------------------------------------------
  * shell_print_prompt – print the interactive prompt showing the VFS CWD.
  *
- * Format:  root@makar /hd/boot~>
+ * Format:  root@makar /mnt/hd/boot~>
  * --------------------------------------------------------------------------- */
 static void shell_print_prompt(void)
 {
@@ -867,12 +868,8 @@ void shell_run(void)
          * Linux VT semantics: clear-on-init uses the current VT's bg. */
         shell_clear_screen();
 
-        t_writestring("Makar -- version " SHELL_VERSION
-                      ", build: " BUILD_DATE " " BUILD_TIME "\n");
-        t_writestring("The GCC/C++ sibling of Medli\n");
-        t_writestring(COPYRIGHT "\n");
-        t_writestring("Released under the BSD-3 Clause Clear license\n\n");
-        t_writestring("Type 'help' for a list of commands.\n");
+        t_writestring("Makar " MAKAR_VERSION "\n");
+        t_writestring("Type 'help' for commands, 'about' for credits.\n");
         t_writestring("Welcome back, " SHELL_USERNAME "!\n\n");
 
     } else {

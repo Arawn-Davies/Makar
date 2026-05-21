@@ -40,8 +40,12 @@ static const man_entry_t man_table[] = {
       "Prints the manual page for the named built-in command.\n"
     },
     { "version",
-      "show build info and copyright",
-      "Usage: version\n\nPrints the kernel version, build date, and copyright notice.\n"
+      "show kernel + shell versions",
+      "Usage: version\n\nPrints the linked kernel and shell component versions and the build date/time.\n"
+    },
+    { "about",
+      "show identity, credits, and licence",
+      "Usage: about\n\nPrints the Makar identity line, copyright, and licence (moved off the boot banner).\n"
     },
     { "clear",
       "clear the screen",
