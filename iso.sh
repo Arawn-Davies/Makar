@@ -13,13 +13,24 @@
 set -e
 . ./build.sh
 
-mkdir -p isodir/boot/grub/i386-pc isodir/apps isodir/src isodir/docs
+mkdir -p isodir/boot/grub/i386-pc isodir/apps isodir/src isodir/docs isodir/limine
 
 cp sysroot/boot/makar.kernel isodir/boot/makar.kernel
 
 # Copy source tree and docs onto the ISO so they're readable via VIX.
 cp -r src/. isodir/src/
 cp -r docs/. isodir/docs/
+
+# Vendored limine BIOS stage (v12.3.0).  The in-kernel installer reads this
+# off the CD and deploys it to the target HDD (boot sector -> MBR, stage2 ->
+# post-MBR gap, the file itself -> /limine on the rootfs).  The host build
+# itself still boots via GRUB (grub-mkrescue, below); only the runtime
+# installer uses limine.  See vendor/limine/VERSION.
+if [ -f vendor/limine/limine-bios.sys ]; then
+    cp vendor/limine/limine-bios.sys isodir/limine/limine-bios.sys
+else
+    echo "Warning: vendor/limine/limine-bios.sys missing; 'install' will fail." >&2
+fi
 
 # Locate the host GRUB i386-pc directory and stage the modules / boot.img /
 # core.img that the in-kernel installer expects to find on the ISO.  This
