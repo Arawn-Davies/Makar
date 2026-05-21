@@ -5,6 +5,11 @@
 # Framework lives in tests/ui_runner.sh.  This file is just test
 # definitions plus the driver loop.
 #
+# Keystrokes are typed via the `keys "..."` helper (ui_runner.sh), which
+# expands a string into `sendkey` lines.  Paths use the canonical $P_*
+# roots (P_CDROM_APPS, P_PROC, ...) so a scenario never hand-spells a path
+# and nothing drifts when mountpoints move.
+#
 # Usage:
 #   tests/ui_test.sh                # run all tests
 #   tests/ui_test.sh <name>...      # run named tests only (dash or underscore)
@@ -31,17 +36,7 @@ fi
 
 test_glob_proc() {
     it "glob-proc" \
-"sendkey c
-sendkey a
-sendkey t
-sendkey spc
-sendkey slash
-sendkey p
-sendkey r
-sendkey o
-sendkey c
-sendkey slash
-sendkey shift-8
+"$(keys "cat /proc/*")
 sendkey ret"
     assert_serial_contains "vendor_id" "MemFree" "Makar $MAKAR_VERSION"
 }
@@ -51,63 +46,23 @@ test_tab_path() {
     # and dump the cpuinfo content.  Verifies tab on unique cmd match,
     # path-style tab extension, and that the resulting command runs.
     it "tab-complete-path" \
-"sendkey c
-sendkey a
-sendkey t
+"$(keys "cat")
 sendkey tab
-sendkey slash
-sendkey p
-sendkey r
-sendkey o
-sendkey c
-sendkey slash
-sendkey c
+$(keys "/proc/c")
 sendkey tab
 sendkey ret"
     assert_serial_contains "vendor_id" "GenuineIntel"
 }
 
 test_exec_hello() {
-    # `exec /cdrom/apps/hello.elf tester` prints "Hello, tester!" via
+    # `exec /mnt/cdrom/apps/hello.elf tester` prints "Hello, tester!" via
     # sys_write on fd 2 (stderr = FD_KIND_VGA_SERIAL).  Absolute path so
     # cwd doesn't matter.  Verifies the per-task fd table end-to-end:
     # task_create allocates the child's fd_table with 0/1/2 pre-bound,
     # sys_write dispatches to serial through fd_get on the calling
     # task's table.  Pre-#134 this went through a global s_fds[].
     it "exec-hello" \
-"sendkey e
-sendkey x
-sendkey e
-sendkey c
-sendkey spc
-sendkey slash
-sendkey c
-sendkey d
-sendkey r
-sendkey o
-sendkey m
-sendkey slash
-sendkey a
-sendkey p
-sendkey p
-sendkey s
-sendkey slash
-sendkey h
-sendkey e
-sendkey l
-sendkey l
-sendkey o
-sendkey dot
-sendkey e
-sendkey l
-sendkey f
-sendkey spc
-sendkey t
-sendkey e
-sendkey s
-sendkey t
-sendkey e
-sendkey r
+"$(keys "exec $P_CDROM_APPS/hello.elf tester")
 sendkey ret"
     assert_serial_contains "Hello," "tester" "status=0"
 }
@@ -115,7 +70,7 @@ sendkey ret"
 test_per_tty_cwd() {
     # Per-task cwd isolation across TTYs (slice 15).  Each shell task
     # owns task_t.cwd; vfs_getcwd/vfs_cd route through task_current.  We
-    # cd VT0 to /proc, switch to VT3 and cd it to /cdrom/apps, then
+    # cd VT0 to /proc, switch to VT3 and cd it to /mnt/cdrom/apps, then
     # switch back to VT0.  Asserting on the "~>" prompt suffix is
     # unambiguous since only prompts end that way.
     #
@@ -123,34 +78,14 @@ test_per_tty_cwd() {
     # doesn't collide with this test's VT excursion.  Extra wait because
     # the VT switch + double cd takes a moment to settle.
     it "per-tty-cwd" \
-"sendkey c
-sendkey d
-sendkey spc
-sendkey slash
-sendkey p
-sendkey r
-sendkey o
-sendkey c
+"$(keys "cd $P_PROC")
 sendkey ret
 sendkey alt-f3
-sendkey c
-sendkey d
-sendkey spc
-sendkey slash
-sendkey c
-sendkey d
-sendkey r
-sendkey o
-sendkey m
-sendkey slash
-sendkey a
-sendkey p
-sendkey p
-sendkey s
+$(keys "cd $P_CDROM_APPS")
 sendkey ret
 sendkey alt-f1" \
         2.0
-    assert_serial_contains "/proc~>" "/cdrom/apps~>"
+    assert_serial_contains "/proc~>" "/mnt/cdrom/apps~>"
 }
 
 test_cd_root() {
@@ -160,16 +95,11 @@ test_cd_root() {
     # Disk filesystems now live under /mnt, so the root tab listing shows
     # the [mnt] container alongside the synthetic [proc] / [dev] trees.
     it "cd-root-listing" \
-"sendkey c
-sendkey d
-sendkey spc
-sendkey slash
+"$(keys "cd /")
 sendkey tab
 sendkey tab
 sendkey ret
-sendkey p
-sendkey w
-sendkey d
+$(keys "pwd")
 sendkey ret"
     assert_serial_contains "mnt"
 }
@@ -180,13 +110,7 @@ test_ls_dev() {
     # assert on (disks/partitions depend on an attached HDD).  Exercises
     # devfs_ls + the VFS_FS_DEV route end-to-end.
     it "ls-dev" \
-"sendkey l
-sendkey s
-sendkey spc
-sendkey slash
-sendkey d
-sendkey e
-sendkey v
+"$(keys "ls $P_DEV")
 sendkey ret"
     assert_serial_contains "cdrom"
 }
@@ -196,13 +120,7 @@ test_ls_mnt() {
     # from CD, so /mnt/cdrom is the stable entry to assert on.  Covers the
     # VFS_FS_MNT route + ls_mnt() after the /hd,/cdrom -> /mnt move.
     it "ls-mnt" \
-"sendkey l
-sendkey s
-sendkey spc
-sendkey slash
-sendkey m
-sendkey n
-sendkey t
+"$(keys "ls $P_MNT")
 sendkey ret"
     assert_serial_contains "cdrom"
 }
@@ -215,72 +133,16 @@ test_calc_brackets() {
     # while shell_exec_elf is still spinning up the task, so calc sees
     # a truncated first expression.
     it "calc-brackets" \
-"sendkey e
-sendkey x
-sendkey e
-sendkey c
-sendkey spc
-sendkey slash
-sendkey c
-sendkey d
-sendkey r
-sendkey o
-sendkey m
-sendkey slash
-sendkey a
-sendkey p
-sendkey p
-sendkey s
-sendkey slash
-sendkey c
-sendkey a
-sendkey l
-sendkey c
-sendkey dot
-sendkey e
-sendkey l
-sendkey f
+"$(keys "exec $P_CDROM_APPS/calc.elf")
 sendkey ret
 PAUSE 0.8
-sendkey shift-9
-sendkey 2
-sendkey shift-8
-sendkey 3
-sendkey shift-0
-sendkey shift-8
-sendkey 4
+$(keys "(2*3)*4")
 sendkey ret
-sendkey 6
-sendkey 9
-sendkey minus
-sendkey shift-9
-sendkey 6
-sendkey shift-8
-sendkey shift-9
-sendkey 9
-sendkey minus
-sendkey 1
-sendkey shift-0
-sendkey shift-0
+$(keys "69-(6*(9-1))")
 sendkey ret
-sendkey shift-9
-sendkey shift-9
-sendkey 8
-sendkey shift-8
-sendkey 2
-sendkey shift-0
-sendkey shift-8
-sendkey shift-9
-sendkey 3
-sendkey minus
-sendkey 1
-sendkey shift-0
-sendkey shift-0
+$(keys "((8*2)*(3-1))")
 sendkey ret
-sendkey e
-sendkey x
-sendkey i
-sendkey t
+$(keys "exit")
 sendkey ret" \
         2.5
     assert_serial_contains "24" "21" "32"
@@ -294,21 +156,7 @@ test_no_dead_in_proctasks() {
     # filter is working, `cat /proc/tasks` should never include the
     # string "DEAD".
     it "no-dead-in-proctasks" \
-"sendkey c
-sendkey a
-sendkey t
-sendkey spc
-sendkey slash
-sendkey p
-sendkey r
-sendkey o
-sendkey c
-sendkey slash
-sendkey t
-sendkey a
-sendkey s
-sendkey k
-sendkey s
+"$(keys "cat $P_PROC/tasks")
 sendkey ret"
     assert_serial_contains "shell0" "shell1"
     assert_serial_not_contains "DEAD"
@@ -331,23 +179,13 @@ test_typo_doesnt_clear() {
     CURRENT_NAME=typo-doesnt-clear
     reset_shell
     local sb1=$(wc -c < "$SERIAL_LOG")
-    send_script 'sendkey n
-sendkey o
-sendkey s
-sendkey u
-sendkey c
-sendkey h
-sendkey c
-sendkey m
-sendkey d
-sendkey ret'
+    send_script "$(keys "nosuchcmd")
+sendkey ret"
     wait_for_serial '\[shell:ready vt=0\]' "$sb1" 5 || \
         echo "  - stage1: never returned to prompt"
     local sb2=$(wc -c < "$SERIAL_LOG")
-    send_script 'sendkey p
-sendkey w
-sendkey d
-sendkey ret'
+    send_script "$(keys "pwd")
+sendkey ret"
     wait_for_serial '\[makbox:pwd\]' "$sb2" 5 || \
         echo "  - stage2: pwd never produced [makbox:pwd]"
 
@@ -412,66 +250,14 @@ test_two_maktops() {
     reset_shell
     local sb1=$(wc -c < "$SERIAL_LOG")
     # Launch maktop on VT0.
-    send_script 'sendkey e
-sendkey x
-sendkey e
-sendkey c
-sendkey spc
-sendkey slash
-sendkey c
-sendkey d
-sendkey r
-sendkey o
-sendkey m
-sendkey slash
-sendkey a
-sendkey p
-sendkey p
-sendkey s
-sendkey slash
-sendkey m
-sendkey a
-sendkey k
-sendkey t
-sendkey o
-sendkey p
-sendkey dot
-sendkey e
-sendkey l
-sendkey f
-sendkey ret'
+    send_script "$(keys "exec $P_CDROM_APPS/maktop.elf")
+sendkey ret"
     sleep 1.2
     # Switch to VT1 and launch maktop there too.
     send_script 'sendkey alt-f2'
     sleep 0.6
-    send_script 'sendkey e
-sendkey x
-sendkey e
-sendkey c
-sendkey spc
-sendkey slash
-sendkey c
-sendkey d
-sendkey r
-sendkey o
-sendkey m
-sendkey slash
-sendkey a
-sendkey p
-sendkey p
-sendkey s
-sendkey slash
-sendkey m
-sendkey a
-sendkey k
-sendkey t
-sendkey o
-sendkey p
-sendkey dot
-sendkey e
-sendkey l
-sendkey f
-sendkey ret'
+    send_script "$(keys "exec $P_CDROM_APPS/maktop.elf")
+sendkey ret"
     sleep 1.5
     echo "screendump $LOGDIR/$CURRENT_NAME.vt1-maktop-running.ppm" \
         | nc -U "$MONITOR_SOCK" >/dev/null
@@ -494,10 +280,8 @@ sendkey ret'
     send_script 'sendkey q'
     sleep 0.6
     local sb2=$(wc -c < "$SERIAL_LOG")
-    send_script 'sendkey p
-sendkey w
-sendkey d
-sendkey ret'
+    send_script "$(keys "pwd")
+sendkey ret"
     wait_for_serial '\[makbox:pwd\]' "$sb2" 5 || \
         echo "  - pwd never ran (one of the maktops never died)"
 
@@ -521,34 +305,8 @@ test_vt_all_roundtrips() {
     CURRENT_NAME=vt-all-roundtrips
     reset_shell
     local sb1=$(wc -c < "$SERIAL_LOG")
-    send_script 'sendkey e
-sendkey x
-sendkey e
-sendkey c
-sendkey spc
-sendkey slash
-sendkey c
-sendkey d
-sendkey r
-sendkey o
-sendkey m
-sendkey slash
-sendkey a
-sendkey p
-sendkey p
-sendkey s
-sendkey slash
-sendkey m
-sendkey a
-sendkey k
-sendkey t
-sendkey o
-sendkey p
-sendkey dot
-sendkey e
-sendkey l
-sendkey f
-sendkey ret'
+    send_script "$(keys "exec $P_CDROM_APPS/maktop.elf")
+sendkey ret"
     sleep 1.2
     for f in f2 f3 f4 ; do
         send_script "sendkey alt-$f"
@@ -563,11 +321,9 @@ sendkey ret'
         sleep 0.2
     done
     local sb2=$(wc -c < "$SERIAL_LOG")
-    send_script 'sendkey q
-sendkey p
-sendkey w
-sendkey d
-sendkey ret'
+    send_script "sendkey q
+$(keys "pwd")
+sendkey ret"
     wait_for_serial '\[makbox:pwd\]' "$sb2" 5 || \
         echo "  - pwd never ran (maktop lost focus during the multi-VT tour)"
 
@@ -599,34 +355,8 @@ test_vt_roundtrip_keeps_maktop_focused() {
     CURRENT_NAME=vt-roundtrip-keeps-maktop-focused
     reset_shell
     local sb1=$(wc -c < "$SERIAL_LOG")
-    send_script 'sendkey e
-sendkey x
-sendkey e
-sendkey c
-sendkey spc
-sendkey slash
-sendkey c
-sendkey d
-sendkey r
-sendkey o
-sendkey m
-sendkey slash
-sendkey a
-sendkey p
-sendkey p
-sendkey s
-sendkey slash
-sendkey m
-sendkey a
-sendkey k
-sendkey t
-sendkey o
-sendkey p
-sendkey dot
-sendkey e
-sendkey l
-sendkey f
-sendkey ret'
+    send_script "$(keys "exec $P_CDROM_APPS/maktop.elf")
+sendkey ret"
     # Give maktop a moment to reach its main loop.
     sleep 1.2
     # Alt+F2 then Alt+F1 -- excursion + return.
@@ -644,11 +374,9 @@ sendkey ret'
     sleep 0.2
     local sb2=$(wc -c < "$SERIAL_LOG")
     # 'q' should reach maktop now and quit it.  Then pwd via makbox.
-    send_script 'sendkey q
-sendkey p
-sendkey w
-sendkey d
-sendkey ret'
+    send_script "sendkey q
+$(keys "pwd")
+sendkey ret"
     wait_for_serial '\[makbox:pwd\]' "$sb2" 5 || \
         echo "  - pwd never ran (maktop probably never saw 'q')"
 
@@ -671,35 +399,7 @@ test_fork_cow() {
     # own private frame).
     reset_shell
     it "fork-cow" \
-"sendkey e
-sendkey x
-sendkey e
-sendkey c
-sendkey spc
-sendkey slash
-sendkey c
-sendkey d
-sendkey r
-sendkey o
-sendkey m
-sendkey slash
-sendkey a
-sendkey p
-sendkey p
-sendkey s
-sendkey slash
-sendkey f
-sendkey o
-sendkey r
-sendkey k
-sendkey t
-sendkey e
-sendkey s
-sendkey t
-sendkey dot
-sendkey e
-sendkey l
-sendkey f
+"$(keys "exec $P_CDROM_APPS/forktest.elf")
 sendkey ret" \
         3.0
     assert_serial_contains \
@@ -722,37 +422,7 @@ test_fork_execve() {
     #     through the child's image swap)
     reset_shell
     it "fork-execve" \
-"sendkey e
-sendkey x
-sendkey e
-sendkey c
-sendkey spc
-sendkey slash
-sendkey c
-sendkey d
-sendkey r
-sendkey o
-sendkey m
-sendkey slash
-sendkey a
-sendkey p
-sendkey p
-sendkey s
-sendkey slash
-sendkey e
-sendkey x
-sendkey e
-sendkey c
-sendkey v
-sendkey e
-sendkey t
-sendkey e
-sendkey s
-sendkey t
-sendkey dot
-sendkey e
-sendkey l
-sendkey f
+"$(keys "exec $P_CDROM_APPS/execvetest.elf")
 sendkey ret" \
         3.5
     assert_serial_contains \
@@ -771,34 +441,7 @@ test_user_sigusr1_handler() {
     # the handler set its flag.  Grep that exact string -- a partial
     # match would also accept the "NEVER ran" failure line.
     it "user-sigusr1-handler" \
-"sendkey e
-sendkey x
-sendkey e
-sendkey c
-sendkey spc
-sendkey slash
-sendkey c
-sendkey d
-sendkey r
-sendkey o
-sendkey m
-sendkey slash
-sendkey a
-sendkey p
-sendkey p
-sendkey s
-sendkey slash
-sendkey s
-sendkey i
-sendkey g
-sendkey t
-sendkey e
-sendkey s
-sendkey t
-sendkey dot
-sendkey e
-sendkey l
-sendkey f
+"$(keys "exec $P_CDROM_APPS/sigtest.elf")
 sendkey ret" \
         2.0
     assert_serial_contains "sigtest: SIGUSR1 handler ran"
@@ -815,38 +458,12 @@ test_ctrlc_kills_child() {
     # serial provenance tag.  Presence of that tag is unambiguous evidence
     # the shell prompt is responsive again after the child was killed.
     it "ctrlc-kills-child" \
-"sendkey e
-sendkey x
-sendkey e
-sendkey c
-sendkey spc
-sendkey slash
-sendkey c
-sendkey d
-sendkey r
-sendkey o
-sendkey m
-sendkey slash
-sendkey a
-sendkey p
-sendkey p
-sendkey s
-sendkey slash
-sendkey c
-sendkey a
-sendkey l
-sendkey c
-sendkey dot
-sendkey e
-sendkey l
-sendkey f
+"$(keys "exec $P_CDROM_APPS/calc.elf")
 sendkey ret
 PAUSE 0.8
 sendkey ctrl-c
 PAUSE 0.4
-sendkey p
-sendkey w
-sendkey d
+$(keys "pwd")
 sendkey ret" \
         2.0
     assert_serial_contains "[makbox:pwd]"
@@ -860,9 +477,7 @@ test_makbox_pwd() {
     #   PATH lookup misses pwd.elf -> makbox fallback -> SYS_GETCWD ->
     #   SYS_WRITE_SERIAL provenance line.
     it "makbox-pwd" \
-"sendkey p
-sendkey w
-sendkey d
+"$(keys "pwd")
 sendkey ret"
     assert_serial_contains "[makbox:pwd]"
 }
@@ -872,18 +487,9 @@ test_shell_scripting_vars() {
     # the variable round-trips through the per-shell-task table.
     reset_shell
     it "shell-scripting-vars" \
-"sendkey n
-sendkey a
-sendkey m
-sendkey e
-sendkey equal
-sendkey f
-sendkey o
-sendkey o
+"$(keys "name=foo")
 sendkey ret
-sendkey e
-sendkey n
-sendkey v
+$(keys "env")
 sendkey ret" \
         1.5
     assert_serial_contains "name=foo"
@@ -897,28 +503,7 @@ test_demo_script() {
     # surfaces as a failing assertion.
     reset_shell
     it "demo-script" \
-"sendkey s
-sendkey h
-sendkey spc
-sendkey slash
-sendkey c
-sendkey d
-sendkey r
-sendkey o
-sendkey m
-sendkey slash
-sendkey a
-sendkey p
-sendkey p
-sendkey s
-sendkey slash
-sendkey d
-sendkey e
-sendkey m
-sendkey o
-sendkey dot
-sendkey s
-sendkey h
+"$(keys "sh $P_CDROM_APPS/demo.sh")
 sendkey ret" \
         25
     assert_serial_contains \
@@ -945,33 +530,8 @@ test_bughunt_clock_exit_palette() {
     CURRENT_NAME=bughunt-clock-exit
     reset_shell
     local sb1=$(wc -c < "$SERIAL_LOG")
-    send_script 'sendkey e
-sendkey x
-sendkey e
-sendkey c
-sendkey spc
-sendkey slash
-sendkey c
-sendkey d
-sendkey r
-sendkey o
-sendkey m
-sendkey slash
-sendkey a
-sendkey p
-sendkey p
-sendkey s
-sendkey slash
-sendkey c
-sendkey l
-sendkey o
-sendkey c
-sendkey k
-sendkey dot
-sendkey e
-sendkey l
-sendkey f
-sendkey ret'
+    send_script "$(keys "exec $P_CDROM_APPS/clock.elf")
+sendkey ret"
     sleep 1.5
     echo "screendump $LOGDIR/$CURRENT_NAME.running.ppm" \
         | nc -U "$MONITOR_SOCK" >/dev/null
@@ -981,17 +541,14 @@ sendkey ret'
     echo "screendump $LOGDIR/$CURRENT_NAME.exited.ppm" \
         | nc -U "$MONITOR_SOCK" >/dev/null
     sleep 0.2
-    send_script 'sendkey p
-sendkey w
-sendkey d
-sendkey ret'
+    send_script "$(keys "pwd")
+sendkey ret"
     sleep 0.6
     echo "screendump $LOGDIR/$CURRENT_NAME.after-pwd.ppm" \
         | nc -U "$MONITOR_SOCK" >/dev/null
     sleep 0.2
-    send_script 'sendkey l
-sendkey s
-sendkey ret'
+    send_script "$(keys "ls")
+sendkey ret"
     sleep 0.6
     echo "screendump $LOGDIR/$CURRENT_NAME.after-ls.ppm" \
         | nc -U "$MONITOR_SOCK" >/dev/null
@@ -1013,15 +570,8 @@ test_bughunt_vix_exit_palette() {
     CURRENT_NAME=bughunt-vix-exit
     reset_shell
     local sb1=$(wc -c < "$SERIAL_LOG")
-    send_script 'sendkey v
-sendkey i
-sendkey x
-sendkey spc
-sendkey slash
-sendkey t
-sendkey m
-sendkey p
-sendkey ret'
+    send_script "$(keys "vix /tmp")
+sendkey ret"
     sleep 1.5
     echo "screendump $LOGDIR/$CURRENT_NAME.running.ppm" \
         | nc -U "$MONITOR_SOCK" >/dev/null
@@ -1032,10 +582,8 @@ sendkey ret'
     echo "screendump $LOGDIR/$CURRENT_NAME.exited.ppm" \
         | nc -U "$MONITOR_SOCK" >/dev/null
     sleep 0.2
-    send_script 'sendkey p
-sendkey w
-sendkey d
-sendkey ret'
+    send_script "$(keys "pwd")
+sendkey ret"
     sleep 0.6
     echo "screendump $LOGDIR/$CURRENT_NAME.after-pwd.ppm" \
         | nc -U "$MONITOR_SOCK" >/dev/null
@@ -1062,15 +610,8 @@ test_bughunt_vix_palette_on_vt3() {
     local sb1=$(wc -c < "$SERIAL_LOG")
     send_script 'sendkey alt-f4'
     sleep 0.8
-    send_script 'sendkey v
-sendkey i
-sendkey x
-sendkey spc
-sendkey slash
-sendkey t
-sendkey m
-sendkey p
-sendkey ret'
+    send_script "$(keys "vix /tmp")
+sendkey ret"
     sleep 1.5
     echo "screendump $LOGDIR/$CURRENT_NAME.running.ppm" \
         | nc -U "$MONITOR_SOCK" >/dev/null
@@ -1101,34 +642,8 @@ test_bughunt_status_bar_after_switch() {
     reset_shell
     local sb1=$(wc -c < "$SERIAL_LOG")
     # Launch maktop on VT0.
-    send_script 'sendkey e
-sendkey x
-sendkey e
-sendkey c
-sendkey spc
-sendkey slash
-sendkey c
-sendkey d
-sendkey r
-sendkey o
-sendkey m
-sendkey slash
-sendkey a
-sendkey p
-sendkey p
-sendkey s
-sendkey slash
-sendkey m
-sendkey a
-sendkey k
-sendkey t
-sendkey o
-sendkey p
-sendkey dot
-sendkey e
-sendkey l
-sendkey f
-sendkey ret'
+    send_script "$(keys "exec $P_CDROM_APPS/maktop.elf")
+sendkey ret"
     sleep 1.2
     # Alt+F2 (shell on VT1), Alt+F1 back to maktop on VT0.
     send_script 'sendkey alt-f2'
@@ -1141,10 +656,8 @@ sendkey ret'
     # Tear down: 'q' to maktop.
     send_script 'sendkey q'
     sleep 0.6
-    send_script 'sendkey p
-sendkey w
-sendkey d
-sendkey ret'
+    send_script "$(keys "pwd")
+sendkey ret"
     sleep 0.8
 
     CURRENT_SEGMENT=$LOGDIR/$CURRENT_NAME.serial

@@ -61,6 +61,18 @@ HDD_IMG=${HDD_IMG:-makar-hdd.img}
 HDD_TEST_IMG=${HDD_TEST_IMG:-makar-hdd-test.img}
 export DOCKER_PLATFORM
 
+# Portable bounded-run wrapper for host commands.  GNU coreutils ships
+# `timeout(1)`; macOS doesn't, but Homebrew coreutils provides `gtimeout`.
+# Falls back to running the command unbounded if neither is present (better
+# than the whole step erroring out with "timeout: command not found").
+# Usage: _timeout <seconds> <cmd> [args...]
+_timeout() {
+    local _secs=$1; shift
+    if   command -v timeout  >/dev/null 2>&1; then timeout  "$_secs" "$@"
+    elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$_secs" "$@"
+    else "$@"; fi
+}
+
 # Argument grammar: `./run.sh <target> <verb> [args...]`.  Linux-build-
 # style: incremental by default (make handles "did anything change");
 # only `clean` wipes artefacts.
@@ -280,10 +292,12 @@ _run_ktest() {
     _accel=$(_qemu_accel)
     # ktest exits QEMU via isa-debug-exit; if the kernel hangs we still want
     # a bounded test run rather than waiting on the GitHub-Actions job
-    # timeout (6h default), so wrap QEMU in `timeout` (GNU coreutils).
-    # `timeout` is absent on macOS by default; only prepend it if present.
+    # timeout (6h default), so wrap QEMU in `timeout` (GNU coreutils) or
+    # `gtimeout` (macOS via Homebrew coreutils); only prepend if present.
     _tmo=""
-    command -v timeout >/dev/null 2>&1 && _tmo="timeout 120"
+    if   command -v timeout  >/dev/null 2>&1; then _tmo="timeout 120"
+    elif command -v gtimeout >/dev/null 2>&1; then _tmo="gtimeout 120"
+    fi
     if [ -n "$_qemu" ]; then
         # shellcheck disable=SC2086
         $_tmo "$_qemu" \
@@ -620,7 +634,7 @@ _run_gdb_iso_test() {
             -s -S &
         QPID=$!
         sleep 2
-        timeout 300 "$_gdb" -batch \
+        _timeout 300 "$_gdb" -batch \
             -ex "source $REPO_ROOT/tests/gdb_boot_test.py" \
             "$REPO_ROOT/src/kernel/makar.kernel" \
             2>&1 | tee "$REPO_ROOT/gdb-test.log"
@@ -672,7 +686,7 @@ _run_gdb_hdd_test() {
             -s -S &
         QPID=$!
         sleep 2
-        timeout 120 "$_gdb" -batch \
+        _timeout 120 "$_gdb" -batch \
             -ex "source $REPO_ROOT/tests/gdb_hdd_test.py" \
             "$REPO_ROOT/src/kernel/makar.kernel" \
             2>&1 | tee "$REPO_ROOT/hdd-test-gdb.log"

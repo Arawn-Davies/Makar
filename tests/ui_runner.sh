@@ -91,6 +91,56 @@ send_script() {
     done <<< "$script"
 }
 
+# Canonical VFS path roots -- single source of truth so scenarios never
+# hand-spell a path (and never drift when mountpoints move, e.g. the
+# /cdrom,/hd -> /mnt/cdrom,/mnt/hd migration).  Compose app paths as
+# "$P_CDROM_APPS/foo.elf".
+P_PROC=/proc
+P_DEV=/dev
+P_MNT=/mnt
+P_CDROM=/mnt/cdrom
+P_CDROM_APPS=/mnt/cdrom/apps
+P_HD=/mnt/hd
+P_HD_APPS=/mnt/hd/apps
+
+# keys "STRING" -- emit one `sendkey <name>` line per character of STRING,
+# translating punctuation to QEMU HMP key names.  No trailing Enter, so
+# callers append `sendkey ret` themselves.  This is the ONE place that knows
+# how to type text: scenarios write `$(keys "exec $P_CDROM_APPS/hello.elf")`
+# instead of a 25-line hand-expanded sendkey block.  Feed the result to
+# `it` or `send_script` (both consume newline-separated `sendkey` lines).
+keys() {
+    local s=$1 i c
+    for (( i = 0; i < ${#s}; i++ )); do
+        c=${s:i:1}
+        case "$c" in
+            ' ')  echo "sendkey spc" ;;
+            '/')  echo "sendkey slash" ;;
+            '.')  echo "sendkey dot" ;;
+            '-')  echo "sendkey minus" ;;
+            '_')  echo "sendkey shift-minus" ;;
+            '=')  echo "sendkey equal" ;;
+            '+')  echo "sendkey shift-equal" ;;
+            ',')  echo "sendkey comma" ;;
+            ';')  echo "sendkey semicolon" ;;
+            ':')  echo "sendkey shift-semicolon" ;;
+            '"')  echo "sendkey shift-apostrophe" ;;
+            "'")  echo "sendkey apostrophe" ;;
+            '(')  echo "sendkey shift-9" ;;
+            ')')  echo "sendkey shift-0" ;;
+            '*')  echo "sendkey shift-8" ;;
+            '?')  echo "sendkey shift-slash" ;;
+            '!')  echo "sendkey shift-1" ;;
+            '$')  echo "sendkey shift-4" ;;
+            '[')  echo "sendkey bracket_left" ;;
+            ']')  echo "sendkey bracket_right" ;;
+            [a-z0-9]) echo "sendkey $c" ;;
+            [A-Z]) echo "sendkey shift-$(printf '%s' "$c" | tr '[:upper:]' '[:lower:]')" ;;
+            *)    echo "sendkey $c" ;;   # last-ditch; QEMU may reject
+        esac
+    done
+}
+
 # --- QEMU lifecycle ---------------------------------------------------------
 
 stop_qemu() {
