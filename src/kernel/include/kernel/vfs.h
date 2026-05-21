@@ -97,6 +97,15 @@ int         vfs_umount_hd(const char *name);
 int         vfs_hd_mounted(void);
 const char *vfs_hd_fsname(const char *name);
 
+/* Empty-mountpoint management (Linux-style: a mountpoint is a directory under
+ * /mnt that `mount` later binds a filesystem into).
+ * vfs_make_mountpoint   – create an empty /mnt/<name> (backs `mkdir /mnt/..`).
+ *                         0, -1 bad name, -6 exists, -12 table full, -13 reserved.
+ * vfs_remove_mountpoint – remove an empty /mnt/<name> (backs `rmdir /mnt/..`).
+ *                         0, -1 no such mountpoint, -16 busy (fs bound). */
+int         vfs_make_mountpoint(const char *name);
+int         vfs_remove_mountpoint(const char *name);
+
 /* Flush and unmount every writable volume in preparation for power-off
  * or reset, so no dirty FAT/dir data is lost.  Safe to call when nothing
  * is mounted.  Invoked from the shutdown / reboot paths. */

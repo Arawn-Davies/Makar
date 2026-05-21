@@ -108,6 +108,9 @@ static void cmd_mount(int argc, char **argv)
                                 "mounted elsewhere (one FAT32 + one ext2 max)\n"); break;
         case -12: t_writestring("mount: mount table full\n"); break;
         case -13: t_writestring("mount: 'cdrom' is reserved\n"); break;
+        case -14: t_writestring("mount: no such mountpoint /mnt/"); t_writestring(mount_name);
+                  t_writestring(" - create it first with 'mkdir /mnt/"); t_writestring(mount_name);
+                  t_writestring("'\n"); break;
         default:  t_writestring("mount: not a recognised FAT32 or ext2 volume "
                                 "(error "); t_dec((uint32_t)(-err));
                   t_writestring(")\n"); break;
@@ -168,6 +171,10 @@ static void cmd_umount(int argc, char **argv)
     int err = vfs_umount_hd(name);
     if (err == -20) {
         t_writestring("umount: multiple volumes mounted - specify /mnt/<name>\n");
+        return;
+    }
+    if (err == -15) {
+        t_writestring("umount: nothing mounted at that mountpoint\n");
         return;
     }
     if (err) {

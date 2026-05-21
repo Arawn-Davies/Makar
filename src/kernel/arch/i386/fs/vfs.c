@@ -62,6 +62,11 @@ static uint32_t s_boot_biosdev = 0xFFu; /* BIOS drive we booted from (0xFF = unk
 #define HD_FS_EXT2   2
 #define MAX_HD_MOUNTS 4
 
+/* A mountpoint with fs == HD_FS_NONE is an *empty* mountpoint: a directory
+ * created under /mnt (via `mkdir /mnt/<name>`) that has no filesystem bound
+ * yet, exactly like a bare mountpoint dir on Linux.  `mount` binds a backend
+ * into an existing empty mountpoint (it never creates one); `umount` reverts
+ * it back to empty; `rmdir` removes the (empty) mountpoint. */
 typedef struct { char name[VFS_MOUNT_NAME_MAX]; int fs; } hd_mount_t;
 static hd_mount_t s_mounts[MAX_HD_MOUNTS];
 static int        s_nmounts;
@@ -76,6 +81,12 @@ static int hd_find(const char *comp, size_t clen)
     return -1;
 }
 
+/* hd_find for a NUL-terminated name. */
+static int hd_find_name(const char *name)
+{
+    return hd_find(name, strlen(name));
+}
+
 /* True if a backend already drives a mount (drivers are single-volume). */
 static int backend_in_use(int fs)
 {
@@ -83,8 +94,13 @@ static int backend_in_use(int fs)
     return 0;
 }
 
-/* True if any HD volume is mounted. */
-static int hd_mounted(void) { return s_nmounts > 0; }
+/* True if any HD volume is actually bound (empty mountpoints don't count). */
+static int hd_mounted(void)
+{
+    for (int i = 0; i < s_nmounts; i++)
+        if (s_mounts[i].fs != HD_FS_NONE) return 1;
+    return 0;
+}
 
 /* Dispatch HD-volume operations to the backend selected by 'fs'. */
 static int hd_ls(int fs, const char *p)        { return (fs == HD_FS_EXT2) ? ext2_ls(p) : fat32_ls(p); }
@@ -119,6 +135,7 @@ static char *cwd_buf(void)
 #define VFS_FS_PROC    3
 #define VFS_FS_DEV     4
 #define VFS_FS_MNT     5
+#define VFS_FS_MNT_EMPTY 6   /* /mnt/<name> placeholder, no fs bound yet */
 #define VFS_FS_UNKNOWN (-1)
 
 /* Mount-point prefix for disk filesystems.  Disk volumes live under
@@ -267,6 +284,8 @@ static int vfs_route(const char *abs, const char **drv_path, int *out_fs)
         int mi = hd_find(comp, clen);
         if (mi >= 0) {
             *drv_path = dp;
+            if (s_mounts[mi].fs == HD_FS_NONE)
+                return VFS_FS_MNT_EMPTY;   /* placeholder, nothing bound yet */
             if (out_fs) *out_fs = s_mounts[mi].fs;
             return VFS_FS_HD;
         }
@@ -314,11 +333,18 @@ static void ls_mnt(void)
     for (int i = 0; i < s_nmounts; i++) {
         t_putchar('[');
         t_writestring(s_mounts[i].name);
-        t_writestring("]\n");
+        t_writestring("]");
+        if (s_mounts[i].fs == HD_FS_NONE)
+            t_writestring("  (empty mountpoint)");
+        else {
+            t_writestring("  ");
+            t_writestring(hd_fsname(s_mounts[i].fs));
+        }
+        t_putchar('\n');
     }
     if (s_cdrom_drive >= 0) t_writestring("[cdrom]\n");
     if (s_nmounts == 0 && s_cdrom_drive < 0)
-        t_writestring("(no disk filesystems mounted - use 'mount')\n");
+        t_writestring("(no mountpoints - use 'mkdir /mnt/<name>' then 'mount')\n");
 }
 
 /* =========================================================================
@@ -413,15 +439,20 @@ static void apply_cwd_fixup(cwd_fixup_fn fn)
  * backend (ext2 superblock preferred, else FAT32).  Returns 0 and (if
  * out_fs) the chosen backend, or a negative code:
  *   -1  bad name        -10 name already mounted   -11 backend already in use
- *   -12 mount table full -13 'cdrom' reserved       <0  backend mount error */
+ *   -13 'cdrom' reserved  -14 no such mountpoint     <0  backend mount error
+ *
+ * The mountpoint must already exist as an empty mountpoint (created with
+ * `mkdir /mnt/<name>`); mount binds a backend into it but never creates one. */
 int vfs_mount_hd(uint8_t drive, uint32_t lba, const char *name, int *out_fs)
 {
     if (!name || !*name) name = "hd";
     for (const char *q = name; *q; q++) if (*q == '/') return -1;
     if (strlen(name) >= VFS_MOUNT_NAME_MAX) return -1;
     if (strcmp(name, "cdrom") == 0) return -13;
-    if (hd_find(name, strlen(name)) >= 0) return -10;
-    if (s_nmounts >= MAX_HD_MOUNTS) return -12;
+
+    int mi = hd_find_name(name);
+    if (mi < 0)                          return -14;  /* mkdir /mnt/<name> first */
+    if (s_mounts[mi].fs != HD_FS_NONE)   return -10;  /* already has a fs bound  */
 
     int fs = ext2_probe(drive, lba) ? HD_FS_EXT2 : HD_FS_FAT32;
     if (backend_in_use(fs)) return -11;   /* drivers are single-volume */
@@ -430,33 +461,64 @@ int vfs_mount_hd(uint8_t drive, uint32_t lba, const char *name, int *out_fs)
                                : fat32_mount(drive, lba);
     if (r != 0) return r;
 
-    hd_mount_t *m = &s_mounts[s_nmounts++];
-    strncpy(m->name, name, VFS_MOUNT_NAME_MAX - 1);
-    m->name[VFS_MOUNT_NAME_MAX - 1] = '\0';
-    m->fs = fs;
-    s_fixup_name = m->name;
+    s_mounts[mi].fs = fs;
+    s_fixup_name = s_mounts[mi].name;
     apply_cwd_fixup(fixup_cwd_mounted);
     if (out_fs) *out_fs = fs;
     return 0;
 }
 
-/* Unmount the /mnt/<name> volume (flushing metadata).  NULL/empty unmounts
- * the sole mount if exactly one exists.  Returns 0, -1 (no such mount), or
- * -20 (ambiguous: name required). */
+/* vfs_make_mountpoint - create an empty /mnt/<name> mountpoint (mkdir).
+ * Returns 0, -1 bad name, -6 already exists, -12 table full, -13 reserved. */
+int vfs_make_mountpoint(const char *name)
+{
+    if (!name || !*name) return -1;
+    for (const char *q = name; *q; q++) if (*q == '/') return -1;
+    if (strlen(name) >= VFS_MOUNT_NAME_MAX) return -1;
+    if (strcmp(name, "cdrom") == 0) return -13;
+    if (hd_find_name(name) >= 0)    return -6;
+    if (s_nmounts >= MAX_HD_MOUNTS) return -12;
+
+    hd_mount_t *m = &s_mounts[s_nmounts++];
+    strncpy(m->name, name, VFS_MOUNT_NAME_MAX - 1);
+    m->name[VFS_MOUNT_NAME_MAX - 1] = '\0';
+    m->fs = HD_FS_NONE;
+    return 0;
+}
+
+/* vfs_remove_mountpoint - remove an empty /mnt/<name> mountpoint (rmdir).
+ * Returns 0, -1 no such mountpoint, -16 busy (a filesystem is bound). */
+int vfs_remove_mountpoint(const char *name)
+{
+    int mi = name ? hd_find_name(name) : -1;
+    if (mi < 0) return -1;
+    if (s_mounts[mi].fs != HD_FS_NONE) return -16;   /* umount first */
+    for (int i = mi; i < s_nmounts - 1; i++) s_mounts[i] = s_mounts[i + 1];
+    s_nmounts--;
+    return 0;
+}
+
+/* Unmount the /mnt/<name> volume (flushing metadata).  The mountpoint itself
+ * persists as an empty mountpoint (Linux-style: umount leaves the directory).
+ * NULL/empty unmounts the sole *bound* mount if exactly one exists.  Returns
+ * 0, -1 (no such mount), -15 (not mounted), or -20 (ambiguous: name needed). */
 int vfs_umount_hd(const char *name)
 {
     if (!name || !*name) {
-        if (s_nmounts == 1) name = s_mounts[0].name;
+        int only = -1, nbound = 0;
+        for (int i = 0; i < s_nmounts; i++)
+            if (s_mounts[i].fs != HD_FS_NONE) { nbound++; only = i; }
+        if (nbound == 1) name = s_mounts[only].name;
         else return -20;
     }
-    int mi = hd_find(name, strlen(name));
+    int mi = hd_find_name(name);
     if (mi < 0) return -1;
+    if (s_mounts[mi].fs == HD_FS_NONE) return -15;   /* nothing bound here */
     if (s_mounts[mi].fs == HD_FS_EXT2) ext2_unmount();
     else                               fat32_unmount();
     s_fixup_name = s_mounts[mi].name;
     apply_cwd_fixup(fixup_cwd_unmounted);
-    for (int i = mi; i < s_nmounts - 1; i++) s_mounts[i] = s_mounts[i + 1];
-    s_nmounts--;
+    s_mounts[mi].fs = HD_FS_NONE;        /* revert to empty mountpoint */
     return 0;
 }
 
@@ -473,6 +535,7 @@ void vfs_prepare_shutdown(void)
     /* Each backend's unmount flushes dirty metadata before clearing the
      * mount, so this is a clean sync on the way down. */
     for (int i = s_nmounts - 1; i >= 0; i--) {
+        if (s_mounts[i].fs == HD_FS_NONE) continue;   /* empty mountpoint */
         t_writestring("Syncing /mnt/");
         t_writestring(s_mounts[i].name);
         t_writestring(" ...\n");
@@ -489,11 +552,12 @@ void vfs_prepare_shutdown(void)
  */
 void vfs_notify_hd_mounted(void)
 {
-    if (hd_find("hd", 2) < 0 && s_nmounts < MAX_HD_MOUNTS) {
-        hd_mount_t *m = &s_mounts[s_nmounts++];
-        memcpy(m->name, "hd", 3);
-        m->fs = HD_FS_FAT32;
+    int mi = hd_find("hd", 2);
+    if (mi < 0 && s_nmounts < MAX_HD_MOUNTS) {
+        mi = s_nmounts++;
+        memcpy(s_mounts[mi].name, "hd", 3);
     }
+    if (mi >= 0) s_mounts[mi].fs = HD_FS_FAT32;
     s_fixup_name = "hd";
     apply_cwd_fixup(fixup_cwd_mounted);
 }
@@ -503,10 +567,7 @@ void vfs_notify_hd_unmounted(void)
     s_fixup_name = "hd";
     apply_cwd_fixup(fixup_cwd_unmounted);
     int mi = hd_find("hd", 2);
-    if (mi >= 0) {
-        for (int i = mi; i < s_nmounts - 1; i++) s_mounts[i] = s_mounts[i + 1];
-        s_nmounts--;
-    }
+    if (mi >= 0) s_mounts[mi].fs = HD_FS_NONE;   /* revert to empty mountpoint */
 }
 
 void vfs_notify_cdrom_ejected(void)
@@ -638,6 +699,11 @@ int vfs_ls(const char *path)
         ls_mnt();
         return 0;
 
+    case VFS_FS_MNT_EMPTY:
+        /* Empty mountpoint - an empty directory until something is mounted. */
+        t_writestring("(empty mountpoint - mount a filesystem here)\n");
+        return 0;
+
     case VFS_FS_HD:
         return hd_ls(fs, drv);
 
@@ -676,7 +742,9 @@ int vfs_cd(const char *path)
     switch (fs) {
     case VFS_FS_ROOT:
     case VFS_FS_MNT:
-        /* Root and the /mnt container are always valid directories. */
+    case VFS_FS_MNT_EMPTY:
+        /* Root, the /mnt container, and empty mountpoints are all valid
+         * directories (an empty mountpoint is just an empty dir). */
         memcpy(cwd, abs, (size_t)(strlen(abs) + 1u));
         return 0;
 
@@ -799,17 +867,57 @@ int vfs_cat(const char *path)
     return 0;
 }
 
+/* If 'abs' is an immediate child of /mnt (i.e. "/mnt/<name>" with no deeper
+ * component), copy <name> into out[] and return 1; else return 0. */
+static int mnt_leaf(const char *abs, char *out, size_t outsz)
+{
+    if (memcmp(abs, VFS_MNT, VFS_MNT_LEN) != 0 || abs[VFS_MNT_LEN] != '/')
+        return 0;
+    const char *name = abs + VFS_MNT_LEN + 1;
+    if (*name == '\0') return 0;
+    size_t i = 0;
+    for (const char *q = name; *q; q++) {
+        if (*q == '/') return 0;            /* deeper than one level */
+        if (i + 1 >= outsz) return 0;
+        out[i++] = *q;
+    }
+    out[i] = '\0';
+    return 1;
+}
+
 /* -------------------------------------------------------------------------
- * vfs_mkdir
+ * vfs_mkdir – create a directory.  An immediate child of /mnt becomes a new
+ * empty mountpoint (a place to `mount` a filesystem); deeper paths create a
+ * real directory on the bound disk filesystem.
  * ---------------------------------------------------------------------- */
 int vfs_mkdir(const char *path)
 {
     char abs[VFS_PATH_MAX];
     path_resolve(path, abs);
 
+    /* mkdir /mnt/<name> -> create an empty mountpoint. */
+    char mpname[VFS_MOUNT_NAME_MAX];
+    if (mnt_leaf(abs, mpname, sizeof(mpname))) {
+        int r = vfs_make_mountpoint(mpname);
+        switch (r) {
+        case 0:   return 0;
+        case -6:  t_writestring("mkdir: already exists: ");  t_writestring(abs); t_putchar('\n'); break;
+        case -12: t_writestring("mkdir: mountpoint table full (max ");
+                  t_dec(MAX_HD_MOUNTS); t_writestring(")\n"); break;
+        case -13: t_writestring("mkdir: 'cdrom' is reserved\n"); break;
+        default:  t_writestring("mkdir: bad mountpoint name: "); t_writestring(abs); t_putchar('\n'); break;
+        }
+        return -1;
+    }
+
     const char *drv;
     int hdfs;
-    if (vfs_route(abs, &drv, &hdfs) != VFS_FS_HD) {
+    int r = vfs_route(abs, &drv, &hdfs);
+    if (r == VFS_FS_CDROM) {
+        t_writestring("mkdir: /mnt/cdrom is a read-only filesystem\n");
+        return -1;
+    }
+    if (r != VFS_FS_HD) {
         t_writestring("mkdir: only supported under a /mnt disk volume\n");
         return -1;
     }
@@ -877,6 +985,14 @@ int vfs_delete_dir(const char *path)
 {
     char abs[VFS_PATH_MAX];
     path_resolve(path, abs);
+
+    /* rmdir /mnt/<name> -> remove an empty mountpoint (busy if a fs is bound). */
+    char mpname[VFS_MOUNT_NAME_MAX];
+    if (mnt_leaf(abs, mpname, sizeof(mpname))) {
+        int r = vfs_remove_mountpoint(mpname);
+        if (r == -16) { t_writestring("rmdir: mountpoint busy - umount first\n"); return -1; }
+        return r;   /* 0, or -1 no such mountpoint */
+    }
 
     const char *drv;
     int hdfs;
@@ -987,6 +1103,8 @@ int vfs_complete(const char *dir, const char *prefix,
         }
         return 0;
     }
+    case VFS_FS_MNT_EMPTY:
+        return 0;   /* empty mountpoint - nothing to complete */
     case VFS_FS_HD:
         return hd_complete(hdfs, drv, prefix, cb, ctx);
     case VFS_FS_CDROM:
