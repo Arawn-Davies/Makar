@@ -803,9 +803,9 @@ static void test_cwd(void)
         memcpy(peer_saved, peer->cwd, pn);
         peer_saved[pn] = '\0';
 
-        memcpy(peer->cwd, "/cdrom", 7);
-        KTEST_ASSERT(strcmp(vfs_getcwd(), "/") == 0);   /* unchanged */
-        KTEST_ASSERT(strcmp(peer->cwd, "/cdrom") == 0); /* but peer did change */
+        memcpy(peer->cwd, "/mnt/cdrom", 11);
+        KTEST_ASSERT(strcmp(vfs_getcwd(), "/") == 0);        /* unchanged */
+        KTEST_ASSERT(strcmp(peer->cwd, "/mnt/cdrom") == 0);  /* but peer did change */
 
         /* Restore peer cwd. */
         memcpy(peer->cwd, peer_saved, strlen(peer_saved) + 1);
@@ -1200,7 +1200,7 @@ static void test_ring3_execution(void)
 /* ---------------------------------------------------------------------------
  * Suite: elf_exec
  *
- * Spawns a child task that calls elf_exec() on /cdrom/apps/echo.elf (the
+ * Spawns a child task that calls elf_exec() on /mnt/cdrom/apps/echo.elf (the
  * standard VFS path for apps on the CD-ROM image).  Waits for the task to
  * reach TASK_DEAD, which proves the ELF loader, argv setup, ring-3 entry,
  * and SYS_EXIT path all function end-to-end.
@@ -1211,7 +1211,7 @@ static int s_echo_argc = 2;
 
 static void elf_exec_task_entry(void)
 {
-    elf_exec("/cdrom/apps/echo.elf", s_echo_argc, s_echo_argv);
+    elf_exec("/mnt/cdrom/apps/echo.elf", s_echo_argc, s_echo_argv);
     task_exit();
 }
 
@@ -1220,8 +1220,8 @@ static void test_elf_exec(void)
     ktest_begin("elf_exec", "ELF32 loader: header parse, segment mapping, entry-point dispatch");
 
     static const char *candidates[] = {
-        "/cdrom/apps/echo.elf",
-        "/hd/apps/echo.elf",
+        "/mnt/cdrom/apps/echo.elf",
+        "/mnt/hd/apps/echo.elf",
         NULL
     };
 
@@ -1262,7 +1262,7 @@ static void test_elf_exec(void)
  *     │ task_create("hello_arg", entry)        ── child enters READY
  *     │
  *     │ ── yields ──>  child runs hello_arg_entry()
- *     │                  └─ elf_exec("/cdrom/apps/hello.elf",
+ *     │                  └─ elf_exec("/mnt/cdrom/apps/hello.elf",
  *     │                              2, {"hello", "tester"})
  *     │                       ↓ ring transition (iret to ring 3)
  *     │                  hello main() prints "Hello, tester!\n"
@@ -1289,7 +1289,7 @@ static void hello_arg_entry(void)
     Serial_WriteString("[ktest]   >>> elf_exec(\"hello.elf\", argc=2, argv=[\"hello\",\"tester\"])\n");
     Serial_WriteString("[ktest]   ----- BEGIN RING 3 OUTPUT -----\n");
 
-    elf_exec("/cdrom/apps/hello.elf", s_hello_argc, s_hello_argv);
+    elf_exec("/mnt/cdrom/apps/hello.elf", s_hello_argc, s_hello_argv);
 
     /* Only reached on elf_exec failure (e.g. file missing). On success the
      * ring-3 program returns via SYS_EXIT, which calls task_exit() directly
@@ -1308,8 +1308,8 @@ static void test_ring3_with_arg(void)
     Serial_WriteString("[ktest] ============================================================\n");
 
     static const char *candidates[] = {
-        "/cdrom/apps/hello.elf",
-        "/hd/apps/hello.elf",
+        "/mnt/cdrom/apps/hello.elf",
+        "/mnt/hd/apps/hello.elf",
         NULL
     };
 

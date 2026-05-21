@@ -2,9 +2,9 @@
  * vfs.c - lightweight Virtual Filesystem routing layer.
  *
  * Path namespace:
- *   /          virtual root (ls shows mount-points)
- *   /hd/…      FAT32 hard-disk partition
- *   /cdrom/…   ISO9660 CD-ROM
+ *   /              virtual root (ls shows mount-points)
+ *   /mnt/hd/…      FAT32 hard-disk partition (mountpoint name configurable)
+ *   /mnt/cdrom/…   ISO9660 CD-ROM
  *
  * All VFS paths are absolute after normalisation.  Relative paths are
  * resolved against the calling task's cwd (task_current()->cwd).
@@ -12,7 +12,7 @@
  * During boot (before tasking_init), there is no task_current().  Writers
  * fall back to s_boot_cwd, which is then handed off to idle->cwd inside
  * tasking_init via vfs_getcwd().  Post-tasking, every cwd read/write is
- * per-task, so VT0 may sit in /hd/apps while VT1 sits in /cdrom/boot
+ * per-task, so VT0 may sit in /mnt/hd/apps while VT1 sits in /mnt/cdrom/boot
  * without cross-contamination.
  *
  * Path normalisation handles:
@@ -73,8 +73,8 @@ static char *cwd_buf(void)
 #define VFS_FS_MNT     5
 #define VFS_FS_UNKNOWN (-1)
 
-/* Mount-point prefix for disk filesystems.  /mnt/hd and /mnt/cdrom are
- * canonical; bare /hd and /cdrom are transitional aliases (see vfs_route). */
+/* Mount-point prefix for disk filesystems.  Disk volumes live under
+ * /mnt: /mnt/hd (FAT32, mountpoint name configurable) and /mnt/cdrom. */
 #define VFS_MNT      "/mnt"
 #define VFS_MNT_LEN  4
 
@@ -193,8 +193,7 @@ static int vfs_route(const char *abs, const char **drv_path)
 
     /* Disk filesystems live under /mnt (Linux convention).  The FAT32
      * volume mounts at a caller-chosen component under /mnt (default
-     * "hd", the OS drive); the CD-ROM is fixed at /mnt/cdrom.  A bare
-     * "/hd" / "/cdrom" remains a transitional alias to the same driver.
+     * "hd", the OS drive); the CD-ROM is fixed at /mnt/cdrom.
      *
      * Under /mnt we split off the first path component and match it
      * against the live mountpoints; the remainder becomes the
@@ -222,19 +221,6 @@ static int vfs_route(const char *abs, const char **drv_path)
         }
         *drv_path = abs;
         return VFS_FS_UNKNOWN;
-    }
-
-    /* Bare "/hd" / "/cdrom" aliases (resolve to the same driver). */
-    if (abs[1] == 'h' && abs[2] == 'd' &&
-        (abs[3] == '/' || abs[3] == '\0')) {
-        *drv_path = (abs[3] == '/') ? (abs + 3) : "/";
-        return VFS_FS_HD;
-    }
-    if (abs[1] == 'c' && abs[2] == 'd' && abs[3] == 'r' &&
-        abs[4] == 'o' && abs[5] == 'm' &&
-        (abs[6] == '/' || abs[6] == '\0')) {
-        *drv_path = (abs[6] == '/') ? (abs + 6) : "/";
-        return VFS_FS_CDROM;
     }
 
     /* /proc (mount prefix is the single source of truth in procfs.h). */
@@ -353,7 +339,7 @@ void vfs_prepare_shutdown(void)
  *
  * Mount-state transitions can leave individual tasks parked under a mount
  * point that just disappeared (or, for the hd-mounted case, sitting on "/"
- * when /hd just became browsable).  Walk every live task and fix up each
+ * when /mnt/hd just became browsable).  Walk every live task and fix up each
  * one's cwd independently - using cwd_buf() here would only mutate the
  * caller's cwd, which is rarely the task that needs the adjustment.
  *
@@ -384,13 +370,11 @@ static void fixup_cwd_hd_mounted(char *cwd)
 
 static void fixup_cwd_hd_unmounted(char *cwd)
 {
-    /* Match the canonical /mnt/<name> as well as the bare /hd alias. */
     char mp[VFS_MOUNT_NAME_MAX + 8];
     hd_mount_path(mp, sizeof(mp));
     size_t mlen = strlen(mp);
     if (strcmp(cwd, mp) == 0 ||
-        (strncmp(cwd, mp, mlen) == 0 && cwd[mlen] == '/') ||
-        (cwd[1] == 'h' && cwd[2] == 'd' && (cwd[3] == '/' || cwd[3] == '\0'))) {
+        (strncmp(cwd, mp, mlen) == 0 && cwd[mlen] == '/')) {
         cwd[0] = '/';
         cwd[1] = '\0';
     }
@@ -398,10 +382,7 @@ static void fixup_cwd_hd_unmounted(char *cwd)
 
 static void fixup_cwd_cdrom_ejected(char *cwd)
 {
-    if (strcmp(cwd, "/mnt/cdrom") == 0 || strncmp(cwd, "/mnt/cdrom/", 11) == 0 ||
-        (cwd[1] == 'c' && cwd[2] == 'd' && cwd[3] == 'r' &&
-         cwd[4] == 'o' && cwd[5] == 'm' &&
-         (cwd[6] == '/' || cwd[6] == '\0'))) {
+    if (strcmp(cwd, "/mnt/cdrom") == 0 || strncmp(cwd, "/mnt/cdrom/", 11) == 0) {
         cwd[0] = '/';
         cwd[1] = '\0';
     }
@@ -880,7 +861,7 @@ long vfs_blockdev_pwrite(int node, const void *buf, uint32_t len, uint32_t off)
  * cb     : invoked for each entry found.
  * ctx    : opaque pointer forwarded to cb.
  *
- * Returns 0 on success, -1 if the path is not under /hd or not mounted.
+ * Returns 0 on success, -1 if the path is not under /mnt/hd or not mounted.
  * ---------------------------------------------------------------------- */
 int vfs_complete(const char *dir, const char *prefix,
                  fat32_complete_cb_t cb, void *ctx)

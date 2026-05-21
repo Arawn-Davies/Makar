@@ -121,11 +121,10 @@ static void cmd_mount(int argc, char **argv)
     t_putchar('\n');
 }
 
-/* True if `target` names the CD-ROM mount (/mnt/cdrom, /cdrom, cdrom). */
+/* True if `target` names the CD-ROM mount (/mnt/cdrom, or bare "cdrom"). */
 static int umount_target_is_cdrom(const char *t)
 {
-    return strcmp(t, "/mnt/cdrom") == 0 || strcmp(t, "/cdrom") == 0 ||
-           strcmp(t, "cdrom") == 0;
+    return strcmp(t, "/mnt/cdrom") == 0 || strcmp(t, "cdrom") == 0;
 }
 
 /* umount [/mnt/<name>]   default target is the FAT32 volume.

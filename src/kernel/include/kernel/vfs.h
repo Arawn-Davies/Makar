@@ -6,9 +6,9 @@
  *
  * Provides a single, unified path namespace:
  *
- *   /          – virtual root; ls shows available mount-points
- *   /hd/…      – FAT32 hard-disk partition (mounted via cmd_mount)
- *   /cdrom/…   – ISO9660 CD-ROM (auto-detected on vfs_init)
+ *   /              – virtual root; ls shows available mount-points
+ *   /mnt/hd/…      – FAT32 hard-disk partition (mounted via cmd_mount)
+ *   /mnt/cdrom/…   – ISO9660 CD-ROM (auto-detected on vfs_init)
  *
  * All shell commands (ls, cd, cat, mkdir) use this layer so they work
  * transparently across both filesystems.
@@ -46,9 +46,9 @@ void vfs_set_boot_drive(uint32_t biosdev);
  * Must be called after both vfs_init() and ide_init().
  *
  * - BIOS HDD (0x80–0xDF): mounts the first FAT32 partition found on the
- *   corresponding ATA drive as /hd and navigates there.
+ *   corresponding ATA drive as /mnt/hd and navigates there.
  * - BIOS CD-ROM (0xE0–0xFF): the ISO9660 drive is already accessible at
- *   /cdrom (registered by vfs_init); navigates CWD there.
+ *   /mnt/cdrom (registered by vfs_init); navigates CWD there.
  * - Unknown (0xFF): tries HDD drives first, then falls back silently.
  */
 void vfs_auto_mount(void);
@@ -59,17 +59,17 @@ void vfs_auto_mount(void);
 
 /*
  * vfs_notify_hd_mounted   – FAT32 volume has just been mounted.
- *                           Moves the CWD to "/hd" when currently at "/".
+ *                           Moves the CWD to "/mnt/hd" when currently at "/".
  * vfs_notify_hd_unmounted – FAT32 volume has just been unmounted.
- *                           Resets the CWD to "/" when it was under "/hd".
+ *                           Resets the CWD to "/" when it was under "/mnt/hd".
  */
 void vfs_notify_hd_mounted(void);
 void vfs_notify_hd_unmounted(void);
 
 /*
  * vfs_notify_cdrom_ejected – called after the ATAPI eject command succeeds.
- * Clears the internal CD-ROM drive reference so /cdrom is no longer accessible,
- * and resets the CWD to "/" if it was inside /cdrom.
+ * Clears the internal CD-ROM drive reference so /mnt/cdrom is no longer
+ * accessible, and resets the CWD to "/" if it was inside /mnt/cdrom.
  */
 void vfs_notify_cdrom_ejected(void);
 

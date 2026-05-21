@@ -11,7 +11,7 @@ Three test paths fan out from `./run.sh iso test`:
 | Phase | Source | What it verifies |
 |---|---|---|
 | **ktest** | `src/kernel/arch/i386/proc/ktest.c` + `usertest.c` | In-kernel unit suites: PMM/paging invariants, ring-3 lifecycle, keyboard sentinel widths, VFS lookup, etc. Runs under `test_mode` cmdline; exits QEMU via isa-debug-exit. Output: `ktest.log` (with PASS/FAIL per assert). |
-| **GDB ISO** | `tests/gdb_boot_test.py` | Boot-checkpoint + hardware-state probe under the QEMU GDB stub. Verifies Multiboot 2 magic, every `kernel_main` checkpoint, CR0.PG / CR3, PIT ticking, background ktest result, CD-ROM and `/hd` content. Output: `gdb-test.log`, `gdb-serial.log`. |
+| **GDB ISO** | `tests/gdb_boot_test.py` | Boot-checkpoint + hardware-state probe under the QEMU GDB stub. Verifies Multiboot 2 magic, every `kernel_main` checkpoint, CR0.PG / CR3, PIT ticking, background ktest result, CD-ROM and `/mnt/hd` content. Output: `gdb-test.log`, `gdb-serial.log`. |
 | **GDB HDD** | `tests/gdb_hdd_test.py` | Same shape as GDB ISO but boots from `makar-hdd-test.img` (no CD-ROM) to prove FAT32-from-MBR boot + auto-mount. |
 | **UI** | `tests/ui_test.sh` | Black-box scenarios driven through QEMU's HMP `sendkey`, asserting on substrings in serial. Scenarios: `glob-proc`, `tab-complete-path`, `cd-root-listing`. CI uploads serial + screendump per scenario. Boot sync on the `kernel: boot complete` serial marker. |
 
@@ -176,8 +176,8 @@ All apps in `/Users/arawn/Makar/src/userspace/` compile to `.elf` files and are 
 **Unified namespace:**
 - `/` - virtual root; lists `[mnt] [proc] [dev]`; `vfs_complete()` enumerates them so `cd /<TAB>`, `cat /*`, `ls /p*` all work
 - `/mnt` - disk-filesystem container; lists the live mounts (`[hd]` / `[cdrom]`)
-- `/mnt/hd/…` - FAT32 hard disk (default OS drive; mountpoint name configurable via `mount`).  Bare `/hd/…` is a transitional alias
-- `/mnt/cdrom/…` - ISO9660 CD-ROM (auto-detected at init).  Bare `/cdrom/…` is a transitional alias
+- `/mnt/hd/…` - FAT32 hard disk (default OS drive; mountpoint name configurable via `mount`)
+- `/mnt/cdrom/…` - ISO9660 CD-ROM (auto-detected at init)
 - `/proc/…` - synthetic, always-present read-only view of kernel state. Backed by `arch/i386/fs/procfs.c`; mount path is the `PROCFS_MOUNT` constant in `include/kernel/procfs.h`. Entries: `cpuinfo`, `meminfo`, `tasks`, `uname`, `rtc` (content generated on each read; no caching)
 - `/dev/…` - synthetic block-device tree (`arch/i386/fs/devfs.c`): `/dev/hda[N]` ATA disks/partitions, `/dev/cdrom` ATAPI. Byte-addressed read/write via `devfs_pread`/`devfs_pwrite` over native sector I/O; opened as `FD_KIND_BLOCKDEV`
 

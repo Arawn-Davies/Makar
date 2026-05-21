@@ -18,7 +18,7 @@ managed runtime), booted via GRUB Multiboot 2. Makar is the
 **C / GCC sibling** of [Medli](https://github.com/Arawn-Davies/Medli) -
 two independent implementations of the same OS concept, sharing a
 command vocabulary, filesystem layout, and long-term binary format
-goals. Current version: **0.7.0** (see `include/kernel/version.h`).
+goals. Current version: **0.7.1** (see `include/kernel/version.h`).
 
 Self-contained: kernel, libc fragment, ring-3 userspace, ELF loader, **four
 independent TTYs (Alt+F1–F4 to switch)**, and an in-kernel `vi`-style
@@ -49,7 +49,7 @@ private kernel stack and (for ring-3 programs) its own page directory.
 | **Display** | VESA framebuffer (Bochs VBE, 720p default), VGA 80×50 fallback. Pane API (`vesa_pane_t`) for split-screen. |
 | **Multi-TTY** | 4 independent shell tasks (`shell0`–`shell3`), **Alt+F1–F4** to switch focus, per-pane redraws on `KEY_FOCUS_GAIN`. |
 | **VIX editor** | Pane-aware vi-style editor (FUZIX/ELKS-inspired). Resolution-agnostic. |
-| **Storage** | FAT32 (HDD/USB) + ISO 9660 (CD-ROM) via IDE PIO. Auto-mount at `/hd` and `/cdrom`. Read+write+delete+rename on FAT32. |
+| **Storage** | FAT32 (HDD/USB) + ISO 9660 (CD-ROM) via IDE PIO. Auto-mount at `/mnt/hd` and `/mnt/cdrom`. Read+write+delete+rename on FAT32. |
 | **Memory** | PMM bitmap allocator, paging (256 MiB identity + per-task 4 KiB user pages), kernel heap (`kmalloc`/`kfree`/`krealloc`). |
 | **Tasking** | **Preemptive** round-robin scheduler. PIT at **100 Hz**, `SCHED_QUANTUM = 4` ticks → 40 ms time slice. Per-task `pid`, `cwd`, `tty`, fd-table placeholder, signal bitmasks. |
 | **Userspace** | Ring-3 via `iret`. ELF loader with argc/argv. Apps: `hello`, `echo`, `calc`, `ls`, `vix`, `diskinfo`, `rm`, `mv`, `cp`. |
