@@ -194,7 +194,9 @@ static unsigned int default_start(void)
  * parse_size - turn a friendly size token into a sector count.
  *
  *   max            all space from `start` to the end of the disk
- *   N%             percentage of the free space (total - start)
+ *   N%             percentage of the whole disk (capped at 100%); the
+ *                  caller clamps start+count to the disk end, so an
+ *                  over-allocation (e.g. 30%+30%+30%+20%) is caught there
  *   N / NM / NMiB  N MiB
  *   NG / NGiB      N GiB
  *   N (bare)       N raw 512-byte sectors
@@ -217,10 +219,10 @@ static unsigned int parse_size(const char *s, unsigned int start, unsigned int t
 
     char u = *s;
     if (u == '%') {
-        unsigned int avail = (total > start) ? total - start : 0u;
-        if (v >= 100u) return avail;
-        /* split to dodge 32-bit overflow on large disks */
-        return (avail / 100u) * v + ((avail % 100u) * v) / 100u;
+        if (v >= 100u) return total;
+        /* percent of the whole disk; split to dodge 32-bit overflow on
+         * large disks.  The caller clamps start+count to the disk end. */
+        return (total / 100u) * v + ((total % 100u) * v) / 100u;
     }
     if (u == 'g' || u == 'G') return v * SECT_PER_GIB;
     if (u == 'm' || u == 'M') return v * SECT_PER_MIB;
@@ -320,8 +322,14 @@ int main(int argc, char **argv)
                     puts_("Invalid or zero size.\n");
                     continue;
                 }
-                /* Clamp to the disk so we never describe sectors past the end. */
-                if (total_sectors && start + count > total_sectors) {
+                /* Clamp to the disk so we never describe sectors past the
+                 * end.  Overflow-safe: compare against remaining space rather
+                 * than `start + count` (which can wrap uint32 on huge sizes). */
+                if (total_sectors && start >= total_sectors) {
+                    puts_("Start past end of disk.\n");
+                    continue;
+                }
+                if (total_sectors && count > total_sectors - start) {
                     count = total_sectors - start;
                     puts_("  (clamped to end of disk: ");
                     putu(count);
