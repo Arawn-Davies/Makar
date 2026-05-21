@@ -24,10 +24,22 @@ QEMU=${QEMU:-qemu-system-i386}
 # is plenty for the PS/2 IRQ + ring + shell_readline pipeline to drain and
 # is still 8-10x faster than GUI mode.
 GUI=${GUI:-0}
+# UI_END selects what stop_qemu does at the end of a GUI run:
+#   shutdown (default) - type `shutdown`, kernel ACPI-offs, QEMU exits.
+#   reboot             - type `reboot`, then LEAVE QEMU running so you can
+#                        manually boot the freshly installed internal drive
+#                        from GRUB's "next available device" entry.  Used to
+#                        verify an `install` end-to-end.  No -no-reboot, so the
+#                        guest actually resets into GRUB instead of exiting.
+UI_END=${UI_END:-shutdown}
 if [ "$GUI" = "1" ]; then
     DISPLAY_ARG=${QEMU_DISPLAY:+-display $QEMU_DISPLAY}
     KEY_DELAY=${KEY_DELAY:-0.15}
-    REBOOT_ARG="-no-reboot"
+    if [ "$UI_END" = "reboot" ]; then
+        REBOOT_ARG=""
+    else
+        REBOOT_ARG="-no-reboot"
+    fi
 else
     DISPLAY_ARG="-display none"
     KEY_DELAY=${KEY_DELAY:-0.03}
@@ -154,7 +166,25 @@ stop_qemu() {
         return 0
     fi
 
-    if [ "$GUI" = "1" ]; then
+    if [ "$GUI" = "1" ] && [ "$UI_END" = "reboot" ]; then
+        # Reboot mode: type `reboot` and hand the window back to the operator.
+        # The guest resets into GRUB (no -no-reboot) where you can pick
+        # "next available device" to boot the just-installed internal drive.
+        # We do NOT kill QEMU - block until you close the window yourself.
+        sleep 1
+        send_script 'sendkey r
+sendkey e
+sendkey b
+sendkey o
+sendkey o
+sendkey t
+sendkey ret'
+        echo "UI_END=reboot: guest rebooting into GRUB; pick 'next available"
+        echo "  device' to boot the installed drive.  Close the QEMU window"
+        echo "  (or Ctrl-C here) when done."
+        wait "$QEMU_PID" 2>/dev/null
+        return 0
+    elif [ "$GUI" = "1" ]; then
         # GUI mode drives a real kernel shutdown (acpi -> port 0x604) so
         # the watcher sees a "Shutting down..." final frame.
         sleep 1
@@ -263,10 +293,18 @@ sendkey ret'
     SCRATCH_HDD="$LOGDIR/scratch-hda.img"
     dd if=/dev/zero of="$SCRATCH_HDD" bs=1M count=32 2>/dev/null
 
+    # Boot order: `once=d` boots the CD-ROM on the FIRST boot (the live system
+    # that runs the installer); after a guest-initiated reboot QEMU falls back
+    # to `order=c` and boots the internal disk - so an `install` followed by
+    # reboot lands in the freshly written limine MBR instead of the CD again.
+    # `-net none` removes any NIC so a failed disk boot can't fall through to
+    # PXE/network ROM.
     # shellcheck disable=SC2086
     "$QEMU" \
         -cdrom "$ISO" \
         -drive file="$SCRATCH_HDD",format=raw,if=ide,index=0,media=disk \
+        -boot once=d,order=c \
+        -net none \
         -m 256 \
         -vga std \
         $DISPLAY_ARG \

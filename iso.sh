@@ -26,10 +26,11 @@ cp -r docs/. isodir/docs/
 # post-MBR gap, the file itself -> /limine on the rootfs).  The host build
 # itself still boots via GRUB (grub-mkrescue, below); only the runtime
 # installer uses limine.  See vendor/limine/VERSION.
-if [ -f vendor/limine/limine-bios.sys ]; then
+if [ -f vendor/limine/limine-bios.sys ] && [ -f vendor/limine/limine-hdd.bin ]; then
     cp vendor/limine/limine-bios.sys isodir/limine/limine-bios.sys
+    cp vendor/limine/limine-hdd.bin  isodir/limine/limine-hdd.bin
 else
-    echo "Warning: vendor/limine/limine-bios.sys missing; 'install' will fail." >&2
+    echo "Warning: vendor/limine/{limine-bios.sys,limine-hdd.bin} missing; 'install' will fail." >&2
 fi
 
 # Locate the host GRUB i386-pc directory and stage the modules / boot.img /

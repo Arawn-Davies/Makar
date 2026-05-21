@@ -543,6 +543,36 @@ sendkey ret" \
         "mnt-flow-done"
 }
 
+test_install() {
+    # Full TUI installer against the blank scratch disk (/dev/hda).  Drives
+    # the wizard: Welcome(Enter) -> drive(Enter) -> fs=ext2(Enter) ->
+    # partition=whole-disk(Enter) -> confirm("yes"+Enter), then waits for the
+    # serial completion marker.  Copies the kernel + /apps + /docs + /src
+    # trees and installs limine, so it is SLOW under TCG and deliberately kept
+    # out of ALL_TESTS - run on demand: ./run.sh ui graphical install
+    reset_shell
+    # Generous pauses between screens: each Enter advances exactly one menu
+    # (getkey blocks), but TCG can drop a bursted sendkey and desync the
+    # wizard, so we wait for each screen to settle before the next key.
+    it_until "install" \
+"$(keys "install")
+sendkey ret
+PAUSE 1.5
+sendkey ret
+PAUSE 1.5
+sendkey ret
+PAUSE 1.5
+sendkey ret
+PAUSE 2.0
+sendkey down
+PAUSE 0.8
+sendkey ret" \
+        "INSTALL: complete ok" 360
+    # Progress now renders inside the TUI box (framebuffer only, not mirrored
+    # to serial), so the completion marker is the serial-visible proof.
+    assert_serial_contains "INSTALL: complete ok"
+}
+
 test_demo_script() {
     # End-to-end run of the bundled scripting demo: exercises every
     # feature (vars, expansion, comments, env, [, integer + string

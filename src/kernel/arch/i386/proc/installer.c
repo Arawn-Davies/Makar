@@ -33,6 +33,7 @@
 #include <kernel/heap.h>
 #include <kernel/tty.h>
 #include <kernel/vesa_tty.h>
+#include <kernel/serial.h>
 #include <kernel/keyboard.h>
 #include <string.h>
 #include <stddef.h>
@@ -47,7 +48,8 @@
 #define MBR_PART_TABLE_OFF    0x1BEu
 #define MBR_SIG_OFF           0x1FEu
 #define LIMINE_STAGE2_LOC_OFF 0x1A4u          /* u64 stage-2 byte offset       */
-#define LIMINE_SYS_ISO_PATH   "/limine/limine-bios.sys"
+#define LIMINE_SYS_ISO_PATH   "/limine/limine-bios.sys"   /* stage3 -> /limine */
+#define LIMINE_HDD_ISO_PATH   "/limine/limine-hdd.bin"    /* MBR boot + stage2 */
 
 #define ROOTFS_EXT2  0
 #define ROOTFS_FAT32 1
@@ -233,42 +235,134 @@ static int tui_menu(const char *title, const char *hint,
     }
 }
 
-/* Modal yes/no confirmation.  Requires typing "yes" to proceed. */
+/* Modal confirmation.  GUI: a default-Cancel menu (arrow + Enter) - robust
+ * against dropped keystrokes and the standard TUI idiom.  VGA: type "yes". */
 static int tui_confirm(const char *title, const char *l1, const char *l2)
 {
     if (g_gui) {
-        tui_frame(title, "Type 'yes' then Enter to proceed, anything else cancels");
-        tui_at(4, 5, l1, C_WARN, C_BG);
-        if (l2) tui_at(4, 6, l2, C_WARN, C_BG);
-        tui_at(4, 9, "Confirm: ", C_FG, C_BG);
-        /* Echo into a known cell region. */
-        vesa_tty_set_cursor(13, 9);
-    } else {
-        t_writestring("\n");
-        t_writestring(l1); t_putchar('\n');
-        if (l2) { t_writestring(l2); t_putchar('\n'); }
-        t_writestring("Type 'yes' to proceed: ");
+        /* Paint the warning lines, then present the choice as a menu so the
+         * (highlighted, reliable) arrow/Enter path drives it.  Default is
+         * Cancel - the operator must move down to Install. */
+        static const char *items[] = { "Cancel", "Yes - ERASE the disk and install" };
+        /* tui_menu repaints the frame itself; stash the warnings above the
+         * menu by painting them after the frame is drawn each loop is overkill,
+         * so we fold the warning into the title hint line instead. */
+        (void)l2;
+        return tui_menu(title, l1, items, 2, NULL) == 1;
     }
+    t_writestring("\n");
+    t_writestring(l1); t_putchar('\n');
+    if (l2) { t_writestring(l2); t_putchar('\n'); }
+    t_writestring("Type 'yes' to proceed: ");
     char in[8];
-    /* In GUI mode we still read via readline but echo goes to the (hidden)
-     * VGA path; accept the typed string regardless of where it shows. */
     readline(in, sizeof(in));
     return strcmp(in, "yes") == 0;
 }
 
-/* Progress / log line painter used during the execution phase.  In GUI mode
- * we clear to the backdrop and write scrolling status via the normal TTY
- * (which already excludes the makmux row), so long copy logs scroll cleanly. */
+/* ------------------------------------------------------------------------- */
+/* Execution-phase log box (GUI) - a bordered, scrolling region so progress  */
+/* stays inside the TUI instead of reverting to shell-style scrolling text.  */
+/* ------------------------------------------------------------------------- */
+
+#define LOG_LINES 96
+#define LOG_W     118
+static char     s_log[LOG_LINES][LOG_W];
+static int      s_log_n;            /* total lines logged                    */
+static uint32_t s_box_top, s_box_bot, s_box_left, s_box_w, s_box_vis;
+static uint32_t s_status_row;
+
+static void box_border(void)
+{
+    char top[256];
+    uint32_t w = s_box_w;
+    if (w > 250) w = 250;
+    top[0] = '+';
+    for (uint32_t i = 1; i < w - 1; i++) top[i] = '-';
+    top[w - 1] = '+'; top[w] = '\0';
+    tui_at(s_box_left, s_box_top, top, C_DIM, C_BG);
+    tui_at(s_box_left, s_box_bot, top, C_DIM, C_BG);
+    for (uint32_t r = s_box_top + 1; r < s_box_bot; r++) {
+        tui_at(s_box_left, r, "|", C_DIM, C_BG);
+        tui_at(s_box_left + w - 1, r, "|", C_DIM, C_BG);
+    }
+}
+
+/* Repaint the visible tail of the log inside the box. */
+static void box_repaint(void)
+{
+    if (!g_gui) return;
+    int start = (s_log_n > (int)s_box_vis) ? s_log_n - (int)s_box_vis : 0;
+    char blank[LOG_W];
+    for (uint32_t i = 0; i < s_box_w - 2 && i < LOG_W - 1; i++) blank[i] = ' ';
+    blank[(s_box_w - 2 < LOG_W - 1) ? (s_box_w - 2) : (LOG_W - 1)] = '\0';
+    for (uint32_t v = 0; v < s_box_vis; v++) {
+        uint32_t row = s_box_top + 1 + v;
+        tui_at(s_box_left + 1, row, blank, C_FG, C_BG);
+        int li = start + (int)v;
+        if (li < s_log_n)
+            tui_at(s_box_left + 1, row, s_log[li % LOG_LINES], C_FG, C_BG);
+    }
+}
+
 static void exec_screen(const char *title)
 {
+    s_log_n = 0;
     if (g_gui) {
-        tui_frame(title, NULL);
-        vesa_tty_set_cursor(0, 2);
+        tui_frame(title, "Installing - please wait...");
+        s_box_top   = 2;
+        s_box_bot   = (g_rows > 4) ? g_rows - 3 : g_rows - 1;
+        s_box_left  = 2;
+        s_box_w     = (g_cols > 4) ? g_cols - 4 : g_cols;
+        s_box_vis   = (s_box_bot > s_box_top + 1) ? (s_box_bot - s_box_top - 1) : 1;
+        s_status_row = g_rows - 2;
+        box_border();
     } else {
         t_writestring("\n=== ");
         t_writestring(title);
         t_writestring(" ===\n");
     }
+}
+
+/* Append one log line (a discrete progress step). */
+static void tui_log(const char *s)
+{
+    if (g_gui) {
+        char *dst = s_log[s_log_n % LOG_LINES];
+        uint32_t i = 0;
+        while (s[i] && i < LOG_W - 1) { dst[i] = s[i]; i++; }
+        dst[i] = '\0';
+        s_log_n++;
+        box_repaint();
+    } else {
+        t_writestring(s);
+        t_putchar('\n');
+    }
+}
+
+/* Overwrite the transient status line (running counts during long copies). */
+static void tui_status(const char *s)
+{
+    if (g_gui) {
+        char blank[256];
+        uint32_t w = (g_cols < 255) ? g_cols : 255;
+        for (uint32_t i = 0; i < w; i++) blank[i] = ' ';
+        blank[w] = '\0';
+        tui_at(0, s_status_row, blank, C_FG, C_BG);
+        tui_at(2, s_status_row, s, C_TITLE, C_BG);
+    }
+    /* VGA: counts are noise without a status line; skip. */
+}
+
+/* Build "<prefix><uint>" into buf (no libc itoa available freestanding). */
+static void str_u(char *buf, const char *prefix, uint32_t v)
+{
+    int o = 0;
+    while (*prefix) buf[o++] = *prefix++;
+    char num[12]; int ni = 0;
+    if (v == 0) num[ni++] = '0';
+    while (v) { num[ni++] = (char)('0' + v % 10); v /= 10; }
+    while (ni) buf[o++] = num[--ni];
+    buf[o] = '\0';
 }
 
 /* ------------------------------------------------------------------------- */
@@ -300,18 +394,40 @@ static int rfs_write(const char *p, const void *b, uint32_t n)
 
 static int copy_file(const char *src, const char *dst)
 {
-    t_writestring("  "); t_writestring(dst); t_writestring(" ... ");
+    uint32_t sz = 0;
+    if (iso9660_read_file(g_cd, src, s_filebuf, INST_MAX_FILE_SIZE, &sz) != 0)
+        return -1;
+    if (rfs_write(dst, s_filebuf, sz) != 0)
+        return -2;
+    return 0;
+}
+
+/* Copy one named file and log a single step line with its size. */
+static void copy_one(const char *src, const char *dst)
+{
+    char line[LOG_W];
+    int o = 0;
+    line[o++] = ' '; line[o++] = ' ';
+    const char *p = dst;
+    while (*p && o < LOG_W - 24) line[o++] = *p++;
+    const char *tail = " ... ";
+    while (*tail) line[o++] = *tail++;
     uint32_t sz = 0;
     if (iso9660_read_file(g_cd, src, s_filebuf, INST_MAX_FILE_SIZE, &sz) != 0) {
-        t_writestring("(skip)\n");
-        return -1;
+        const char *e = "(skip)"; while (*e) line[o++] = *e++; line[o] = '\0';
+        tui_log(line); return;
     }
     if (rfs_write(dst, s_filebuf, sz) != 0) {
-        t_writestring("write error\n");
-        return -2;
+        const char *e = "write error"; while (*e) line[o++] = *e++; line[o] = '\0';
+        tui_log(line); return;
     }
-    t_dec(sz); t_writestring(" B\n");
-    return 0;
+    /* append "<sz> B" */
+    char num[12]; int ni = 0; uint32_t v = sz;
+    if (v == 0) num[ni++] = '0';
+    while (v) { num[ni++] = (char)('0' + v % 10); v /= 10; }
+    while (ni) line[o++] = num[--ni];
+    line[o++] = ' '; line[o++] = 'B'; line[o] = '\0';
+    tui_log(line);
 }
 
 /* iso9660_complete callback - record entries (no I/O here). */
@@ -347,9 +463,19 @@ static const char *q_pop(void)
 }
 
 /* Recursively mirror an ISO directory tree onto the rootfs (BFS).  Paths are
- * identical on both sides (same layout), so one path serves source + dest. */
+ * identical on both sides (same layout), so one path serves source + dest.
+ * Logs one step line, then updates a running file count on the status line so
+ * the box doesn't fill with hundreds of per-file lines. */
 static void copy_tree(const char *root)
 {
+    char line[LOG_W];
+    str_u(line, "Copying ", 0);   /* placeholder, rebuild below */
+    int o = 0; const char *p = "Copying "; while (*p) line[o++] = *p++;
+    p = root; while (*p) line[o++] = *p++;
+    const char *t = " ..."; while (*t) line[o++] = *t++; line[o] = '\0';
+    tui_log(line);
+
+    uint32_t files = 0;
     rfs_mkdir(root);
     q_reset();
     q_push(root);
@@ -363,23 +489,37 @@ static void copy_tree(const char *root)
 
         for (int i = 0; i < s_nents; i++) {
             char child[PATH_MAX_];
-            int o = 0;
+            int co = 0;
             const char *d = dir;
-            while (*d && o < PATH_MAX_ - 1) child[o++] = *d++;
-            if (!(o == 1 && child[0] == '/') && o < PATH_MAX_ - 1)
-                child[o++] = '/';
+            while (*d && co < PATH_MAX_ - 1) child[co++] = *d++;
+            if (!(co == 1 && child[0] == '/') && co < PATH_MAX_ - 1)
+                child[co++] = '/';
             const char *nm = s_ents[i].name;
-            while (*nm && o < PATH_MAX_ - 1) child[o++] = *nm++;
-            child[o] = '\0';
+            while (*nm && co < PATH_MAX_ - 1) child[co++] = *nm++;
+            child[co] = '\0';
 
             if (s_ents[i].is_dir) {
                 rfs_mkdir(child);
                 q_push(child);
             } else {
                 copy_file(child, child);
+                files++;
+                if ((files % 10) == 0) {
+                    char st[64];
+                    str_u(st, "  copied ", files);
+                    int so = (int)strlen(st);
+                    const char *f = " files"; while (*f) st[so++] = *f++; st[so] = '\0';
+                    tui_status(st);
+                }
             }
         }
     }
+    char done[64];
+    str_u(done, "  done - ", files);
+    int do_ = (int)strlen(done);
+    const char *f = " files"; while (*f) done[do_++] = *f++; done[do_] = '\0';
+    tui_log(done);
+    tui_status("");
 }
 
 /* ------------------------------------------------------------------------- */
@@ -496,62 +636,67 @@ static int do_install(uint8_t drive, uint32_t disk_sectors, int fs)
 
     exec_screen("Installing Makar");
 
-    t_writestring("Partitioning drive...\n");
+    tui_log("Partitioning drive...");
     if (partition_whole_disk(drive, disk_sectors, fs, &lba, &count) != 0) {
-        t_writestring("  ERROR: failed to write partition table.\n");
+        tui_log("  ERROR: failed to write partition table.");
         return -1;
     }
 
-    t_writestring(fs == ROOTFS_EXT2 ? "Formatting ext2...\n"
-                                    : "Formatting FAT32...\n");
+    tui_log(fs == ROOTFS_EXT2 ? "Formatting ext2..." : "Formatting FAT32...");
     int mk = (fs == ROOTFS_EXT2) ? ext2_mkfs(drive, lba, count)
                                   : fat32_mkfs(drive, lba, count);
-    if (mk != 0) { t_writestring("  ERROR: mkfs failed.\n"); return -2; }
+    if (mk != 0) { tui_log("  ERROR: mkfs failed."); return -2; }
 
-    t_writestring("Mounting new root filesystem...\n");
+    tui_log("Mounting new root filesystem...");
     if (fat32_mounted()) fat32_unmount();
     int mnt = (fs == ROOTFS_EXT2) ? ext2_mount(drive, lba)
                                    : fat32_mount(drive, lba);
-    if (mnt != 0) { t_writestring("  ERROR: mount failed.\n"); return -3; }
+    if (mnt != 0) { tui_log("  ERROR: mount failed."); return -3; }
     g_root_fs = fs;
 
-    t_writestring("Creating directory tree...\n");
+    tui_log("Creating directory tree...");
     rfs_mkdir("/boot");
     rfs_mkdir("/limine");
 
-    t_writestring("Copying kernel...\n");
-    copy_file("/boot/makar.kernel", "/boot/makar.kernel");
+    tui_log("Copying kernel...");
+    copy_one("/boot/makar.kernel", "/boot/makar.kernel");
 
-    t_writestring("Copying limine-bios.sys...\n");
-    copy_file(LIMINE_SYS_ISO_PATH, "/limine/limine-bios.sys");
+    tui_log("Copying limine-bios.sys...");
+    copy_one(LIMINE_SYS_ISO_PATH, "/limine/limine-bios.sys");
 
-    t_writestring("Writing limine.conf...\n");
+    tui_log("Writing limine.conf...");
     if (rfs_write("/limine/limine.conf", limine_conf,
                   (uint32_t)(sizeof(limine_conf) - 1)) != 0)
-        t_writestring("  WARNING: failed to write limine.conf.\n");
+        tui_log("  WARNING: failed to write limine.conf.");
 
-    t_writestring("Copying /apps ...\n");  copy_tree("/apps");
-    t_writestring("Copying /docs ...\n");  copy_tree("/docs");
-    t_writestring("Copying /src ...\n");   copy_tree("/src");
+    copy_tree("/apps");
+    copy_tree("/docs");
+    copy_tree("/src");
 
     /* Flush rootfs metadata before touching the bootloader. */
     if (fs == ROOTFS_EXT2) ext2_unmount(); else fat32_unmount();
     vfs_notify_hd_unmounted();
 
-    t_writestring("Installing limine bootloader...\n");
+    tui_log("Installing limine bootloader...");
+    /* The MBR boot code + stage2 come from limine-hdd.bin (mirrors the host
+     * bios-install, which embeds binary_limine_hdd_bin_data); limine-bios.sys
+     * is stage3 and lives only on the filesystem (/limine, copied above). */
     uint32_t sys_sz = 0;
-    if (iso9660_read_file(g_cd, LIMINE_SYS_ISO_PATH, s_filebuf,
+    if (iso9660_read_file(g_cd, LIMINE_HDD_ISO_PATH, s_filebuf,
                           INST_MAX_FILE_SIZE, &sys_sz) != 0 || sys_sz <= 512) {
-        t_writestring("  ERROR: cannot read limine-bios.sys from CD.\n");
+        tui_log("  ERROR: cannot read limine-hdd.bin from CD.");
         return -4;
     }
     int li = limine_install_mbr(drive, s_filebuf, sys_sz);
     if (li != 0) {
-        t_writestring("  ERROR: limine install failed (");
-        t_dec((uint32_t)(-li)); t_writestring(").\n");
+        char e[48];
+        str_u(e, "  ERROR: limine install failed (", (uint32_t)(-li));
+        int eo = (int)strlen(e); e[eo++] = ')'; e[eo] = '\0';
+        tui_log(e);
         return -5;
     }
 
+    tui_log("Done.");
     return 0;
 }
 
@@ -601,6 +746,7 @@ static int build_drive_list(void)
 void installer_run(void)
 {
     tui_geometry();
+    Serial_WriteString("INSTALL>welcome\n");
 
     /* Welcome. */
     if (g_gui) {
@@ -629,6 +775,7 @@ void installer_run(void)
         return;
     }
 
+    Serial_WriteString("INSTALL>drive\n");
     int pick = tui_menu("Select target drive", NULL,
                         s_pick_ptr, n, NULL);
     if (pick < 0) return;
@@ -641,6 +788,7 @@ void installer_run(void)
     static const char *fs_descs[] = {
         "Recommended root filesystem; limine reads ext2.",
         "FAT-based; simpler, what older installs used." };
+    Serial_WriteString("INSTALL>fs\n");
     int fs_pick = tui_menu("Root filesystem", NULL, fs_items, 2, fs_descs);
     if (fs_pick < 0) return;
     int fs = (fs_pick == 0) ? ROOTFS_EXT2 : ROOTFS_FAT32;
@@ -651,6 +799,7 @@ void installer_run(void)
     static const char *pm_descs[] = {
         "Wipe the drive and create one partition spanning it.",
         "Quit here and run 'cfdisk' yourself, then re-run install." };
+    Serial_WriteString("INSTALL>partition\n");
     int pm = tui_menu("Partitioning", NULL, pm_items, 2, pm_descs);
     if (pm < 0) return;
     if (pm == 1) {
