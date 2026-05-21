@@ -132,6 +132,7 @@ keys() {
             '?')  echo "sendkey shift-slash" ;;
             '!')  echo "sendkey shift-1" ;;
             '$')  echo "sendkey shift-4" ;;
+            '%')  echo "sendkey shift-5" ;;
             '[')  echo "sendkey bracket_left" ;;
             ']')  echo "sendkey bracket_right" ;;
             [a-z0-9]) echo "sendkey $c" ;;
@@ -255,9 +256,17 @@ sendkey ret'
 
     rm -f "$SERIAL_LOG" "$MONITOR_SOCK"
 
+    # Blank scratch disk so /dev/hda exists for the mount-workflow scenario.
+    # It carries no partition table (auto-mount is FAT32-only, so it stays
+    # unmounted at boot); the scenario formats it with mkfs.ext2 and mounts
+    # it itself.  Lives in LOGDIR so it's cleaned up with everything else.
+    SCRATCH_HDD="$LOGDIR/scratch-hda.img"
+    dd if=/dev/zero of="$SCRATCH_HDD" bs=1M count=32 2>/dev/null
+
     # shellcheck disable=SC2086
     "$QEMU" \
         -cdrom "$ISO" \
+        -drive file="$SCRATCH_HDD",format=raw,if=ide,index=0,media=disk \
         -m 256 \
         -vga std \
         $DISPLAY_ARG \

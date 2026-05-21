@@ -126,26 +126,37 @@ sendkey ret"
 }
 
 test_calc_brackets() {
-    # Bracket/parenthesis arithmetic smoke test in calc.elf.  Absolute
-    # path so cwd doesn't matter.  The PAUSE after `exec ...<Enter>`
-    # gives the calc child task time to be scheduled and reach its
-    # input loop - without it the first keystrokes race ahead and arrive
-    # while shell_exec_elf is still spinning up the task, so calc sees
-    # a truncated first expression.
+    # Full arithmetic exercise of calc.elf: every operator (+ - * / %),
+    # BIDMAS/operator precedence, nested parentheses, and the
+    # divide-by-zero guard.  Absolute path so cwd doesn't matter.  The
+    # PAUSE after `exec ...<Enter>` gives the calc child task time to be
+    # scheduled and reach its input loop - without it the first keystrokes
+    # race ahead and arrive while shell_exec_elf is still spinning up the
+    # task, so calc sees a truncated first expression.  Results are chosen
+    # so each is a distinctive number that never appears in any input line
+    # (assert_serial_contains is a plain substring match over the slice).
     it "calc-brackets" \
 "$(keys "exec $P_CDROM_APPS/calc.elf")
 sendkey ret
 PAUSE 0.8
-$(keys "(2*3)*4")
+$(keys "(2+3)*4")
 sendkey ret
-$(keys "69-(6*(9-1))")
+$(keys "100/4")
 sendkey ret
-$(keys "((8*2)*(3-1))")
+$(keys "100-3*2")
+sendkey ret
+$(keys "2*(3+4)-1")
+sendkey ret
+$(keys "1000%97")
+sendkey ret
+$(keys "6/0")
 sendkey ret
 $(keys "exit")
 sendkey ret" \
-        2.5
-    assert_serial_contains "24" "21" "32"
+        3
+    # (2+3)*4=20, 100/4=25, 100-3*2=94 (mult before sub), 2*(3+4)-1=13,
+    # 1000%97=30, and the divide-by-zero guard.
+    assert_serial_contains "20" "25" "94" "13" "30" "division by zero"
 }
 
 test_no_dead_in_proctasks() {
@@ -495,6 +506,43 @@ sendkey ret" \
     assert_serial_contains "name=foo"
 }
 
+test_mnt_mountpoint() {
+    # Linux-style mountpoint workflow on the blank scratch disk the runner
+    # attaches as /dev/hda (raw, no partition table -> stays unmounted at
+    # boot since auto-mount is FAT32-only).  Format it ext2, create an empty
+    # mountpoint with mkdir, bind it with mount, umount (reverts to empty),
+    # then rmdir.  Asserts on the builtin status lines (mirrored to serial
+    # under `verbose on`).  Exercises vfs_make_mountpoint / vfs_mount_hd into
+    # an existing empty mountpoint / vfs_umount_hd revert / vfs_remove_mountpoint.
+    reset_shell
+    # it_until syncs on the trailing `echo` marker instead of sleeping a
+    # fixed duration, so the scenario ends the moment rmdir completes
+    # rather than idling until a worst-case mkfs timeout elapses.
+    it_until "mnt-mountpoint" \
+"$(keys "mkfs.ext2 /dev/hda")
+sendkey ret
+$(keys "mkdir /mnt/data")
+sendkey ret
+$(keys "mount /dev/hda /mnt/data")
+sendkey ret
+$(keys "umount /mnt/data")
+sendkey ret
+$(keys "rmdir /mnt/data")
+sendkey ret
+$(keys "mkdir /mnt/cdrom/nope")
+sendkey ret
+$(keys "echo mnt-flow-done")
+sendkey ret" \
+        "mnt-flow-done" 20
+    assert_serial_contains \
+        "as ext2..." \
+        "Mounted ext2" \
+        "at /mnt/data" \
+        "Volume unmounted." \
+        "read-only filesystem" \
+        "mnt-flow-done"
+}
+
 test_demo_script() {
     # End-to-end run of the bundled scripting demo: exercises every
     # feature (vars, expansion, comments, env, [, integer + string
@@ -672,7 +720,7 @@ sendkey ret"
 
 # --- Driver -----------------------------------------------------------------
 
-ALL_TESTS=(glob_proc tab_path exec_hello cd_root ls_dev ls_mnt per_tty_cwd calc_brackets ctrlc_kills_child no_dead_in_proctasks typo_doesnt_clear vt_roundtrip_keeps_maktop_focused vt_all_roundtrips fork_cow fork_execve user_sigusr1_handler makbox_pwd shell_scripting_vars demo_script bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch)
+ALL_TESTS=(glob_proc tab_path exec_hello cd_root ls_dev ls_mnt per_tty_cwd calc_brackets ctrlc_kills_child no_dead_in_proctasks typo_doesnt_clear vt_roundtrip_keeps_maktop_focused vt_all_roundtrips fork_cow fork_execve user_sigusr1_handler makbox_pwd shell_scripting_vars demo_script bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch mnt_mountpoint)
 
 declare -a TO_RUN
 if [ $# -eq 0 ]; then
