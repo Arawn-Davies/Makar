@@ -1221,6 +1221,7 @@ static void test_elf_exec(void)
 
     static const char *candidates[] = {
         "/mnt/cdrom/apps/echo.elf",
+        "/mnt/root/apps/echo.elf",
         "/mnt/hd/apps/echo.elf",
         NULL
     };
@@ -1309,6 +1310,7 @@ static void test_ring3_with_arg(void)
 
     static const char *candidates[] = {
         "/mnt/cdrom/apps/hello.elf",
+        "/mnt/root/apps/hello.elf",
         "/mnt/hd/apps/hello.elf",
         NULL
     };
