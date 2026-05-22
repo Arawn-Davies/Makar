@@ -60,7 +60,7 @@ static uint32_t s_boot_biosdev = 0xFFu; /* BIOS drive we booted from (0xFF = unk
 #define HD_FS_NONE   0
 #define HD_FS_FAT32  1
 #define HD_FS_EXT2   2
-#define MAX_HD_MOUNTS 4
+#define MAX_HD_MOUNTS 8
 
 /* A mountpoint with fs == HD_FS_NONE is an *empty* mountpoint: a directory
  * created under /mnt (via `mkdir /mnt/<name>`) that has no filesystem bound
@@ -139,7 +139,8 @@ static char *cwd_buf(void)
 #define VFS_FS_UNKNOWN (-1)
 
 /* Mount-point prefix for disk filesystems.  Disk volumes live under
- * /mnt: /mnt/hd (FAT32, mountpoint name configurable) and /mnt/cdrom. */
+ * /mnt: /mnt/boot (FAT32 boot partition), /mnt/root (data partition,
+ *       ext2 or FAT32), /mnt/hd (legacy single-partition), and /mnt/cdrom. */
 #define VFS_MNT      "/mnt"
 #define VFS_MNT_LEN  4
 
@@ -368,6 +369,19 @@ void vfs_init(void)
         }
     }
 
+    /* Pre-register the disk mountpoints used by vfs_auto_mount and the
+     * installer.  Entries are empty (HD_FS_NONE) until a backend is bound.
+     *   /mnt/boot – FAT32 boot partition (kernel + limine stage 3)
+     *   /mnt/root – data partition        (apps / docs / src; ext2 or FAT32)
+     *   /mnt/hd   – legacy single-partition compatibility mount point        */
+    static const char *prebuilt[] = { "boot", "root", "hd" };
+    for (size_t i = 0; i < sizeof(prebuilt) / sizeof(prebuilt[0]); i++) {
+        hd_mount_t *m = &s_mounts[s_nmounts++];
+        strncpy(m->name, prebuilt[i], VFS_MOUNT_NAME_MAX - 1);
+        m->name[VFS_MOUNT_NAME_MAX - 1] = '\0';
+        m->fs = HD_FS_NONE;
+    }
+
     /* Build the /dev node table from the just-scanned IDE bus. */
     devfs_init();
 }
@@ -589,10 +603,18 @@ void vfs_set_boot_drive(uint32_t biosdev)
 static disk_parts_t s_auto_parts;
 
 /*
- * try_mount_hdd – probe 'drive' for a FAT32 partition and mount the first one.
- * Returns 1 on success, 0 on failure.
+ * try_mount_drive – probe 'drive' and mount its partition(s).
+ *
+ * Dual-partition layout (Makar installer):
+ *   partition 0 – FAT32 boot  → /mnt/boot  (kernel + limine stage 3)
+ *   partition 1 – ext2/FAT32  → /mnt/root  (apps / docs / src)
+ *
+ * Single-partition layout (test disk, legacy):
+ *   partition 0 – FAT32       → /mnt/hd    (backward compatibility)
+ *
+ * Returns 1 if at least one partition was mounted, 0 otherwise.
  */
-static int try_mount_hdd(uint8_t drive)
+static int try_mount_drive(uint8_t drive)
 {
     const ide_drive_t *d = ide_get_drive(drive);
     if (!d || !d->present || d->type != IDE_TYPE_ATA)
@@ -601,31 +623,64 @@ static int try_mount_hdd(uint8_t drive)
     if (part_probe(drive, &s_auto_parts) != 0)
         return 0;
 
-    for (int i = 0; i < s_auto_parts.count; i++) {
-        const part_info_t *p = &s_auto_parts.parts[i];
-        int is_fat32 = 0;
+    if (s_auto_parts.count == 0)
+        return 0;
 
-        if (s_auto_parts.scheme == PART_SCHEME_MBR) {
-            is_fat32 = (p->mbr_type == PART_MBR_FAT32_CHS ||
-                        p->mbr_type == PART_MBR_FAT32_LBA);
-        } else if (s_auto_parts.scheme == PART_SCHEME_GPT) {
-            is_fat32 = (memcmp(p->type_guid, PART_GUID_FAT32, 16) == 0);
-        }
-
-        if (!is_fat32)
-            continue;
-
+    /* ---- Single-partition path: legacy /mnt/hd ---- */
+    if (s_auto_parts.count == 1) {
+        const part_info_t *p = &s_auto_parts.parts[0];
         if (fat32_mount(drive, p->lba_start) == 0) {
             vfs_notify_hd_mounted();
             t_writestring("Auto-mounted FAT32 (drive ");
             t_dec(drive);
-            t_writestring(", partition ");
-            t_dec((uint32_t)(i + 1));
-            t_writestring(") at /mnt/hd\n");
+            t_writestring(", partition 1) at /mnt/hd\n");
             return 1;
         }
+        return 0;
     }
-    return 0;
+
+    /* ---- Dual-partition path ---- */
+    int mounted = 0;
+
+    /* Partition 2 → /mnt/root (data: ext2 or FAT32). */
+    const part_info_t *data_p = &s_auto_parts.parts[1];
+    int data_mi = hd_find_name("root");
+    if (data_mi >= 0 && s_mounts[data_mi].fs == HD_FS_NONE) {
+        int fs = ext2_probe(drive, data_p->lba_start) ? HD_FS_EXT2 : HD_FS_FAT32;
+        int r  = (fs == HD_FS_EXT2) ? ext2_mount(drive, data_p->lba_start)
+                                     : fat32_mount(drive, data_p->lba_start);
+        if (r == 0) {
+            s_mounts[data_mi].fs = fs;
+            s_fixup_name = s_mounts[data_mi].name;
+            apply_cwd_fixup(fixup_cwd_mounted);
+            t_writestring("Auto-mounted ");
+            t_writestring(hd_fsname(fs));
+            t_writestring(" (drive ");
+            t_dec(drive);
+            t_writestring(", partition 2) at /mnt/root\n");
+            mounted = 1;
+        }
+    }
+
+    /* Partition 1 → /mnt/boot (FAT32 boot, only if FAT32 backend is free). */
+    const part_info_t *boot_p = &s_auto_parts.parts[0];
+    int boot_is_fat32 = (s_auto_parts.scheme == PART_SCHEME_MBR)
+        ? (boot_p->mbr_type == PART_MBR_FAT32_CHS ||
+           boot_p->mbr_type == PART_MBR_FAT32_LBA)
+        : (memcmp(boot_p->type_guid, PART_GUID_FAT32, 16) == 0);
+
+    int boot_mi = hd_find_name("boot");
+    if (boot_is_fat32 && boot_mi >= 0 && s_mounts[boot_mi].fs == HD_FS_NONE
+            && !backend_in_use(HD_FS_FAT32)) {
+        if (fat32_mount(drive, boot_p->lba_start) == 0) {
+            s_mounts[boot_mi].fs = HD_FS_FAT32;
+            t_writestring("Auto-mounted FAT32 (drive ");
+            t_dec(drive);
+            t_writestring(", partition 1) at /mnt/boot\n");
+        }
+    }
+
+    return mounted;
 }
 
 void vfs_auto_mount(void)
@@ -659,12 +714,12 @@ void vfs_auto_mount(void)
     if (s_boot_biosdev >= 0x80u && s_boot_biosdev <= 0xDFu) {
         uint8_t hint_drive = (uint8_t)(s_boot_biosdev - 0x80u);
         if (hint_drive < IDE_MAX_DRIVES)
-            hd_mounted = try_mount_hdd(hint_drive);
+            hd_mounted = try_mount_drive(hint_drive);
     }
 
     /* Exhaustive scan: try every slot in order. */
     for (int i = 0; i < IDE_MAX_DRIVES && !hd_mounted; i++)
-        hd_mounted = try_mount_hdd((uint8_t)i);
+        hd_mounted = try_mount_drive((uint8_t)i);
 
     /* Report CD-ROM status (always registered by vfs_init if present). */
     if (s_cdrom_drive >= 0) {

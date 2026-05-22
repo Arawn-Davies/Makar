@@ -64,7 +64,7 @@ static void shell_print_prompt(void);
  * unset.  Colon-separated, Unix-style.  The PATH variable (set like any
  * other shell var, e.g. `PATH=/mnt/hd/bin:/mnt/cdrom/apps`) overrides it
  * and is consulted by both command dispatch and tab completion. */
-#define SHELL_DEFAULT_PATH "/mnt/cdrom/apps:/mnt/hd/apps"
+#define SHELL_DEFAULT_PATH "/mnt/cdrom/apps:/mnt/root/apps:/mnt/hd/apps"
 
 /* Resolve the effective PATH string: the per-task PATH variable if set,
  * else the built-in default. */
