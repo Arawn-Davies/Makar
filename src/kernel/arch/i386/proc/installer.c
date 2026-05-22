@@ -32,6 +32,7 @@
 #include <kernel/fat32.h>
 #include <kernel/ext2.h>
 #include <kernel/vfs.h>
+#include <kernel/logfs.h>
 #include <kernel/heap.h>
 #include <kernel/tty.h>
 #include <kernel/vesa_tty.h>
@@ -330,6 +331,13 @@ static void exec_screen(const char *title)
 /* Append one log line (a discrete progress step). */
 static void tui_log(const char *s)
 {
+    /* Mirror every progress/error line into the in-RAM log tree at
+     * /log/install.log.  In GUI mode the log box paints to the framebuffer
+     * only, so without this a failed install leaves no inspectable record;
+     * `cat /log/install.log` now shows the full step list up to the point it
+     * stopped. */
+    logfs_append_line("install.log", s);
+
     if (g_gui) {
         char *dst = s_log[s_log_n % LOG_LINES];
         uint32_t i = 0;
@@ -868,7 +876,10 @@ void installer_run(void)
         return;
     }
 
-    /* Confirm destruction. */
+    /* Confirm destruction.  Emit a serial breadcrumb first so the ui-test
+     * runner can sync on it (the GUI confirm is a framebuffer-only menu with
+     * no serial mirror, so without this marker the test had to blind-pause). */
+    Serial_WriteString("INSTALL>confirm\n");
     char w1[80];
     {
         int o = 0; const char *p = "WARNING: ALL DATA on ";

@@ -544,32 +544,77 @@ sendkey ret" \
 }
 
 test_install() {
-    # Full TUI installer against the blank scratch disk (/dev/hda).  Drives
-    # the wizard: Welcome(Enter) -> drive(Enter) -> fs=ext2(Enter) ->
-    # partition=whole-disk(Enter) -> confirm("yes"+Enter), then waits for the
-    # serial completion marker.  Copies the kernel + /apps + /docs + /src
-    # trees and installs limine, so it is SLOW under TCG and deliberately kept
-    # out of ALL_TESTS - run on demand: ./run.sh ui graphical install
+    # Full TUI installer against the blank scratch disk (/dev/hda).  Drives the
+    # wizard deterministically: installer_run prints an `INSTALL>...` serial
+    # marker right before each screen blocks on input, so we sync on the marker
+    # and then send the key that picks the default (recommended) option, rather
+    # than blind-pausing.  Screens, in order:
+    #   welcome   (Enter to begin)
+    #   drive     (Enter -> the one ATA target)
+    #   fs        (Enter -> ext2, the recommended/default item)
+    #   partition (Enter -> "use entire disk", the default)
+    #   confirm   (Down then Enter -> menu defaults to Cancel, move to "Yes")
+    # then we wait for the completion marker.  Copies the kernel + /apps +
+    # /docs + /src trees and installs limine, so it is SLOW under TCG and
+    # deliberately kept out of ALL_TESTS - run on demand:
+    #   ./run.sh ui install            (headless)
+    #   ./run.sh ui graphical install  (watch the wizard)
     reset_shell
-    # Generous pauses between screens: each Enter advances exactly one menu
-    # (getkey blocks), but TCG can drop a bursted sendkey and desync the
-    # wizard, so we wait for each screen to settle before the next key.
-    it_until "install" \
-"$(keys "install")
-sendkey ret
-PAUSE 1.5
-sendkey ret
-PAUSE 1.5
-sendkey ret
-PAUSE 1.5
-sendkey ret
-PAUSE 2.0
-sendkey down
-PAUSE 0.8
-sendkey ret" \
-        "INSTALL: complete ok" 360
-    # Progress now renders inside the TUI box (framebuffer only, not mirrored
-    # to serial), so the completion marker is the serial-visible proof.
+    CURRENT_NAME=install
+    CURRENT_FAILED=0
+
+    local start_bytes=0
+    [ -f "$SERIAL_LOG" ] && start_bytes=$(wc -c < "$SERIAL_LOG")
+
+    # Launch; installer_run emits INSTALL>welcome before its first getkey.
+    send_script "$(keys "install")
+sendkey ret"
+
+    # Walk the wizard.  Each step waits for that screen's marker (re-syncing
+    # from the install start, since the markers are cumulative + ordered in
+    # the slice) before sending the key, so there is no pause drift to desync.
+    expect_key "INSTALL>welcome"   "$start_bytes" 'sendkey ret'  && \
+    expect_key "INSTALL>drive"     "$start_bytes" 'sendkey ret'  && \
+    expect_key "INSTALL>fs"        "$start_bytes" 'sendkey ret'  && \
+    expect_key "INSTALL>partition" "$start_bytes" 'sendkey ret'
+    # Confirm dialog: tui_menu defaults to "Cancel" (index 0); "Yes - ERASE"
+    # is index 1, so we must press Down once to move the highlight before
+    # Enter.  Send the two keys SEPARATELY with a dwell between them -- bundled
+    # back-to-back the Down arrow gets eaten while the menu repaints to the
+    # framebuffer, leaving Enter to fire on the default (Cancel) and silently
+    # abort the install.  expect_key presses Down after the screen settles;
+    # the explicit dwell then lets the highlight move to "Yes" before Enter.
+    if expect_key "INSTALL>confirm" "$start_bytes" 'sendkey down'; then
+        sleep 1.0
+        send_script 'sendkey ret'
+    fi
+
+    # Copy + limine embed are the slow part under TCG; the progress box paints
+    # to the framebuffer only, so the serial completion marker is the proof.
+    local completed=1
+    if ! wait_for_serial "INSTALL: complete ok" "$start_bytes" 360; then
+        echo "  - installer did not report completion"
+        completed=0
+        CURRENT_FAILED=1
+    fi
+
+    # Whatever the outcome, dump the in-RAM installer log (/log) to serial so
+    # the captured slice records exactly which step the installer reached.
+    # The installer's per-step lines paint to the framebuffer only; /log is
+    # where they (and the kernel debug stream) are mirrored.  Esc first in
+    # case the installer is parked on its final "press a key" screen.
+    send_script 'sendkey esc'
+    sleep 0.5
+    send_script "$(keys "cat /log")
+sendkey ret"
+    [ "$completed" = "0" ] && sleep 2 || sleep 1
+
+    CURRENT_SEGMENT=$LOGDIR/$CURRENT_NAME.serial
+    CURRENT_DUMP=$LOGDIR/$CURRENT_NAME.ppm
+    rm -f "$CURRENT_SEGMENT" "$CURRENT_DUMP"
+    echo "screendump $CURRENT_DUMP" | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    dd if="$SERIAL_LOG" bs=1 skip="$start_bytes" 2>/dev/null > "$CURRENT_SEGMENT"
     assert_serial_contains "INSTALL: complete ok"
 }
 

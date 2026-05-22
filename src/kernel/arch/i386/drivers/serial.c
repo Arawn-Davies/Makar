@@ -7,6 +7,7 @@
 #include <string.h>
 #include <kernel/asm.h>
 #include <kernel/serial.h>
+#include <kernel/vfs.h>
 
 #define COM1 0x3f8
 #define COM2 0x2f8
@@ -50,10 +51,18 @@ void Serial_WriteChar(char a) {
 //Prints a string over a serial connection
 void Serial_WriteString(string a)
 {
-    while (*a != 0)
+    /* Tee the exact byte stream into the in-RAM dmesg buffer (/log) so all
+     * kernel debug output is inspectable from inside Makar via `cat /log`,
+     * independent of whether anyone is capturing COM1.  Uses a static buffer
+     * (no heap), so this is safe even during very early boot. */
+    uint32_t n = (uint32_t)strlen(a);
+    vfs_klog_write(a, n);
+
+    const char *p = a;
+    while (*p != 0)
     {
-        Serial_WriteChar(*a);
-        a = a + 1;
+        Serial_WriteChar(*p);
+        p = p + 1;
     }
 }
 

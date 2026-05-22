@@ -31,10 +31,16 @@ GUI=${GUI:-0}
 #                        from GRUB's "next available device" entry.  Used to
 #                        verify an `install` end-to-end.  No -no-reboot, so the
 #                        guest actually resets into GRUB instead of exiting.
+#   stay               - send nothing; LEAVE QEMU running at the live shell
+#                        prompt so you can poke around by hand (e.g. inspect
+#                        /log).  Blocks until you close the window / Ctrl-C.
 UI_END=${UI_END:-shutdown}
 if [ "$GUI" = "1" ]; then
     DISPLAY_ARG=${QEMU_DISPLAY:+-display $QEMU_DISPLAY}
-    KEY_DELAY=${KEY_DELAY:-0.15}
+    # 0.4 s/key in GUI mode: the visible window + TCG can lag the PS/2 IRQ ->
+    # ring -> shell_readline pipeline, and a too-fast burst drops characters or
+    # races a VT switch.  Override with KEY_DELAY=… for a specific run.
+    KEY_DELAY=${KEY_DELAY:-0.4}
     if [ "$UI_END" = "reboot" ]; then
         REBOOT_ARG=""
     else
@@ -182,6 +188,15 @@ sendkey ret'
         echo "UI_END=reboot: guest rebooting into GRUB; pick 'next available"
         echo "  device' to boot the installed drive.  Close the QEMU window"
         echo "  (or Ctrl-C here) when done."
+        wait "$QEMU_PID" 2>/dev/null
+        return 0
+    elif [ "$GUI" = "1" ] && [ "$UI_END" = "stay" ]; then
+        # Stay mode: tests are done; leave the guest at its live shell prompt
+        # so the operator can drive it by hand.  No keystrokes, no kill -- block
+        # until the window is closed (or Ctrl-C here).
+        echo "UI_END=stay: tests done; QEMU left running at the shell."
+        echo "  Poke around (e.g. 'ls /log', 'cat /log/kernel.log'); close the"
+        echo "  QEMU window (or Ctrl-C here) when done."
         wait "$QEMU_PID" 2>/dev/null
         return 0
     elif [ "$GUI" = "1" ]; then
@@ -415,6 +430,29 @@ wait_for_serial() {
         sleep 0.1
     done
     return 1
+}
+
+# expect_key <pattern> <start_bytes> <sendkey-script> [timeout_s=8]
+#   The "wait for the screen, then act" idiom for driving a multi-screen TUI
+#   deterministically: poll the serial slice (from <start_bytes>) until
+#   <pattern> appears, then send <sendkey-script>.  Returns 1 and flags the
+#   test as failed if the marker never shows.  Re-syncing on each screen's
+#   marker means there is no cumulative pause drift (the flake class that made
+#   the old fixed-PAUSE installer scenario unreliable under TCG).
+#
+#   The brief settle after the marker lets the screen's getkey() register its
+#   keyboard consumer before we type, so the keystroke lands in its ring
+#   rather than racing the marker print.
+expect_key() {
+    local pattern=$1 start=$2 script=$3 timeout=${4:-8}
+    if ! wait_for_serial "$pattern" "$start" "$timeout"; then
+        echo "  - expect_key: timed out waiting for: $pattern"
+        CURRENT_FAILED=1
+        return 1
+    fi
+    sleep "${EXPECT_SETTLE:-1.0}"
+    send_script "$script"
+    return 0
 }
 
 # it_until <label> <sendkey-script> <sync-pattern> [timeout_s=5]
