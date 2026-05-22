@@ -375,7 +375,7 @@ void vfs_init(void)
      *   /mnt/root – data partition        (apps / docs / src; ext2 or FAT32)
      *   /mnt/hd   – legacy single-partition compatibility mount point        */
     static const char *prebuilt[] = { "boot", "root", "hd" };
-    for (int i = 0; i < 3; i++) {
+    for (size_t i = 0; i < sizeof(prebuilt) / sizeof(prebuilt[0]); i++) {
         hd_mount_t *m = &s_mounts[s_nmounts++];
         strncpy(m->name, prebuilt[i], VFS_MOUNT_NAME_MAX - 1);
         m->name[VFS_MOUNT_NAME_MAX - 1] = '\0';

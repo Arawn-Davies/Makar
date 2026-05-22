@@ -46,7 +46,8 @@
 /* ------------------------------------------------------------------------- */
 
 #define INST_PART_START_LBA   2048u          /* 1 MiB aligned first partition */
-#define INST_BOOT_SECTORS     102400u         /* 50 MiB FAT32 boot partition   */
+#define INST_BOOT_SECTORS     102400u         /* 50 MiB FAT32 boot partition   \
+                                              * (assumes 512-byte sectors)     */
 #define INST_MAX_FILE_SIZE    (8u * 1024u * 1024u)
 #define MBR_PART_TABLE_OFF    0x1BEu
 #define MBR_SIG_OFF           0x1FEu
@@ -606,7 +607,10 @@ static int partition_whole_disk(uint8_t drive, uint32_t disk_sectors,
     uint32_t b_start = INST_PART_START_LBA;
     uint32_t b_sz    = INST_BOOT_SECTORS;
     uint32_t d_start = b_start + b_sz;
-    if (disk_sectors <= d_start) return -1;   /* disk too small */
+    if (disk_sectors <= d_start) {
+        tui_log("  ERROR: disk too small for dual-partition layout (need > 50 MiB).");
+        return -1;
+    }
     uint32_t d_sz = disk_sectors - d_start;
 
     memset(s_boot, 0, sizeof(s_boot));
