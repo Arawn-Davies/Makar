@@ -66,9 +66,9 @@ Multi-statement lines split on `;` are supported (`if [ X ]; then A; elif [ Y ];
 ## Running scripts
 
 ```sh
-sh /cdrom/apps/demo.sh
+sh /mnt/cdrom/apps/demo.sh
 ./script.sh               # path ending in .sh goes through the interpreter
-/cdrom/apps/script.sh     # absolute path, same dispatch
+/mnt/cdrom/apps/script.sh # absolute path, same dispatch
 ```
 
 The `sh` builtin writes the script's final `$?` to serial as `sh: exit=N` so test runners can scrape the value.
@@ -95,14 +95,14 @@ The `sh` builtin writes the script's final `$?` to serial as `sh: exit=N` so tes
 
 ## Worked example
 
-`src/userspace/demo.sh` is bundled into `/cdrom/apps/demo.sh` and `/hd/apps/demo.sh`.  It exercises every feature listed above with section markers (`cwd-ok`, `gt-ok`, `elif-correct-blue`, etc.) so a regression in any layer fails loudly.  Run with:
+`src/userspace/demo.sh` is bundled into `/mnt/cdrom/apps/demo.sh` and `/mnt/hd/apps/demo.sh`.  It exercises every feature listed above with section markers (`cwd-ok`, `gt-ok`, `elif-correct-blue`, etc.) so a regression in any layer fails loudly.  Run with:
 
 ```sh
-sh /cdrom/apps/demo.sh
+sh /mnt/cdrom/apps/demo.sh
 ```
 
 or the bash-style equivalent:
 
 ```sh
-/cdrom/apps/demo.sh
+/mnt/cdrom/apps/demo.sh
 ```

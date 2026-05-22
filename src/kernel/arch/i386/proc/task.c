@@ -121,7 +121,7 @@ void tasking_init(void)
     idle->pid      = 1;
     idle->user_brk = 0;
     /* Seed idle->cwd from the boot-time scratch cwd that vfs_init() /
-     * vfs_auto_mount() populated (e.g. "/cdrom" on a CD-ROM boot).  This
+     * vfs_auto_mount() populated (e.g. "/mnt/cdrom" on a CD-ROM boot).  This
      * is the one-shot handoff: from this point onward vfs_getcwd() routes
      * to task_current()->cwd, and the boot scratch buffer is unused. */
     {

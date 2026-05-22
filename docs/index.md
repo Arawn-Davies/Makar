@@ -37,18 +37,36 @@ how language choice shapes the implementation.
 | **Display** | VESA framebuffer (Bochs VBE, 720p default); VGA 80×50 fallback. `vesa_pane_t` pane abstraction. |
 | **Multi-TTY** | 4 preemptive shell tasks `shell0`–`shell3`, **Alt+F1–F4** to switch. Per-TTY `vt_buf_t` backing grid; FB painted only when focused; **makmux** multiplexer's status bar at the bottom row (left label, centred `VT1 VT2 VT3 VT4`, `Alt+F1-F4` hint; **Alt+F5** toggles the label between `Makar` and a live `HH:MM:SS DD/MM/YY` clock). Framebuffer syscalls are focus-gated so a backgrounded fullscreen app stays isolated to its VT. |
 | **VIX editor** | vim-style line-number gutter, word wrap, flashing block caret (`SYS_CARET_STYLE`), status row, runtime-resolution agnostic. Now a **userland** ELF (`vix.elf`) run via PATH — appears in `maktop` as its own task. Renamed from VICS during the port — see [Makar × Medli](makar-medli.md). |
-| **Storage** | FAT32 (HDD/USB) + ISO 9660 (CD-ROM) over IDE PIO. Disk filesystems live under `/mnt`: FAT32 auto-mounts at `/mnt/hd`, CD-ROM at `/mnt/cdrom` (`/hd`, `/cdrom` kept as aliases). `mount /dev/hdaN /mnt/<name>` for arbitrary mountpoints. Read + write + delete + rename on FAT32; flush + unmount on shutdown/reboot. |
-| **`/dev`** | Synthetic block-device tree: `/dev/hda[N]` (ATA disks + partitions), `/dev/cdrom` (ATAPI). Byte-addressed read/write over native sector I/O; backs `fdisk.elf` and `mount`. |
+| **Storage** | FAT32 + **ext2** (HDD/USB) + ISO 9660 (CD-ROM) over IDE PIO. Disk filesystems live under `/mnt`: FAT32 auto-mounts at `/mnt/hd` (kernel + bootloader modules + root, EFI-partition style), CD-ROM at `/mnt/cdrom`. `mount /dev/hdaN /mnt/<name>` auto-detects the backend (ext2 superblock else FAT32). FAT32 and ext2 mount **simultaneously** at separate mountpoints (one of each — the drivers are single-volume). Read + write + delete + rename + mkdir on both; `mkfs.fat32` / `mkfs.ext2` to format; flush + unmount on shutdown/reboot. |
+| **`/dev`** | Synthetic block-device tree: `/dev/hda[N]` (ATA disks + partitions), `/dev/cdrom` (ATAPI). Byte-addressed read/write over native sector I/O; backs `fdisk.elf` / `cfdisk.elf` and `mount`. |
 | **`/proc`** | Synthetic filesystem with `cpuinfo`, `meminfo`, `tasks`, `uname`, `rtc` — content generated on each read. `meminfo` MemUsed folds in heap; `tasks` has a per-task `MEMKB` column. |
 | **Memory** | PMM bitmap allocator, paging (256 MiB identity + per-task 4 KiB user pages), kernel heap. |
 | **Tasking** | Preemptive round-robin scheduler. PIT 100 Hz, `SCHED_QUANTUM = 4` ticks (40 ms slice). Per-task `pid`, `parent_pid`, `cwd`, `tty`, real `fd_table_t`, signal bitmasks, `exit_status`. User PD reaped on task exit. Lifecycle: `READY → RUNNING → ZOMBIE → DEAD`. |
 | **Processes** | Full POSIX **fork + execve + wait4**: copy-on-write page-table clone (per-frame refcounts + `VMM_PTE_COW` software bit + COW `#PF` handler with `CR0.WP` enforced), execve replaces caller's address space with a new ELF, wait4 reaps zombies and round-trips the child's `exit_status`. |
-| **Userspace** | Ring-3 via `iret`. ELF loader (`elf_exec`) with argc/argv. Apps: `hello`, `calc`, `vix`, `diskinfo`, `fdisk`, `basic` (C64-style integer BASIC w/ graphics), `kbtester`, `makbox` (multicall: `ls`/`cat`/`cp`/`mv`/`rm`/`rmdir`/`echo`/`pwd`), `clock`, `lines`, `maktop`, `sigtest`, `forktest` + `execvetest`. |
+| **Userspace** | Ring-3 via `iret`. ELF loader (`elf_exec`) with argc/argv. Apps: `hello`, `calc`, `vix`, `diskinfo`, `fdisk`, `cfdisk` (full-screen cfdisk-style MBR editor), `basic` (C64-style integer BASIC w/ graphics), `kbtester`, `makbox` (multicall: `ls`/`cat`/`cp`/`mv`/`rm`/`rmdir`/`echo`/`pwd`), `clock`, `lines`, `maktop`, `sigtest`, `forktest` + `execvetest`. |
 | **Syscalls** | Linux i386 ABI subset over `int 0x80` (1 exit, 2 fork, 11 execve, 19 lseek, 37 kill, 45 brk, 48 signal, 114 wait4, 119 sigreturn, 158 yield, ...) + Makar extensions (200–218; 218 = `SYS_CARET_STYLE`). `/dev` nodes open as `FD_KIND_BLOCKDEV` so read/write/lseek do sector I/O. |
 | **Shell** | Inline editing, 16-entry history, cross-FS tab completion, glob expansion, Ctrl+C sigint, `lsman`/`man <cmd>`, settable `PATH` variable. Fullscreen-command dispatch with auto FB restore. |
 | **Drivers** | 16550 UART, PIT, layered PS/2 keyboard (full set-1 + e0 with per-task SPSC rings), ATA/IDE PIO 28-bit LBA, MBR + GPT partition tables. |
 | **Debug** | INT 1 / INT 3 GDB-friendly handlers, kernel panic screen, ktest harness with per-suite descriptions and VGA + serial output. |
 | **Serial** | Linux-style: dmesg + explicit diagnostics by default. `console=ttyS0` cmdline or `verbose [on\|off]` shell builtin opts into TTY-mirroring. |
+
+## Minimum system requirements
+
+Makar targets emulation (QEMU) but is designed to run on period-appropriate
+real hardware once installed to disk.
+
+| Resource | Minimum | Recommended |
+|---|---|---|
+| **CPU** | i686 (Pentium Pro / 1995) — 32-bit protected mode, PSE large pages | Any i686+; runs in QEMU TCG without KVM |
+| **RAM** | **32 MiB** (CI/test config boots with `qemu -m 32`; ~29 MiB free after the PMM reserves the kernel) | 256 MiB (kernel identity-maps the low 256 MiB) |
+| **Firmware** | BIOS with GRUB Multiboot 2 (the boot device tag is read for auto-mount) | — |
+| **Display** | VGA text 80×50 (always works) | Bochs VBE for the 720p VESA framebuffer (`qemu -vga std`) |
+| **Storage** | None required to boot (live shell). For persistence: an ATA/IDE disk (PIO, 28-bit LBA) with an MBR or GPT FAT32 partition; optional ext2 partition | ATA HDD for `/mnt/hd` + an ext2 data partition |
+| **Input** | PS/2 keyboard (set-1 + 0xE0 extended) | — |
+| **Boot media** | ISO 9660 CD-ROM (`-cdrom makar.iso`) or a FAT32 HDD image with GRUB | — |
+
+USB HID keyboards, networking, and x86-64 are not yet supported (see the
+[roadmap](roadmap.md)).
 
 ## Kernel subsystem reference
 
@@ -78,6 +96,7 @@ Per-driver and per-module documentation:
 | [keyboard](kernel/keyboard.md) | PS/2 keyboard driver (layered, IRQ 1, set 1 + e0, per-task SPSC rings) |
 | [ide](kernel/ide.md) | ATA/IDE PIO driver (28-bit LBA read/write) |
 | [partition](kernel/partition.md) | MBR and GPT partition table driver |
+| [ext2](kernel/ext2.md) | ext2 filesystem driver (read + write + mkfs) |
 | [procfs](kernel/procfs.md) | Synthetic `/proc` filesystem |
 | [devfs](kernel/devfs.md) | Synthetic `/dev` block devices (disks, partitions, CD-ROM) |
 | [shell](kernel/shell.md) | Interactive multi-TTY kernel command shell |
@@ -99,7 +118,7 @@ src/kernel/arch/i386/
   core/       GDT/IDT, ISR stub, interrupt dispatch
   mm/         pmm.c, paging.c, vmm.c, heap.c
   drivers/    serial, keyboard, timer, IDE, ACPI, partition
-  fs/         fat32.c, iso9660.c, procfs.c, devfs.c, vfs.c
+  fs/         fat32.c, ext2.c, iso9660.c, procfs.c, devfs.c, vfs.c
   display/    tty.c, vesa.c + vesa_tty.c, vt.c
   proc/       task.c + task_asm.S, syscall.c, ring3.S, vtty.c
   shell/      shell.c, shell_cmd_*.c

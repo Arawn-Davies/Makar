@@ -8,10 +8,10 @@ Everything in the original checklist is now implemented and surpassed:
 
 - Inline editing, history (↑/↓ + `!!`), Ctrl+C sigint
 - Module-table dispatch with a `fullscreen` flag for FB-restoring builtins
-- VFS-aware tab completion across `/hd`, `/cdrom`, `/proc`, and the
+- VFS-aware tab completion across `/mnt/hd`, `/mnt/cdrom`, `/proc`, and the
   virtual root
 - Glob expansion (`*`, `?`) on argv via `shell_glob.c`
-- PATH lookup for ELFs (`/cdrom/apps/`, `/hd/apps/`)
+- PATH lookup for ELFs (`/mnt/cdrom/apps/`, `/mnt/hd/apps/`)
 - `exec <path>` plus 5 builtins that paint over the framebuffer
 - Per-TTY shells (`shell0`–`shell3`) running as preemptive kernel tasks
 

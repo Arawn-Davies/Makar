@@ -5,6 +5,11 @@
  *                      program line, RUN/LIST/NEW, or run a bare statement)
  *   basic prog.bas     load a .bas file, RUN it, then exit
  *
+ * Inside the REPL, LOAD "path" reads a program file into memory (replacing
+ * the current program) without running it, and SAVE "path" writes the
+ * current program back out as numbered lines.  Quotes around the path are
+ * optional.
+ *
  * Integer-only by design: Makar doesn't init the x87 FPU or save/restore
  * it across context switches, so ring-3 float would corrupt under
  * preemption.  All arithmetic is 32-bit signed; fractional work (e.g. the
@@ -15,7 +20,8 @@
  * the graphics statements report "?NO GRAPHICS".
  *
  * Supported: PRINT  LET/assign  IF..THEN  GOTO  GOSUB/RETURN  FOR..TO..STEP
- * ..NEXT  INPUT  REM  END/STOP  CLS  PLOT  LINE  COLOR  RUN  LIST  NEW.
+ * ..NEXT  INPUT  REM  END/STOP  CLS  PLOT  LINE  COLOR  RUN  LIST  NEW
+ * LOAD "path"  SAVE "path"  (mbasic-style program file I/O).
  * Expressions: + - * / MOD, = <> < > <= >=, unary -, parentheses, ABS(),
  * RND(), SGN(); variables are 1-2 chars (letter then letter/digit).
  */
@@ -548,16 +554,51 @@ static int parse_leading_int(const char **pp)
     *pp=p; return v;
 }
 
+/* Defined below; needed by immediate() for the LOAD/SAVE commands. */
+static int load_file(const char *path, int allow_bare);
+static int save_program(const char *path);
+
+/* Extract the path argument following a LOAD/SAVE keyword: skip spaces and
+ * strip optional surrounding double quotes.  Returns a static buffer, or
+ * NULL when no path is given. */
+static const char *path_arg(const char *p)
+{
+    static char buf[128];
+    while (*p==' ') p++;
+    int q = (*p=='"'); if (q) p++;
+    int o=0;
+    while (*p && o<(int)sizeof(buf)-1) {
+        if (q) { if (*p=='"') break; }
+        else if (*p==' '||*p=='\n'||*p=='\r') break;
+        buf[o++]=*p++;
+    }
+    buf[o]='\0';
+    return o ? buf : 0;
+}
+
 /* Execute one immediate (non-numbered) line of input. */
 static void immediate(char *line)
 {
     /* trim */
     char *p=line;
-    /* RUN / LIST / NEW recognised before falling into statement exec */
+    /* RUN / LIST / NEW / LOAD / SAVE recognised before statement exec */
     while(*p==' ')p++;
     if (up(p[0])=='R'&&up(p[1])=='U'&&up(p[2])=='N') { run_program(); return; }
     if (up(p[0])=='L'&&up(p[1])=='I'&&up(p[2])=='S'&&up(p[3])=='T') { cmd_list(); return; }
     if (up(p[0])=='N'&&up(p[1])=='E'&&up(p[2])=='W') { g_nlines=0; g_nvars=0; return; }
+    if (up(p[0])=='L'&&up(p[1])=='O'&&up(p[2])=='A'&&up(p[3])=='D') {
+        const char *path=path_arg(p+4);
+        if (!path) { puts_("?LOAD needs a filename\n"); return; }
+        g_nlines=0; g_nvars=0;          /* LOAD replaces the current program */
+        if (load_file(path, 0)==0) { puts_("Loaded "); puts_(path); putc_('\n'); }
+        return;
+    }
+    if (up(p[0])=='S'&&up(p[1])=='A'&&up(p[2])=='V'&&up(p[3])=='E') {
+        const char *path=path_arg(p+4);
+        if (!path) { puts_("?SAVE needs a filename\n"); return; }
+        if (save_program(path)==0) { puts_("Saved "); puts_(path); putc_('\n'); }
+        return;
+    }
 
     /* run as a one-shot statement on a synthetic line 0 */
     static char tmp[LINE_CAP];
@@ -577,7 +618,24 @@ static void feed_line(char *line)
 
 static char g_filebuf[64*1024];
 
-static int load_and_run(const char *path)
+/* Parse g_filebuf[0..n) into the program store.  Numbered lines are stored;
+ * when allow_bare is set, non-numbered lines are executed immediately (so a
+ * .bas file passed on the command line may contain bare statements / RUN). */
+static void parse_into_program(long n, int allow_bare)
+{
+    int i=0; char ln[LINE_CAP];
+    while (i<n) {
+        int o=0; while(i<n && g_filebuf[i]!='\n'){ if(o<LINE_CAP-1) ln[o++]=g_filebuf[i]; i++; }
+        ln[o]='\0'; i++;
+        const char *p=ln; int num=parse_leading_int(&p);
+        if (num>=0){ while(*p==' ')p++; store_line(num,p); }
+        else if (allow_bare && o>0) { /* bare statements / RUN in a file */ char c=up(ln[0]);
+            if (c=='R'||c=='L'||c=='N'||c=='P'||c=='?'||is_alpha(ln[0])) feed_line(ln); }
+    }
+}
+
+/* Read a .bas file into the program store.  Returns 0 on success. */
+static int load_file(const char *path, int allow_bare)
 {
     int fd=sys_open(path,O_RDONLY);
     if (fd<0){ puts_("basic: cannot open "); puts_(path); putc_('\n'); return 1; }
@@ -585,16 +643,37 @@ static int load_and_run(const char *path)
     sys_close(fd);
     if (n<=0){ puts_("basic: empty file\n"); return 1; }
     g_filebuf[n]='\0';
-    /* split into lines and feed each (store program lines). */
-    int i=0; char ln[LINE_CAP];
-    while (i<n) {
-        int o=0; while(i<n && g_filebuf[i]!='\n'){ if(o<LINE_CAP-1) ln[o++]=g_filebuf[i]; i++; }
-        ln[o]='\0'; i++;
-        const char *p=ln; int num=parse_leading_int(&p);
-        if (num>=0){ while(*p==' ')p++; store_line(num,p); }
-        else if (o>0) { /* allow bare statements / RUN in a file */ char c=up(ln[0]);
-            if (c=='R'||c=='L'||c=='N'||c=='P'||c=='?'||is_alpha(ln[0])) feed_line(ln); }
+    parse_into_program(n, allow_bare);
+    return 0;
+}
+
+/* Serialise the current program ("num text\n" per line) and write it to
+ * path via SYS_WRITE_FILE.  Returns 0 on success. */
+static int save_program(const char *path)
+{
+    int len=0;
+    for (int i=0;i<g_nlines && len<(int)sizeof(g_filebuf)-1;i++){
+        int v=g_prog[i].num;
+        char num[12]; int nn=0;
+        if (v==0) num[nn++]='0';
+        else { char t[12]; int m=0; while(v){ t[m++]=(char)('0'+v%10); v/=10; }
+               while(m) num[nn++]=t[--m]; }
+        for (int k=0;k<nn && len<(int)sizeof(g_filebuf)-1;k++) g_filebuf[len++]=num[k];
+        if (len<(int)sizeof(g_filebuf)-1) g_filebuf[len++]=' ';
+        const char *tx=g_prog[i].text;
+        while (*tx && len<(int)sizeof(g_filebuf)-1) g_filebuf[len++]=*tx++;
+        if (len<(int)sizeof(g_filebuf)-1) g_filebuf[len++]='\n';
     }
+    if (sys_write_file(path, g_filebuf, (unsigned)len)!=0){
+        puts_("basic: cannot write "); puts_(path); putc_('\n');
+        return 1;
+    }
+    return 0;
+}
+
+static int load_and_run(const char *path)
+{
+    if (load_file(path, 1)) return 1;
     run_program();
     /* Keep a graphics frame on screen until a key is pressed -- otherwise
      * the shell's post-exit screen restore wipes our pixels instantly.

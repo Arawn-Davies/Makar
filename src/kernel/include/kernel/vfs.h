@@ -6,9 +6,9 @@
  *
  * Provides a single, unified path namespace:
  *
- *   /          – virtual root; ls shows available mount-points
- *   /hd/…      – FAT32 hard-disk partition (mounted via cmd_mount)
- *   /cdrom/…   – ISO9660 CD-ROM (auto-detected on vfs_init)
+ *   /              – virtual root; ls shows available mount-points
+ *   /mnt/hd/…      – FAT32 hard-disk partition (mounted via cmd_mount)
+ *   /mnt/cdrom/…   – ISO9660 CD-ROM (auto-detected on vfs_init)
  *
  * All shell commands (ls, cd, cat, mkdir) use this layer so they work
  * transparently across both filesystems.
@@ -46,9 +46,9 @@ void vfs_set_boot_drive(uint32_t biosdev);
  * Must be called after both vfs_init() and ide_init().
  *
  * - BIOS HDD (0x80–0xDF): mounts the first FAT32 partition found on the
- *   corresponding ATA drive as /hd and navigates there.
+ *   corresponding ATA drive as /mnt/hd and navigates there.
  * - BIOS CD-ROM (0xE0–0xFF): the ISO9660 drive is already accessible at
- *   /cdrom (registered by vfs_init); navigates CWD there.
+ *   /mnt/cdrom (registered by vfs_init); navigates CWD there.
  * - Unknown (0xFF): tries HDD drives first, then falls back silently.
  */
 void vfs_auto_mount(void);
@@ -59,17 +59,17 @@ void vfs_auto_mount(void);
 
 /*
  * vfs_notify_hd_mounted   – FAT32 volume has just been mounted.
- *                           Moves the CWD to "/hd" when currently at "/".
+ *                           Moves the CWD to "/mnt/hd" when currently at "/".
  * vfs_notify_hd_unmounted – FAT32 volume has just been unmounted.
- *                           Resets the CWD to "/" when it was under "/hd".
+ *                           Resets the CWD to "/" when it was under "/mnt/hd".
  */
 void vfs_notify_hd_mounted(void);
 void vfs_notify_hd_unmounted(void);
 
 /*
  * vfs_notify_cdrom_ejected – called after the ATAPI eject command succeeds.
- * Clears the internal CD-ROM drive reference so /cdrom is no longer accessible,
- * and resets the CWD to "/" if it was inside /cdrom.
+ * Clears the internal CD-ROM drive reference so /mnt/cdrom is no longer
+ * accessible, and resets the CWD to "/" if it was inside /mnt/cdrom.
  */
 void vfs_notify_cdrom_ejected(void);
 
@@ -80,11 +80,31 @@ void vfs_notify_cdrom_ejected(void);
 /* Return a pointer to the current VFS path (e.g. "/mnt/hd/boot/grub"). */
 const char *vfs_getcwd(void);
 
-/* Get/set the /mnt component the single FAT32 volume is reachable at.
- * Default "hd".  `mount /dev/hdaN /mnt/<name>` sets it; umount resets it.
- * `name` must be a single component (no '/'); empty/NULL resets to "hd". */
-void        vfs_set_hd_mount(const char *name);
-const char *vfs_hd_mount(void);
+/*
+ * Hard-disk mount table.  FAT32 (kernel + bootloader + root, EFI-style) and
+ * ext2 (apps / user directories) coexist at separate /mnt/<name> mountpoints.
+ *
+ * vfs_mount_hd  – mount (drive, lba) at /mnt/<name>, auto-selecting the
+ *                 backend (ext2 superblock preferred, else FAT32).  Returns 0
+ *                 and writes the chosen backend id to *out_fs (may be NULL),
+ *                 or a negative error code.
+ * vfs_umount_hd – unmount /mnt/<name> (NULL/empty = the sole mount if unique).
+ * vfs_hd_mounted – 1 if any HD volume is mounted.
+ * vfs_hd_fsname  – backend name ("FAT32"/"ext2"/"none") for /mnt/<name>.
+ */
+int         vfs_mount_hd(uint8_t drive, uint32_t lba, const char *name, int *out_fs);
+int         vfs_umount_hd(const char *name);
+int         vfs_hd_mounted(void);
+const char *vfs_hd_fsname(const char *name);
+
+/* Empty-mountpoint management (Linux-style: a mountpoint is a directory under
+ * /mnt that `mount` later binds a filesystem into).
+ * vfs_make_mountpoint   – create an empty /mnt/<name> (backs `mkdir /mnt/..`).
+ *                         0, -1 bad name, -6 exists, -12 table full, -13 reserved.
+ * vfs_remove_mountpoint – remove an empty /mnt/<name> (backs `rmdir /mnt/..`).
+ *                         0, -1 no such mountpoint, -16 busy (fs bound). */
+int         vfs_make_mountpoint(const char *name);
+int         vfs_remove_mountpoint(const char *name);
 
 /* Flush and unmount every writable volume in preparation for power-off
  * or reset, so no dirty FAT/dir data is lost.  Safe to call when nothing

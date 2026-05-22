@@ -150,7 +150,7 @@ the instant the kernel says it's ready and bounds via the timeout.
 |---|---|
 | `glob-proc` | `cat /proc/*` glob-expands across the synthetic FS |
 | `tab-complete-path` | `cat<TAB> /proc/c<TAB><Enter>` resolves to `cat /proc/cpuinfo` |
-| `exec-hello` | `exec /cdrom/apps/hello.elf tester` reaches `sys_exit(0)` and prints the expected greeting |
+| `exec-hello` | `exec /mnt/cdrom/apps/hello.elf tester` reaches `sys_exit(0)` and prints the expected greeting |
 | `cd-root-listing` | `cd /<TAB><TAB>` lists mounts; subsequent `pwd` confirms cwd |
 | `per-tty-cwd` | Per-task cwd isolation across `Alt+F1`/`Alt+F3` switches |
 | `calc-brackets` | `calc.elf` evaluates parenthesised arithmetic |

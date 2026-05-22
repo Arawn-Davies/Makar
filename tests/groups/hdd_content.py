@@ -9,9 +9,9 @@ import gdb
 NAME = 'HDD content'
 
 EXPECTED_FILES = [
-    '/hd/boot/makar.kernel',
-    '/hd/apps/hello.elf',
-    '/hd/apps/calc.elf',
+    '/mnt/hd/boot/makar.kernel',
+    '/mnt/hd/apps/hello.elf',
+    '/mnt/hd/apps/calc.elf',
 ]
 
 

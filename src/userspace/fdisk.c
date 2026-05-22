@@ -9,6 +9,11 @@
  *   fdisk            edit /dev/hda
  *   fdisk /dev/hdb   edit a specific disk
  *
+ * The `n` (new) command accepts friendly sizes as well as raw sector
+ * counts: `max` (rest of disk), `N%` (percent of free space), `NM`/`NG`
+ * (MiB/GiB), or a bare sector count.  Start LBA defaults to the first
+ * 1 MiB-aligned sector past the last partition (Enter to accept).
+ *
  * Writes go straight back to LBA 0 via SYS_WRITE on the open fd; the
  * kernel's devfs does the read-modify-write so the bootstrap code in
  * bytes 0x000-0x1BD is preserved.
@@ -85,6 +90,26 @@ static unsigned int parse_uint(const char *s)
     return v;
 }
 
+/* parse_hex - always interpret the token as hexadecimal (optional 0x prefix).
+ * Used for partition type codes, where the prompt advertises hex but operators
+ * type bare digits like "83" expecting 0x83 (Linux), not decimal 83 (= 0x53). */
+static unsigned int parse_hex(const char *s)
+{
+    unsigned int v = 0;
+    while (*s == ' ') s++;
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) s += 2;
+    while (*s) {
+        char c = *s++;
+        unsigned int d;
+        if (c >= '0' && c <= '9') d = (unsigned int)(c - '0');
+        else if (c >= 'a' && c <= 'f') d = (unsigned int)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') d = (unsigned int)(c - 'A' + 10);
+        else break;
+        v = v * 16 + d;
+    }
+    return v;
+}
+
 /* ---- MBR entry access (little-endian) --------------------------------- */
 
 static unsigned char *entry(int i) { return &mbr[PART_OFFSET + i * PART_ENTRY]; }
@@ -154,6 +179,76 @@ static void print_table(const char *dev)
 
 static int valid_index(unsigned int n) { return n >= 1 && n <= NUM_PARTS; }
 
+/* Sectors per MiB / GiB (512-byte sectors). */
+#define SECT_PER_MIB  2048u
+#define SECT_PER_GIB  (2048u * 1024u)
+
+/* ci3 - case-insensitive 3-char match against a lowercase literal. */
+static int ci3(const char *s, char a, char b, char c)
+{
+    char x = s[0], y = s[1], z = s[2];
+    if (x >= 'A' && x <= 'Z') x = (char)(x + 32);
+    if (y >= 'A' && y <= 'Z') y = (char)(y + 32);
+    if (z >= 'A' && z <= 'Z') z = (char)(z + 32);
+    return x == a && y == b && z == c;
+}
+
+/*
+ * default_start - first 1 MiB-aligned LBA past every populated partition,
+ * never below 2048 (the GRUB/limine-safe embedding gap).
+ */
+static unsigned int default_start(void)
+{
+    unsigned int s = 2048u;
+    for (int i = 0; i < NUM_PARTS; i++) {
+        unsigned char *e = entry(i);
+        unsigned int cnt = le32(e + 12);
+        if (cnt == 0) continue;
+        unsigned int end = le32(e + 8) + cnt;
+        if (end > s) s = end;
+    }
+    return (s + 2047u) & ~2047u;        /* round up to 1 MiB */
+}
+
+/*
+ * parse_size - turn a friendly size token into a sector count.
+ *
+ *   max            all space from `start` to the end of the disk
+ *   N%             percentage of the whole disk (capped at 100%); the
+ *                  caller clamps start+count to the disk end, so an
+ *                  over-allocation (e.g. 30%+30%+30%+20%) is caught there
+ *   N / NM / NMiB  N MiB
+ *   NG / NGiB      N GiB
+ *   N (bare)       N raw 512-byte sectors
+ *
+ * `start` and `total` are in sectors.  Returns 0 on parse failure / empty.
+ * All arithmetic is 32-bit (userspace links -nostdlib, no __udivdi3).
+ */
+static unsigned int parse_size(const char *s, unsigned int start, unsigned int total)
+{
+    while (*s == ' ') s++;
+
+    if (ci3(s, 'm', 'a', 'x'))
+        return (total > start) ? total - start : 0;
+
+    unsigned int v = 0;
+    int got = 0;
+    while (*s >= '0' && *s <= '9') { v = v * 10u + (unsigned int)(*s++ - '0'); got = 1; }
+    if (!got) return 0;
+    while (*s == ' ') s++;
+
+    char u = *s;
+    if (u == '%') {
+        if (v >= 100u) return total;
+        /* percent of the whole disk; split to dodge 32-bit overflow on
+         * large disks.  The caller clamps start+count to the disk end. */
+        return (total / 100u) * v + ((total % 100u) * v) / 100u;
+    }
+    if (u == 'g' || u == 'G') return v * SECT_PER_GIB;
+    if (u == 'm' || u == 'M') return v * SECT_PER_MIB;
+    return v;                            /* bare sectors */
+}
+
 int main(int argc, char **argv)
 {
     const char *dev = (argc > 1) ? argv[1] : "/dev/hda";
@@ -178,6 +273,20 @@ int main(int argc, char **argv)
     int has_sig = (mbr[510] == 0x55 && mbr[511] == 0xAA);
     if (!has_sig)
         puts_("fdisk: no valid MBR signature (0x55AA); table may be blank\n");
+
+    /* Total disk size in sectors, via SEEK_END (block-device fd reports its
+     * byte size).  0 if the kernel can't tell us; max/% then unavailable. */
+    long dev_bytes = sys_lseek(fd, 0, SEEK_END);
+    unsigned int total_sectors = (dev_bytes > 0) ? (unsigned int)(dev_bytes / SECTOR_SIZE) : 0u;
+    sys_lseek(fd, 0, SEEK_SET);
+
+    if (total_sectors) {
+        puts_("Disk size: ");
+        putu(total_sectors);
+        puts_(" sectors (");
+        putu(total_sectors / SECT_PER_MIB);
+        puts_(" MiB)\n");
+    }
 
     print_table(dev);
     puts_("\nCommands: p print  n new  d delete  t type  a boot  w write  q quit\n");
@@ -212,7 +321,7 @@ int main(int argc, char **argv)
             } else if (c == 't') {
                 puts_("Type (hex, e.g. 0c): ");
                 if (readline() == 0) continue;
-                e[4] = (unsigned char)parse_uint(line);
+                e[4] = (unsigned char)parse_hex(line);
                 dirty = 1;
                 puts_("Type set to ");
                 puthex2(e[4]);
@@ -220,12 +329,32 @@ int main(int argc, char **argv)
                 puts_(type_name(e[4]));
                 puts_(")\n");
             } else { /* 'n' */
-                puts_("Start LBA: ");
+                unsigned int dstart = default_start();
+                puts_("Start LBA [");
+                putu(dstart);
+                puts_("] (Enter for default): ");
+                unsigned int start = (readline() == 0) ? dstart : parse_uint(line);
+
+                puts_("Size (sectors, NM, NG, N%, or max): ");
                 if (readline() == 0) continue;
-                unsigned int start = parse_uint(line);
-                puts_("Size in sectors: ");
-                if (readline() == 0) continue;
-                unsigned int count = parse_uint(line);
+                unsigned int count = parse_size(line, start, total_sectors);
+                if (count == 0) {
+                    puts_("Invalid or zero size.\n");
+                    continue;
+                }
+                /* Clamp to the disk so we never describe sectors past the
+                 * end.  Overflow-safe: compare against remaining space rather
+                 * than `start + count` (which can wrap uint32 on huge sizes). */
+                if (total_sectors && start >= total_sectors) {
+                    puts_("Start past end of disk.\n");
+                    continue;
+                }
+                if (total_sectors && count > total_sectors - start) {
+                    count = total_sectors - start;
+                    puts_("  (clamped to end of disk: ");
+                    putu(count);
+                    puts_(" sectors)\n");
+                }
                 wr32(e + 8, start);
                 wr32(e + 12, count);
                 if (e[4] == 0x00) e[4] = 0x0C;   /* default to FAT32 LBA */
@@ -233,7 +362,13 @@ int main(int argc, char **argv)
                 e[1] = 0xFE; e[2] = 0xFF; e[3] = 0xFF;
                 e[5] = 0xFE; e[6] = 0xFF; e[7] = 0xFF;
                 dirty = 1;
-                puts_("Partition set.\n");
+                puts_("Partition set: start ");
+                putu(start);
+                puts_(", ");
+                putu(count);
+                puts_(" sectors (");
+                putu(count / SECT_PER_MIB);
+                puts_(" MiB).\n");
             }
         } else if (c == 'w') {
             mbr[510] = 0x55;

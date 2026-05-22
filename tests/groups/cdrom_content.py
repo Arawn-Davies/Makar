@@ -1,6 +1,6 @@
 """CD-ROM content verification group.
 
-Checks that expected files exist on the ISO9660 filesystem at /cdrom.
+Checks that expected files exist on the ISO9660 filesystem at /mnt/cdrom.
 Must run after ktest_bg (which breaks at keyboard_getchar, guaranteeing
 vfs_auto_mount has completed).
 """
@@ -10,9 +10,9 @@ import gdb
 NAME = 'CD-ROM content'
 
 EXPECTED_FILES = [
-    '/cdrom/boot/makar.kernel',
-    '/cdrom/apps/hello.elf',
-    '/cdrom/apps/calc.elf',
+    '/mnt/cdrom/boot/makar.kernel',
+    '/mnt/cdrom/apps/hello.elf',
+    '/mnt/cdrom/apps/calc.elf',
 ]
 
 
