@@ -39,7 +39,8 @@ int ext2_probe(uint8_t drive, uint32_t part_lba);
 int ext2_mount(uint8_t drive, uint32_t part_lba);
 
 /*
- * ext2_mkfs – format a partition as ext2 (1 KiB blocks, rev 1, FILETYPE).
+ * ext2_mkfs – format a partition as ext2 (1 KiB blocks, conservative
+ *             rev-0-compatible superblock feature set).
  *   drive        : IDE drive number
  *   part_lba     : LBA of partition start
  *   part_sectors : partition length in 512-byte sectors

@@ -1060,8 +1060,10 @@ int ext2_rename_dir(const char *old_path, const char *new_path)
 /* ---- mkfs --------------------------------------------------------------- */
 
 /* mkfs writes raw blocks before any volume is mounted, so it uses local
- * block I/O rather than the mount-state helpers above.  Fixed 1 KiB blocks,
- * rev 1, FILETYPE feature, super+GDT backup in every group (no sparse_super). */
+ * block I/O rather than the mount-state helpers above.  Fixed 1 KiB blocks
+ * with a conservative superblock feature set (rev 0 / no incompat bits) for
+ * broad bootloader compatibility, plus super+GDT backup in every group (no
+ * sparse_super). */
 
 #define MKFS_BS    1024u
 #define MKFS_SPB   (MKFS_BS / SECTOR_SIZE)
@@ -1088,6 +1090,7 @@ int ext2_mkfs(uint8_t drive, uint32_t part_lba, uint32_t part_sectors)
 {
     mk_drive = drive;
     mk_lba   = part_lba;
+    const int mk_has_filetype = 0;
 
     const uint32_t bs   = MKFS_BS;
     const uint32_t isize = EXT2_GOOD_OLD_INODE_SIZE;   /* 128 */
@@ -1185,23 +1188,23 @@ int ext2_mkfs(uint8_t drive, uint32_t part_lba, uint32_t part_sectors)
         memset(blk, 0, bs);
         ext2_dirent_t *d = (ext2_dirent_t *)blk;
         d->inode = EXT2_ROOT_INO; d->rec_len = 12; d->name_len = 1;
-        d->file_type = EXT2_FT_DIR; blk[8] = '.';
+        d->file_type = mk_has_filetype ? EXT2_FT_DIR : 0; blk[8] = '.';
         d = (ext2_dirent_t *)(blk + 12);
         d->inode = EXT2_ROOT_INO; d->rec_len = 12; d->name_len = 2;
-        d->file_type = EXT2_FT_DIR; blk[20] = '.'; blk[21] = '.';
+        d->file_type = mk_has_filetype ? EXT2_FT_DIR : 0; blk[20] = '.'; blk[21] = '.';
         d = (ext2_dirent_t *)(blk + 24);
         d->inode = 11; d->rec_len = (uint16_t)(bs - 24); d->name_len = 10;
-        d->file_type = EXT2_FT_DIR; memcpy(blk + 32, "lost+found", 10);
+        d->file_type = mk_has_filetype ? EXT2_FT_DIR : 0; memcpy(blk + 32, "lost+found", 10);
         if (mk_wb(root_block, blk) != 0) { kfree(gd); return -2; }
 
         /* lost+found: ".", ".." */
         memset(blk, 0, bs);
         d = (ext2_dirent_t *)blk;
         d->inode = 11; d->rec_len = 12; d->name_len = 1;
-        d->file_type = EXT2_FT_DIR; blk[8] = '.';
+        d->file_type = mk_has_filetype ? EXT2_FT_DIR : 0; blk[8] = '.';
         d = (ext2_dirent_t *)(blk + 12);
         d->inode = EXT2_ROOT_INO; d->rec_len = (uint16_t)(bs - 12); d->name_len = 2;
-        d->file_type = EXT2_FT_DIR; blk[20] = '.'; blk[21] = '.';
+        d->file_type = mk_has_filetype ? EXT2_FT_DIR : 0; blk[20] = '.'; blk[21] = '.';
         if (mk_wb(lf_block, blk) != 0) { kfree(gd); return -2; }
     }
 
@@ -1227,10 +1230,10 @@ int ext2_mkfs(uint8_t drive, uint32_t part_lba, uint32_t part_sectors)
     sb.s_magic             = EXT2_MAGIC;
     sb.s_state             = 1;          /* clean */
     sb.s_errors            = 1;          /* continue */
-    sb.s_rev_level         = EXT2_DYNAMIC_REV;
+    sb.s_rev_level         = EXT2_GOOD_OLD_REV;
     sb.s_first_ino         = 11;
     sb.s_inode_size        = (uint16_t)isize;
-    sb.s_feature_incompat  = EXT2_FEATURE_INCOMPAT_FILETYPE;
+    sb.s_feature_incompat  = mk_has_filetype ? EXT2_FEATURE_INCOMPAT_FILETYPE : 0;
     memcpy(sb.s_volume_name, "makar", 5);
 
     /* Write super + GDT backups into every group (no sparse_super). */
