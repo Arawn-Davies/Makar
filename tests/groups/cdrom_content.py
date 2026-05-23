@@ -13,6 +13,11 @@ EXPECTED_FILES = [
     '/mnt/cdrom/boot/makar.kernel',
     '/mnt/cdrom/apps/hello.elf',
     '/mnt/cdrom/apps/calc.elf',
+    '/mnt/cdrom/apps/tcc.elf',
+    '/mnt/cdrom/usr/lib/libc.a',
+    '/mnt/cdrom/usr/lib/crt1.o',
+    '/mnt/cdrom/usr/include/syscall.h',
+    '/mnt/cdrom/usr/lib/tcc/libtcc1.a',
 ]
 
 

@@ -13,6 +13,12 @@
 set -e
 . ./build.sh
 
+# ── Build TCC (tcc.elf + sysroot) ────────────────────────────────────────────
+# build-tcc.sh compiles vendor/tinycc into tcc.elf and stages TCC's runtime
+# (libtcc1.a, built-in headers, CRT stubs) into isodir/usr/lib/.
+# Runs after build.sh so crt0.o and libc.a are available.
+bash build-tcc.sh
+
 mkdir -p isodir/boot/grub/i386-pc isodir/apps isodir/src isodir/docs isodir/limine
 
 cp sysroot/boot/makar.kernel isodir/boot/makar.kernel
