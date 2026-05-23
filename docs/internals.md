@@ -710,12 +710,21 @@ asks for it specifically.
 
 ### 11.6 An in-kernel C compiler
 
-`tcc` (~200 KiB) compiles C to ELF in memory and writes the output via
-`vfs_write_file`.  No fork needed at all — it's a single-binary
-operation.  Once musl is static, building tcc against it gives a
-self-hosting "write source, compile, run" loop on bare metal — the CP/M
-target.  Still on the roadmap as a future demo; no longer the most
-interesting piece now that fork+exec works.
+TCC (Tiny C Compiler, vendored at `vendor/tinycc/`, v0.9.27, LGPL-2.1) is
+being ported to run as a **userspace ELF binary** (`tcc.elf`) on Makar.
+It compiles C to a static `ET_EXEC` ELF on disk — no fork, no JIT, no
+`mmap(PROT_EXEC)`. The workflow is CP/M-style: boot → write source in VIX →
+`tcc hello.c -o hello.elf` → `exec hello.elf`.
+
+**Current state (May 2026):** Phases 1 & 2 of the
+[TCC feasibility plan](tcc-feasibility.md) are shipped. The kernel-side file
+I/O surface (writable fds, `O_CREAT`/`O_TRUNC`/`O_APPEND`, `SYS_STAT`/
+`FSTAT`, `READDIR`, 8 MiB file cap) and the freestanding libc shim
+(`malloc`/`stdio`/`setjmp`/`ctype`/`stdlib`/POSIX wrappers) are both in tree
+with ktest + ui-test coverage. `build-tcc.sh` probes the cross-compile and
+logs the remaining porting gaps (primarily `tccrun.c`'s JIT/signal paths);
+Phase 3 (patch those out, produce `tcc.elf`, ship on the OS image) is the
+next milestone. See [TCC feasibility](tcc-feasibility.md) for the full plan.
 
 ---
 
