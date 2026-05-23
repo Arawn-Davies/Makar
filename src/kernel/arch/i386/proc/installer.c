@@ -772,6 +772,7 @@ static int do_install(uint8_t drive, uint32_t disk_sectors, int fs)
     copy_tree("/apps");
     copy_tree("/docs");
     copy_tree("/src");
+    copy_tree("/usr");
 
     /* Flush data partition before touching the bootloader. */
     if (fs == ROOTFS_EXT2) ext2_unmount(); else fat32_unmount();

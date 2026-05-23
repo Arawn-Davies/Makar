@@ -159,6 +159,14 @@ if [ -d /work/isodir/src ]; then
     cp -r /work/isodir/src/. "$MNT/src/"
 fi
 
+# Copy the sysroot (libc.a + crt0.o + headers + example sources) so an
+# HDD-booted system can resolve /usr/... paths just like the ISO does.
+# When tcc.elf is present in apps/, this puts everything in reach.
+if [ -d /work/isodir/usr ]; then
+    mkdir -p "$MNT/usr"
+    cp -r /work/isodir/usr/. "$MNT/usr/"
+fi
+
 cat > "$MNT/boot/grub/grub.cfg" << GCFG
 set default=0
 set timeout=3

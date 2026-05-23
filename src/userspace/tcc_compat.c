@@ -1,0 +1,262 @@
+/*
+ * tcc_compat.c -- POSIX-flavoured libc surface needed by TCC.
+ *
+ * TCC's source references a set of "hosted" libc functions that the
+ * Makar shim doesn't otherwise need (open/close/read/write at the
+ * POSIX wrapper layer, sprintf, strtoull, fseek/ftell, exit, ...).
+ * Each one here is a thin adapter onto the existing Makar syscall
+ * surface or onto another shim function.
+ *
+ * The objects ship in libc.a so other apps stay un-affected: anything
+ * they don't reference, the linker discards.
+ */
+
+#include "syscall.h"
+#include "stdio.h"
+#include "stdlib.h"
+#include "string.h"
+
+/* ---- POSIX file I/O wrappers ---------------------------------------- */
+
+int open(const char *path, int flags, ...)
+{
+    return sys_open(path, flags);
+}
+
+int close(int fd)
+{
+    return sys_close(fd);
+}
+
+long read(int fd, void *buf, unsigned n)
+{
+    return sys_read(fd, buf, n);
+}
+
+long write(int fd, const void *buf, unsigned n)
+{
+    return sys_write(fd, buf, n);
+}
+
+long lseek(int fd, long offset, int whence)
+{
+    return sys_lseek(fd, (int)offset, whence);
+}
+
+int unlink(const char *path)
+{
+    return sys_delete_file(path);
+}
+
+int remove(const char *path)
+{
+    return sys_delete_file(path);
+}
+
+int chmod(const char *path, unsigned int mode)
+{
+    (void)path; (void)mode; return 0;   /* Makar has no permission bits today */
+}
+
+int stat(const char *path, struct stat *st)
+{
+    return sys_stat(path, st);
+}
+
+int fstat(int fd, struct stat *st)
+{
+    return sys_fstat(fd, st);
+}
+
+/* ---- Process control ------------------------------------------------ */
+
+__attribute__((noreturn))
+void exit(int status)
+{
+    sys_exit(status);
+    while (1) {}   /* sys_exit doesn't return; satisfy noreturn nonetheless */
+}
+
+__attribute__((noreturn))
+void abort(void)
+{
+    sys_exit(134);                  /* 128 + SIGABRT */
+    while (1) {}
+}
+
+int execvp(const char *file, char *const argv[])
+{
+    /* PATH search isn't expected on Makar from TCC's tool dispatch --
+     * absolute paths or one of the known apps suffice. */
+    return sys_execve(file, argv, 0);
+}
+
+/* ---- 64-bit strtol/strtoul ------------------------------------------ */
+
+long long strtoll(const char *s, char **endp, int base)
+{
+    const char *p = s;
+    while (*p == ' ' || *p == '\t') p++;
+    int neg = 0;
+    if (*p == '+' || *p == '-') { neg = (*p == '-'); p++; }
+    if ((base == 0 || base == 16) && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        p += 2; base = 16;
+    } else if (base == 0 && *p == '0') { p++; base = 8; }
+    else if (base == 0) base = 10;
+
+    long long acc = 0;
+    int any = 0;
+    while (*p) {
+        int d;
+        if (*p >= '0' && *p <= '9') d = *p - '0';
+        else if (*p >= 'a' && *p <= 'z') d = *p - 'a' + 10;
+        else if (*p >= 'A' && *p <= 'Z') d = *p - 'A' + 10;
+        else break;
+        if (d >= base) break;
+        acc = acc * (long long)base + (long long)d;
+        any = 1; p++;
+    }
+    if (endp) *endp = (char *)(any ? p : s);
+    return neg ? -acc : acc;
+}
+
+unsigned long long strtoull(const char *s, char **endp, int base)
+{
+    return (unsigned long long)strtoll(s, endp, base);
+}
+
+/* ---- sprintf via vsnprintf into a generous scratch ------------------ */
+
+int sprintf(char *buf, const char *fmt, ...)
+{
+    __builtin_va_list ap; __builtin_va_start(ap, fmt);
+    /* No upper bound is "right" here.  4 KiB is the working ceiling for
+     * the formatted strings TCC produces (relocation names, file paths). */
+    int n = vsnprintf(buf, 4096u, fmt, ap);
+    __builtin_va_end(ap);
+    return n;
+}
+
+int vsprintf(char *buf, const char *fmt, __builtin_va_list ap)
+{
+    return vsnprintf(buf, 4096u, fmt, ap);
+}
+
+/* ---- stdio extras ---------------------------------------------------- */
+
+int fseek(FILE *f, long offset, int whence)
+{
+    if (!f) return -1;
+    fflush(f);
+    return (sys_lseek(f->fd, (int)offset, whence) < 0) ? -1 : 0;
+}
+
+long ftell(FILE *f)
+{
+    if (!f) return -1;
+    fflush(f);
+    return sys_lseek(f->fd, 0, SEEK_CUR);
+}
+
+FILE *fdopen(int fd, const char *mode)
+{
+    (void)mode;
+    /* Allocate a FILE* over an already-open fd.  TCC uses this once,
+     * inside tcc_write_elf_file, to wrap the output fd before
+     * fwrite'ing the ELF bytes into it. */
+    extern void *malloc(unsigned int);
+    FILE *f = (FILE *)malloc(sizeof(FILE));
+    if (!f) return 0;
+    f->fd = fd; f->err = 0; f->eof = 0; f->wlen = 0;
+    return f;
+}
+
+/* fprintf to stderr is the typical TCC diagnostic path; vfprintf
+ * fills the same role with an explicit va_list. */
+int vfprintf(FILE *f, const char *fmt, __builtin_va_list ap)
+{
+    char scratch[2048];
+    int n = vsnprintf(scratch, sizeof(scratch), fmt, ap);
+    fwrite(scratch, 1, (unsigned int)n, f);
+    return n;
+}
+
+/* ---- time / random -------------------------------------------------- */
+
+unsigned int time(unsigned int *t)
+{
+    unsigned int now = sys_uptime();   /* 100 Hz tick counter */
+    if (t) *t = now;
+    return now;
+}
+
+struct tm_stub { int a[9]; };
+
+struct tm_stub *localtime(const unsigned int *t)
+{
+    (void)t;
+    static struct tm_stub zero;
+    return &zero;
+}
+
+int gettimeofday(void *tv, void *tz)
+{
+    (void)tz;
+    /* TCC uses gettimeofday only for `-bench` reporting; zero is fine. */
+    if (tv) ((unsigned int *)tv)[0] = sys_uptime(),
+            ((unsigned int *)tv)[1] = 0;
+    return 0;
+}
+
+/* ---- errno ---------------------------------------------------------- */
+
+int errno = 0;
+
+/* ---- assert --------------------------------------------------------- */
+
+void __assert_fail(const char *expr, const char *file, int line, const char *func)
+{
+    (void)expr; (void)file; (void)line; (void)func;
+    sys_write(2, "assertion failed\n", 17);
+    sys_exit(134);
+}
+
+/* ---- mmap stub (tccrun.c JIT path; never actually invoked) ---------- */
+
+void *mmap(void *a, unsigned int sz, int prot, int fl, int fd, long off)
+{
+    (void)a; (void)sz; (void)prot; (void)fl; (void)fd; (void)off;
+    return (void *)-1;     /* MAP_FAILED */
+}
+
+int munmap(void *a, unsigned int sz)
+{
+    (void)a; (void)sz; return -1;
+}
+
+/* ---- math placeholders (unused float-folding paths) ----------------- */
+
+double ldexp(double x, int e)         { (void)e; return x; }
+double frexp(double x, int *e)        { if (e) *e = 0; return x; }
+
+/* TCC's parse_number references strtod/strtof/strtold via the
+ * floating-point constant lexer.  Programs that consume floating
+ * literals will fail to fold them, but for the bring-up cases
+ * (integer-only sources) the symbols just need to resolve. */
+float       strtof (const char *s, char **e) { (void)s; if (e) *e = (char *)s; return 0.0f; }
+double      strtod (const char *s, char **e) { (void)s; if (e) *e = (char *)s; return 0.0;  }
+long double strtold(const char *s, char **e) { (void)s; if (e) *e = (char *)s; return 0.0L; }
+
+/* getcwd: TCC uses it once for debug-info emission. */
+char *getcwd(char *buf, unsigned int size)
+{
+    if (sys_getcwd(buf, size) < 0) return 0;
+    return buf;
+}
+
+/* mprotect: tccrun.c's JIT page-permission flip; unreachable on Makar
+ * (we don't ship -run) but the symbol must resolve. */
+int mprotect(void *addr, unsigned int len, int prot)
+{
+    (void)addr; (void)len; (void)prot; return -1;
+}

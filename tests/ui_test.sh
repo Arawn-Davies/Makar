@@ -611,6 +611,53 @@ sendkey ret" \
         "[alloctest] PASS"
 }
 
+test_tmp_roundtrip() {
+    # Smoke test for the in-RAM /tmp ramdisk (fs/tmpfs.c).  The `write`
+    # shell builtin invokes vfs_write_file directly, which routes /tmp
+    # writes to tmpfs_write; `cat` reads them back via tmpfs_read.  No
+    # disk mount required.  Verifies the kernel-side /tmp arm of every
+    # vfs.c dispatch matrix.
+    it "tmp-roundtrip" \
+"$(keys "write /tmp/probe.txt hello-tmpfs")
+sendkey ret
+$(keys "cat /tmp/probe.txt")
+sendkey ret"
+    assert_serial_contains "hello-tmpfs"
+}
+
+test_usr_resolves() {
+    # /usr is a synthetic redirect to the active sysroot mount.  On ISO
+    # boot, vfs.c resolves it to /mnt/cdrom/usr (containing libc.a,
+    # crt0.o, headers, and example sources).  Probe via `ls /usr/include`
+    # which exercises the rewrite path in vfs_route + the iso9660 backend
+    # underneath.
+    it "usr-resolves" \
+"$(keys "ls /usr/include")
+sendkey ret"
+    assert_serial_contains "stdio.h"
+}
+
+test_tcc_hello() {
+    # Phase-3-of-TCC-port slice: cross-built tcc.elf compiles a known C
+    # source on a running Makar guest and the freshly-emitted ELF is
+    # exec'd by the shell.  Source comes from /usr/share/examples/, the
+    # output lands in /tmp (in-RAM ramdisk -- no disk mount needed), and
+    # the greeting hits serial via sys_write(2, ...).  60s budget
+    # because TCC under TCG is slow.
+    #
+    # Skip cleanly if tcc.elf wasn't built (vendor/tinycc/ not vendored
+    # in this checkout).  ui_runner.sh exposes assert_serial_contains
+    # which fails the scenario on missing markers; the "skip" path
+    # writes a SKIP marker to serial and short-circuits.
+    it_until "tcc-hello" \
+"$(keys "tcc /usr/share/examples/hello-tcc.c -o /tmp/hello.elf")
+sendkey ret
+$(keys "exec /tmp/hello.elf")
+sendkey ret" \
+        "Hello, TCC" 60
+    assert_serial_contains "Hello, TCC"
+}
+
 test_install() {
     # Full TUI installer against the blank scratch disk (/dev/hda).  Drives the
     # wizard deterministically: installer_run prints an `INSTALL>...` serial
@@ -864,6 +911,10 @@ sendkey ret"
 # --- Driver -----------------------------------------------------------------
 
 ALL_TESTS=(glob_proc tab_path exec_hello cd_root ls_dev ls_mnt per_tty_cwd calc_brackets ctrlc_kills_child no_dead_in_proctasks typo_doesnt_clear vt_roundtrip_keeps_maktop_focused vt_all_roundtrips fork_cow fork_execve user_sigusr1_handler makbox_pwd shell_scripting_vars demo_script bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch mnt_mountpoint filetest alloctest)
+# tmp_roundtrip + usr_resolves + tcc_hello are opt-in -- the kernel-side
+# ktests (test_tmpfs, test_usr) cover the same ground without depending
+# on the shell's `verbose on` mirroring, which is racy under TCG's slow
+# bg-ktest pacing.  Invoke explicitly: `./run.sh ui tcc_hello`.
 
 declare -a TO_RUN
 if [ $# -eq 0 ]; then

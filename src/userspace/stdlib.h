@@ -50,6 +50,46 @@ static inline long strtol(const char *s, char **endp, int base)
 
 static inline int atoi(const char *s) { return (int)strtol(s, 0, 10); }
 
+/* strtoul: unsigned version of strtol.  Accepts the same prefix grammar
+ * (whitespace, optional '+'/'-', 0x/0 base autodetect).  A leading '-'
+ * is honoured by negating the accumulator on return -- POSIX says the
+ * value is "negated according to the C language rules", i.e. modulo
+ * 2^32 for an unsigned long on i386. */
+static inline unsigned long strtoul(const char *s, char **endp, int base)
+{
+    const char *p = s;
+    while (isspace((unsigned char)*p)) p++;
+
+    int neg = 0;
+    if (*p == '+' || *p == '-') { neg = (*p == '-'); p++; }
+
+    if ((base == 0 || base == 16) && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        p += 2;
+        base = 16;
+    } else if (base == 0 && p[0] == '0') {
+        p++;
+        base = 8;
+    } else if (base == 0) {
+        base = 10;
+    }
+
+    unsigned long acc = 0;
+    int any = 0;
+    while (*p) {
+        int d;
+        if (*p >= '0' && *p <= '9')      d = *p - '0';
+        else if (*p >= 'a' && *p <= 'z') d = *p - 'a' + 10;
+        else if (*p >= 'A' && *p <= 'Z') d = *p - 'A' + 10;
+        else                              break;
+        if (d >= base) break;
+        acc = acc * (unsigned long)base + (unsigned long)d;
+        any = 1;
+        p++;
+    }
+    if (endp) *endp = (char *)(any ? p : s);
+    return neg ? (unsigned long)(-(long)acc) : acc;
+}
+
 /* getenv: Makar has no env layer yet (SYS_EXECVE ignores envp), so every
  * lookup misses.  Provides the symbol TCC + ports want without forcing
  * a kernel slice today. */

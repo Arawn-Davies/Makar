@@ -365,6 +365,27 @@ sendkey ret'
 
     # Mirror shell output to COM1 for the rest of the session.  The flag
     # is sticky so we only set it once for the whole shared-VM run.
+    #
+    # CRITICAL TIMING: the shell sits in a `while (!ktest_bg_done)
+    # task_yield()` loop until background ktests finish (several minutes
+    # under TCG).  Once ktest_bg sets the done flag, the shell drains
+    # the keyboard ring (`while (keyboard_poll())`), tossing any earlier
+    # keystrokes -- so `verbose on` typed pre-spinner ends up eaten.
+    # Wait for the "KTEST_BG: PASS" marker before typing.
+    local bg_timeout=${UI_BG_KTEST_TIMEOUT:-300}
+    waited=0
+    while [ $waited -lt $((bg_timeout * 2)) ]; do
+        if grep -q "KTEST_BG: PASS\|KTEST_BG: FAIL" "$SERIAL_LOG" 2>/dev/null; then break; fi
+        if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+            echo "FAIL: QEMU exited before KTEST_BG completed" >&2
+            return 1
+        fi
+        sleep 0.5
+        waited=$((waited + 1))
+    done
+    # Brief grace for the shell to actually finish its drain + first
+    # prompt repaint.
+    sleep 2
     # A wakeup <ret> first absorbs any first-post-boot keystroke-loss
     # race -- without it the leading `v` of `verbose on` lands during
     # the loading-screen-to-prompt handoff and gets dropped, leaving
