@@ -20,3 +20,14 @@ tests/groups/__pycache__/
 
 # Compiled binary artifacts (no extension) that appear in arch dirs
 src/kernel/arch/*/dt_asm
+
+# Userspace build artefacts
+src/userspace/*.o
+src/userspace/*.a
+src/userspace/*.elf
+
+# Vendored TCC build artefacts
+vendor/tinycc/build-stubs/
+vendor/tinycc/build-tcc.log
+vendor/tinycc/*.o
+vendor/tinycc/config.h

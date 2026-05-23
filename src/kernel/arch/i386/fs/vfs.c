@@ -28,6 +28,7 @@
 #include <kernel/procfs.h>
 #include <kernel/devfs.h>
 #include <kernel/logfs.h>
+#include <kernel/tmpfs.h>
 #include <kernel/ide.h>
 #include <kernel/partition.h>
 #include <kernel/tty.h>
@@ -138,6 +139,7 @@ static char *cwd_buf(void)
 #define VFS_FS_MNT     5
 #define VFS_FS_MNT_EMPTY 6   /* /mnt/<name> placeholder, no fs bound yet */
 #define VFS_FS_LOG     7     /* "/log" – synthetic, writable in-RAM log tree */
+#define VFS_FS_TMP     8     /* "/tmp" – synthetic, writable in-RAM ramdisk */
 #define VFS_FS_UNKNOWN (-1)
 
 /* -------------------------------------------------------------------------
@@ -258,6 +260,65 @@ static void path_resolve(const char *path, char *out)
 }
 
 /* -------------------------------------------------------------------------
+ * /usr resolver — synthetic prefix that points at the active boot medium's
+ * sysroot.  Resolved on first access by probing each HD mount for a
+ * sentinel file (/usr/lib/crt0.o, installed alongside libc.a); falls back
+ * to /mnt/cdrom/usr if no HD has a sysroot.  Cached until invalidated by
+ * a mount-table mutation.
+ * ---------------------------------------------------------------------- */
+#define USR_MOUNT      "/usr"
+#define USR_MOUNT_LEN  4
+#define USR_SENTINEL   "/usr/lib/crt0.o"
+
+/* Forward decl — needed by the resolver below; defined further down. */
+int vfs_file_exists(const char *path);
+
+static char s_usr_prefix[VFS_PATH_MAX];
+static int  s_usr_resolved;        /* 0 = needs resolve, 1 = cached */
+
+/* Invalidate the cached prefix.  Called from every mount/unmount path so
+ * the next /usr/... lookup re-probes the freshly-changed mount layout. */
+static void vfs_usr_invalidate(void)
+{
+    s_usr_prefix[0] = '\0';
+    s_usr_resolved  = 0;
+}
+
+/* Resolve s_usr_prefix lazily.  Returns the cached prefix string, or
+ * NULL if no boot medium currently provides a sysroot. */
+static const char *resolve_usr_prefix(void)
+{
+    if (s_usr_resolved) return s_usr_prefix[0] ? s_usr_prefix : NULL;
+    s_usr_resolved = 1;
+    s_usr_prefix[0] = '\0';
+
+    /* Prefer an HDD-resident /usr (installed system) to the boot CD. */
+    for (int i = 0; i < s_nmounts; i++) {
+        if (s_mounts[i].fs == HD_FS_NONE) continue;
+        char probe[VFS_PATH_MAX];
+        size_t mn = strlen(s_mounts[i].name);
+        if (5 + mn + sizeof("/" USR_SENTINEL) >= sizeof(probe)) continue;
+        /* probe = "/mnt/<name>" USR_SENTINEL */
+        strcpy(probe, "/mnt/");
+        strcat(probe, s_mounts[i].name);
+        strcat(probe, USR_SENTINEL);
+        if (vfs_file_exists(probe)) {
+            /* Sysroot is on this HD volume. */
+            strcpy(s_usr_prefix, "/mnt/");
+            strcat(s_usr_prefix, s_mounts[i].name);
+            strcat(s_usr_prefix, "/usr");
+            return s_usr_prefix;
+        }
+    }
+    /* Fall back to CD-ROM if a probe there shows the sysroot. */
+    if (s_cdrom_drive >= 0 && vfs_file_exists("/mnt/cdrom" USR_SENTINEL)) {
+        strcpy(s_usr_prefix, "/mnt/cdrom/usr");
+        return s_usr_prefix;
+    }
+    return NULL;
+}
+
+/* -------------------------------------------------------------------------
  * vfs_route – determine which driver handles 'abs' and set *drv_path to
  * the driver-relative path (always starts with '/').
  *
@@ -267,10 +328,37 @@ static int vfs_route(const char *abs, const char **drv_path, int *out_fs)
 {
     if (out_fs) *out_fs = HD_FS_NONE;
 
-    /* Root "/" */
+    /* Root "/" — must come first; the prefix-match arms below read past
+     * abs[1] and would compare against uninitialised stack memory. */
     if (abs[0] == '/' && abs[1] == '\0') {
         *drv_path = "/";
         return VFS_FS_ROOT;
+    }
+
+    /* /usr/... — synthetic redirect to the active sysroot mount.
+     * Rewrite "/usr" or "/usr/X" into "<s_usr_prefix>" or
+     * "<s_usr_prefix>/X" in a scratch buffer and recurse.  Single-
+     * threaded VFS dispatch means the static scratch is safe; the
+     * recursion is at most one level deep because the rewritten path
+     * starts with /mnt/, not /usr/. */
+    if (memcmp(abs, USR_MOUNT, USR_MOUNT_LEN) == 0 &&
+        (abs[USR_MOUNT_LEN] == '/' || abs[USR_MOUNT_LEN] == '\0')) {
+        const char *prefix = resolve_usr_prefix();
+        if (!prefix) {
+            *drv_path = abs;
+            return VFS_FS_UNKNOWN;
+        }
+        static char usr_scratch[VFS_PATH_MAX];
+        size_t pl = strlen(prefix);
+        const char *suffix = abs + USR_MOUNT_LEN;     /* "" or "/X..." */
+        size_t sl = strlen(suffix);
+        if (pl + sl + 1 > sizeof(usr_scratch)) {
+            *drv_path = abs;
+            return VFS_FS_UNKNOWN;
+        }
+        memcpy(usr_scratch, prefix, pl);
+        memcpy(usr_scratch + pl, suffix, sl + 1);
+        return vfs_route(usr_scratch, drv_path, out_fs);
     }
 
     /* "/log" – the synthetic writable log directory (dmesg-style tree). */
@@ -280,6 +368,15 @@ static int vfs_route(const char *abs, const char **drv_path, int *out_fs)
                         ? (abs + LOGFS_MOUNT_LEN)
                         : "/";
         return VFS_FS_LOG;
+    }
+
+    /* "/tmp" – synthetic, writable in-RAM ramdisk (overwrite semantics). */
+    if (memcmp(abs, TMPFS_MOUNT, TMPFS_MOUNT_LEN) == 0 &&
+        (abs[TMPFS_MOUNT_LEN] == '/' || abs[TMPFS_MOUNT_LEN] == '\0')) {
+        *drv_path = (abs[TMPFS_MOUNT_LEN] == '/')
+                        ? (abs + TMPFS_MOUNT_LEN)
+                        : "/";
+        return VFS_FS_TMP;
     }
 
     /* Disk filesystems live under /mnt (Linux convention).  The FAT32
@@ -350,6 +447,9 @@ static void ls_root(void)
     t_writestring("[proc]\n");   /* always present - synthesised         */
     t_writestring("[dev]\n");    /* always present - synthesised         */
     t_writestring("[log]\n");    /* in-RAM writable log tree (dmesg)     */
+    t_writestring("[tmp]\n");    /* in-RAM writable scratch ramdisk      */
+    if (resolve_usr_prefix())    /* present only when a sysroot is live  */
+        t_writestring("[usr]\n");
 }
 
 /* List /mnt - the disk-filesystem mount container. */
@@ -502,6 +602,7 @@ int vfs_mount_hd(uint8_t drive, uint32_t lba, const char *name, int *out_fs)
     s_mounts[mi].fs = fs;
     s_fixup_name = s_mounts[mi].name;
     apply_cwd_fixup(fixup_cwd_mounted);
+    vfs_usr_invalidate();   /* new mount may bring a sysroot into reach */
     if (out_fs) *out_fs = fs;
     return 0;
 }
@@ -521,6 +622,7 @@ int vfs_make_mountpoint(const char *name)
     strncpy(m->name, name, VFS_MOUNT_NAME_MAX - 1);
     m->name[VFS_MOUNT_NAME_MAX - 1] = '\0';
     m->fs = HD_FS_NONE;
+    vfs_usr_invalidate();
     return 0;
 }
 
@@ -533,6 +635,7 @@ int vfs_remove_mountpoint(const char *name)
     if (s_mounts[mi].fs != HD_FS_NONE) return -16;   /* umount first */
     for (int i = mi; i < s_nmounts - 1; i++) s_mounts[i] = s_mounts[i + 1];
     s_nmounts--;
+    vfs_usr_invalidate();
     return 0;
 }
 
@@ -557,6 +660,7 @@ int vfs_umount_hd(const char *name)
     s_fixup_name = s_mounts[mi].name;
     apply_cwd_fixup(fixup_cwd_unmounted);
     s_mounts[mi].fs = HD_FS_NONE;        /* revert to empty mountpoint */
+    vfs_usr_invalidate();
     return 0;
 }
 
@@ -598,6 +702,7 @@ void vfs_notify_hd_mounted(void)
     if (mi >= 0) s_mounts[mi].fs = HD_FS_FAT32;
     s_fixup_name = "hd";
     apply_cwd_fixup(fixup_cwd_mounted);
+    vfs_usr_invalidate();
 }
 
 void vfs_notify_hd_unmounted(void)
@@ -606,12 +711,14 @@ void vfs_notify_hd_unmounted(void)
     apply_cwd_fixup(fixup_cwd_unmounted);
     int mi = hd_find("hd", 2);
     if (mi >= 0) s_mounts[mi].fs = HD_FS_NONE;   /* revert to empty mountpoint */
+    vfs_usr_invalidate();
 }
 
 void vfs_notify_cdrom_ejected(void)
 {
     s_cdrom_drive = -1;
     apply_cwd_fixup(fixup_cwd_cdrom_ejected);
+    vfs_usr_invalidate();
 }
 
 /* -------------------------------------------------------------------------
@@ -677,6 +784,7 @@ static int try_mount_drive(uint8_t drive)
             s_mounts[data_mi].fs = fs;
             s_fixup_name = s_mounts[data_mi].name;
             apply_cwd_fixup(fixup_cwd_mounted);
+            vfs_usr_invalidate();
             t_writestring("Auto-mounted ");
             t_writestring(hd_fsname(fs));
             t_writestring(" (drive ");
@@ -698,6 +806,7 @@ static int try_mount_drive(uint8_t drive)
             && !backend_in_use(HD_FS_FAT32)) {
         if (fat32_mount(drive, boot_p->lba_start) == 0) {
             s_mounts[boot_mi].fs = HD_FS_FAT32;
+            vfs_usr_invalidate();
             t_writestring("Auto-mounted FAT32 (drive ");
             t_dec(drive);
             t_writestring(", partition 1) at /mnt/boot\n");
@@ -802,6 +911,9 @@ int vfs_ls(const char *path)
     case VFS_FS_LOG:
         return logfs_ls(drv);
 
+    case VFS_FS_TMP:
+        return tmpfs_ls(drv);
+
     default:
         t_writestring("ls: path not found\n");
         return -1;
@@ -881,6 +993,16 @@ int vfs_cd(const char *path)
         t_writestring("cd: not a directory\n");
         return -1;
 
+    case VFS_FS_TMP:
+        /* /tmp is flat: only "/tmp" itself is a directory. */
+        if (drv[0] == '/' && drv[1] == '\0') {
+            strncpy(cwd, abs, VFS_PATH_MAX - 1);
+            cwd[VFS_PATH_MAX - 1] = '\0';
+            return 0;
+        }
+        t_writestring("cd: not a directory\n");
+        return -1;
+
     default:
         t_writestring("cd: path not found\n");
         return -1;
@@ -929,6 +1051,10 @@ int vfs_cat(const char *path)
 
     case VFS_FS_LOG:
         err = (logfs_read(drv, buf, CAT_MAX, &got) < 0) ? -1 : 0;
+        break;
+
+    case VFS_FS_TMP:
+        err = (tmpfs_read(drv, buf, CAT_MAX, &got) < 0) ? -1 : 0;
         break;
 
     case VFS_FS_DEV: {
@@ -1044,6 +1170,9 @@ int vfs_read_file(const char *path, void *buf, uint32_t bufsz, uint32_t *out_sz)
     case VFS_FS_LOG:
         return (logfs_read(drv, buf, bufsz, out_sz) < 0) ? -1 : 0;
 
+    case VFS_FS_TMP:
+        return (tmpfs_read(drv, buf, bufsz, out_sz) < 0) ? -1 : 0;
+
     case VFS_FS_DEV: {
         int idx = devfs_lookup(drv);
         if (idx < 0) return -1;
@@ -1072,6 +1201,12 @@ int vfs_write_file(const char *path, const void *buf, uint32_t size)
     if (fs == VFS_FS_LOG)
         return (logfs_write(drv, buf, size) < 0) ? -1 : 0;
 
+    /* /tmp is a writable in-RAM scratch: each write replaces the file
+     * (overwrite semantics, see fs/tmpfs.c).  Used by tcc(1) as an
+     * output sink before exec'ing the freshly emitted ELF. */
+    if (fs == VFS_FS_TMP)
+        return (tmpfs_write(drv, buf, size) < 0) ? -1 : 0;
+
     if (fs != VFS_FS_HD) return -1;
     return hd_write_file(hdfs, drv, buf, size);
 }
@@ -1083,7 +1218,9 @@ int vfs_delete_file(const char *path)
 
     const char *drv;
     int hdfs;
-    if (vfs_route(abs, &drv, &hdfs) != VFS_FS_HD) return -1;
+    int fs = vfs_route(abs, &drv, &hdfs);
+    if (fs == VFS_FS_TMP) return tmpfs_delete(drv);
+    if (fs != VFS_FS_HD) return -1;
     return hd_delete_file(hdfs, drv);
 }
 
@@ -1146,6 +1283,8 @@ int vfs_file_exists(const char *path)
         return devfs_file_exists(drv);
     case VFS_FS_LOG:
         return logfs_file_exists(drv);
+    case VFS_FS_TMP:
+        return tmpfs_file_exists(drv);
     default:
         return 0;
     }
@@ -1231,6 +1370,14 @@ int vfs_stat(const char *path, vfs_stat_info_t *out)
         return 0;
     }
 
+    case VFS_FS_TMP: {
+        /* tmpfs reports a direct size without copying file data. */
+        long sz = tmpfs_size(drv);
+        if (sz < 0) return -1;
+        out->size = (uint32_t)sz; out->kind = VFS_STAT_FILE;
+        return 0;
+    }
+
     case VFS_FS_DEV: {
         uint32_t dev_sz = 0;
         int node = vfs_blockdev_lookup(abs, &dev_sz);
@@ -1294,6 +1441,8 @@ int vfs_complete(const char *dir, const char *prefix,
             cb("proc",  1, ctx);
             cb("dev",   1, ctx);
             cb("log",   1, ctx);
+            cb("tmp",   1, ctx);
+            if (resolve_usr_prefix()) cb("usr", 1, ctx);
         }
         return 0;
     }
@@ -1318,6 +1467,8 @@ int vfs_complete(const char *dir, const char *prefix,
         return devfs_complete(drv, prefix, cb, ctx);
     case VFS_FS_LOG:
         return logfs_complete(drv, prefix, cb, ctx);
+    case VFS_FS_TMP:
+        return tmpfs_complete(drv, prefix, cb, ctx);
     default:
         return -1;
     }

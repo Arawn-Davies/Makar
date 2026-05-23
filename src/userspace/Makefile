@@ -4,6 +4,7 @@ HOST?=$(DEFAULT_HOST)
 CC=$(HOST)-gcc
 AS=$(HOST)-as
 LD=$(HOST)-ld
+AR=$(HOST)-ar
 
 CFLAGS?=-O2 -g
 CFLAGS:=$(CFLAGS) -std=c11 -ffreestanding -fno-stack-protector \
@@ -16,8 +17,24 @@ ISODIR?=$(CURDIR)/../../isodir
 
 PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf kbtester.elf makbox.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf fdisk.elf cfdisk.elf basic.elf filetest.elf alloctest.elf
 
+# libc.a -- single archive of the userspace shim (malloc + FILE* stdio +
+# setjmp/longjmp + string/memory helpers).  Shipped under /usr/lib on the
+# OS image so tcc(1) can link against it as -lc.  The objects are also
+# linked individually into a few legacy app recipes (alloctest, filetest)
+# below to give the archive passive ui-test coverage.
+LIBC_OBJS=malloc.o stdio.o setjmp.o string.o tcc_compat.o
 
-all: $(PROGS)
+# tcc.elf is only built when the vendored snapshot at vendor/tinycc/ is
+# populated (see build-tcc.sh).  The artefact lands here at the top of
+# the userspace directory; if it's present, ship it.
+TCC_ELF=$(wildcard tcc.elf)
+
+# Headers shipped to /usr/include on the OS image so userland (and
+# tcc-compiled programs) can resolve `#include <name.h>` directly.
+SYSROOT_HEADERS=malloc.h stdio.h stdlib.h ctype.h setjmp.h string.h syscall.h
+
+
+all: $(PROGS) libc.a
 
 hello.elf: crt0.o hello.o
 	$(LD) $(LDFLAGS) -o $@ $^
@@ -70,11 +87,16 @@ cfdisk.elf: crt0.o cfdisk.o
 basic.elf: crt0.o basic.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-filetest.elf: crt0.o filetest.o
-	$(LD) $(LDFLAGS) -o $@ $^
+filetest.elf: crt0.o filetest.o libc.a
+	$(LD) $(LDFLAGS) -o $@ crt0.o filetest.o libc.a
 
-alloctest.elf: crt0.o alloctest.o malloc.o setjmp.o stdio.o
-	$(LD) $(LDFLAGS) -o $@ $^
+alloctest.elf: crt0.o alloctest.o libc.a
+	$(LD) $(LDFLAGS) -o $@ crt0.o alloctest.o libc.a
+
+# Archive of the userspace libc shim.  Built with rcs (replace, create
+# index) so successive builds replace stale objects in place.
+libc.a: $(LIBC_OBJS)
+	$(AR) rcs $@ $^
 
 
 %.o: %.c
@@ -90,10 +112,25 @@ install: all
 	cp $(PROGS) $(ISODIR)/apps/
 	cp demo.sh $(ISODIR)/apps/
 	cp *.bas $(ISODIR)/apps/
+# /usr sysroot for the in-OS compiler (tcc) and any future hosted ports.
+# `crt0.o` is the C-runtime startup; `libc.a` the freestanding libc shim
+# archive; headers under /usr/include resolve #include <name.h>; and the
+# example sources under /usr/share/examples ship reference programs the
+# ui-test scenarios can compile in-place.
+	mkdir -p $(ISODIR)/usr/lib $(ISODIR)/usr/include $(ISODIR)/usr/share/examples
+	cp crt0.o libc.a $(ISODIR)/usr/lib/
+	cp $(SYSROOT_HEADERS) $(ISODIR)/usr/include/
+	cp hello-tcc.c $(ISODIR)/usr/share/examples/
+# tcc.elf rides along with the rest of the apps so PATH lookup resolves
+# `tcc` from the kernel shell.  Only present when build-tcc.sh has been
+# run with vendor/tinycc/ populated.
+ifneq ($(TCC_ELF),)
+	cp $(TCC_ELF) $(ISODIR)/apps/
+endif
 
 install-headers:
 
 clean:
-	rm -f *.o $(PROGS) *.elf
+	rm -f *.o $(PROGS) *.elf libc.a
 
 .PHONY: all install install-headers clean

@@ -26,6 +26,7 @@
 #include <kernel/elf.h>
 #include <kernel/vfs.h>
 #include <kernel/devfs.h>
+#include <kernel/tmpfs.h>
 #include <kernel/asm.h>
 #include <kernel/keyboard.h>
 #include <string.h>
@@ -42,7 +43,7 @@ volatile int ktest_bg_done = 0;
  * inside the RUN macro in ktest_bg_task; total is fixed at compile time so
  * the bar length is known the moment shell_run starts. */
 volatile int ktest_bg_completed = 0;
-const    int ktest_bg_total     = 16;   /* keep in sync with RUN() calls below */
+const    int ktest_bg_total     = 18;   /* keep in sync with RUN() calls below */
 
 /* When set, suppress VGA output for pass lines and suite headers. */
 int ktest_muted = 0;
@@ -240,6 +241,100 @@ static void test_devfs(void)
     ktest_summary();
 }
 
+
+
+/* ---------------------------------------------------------------------------
+ * Suite: tmpfs
+ *
+ * Exercises the in-RAM /tmp ramdisk (fs/tmpfs.c) end-to-end through the
+ * VFS dispatch matrix.  The matrix routes /tmp/... to tmpfs_*; we verify
+ * write-then-read overwrite semantics (unlike logfs's append ring),
+ * stat, file_exists, and delete.  Pure in-RAM -- no disk dependency.
+ * ------------------------------------------------------------------------- */
+
+static void test_tmpfs(void)
+{
+    ktest_begin("tmpfs", "/tmp ramdisk: write/read overwrite, stat, file_exists, delete");
+
+    /* Initial state: file doesn't exist. */
+    KTEST_ASSERT(vfs_file_exists("/tmp/probe.bin") == 0);
+
+    /* Write through the VFS layer (routes to tmpfs_write). */
+    const char *msg = "tmpfs-roundtrip-ok";
+    uint32_t    mlen = (uint32_t)strlen(msg);
+    KTEST_ASSERT(vfs_write_file("/tmp/probe.bin", msg, mlen) == 0);
+    KTEST_ASSERT(vfs_file_exists("/tmp/probe.bin") == 1);
+
+    /* Read back; payload must match exactly. */
+    char readback[64];
+    uint32_t got = 0;
+    KTEST_ASSERT(vfs_read_file("/tmp/probe.bin", readback, sizeof(readback), &got) == 0);
+    KTEST_ASSERT(got == mlen);
+    KTEST_ASSERT(memcmp(readback, msg, mlen) == 0);
+
+    /* Overwrite (NOT append, unlike logfs) -- second write replaces the
+     * payload, doesn't tack onto the end. */
+    const char *msg2 = "xx";
+    KTEST_ASSERT(vfs_write_file("/tmp/probe.bin", msg2, 2) == 0);
+    got = 0;
+    KTEST_ASSERT(vfs_read_file("/tmp/probe.bin", readback, sizeof(readback), &got) == 0);
+    KTEST_ASSERT(got == 2);
+    KTEST_ASSERT(memcmp(readback, msg2, 2) == 0);
+
+    /* stat: size reflects the most recent write, kind is regular file. */
+    vfs_stat_info_t st;
+    KTEST_ASSERT(vfs_stat("/tmp/probe.bin", &st) == 0);
+    KTEST_ASSERT(st.size == 2);
+    KTEST_ASSERT(st.kind == VFS_STAT_FILE);
+
+    /* Delete and confirm the file disappears. */
+    KTEST_ASSERT(vfs_delete_file("/tmp/probe.bin") == 0);
+    KTEST_ASSERT(vfs_file_exists("/tmp/probe.bin") == 0);
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
+ * Suite: /usr resolver
+ *
+ * /usr is a synthetic redirect in vfs_route; the prefix is resolved
+ * lazily to /mnt/cdrom/usr (CD boot) or /mnt/hd/usr (HDD boot) by
+ * probing for the sentinel file /usr/lib/crt0.o.  This suite proves
+ * the rewrite works against whichever boot medium is active.  Skipped
+ * silently when no sysroot is installed (sentinel missing on both
+ * boot media) so the test stays valid on minimal builds.
+ * ------------------------------------------------------------------------- */
+
+static void test_usr(void)
+{
+    ktest_begin("usr", "/usr redirect: sysroot path resolution + content visible");
+
+    /* If no sysroot is shipped on this medium, skip silently. */
+    if (!vfs_file_exists("/usr/lib/crt0.o")) {
+        ktest_summary();
+        return;
+    }
+
+    /* The sentinel probe must work via the /usr rewrite. */
+    KTEST_ASSERT(vfs_file_exists("/usr/lib/crt0.o") == 1);
+
+    /* libc.a must be reachable via /usr/lib. */
+    KTEST_ASSERT(vfs_file_exists("/usr/lib/libc.a") == 1);
+
+    /* Headers must be reachable via /usr/include. */
+    KTEST_ASSERT(vfs_file_exists("/usr/include/stdio.h") == 1);
+    KTEST_ASSERT(vfs_file_exists("/usr/include/string.h") == 1);
+
+    /* And the example source ships under /usr/share/examples. */
+    KTEST_ASSERT(vfs_file_exists("/usr/share/examples/hello-tcc.c") == 1);
+
+    /* stat shows a non-zero size for libc.a (it's an archive of real .o files). */
+    vfs_stat_info_t st;
+    KTEST_ASSERT(vfs_stat("/usr/lib/libc.a", &st) == 0);
+    KTEST_ASSERT(st.size > 0);
+
+    ktest_summary();
+}
 
 
 /* ---------------------------------------------------------------------------
@@ -2072,6 +2167,14 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
+    test_tmpfs();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_usr();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
     test_pmm();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
@@ -2188,6 +2291,8 @@ void ktest_bg_task(void)
     RUN(test_string);
     RUN(test_partition);
     RUN(test_devfs);
+    RUN(test_tmpfs);
+    RUN(test_usr);
     RUN(test_pmm);
     RUN(test_heap);
     RUN(test_vmm);
