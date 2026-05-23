@@ -1144,8 +1144,103 @@ int vfs_file_exists(const char *path)
         return procfs_file_exists(drv);
     case VFS_FS_DEV:
         return devfs_file_exists(drv);
+    case VFS_FS_LOG:
+        return logfs_file_exists(drv);
     default:
         return 0;
+    }
+}
+
+/* vfs_stat -- lean per-backend size + kind probe.  Avoids loading file data
+ * for sized backends (ext2 inode, FAT32 dir entry, ISO9660 PVD descriptor,
+ * devfs node table); falls back to a small scratch read for synthetic FSes
+ * (procfs / logfs) whose files are bounded by construction. */
+int vfs_stat(const char *path, vfs_stat_info_t *out)
+{
+    if (!out) return -1;
+    out->size = 0; out->kind = VFS_STAT_FILE;
+
+    char abs[VFS_PATH_MAX];
+    path_resolve(path, abs);
+
+    const char *drv;
+    int hdfs;
+    int r = vfs_route(abs, &drv, &hdfs);
+
+    switch (r) {
+    case VFS_FS_ROOT:
+    case VFS_FS_MNT:
+    case VFS_FS_MNT_EMPTY:
+        out->kind = VFS_STAT_DIR;
+        return 0;
+
+    case VFS_FS_HD:
+        if (hdfs == HD_FS_EXT2) {
+            uint32_t sz = 0; int isdir = 0;
+            if (ext2_stat(drv, &sz, &isdir) != 0) return -1;
+            out->size = sz;
+            out->kind = isdir ? VFS_STAT_DIR : VFS_STAT_FILE;
+            return 0;
+        } else {
+            /* FAT32: read_file with buf=NULL returns 0 with *out_sz set
+             * to the directory-entry size, without touching file data.
+             * Returns nonzero on missing path or directory entry. */
+            uint32_t sz = 0;
+            int rc = fat32_read_file(drv, NULL, 0xFFFFFFFFu, &sz);
+            if (rc == 0) { out->size = sz; out->kind = VFS_STAT_FILE; return 0; }
+            /* Directory or missing.  Probe as directory: try ls? cheaper
+             * to just say "exists as dir" if fat32_file_exists is false
+             * but path resolves under /mnt.  Best-effort: treat a non-zero
+             * return as directory iff the basename is empty (root). */
+            return -1;
+        }
+
+    case VFS_FS_CDROM:
+        if (s_cdrom_drive < 0) return -1;
+        {
+            uint32_t sz = 0;
+            if (iso9660_read_file((uint8_t)s_cdrom_drive, drv,
+                                  NULL, 0xFFFFFFFFu, &sz) == 0) {
+                out->size = sz; out->kind = VFS_STAT_FILE; return 0;
+            }
+            return -1;
+        }
+
+    case VFS_FS_PROC: {
+        /* procfs files are small and synthetic; use a 4 KiB scratch. */
+        if (!procfs_file_exists(drv)) return -1;
+        uint8_t *scratch = (uint8_t *)kmalloc(4096);
+        if (!scratch) return -1;
+        uint32_t got = 0;
+        int rc = procfs_read_file(drv, scratch, 4096, &got);
+        kfree(scratch);
+        if (rc != 0) return -1;
+        out->size = got; out->kind = VFS_STAT_FILE;
+        return 0;
+    }
+
+    case VFS_FS_LOG: {
+        /* logfs entries are bounded by their ring; 64 KiB is plenty. */
+        uint8_t *scratch = (uint8_t *)kmalloc(64u * 1024u);
+        if (!scratch) return -1;
+        uint32_t got = 0;
+        int rc = (logfs_read(drv, scratch, 64u * 1024u, &got) < 0) ? -1 : 0;
+        kfree(scratch);
+        if (rc != 0) return -1;
+        out->size = got; out->kind = VFS_STAT_FILE;
+        return 0;
+    }
+
+    case VFS_FS_DEV: {
+        uint32_t dev_sz = 0;
+        int node = vfs_blockdev_lookup(abs, &dev_sz);
+        if (node < 0) return -1;
+        out->size = dev_sz; out->kind = VFS_STAT_BLOCKDEV;
+        return 0;
+    }
+
+    default:
+        return -1;
     }
 }
 

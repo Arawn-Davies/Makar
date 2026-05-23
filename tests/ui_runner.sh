@@ -306,7 +306,11 @@ sendkey ret'
     # unmounted at boot); the scenario formats it with mkfs.ext2 and mounts
     # it itself.  Lives in LOGDIR so it's cleaned up with everything else.
     SCRATCH_HDD="$LOGDIR/scratch-hda.img"
-    dd if=/dev/zero of="$SCRATCH_HDD" bs=1M count=32 2>/dev/null
+    # The scratch /dev/hda must fit a release install (FAT32 minimum 33 MiB
+    # bootfs + ext2 rootfs holding apps + src + docs).  Use the release
+    # sizing (default 256 MiB) so the install scenario works; smaller
+    # scenarios (filetest, mnt-mountpoint) are unaffected by the slack.
+    dd if=/dev/zero of="$SCRATCH_HDD" bs=1M count="${MAKAR_HDD_SIZE_MB:-256}" 2>/dev/null
 
     # Boot order: `once=d` boots the CD-ROM on the FIRST boot (the live system
     # that runs the installer); after a guest-initiated reboot QEMU falls back
@@ -393,7 +397,16 @@ sendkey ret'
 # shutdown and stomp the static argv globals in shell_exec_elf.
 # Per-task exec_params (task_t.exec_params) closed that race at the
 # kernel level, so one Ctrl+C is enough now.
+# The first call after boot is a no-op: nothing has run yet, the shell
+# is freshly prompted, and the anchor would only burn ~0.6 s of visible
+# typing for no semantic effect.  Subsequent calls do the full anchor
+# so prior-test state never leaks into the next one.
+RESET_SHELL_CALLED=0
 reset_shell() {
+    if [ "$RESET_SHELL_CALLED" = "0" ]; then
+        RESET_SHELL_CALLED=1
+        return 0
+    fi
     send_script 'sendkey alt-f1
 sendkey ctrl-c
 sendkey c

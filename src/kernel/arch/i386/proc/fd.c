@@ -1,16 +1,38 @@
 /*
  * fd.c -- Per-task file descriptor table.
  *
- * Each task owns a fd_table_t with TASK_MAX_FDS slots. fds 0/1/2 are
+ * Each task owns a fd_table_t with TASK_MAX_FDS slots.  fds 0/1/2 are
  * pre-bound to keyboard/vga/vga+serial so freshly-created tasks behave
- * like POSIX processes. Higher fds are allocated by SYS_OPEN; the file
- * payload is read eagerly into a heap buffer (cap SYSCALL_FILE_MAX),
- * matching the pre-slice behaviour preserved by syscall.c.
+ * like POSIX processes.  Higher fds are allocated by SYS_OPEN.
+ *
+ * FD_KIND_FILE slots hold the file in a kmalloc'd, growable buffer.
+ * If the `dirty` bit is set when the slot is closed (whether via
+ * SYS_CLOSE or via fd_table_destroy at task tear-down), the buffer is
+ * flushed back to the VFS via vfs_write_file(e->path, ...).  The path
+ * lives inline on the slot so the close-flush doesn't need a separate
+ * lookup, and so fork's deep-copy continues to work with a single
+ * memcpy(slot, slot, sizeof slot).
  */
 
 #include <kernel/fd.h>
 #include <kernel/heap.h>
+#include <kernel/vfs.h>
 #include <string.h>
+
+/* Flush a single dirty FILE slot back to its origin path.  Returns 0 on
+ * success, -1 on flush error.  Safe to call on non-FILE / non-dirty
+ * slots (returns 0 with no side-effect). */
+static int fd_flush_one(fd_entry_t *e)
+{
+    if (!e || e->kind != FD_KIND_FILE || !e->dirty || !e->data || e->path[0] == '\0')
+        return 0;
+    int rc = vfs_write_file(e->path, e->data, e->size);
+    /* Whether or not the flush succeeded, the buffer's view is now
+     * authoritative for the caller -- clear dirty so a stray re-close
+     * (e.g. fd_table_destroy after a manual fd_close) doesn't retry. */
+    e->dirty = 0;
+    return (rc == 0) ? 0 : -1;
+}
 
 fd_table_t *fd_table_create_default(void)
 {
@@ -30,8 +52,12 @@ void fd_table_destroy(fd_table_t *tbl)
     if (!tbl)
         return;
     for (int i = 0; i < TASK_MAX_FDS; i++) {
-        if (tbl->slots[i].kind == FD_KIND_FILE && tbl->slots[i].data)
-            kfree(tbl->slots[i].data);
+        fd_entry_t *e = &tbl->slots[i];
+        if (e->kind == FD_KIND_FILE) {
+            (void)fd_flush_one(e);   /* best-effort on tear-down */
+            if (e->data)
+                kfree(e->data);
+        }
     }
     kfree(tbl);
 }
@@ -46,11 +72,15 @@ fd_table_t *fd_table_clone(const fd_table_t *src)
     memcpy(t, src, sizeof(*t));
 
     /* Each FILE slot needs its own buffer so writes/seeks in the child
-     * don't bleed back into the parent's view. */
+     * don't bleed back into the parent's view.  We deliberately also
+     * clear `dirty` on the child copy -- the parent owns the eventual
+     * flush, and a double-flush from both sides would race on FAT32's
+     * directory entry.  This is the documented non-POSIX shortcut that
+     * the open_file_t refactor (slice list, pipe(2)/dup(2)) will undo. */
     for (int i = 0; i < TASK_MAX_FDS; i++) {
         if (t->slots[i].kind == FD_KIND_FILE &&
-            t->slots[i].data && t->slots[i].size) {
-            uint8_t *buf = (uint8_t *)kmalloc(t->slots[i].size);
+            t->slots[i].data && t->slots[i].capacity) {
+            uint8_t *buf = (uint8_t *)kmalloc(t->slots[i].capacity);
             if (!buf) {
                 for (int j = 0; j < i; j++) {
                     if (t->slots[j].kind == FD_KIND_FILE && t->slots[j].data)
@@ -60,12 +90,15 @@ fd_table_t *fd_table_clone(const fd_table_t *src)
                 return NULL;
             }
             memcpy(buf, t->slots[i].data, t->slots[i].size);
-            t->slots[i].data = buf;
+            t->slots[i].data  = buf;
+            t->slots[i].dirty = 0;
         } else if (t->slots[i].kind == FD_KIND_FILE) {
             /* Defensive: a FILE slot with no buffer is malformed; sever
              * the alias to the parent's data so close-on-OOM-unwind
              * doesn't double-free anything. */
-            t->slots[i].data = NULL;
+            t->slots[i].data     = NULL;
+            t->slots[i].capacity = 0;
+            t->slots[i].dirty    = 0;
         }
     }
     return t;
@@ -96,11 +129,13 @@ int fd_close(fd_table_t *tbl, int fd)
     fd_entry_t *e = fd_get(tbl, fd);
     if (!e)
         return -1;
-    if (e->kind == FD_KIND_FILE && e->data)
-        kfree(e->data);
-    e->kind = FD_KIND_NONE;
-    e->data = NULL;
-    e->size = 0;
-    e->pos  = 0;
-    return 0;
+    int rc = 0;
+    if (e->kind == FD_KIND_FILE) {
+        rc = fd_flush_one(e);   /* propagates flush errors to the caller */
+        if (e->data)
+            kfree(e->data);
+    }
+    memset(e, 0, sizeof(*e));
+    /* memset already zeroes e->kind (== FD_KIND_NONE). */
+    return rc;
 }

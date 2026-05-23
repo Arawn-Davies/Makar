@@ -223,8 +223,16 @@ static int cmd_rm(int argc, char **argv)
     return rc;
 }
 
+/* SIGINT handler: any in-flight applet (cat reading a large log, cp
+ * copying a multi-MiB tree, ...) terminates cleanly when the operator
+ * presses Ctrl-C, rather than running to completion ignoring the
+ * delivered signal. */
+static void on_sigint(int signo) { (void)signo; sys_exit(130); }
+
 int main(int argc, char **argv)
 {
+    sys_signal(SIGINT, on_sigint);
+
     if (argc < 2) {
         write_fd(1, "Usage: makbox <ls|cat|cp|mv|rm|rmdir|echo|pwd> [args...]\n");
         sys_exit(1);

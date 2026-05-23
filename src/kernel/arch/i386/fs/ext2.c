@@ -709,6 +709,20 @@ int ext2_file_exists(const char *path)
     return e2_resolve(path, NULL) != 0;
 }
 
+/* ext2_stat -- lean inode probe for VFS stat.  Does not read file data.
+ * On success returns 0 and writes *out_size and *out_is_dir.  Returns -1
+ * if path can't be resolved or the volume isn't mounted. */
+int ext2_stat(const char *path, uint32_t *out_size, int *out_is_dir)
+{
+    if (!s_mounted) return -1;
+    ext2_inode_t in;
+    uint32_t ino = e2_resolve(path && *path ? path : "/", &in);
+    if (!ino) return -1;
+    if (out_size)   *out_size   = in.i_size;
+    if (out_is_dir) *out_is_dir = ((in.i_mode & EXT2_S_IFMT) == EXT2_S_IFDIR);
+    return 0;
+}
+
 int ext2_read_file(const char *path, void *buf, uint32_t bufsz, uint32_t *out_sz)
 {
     if (!s_mounted) return -1;

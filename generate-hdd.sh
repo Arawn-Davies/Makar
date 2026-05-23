@@ -2,7 +2,19 @@
 # generate-hdd.sh - build an installed Makar HDD image bootable with -boot c.
 #
 # What it produces:
-#   makar-hdd.img   512 MiB raw disk, MBR + FAT32 + GRUB 2 in embedding area
+#   makar-hdd.img   96 MiB raw disk, MBR + FAT32 + GRUB 2 in embedding area
+#
+# Standard size layout (post May-2026 -- single source of truth):
+#   MAKAR_HDD_SIZE_MB        96   release HDD (bootfs 34 FAT32 + rootfs 62 ext2)
+#   MAKAR_HDD_TEST_SIZE_MB   96   CI / ISO-test scratch HDD (same; FAT32 needs >=33 MiB)
+#
+# Why 34 not 16 for bootfs: FAT32 requires >= 65525 clusters (~33 MiB at
+# 512-byte sectors) and limine BIOS only reads FAT32 or ISO9660 (not
+# ext2/FAT16/etc), so 34 MiB is the firm floor for our bootfs.  16 MiB
+# bootfs would need a FAT12/16-capable bootloader -- not on the slice
+# list today.
+# Today this script still lays out a single FAT32 partition; the
+# bootfs/rootfs split lands with the limine installer slice.
 #
 # Test with:
 #   qemu-system-i386 \

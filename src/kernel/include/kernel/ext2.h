@@ -66,6 +66,9 @@ int ext2_mkdir(const char *path);
  * ---------------------------------------------------------------------- */
 int ext2_read_file(const char *path, void *buf, uint32_t bufsz, uint32_t *out_sz);
 int ext2_file_exists(const char *path);
+/* Lean stat: fills *out_size and *out_is_dir without reading file data.
+ * Returns 0 on success, -1 if path unresolved or volume unmounted. */
+int ext2_stat(const char *path, uint32_t *out_size, int *out_is_dir);
 int ext2_write_file(const char *path, const void *buf, uint32_t size);
 int ext2_delete_file(const char *path);
 int ext2_delete_dir(const char *path);

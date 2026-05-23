@@ -4,7 +4,7 @@
  * Full-screen wizard that:
  *   1. lists the ATA target drives and lets the user pick one (arrow keys);
  *   2. asks for the data filesystem (ext2 or FAT32);
- *   3. partitions the disk: a 50 MiB FAT32 boot partition (kernel +
+ *   3. partitions the disk: a 34 MiB FAT32 boot partition (kernel +
  *      limine-bios.sys + limine.conf) plus a data partition spanning the rest
  *      (ext2 or FAT32, per the user's choice) holding /apps, /docs, /src;
  *   4. formats both partitions and copies files onto them;
@@ -47,7 +47,19 @@
 /* ------------------------------------------------------------------------- */
 
 #define INST_PART_START_LBA   2048u          /* 1 MiB aligned first partition */
-#define INST_BOOT_SECTORS     102400u         /* 50 MiB FAT32 boot partition   \
+/* Bootfs sized to "just enough": limine-bios.sys (~120 KiB) + kernel
+ * (~650 KiB) + limine.conf + FAT32 reserved sectors + cluster overhead +
+ * breathing room for multiple kernel versions.  34 MiB is generous (~10x
+ * what limine+kernel actually occupy today).  Everything else on the disk
+ * becomes rootfs (apps + src + docs + user data).  Tweak INST_BOOT_MB if
+ * a future bootloader gets fatter. */
+/* FAT32 requires >= 65525 clusters which at 512-byte sectors works out
+ * to roughly 33 MiB minimum (the spec's "small FAT32" trigger).  mkfs
+ * refuses anything below that, so 34 MiB / 16 MiB are not viable bootfs
+ * sizes despite being more than enough by usage.  34 MiB is the
+ * smallest reliable FAT32 + a touch of headroom. */
+#define INST_BOOT_MB          34u
+#define INST_BOOT_SECTORS     (INST_BOOT_MB * 2048u)   /* 34 MiB FAT32 boot partition \
                                               * (assumes 512-byte sectors)     */
 #define INST_MAX_FILE_SIZE    (8u * 1024u * 1024u)
 #define MBR_PART_TABLE_OFF    0x1BEu
@@ -616,7 +628,7 @@ static int partition_whole_disk(uint8_t drive, uint32_t disk_sectors,
     uint32_t b_sz    = INST_BOOT_SECTORS;
     uint32_t d_start = b_start + b_sz;
     if (disk_sectors <= d_start) {
-        tui_log("  ERROR: disk too small for dual-partition layout (need > 50 MiB).");
+        tui_log("  ERROR: disk too small for dual-partition layout (need > 34 MiB bootfs + rootfs headroom).");
         return -1;
     }
     uint32_t d_sz = disk_sectors - d_start;
@@ -661,6 +673,29 @@ static const char limine_conf[] =
     "    protocol: multiboot2\n"
     "    path: boot():/boot/makar.kernel\n";
 
+/* Append "<prefix> (rc=<n>)" to the installer log -- detailed failure
+ * context so a post-mortem `cat /log/install.log` records exactly which
+ * step failed and the backend return code.  Buf is generous (`tui_log`
+ * truncates at LOG_W). */
+static void tui_log_rc(const char *prefix, int rc)
+{
+    char buf[160];
+    int  i = 0;
+    while (prefix[i] && i < 120) { buf[i] = prefix[i]; i++; }
+    /* " (rc=<int>)" */
+    const char *suf = " (rc=";
+    for (int j = 0; suf[j] && i < 154; j++) buf[i++] = suf[j];
+    int n = rc;
+    if (n < 0) { buf[i++] = '-'; n = -n; }
+    char dig[12]; int dn = 0;
+    if (n == 0) dig[dn++] = '0';
+    while (n) { dig[dn++] = (char)('0' + (n % 10)); n /= 10; }
+    while (dn--) buf[i++] = dig[dn];
+    buf[i++] = ')';
+    buf[i]   = '\0';
+    tui_log(buf);
+}
+
 static int do_install(uint8_t drive, uint32_t disk_sectors, int fs)
 {
     uint32_t boot_lba = 0, boot_count = 0;
@@ -669,30 +704,33 @@ static int do_install(uint8_t drive, uint32_t disk_sectors, int fs)
     exec_screen("Installing Makar");
 
     tui_log("Partitioning drive...");
-    if (partition_whole_disk(drive, disk_sectors, fs,
-                             &boot_lba, &boot_count,
-                             &data_lba, &data_count) != 0) {
-        tui_log("  ERROR: failed to write partition table.");
+    int prc = partition_whole_disk(drive, disk_sectors, fs,
+                                   &boot_lba, &boot_count,
+                                   &data_lba, &data_count);
+    if (prc != 0) {
+        tui_log_rc("  ERROR: failed to write partition table.", prc);
         return -1;
     }
 
     /* ---- Partition 1: FAT32 boot (kernel + limine stage 3) ---- */
 
-    tui_log("Formatting boot partition (FAT32, 50 MiB)...");
-    if (fat32_mkfs(drive, boot_lba, boot_count) != 0) {
-        tui_log("  ERROR: boot mkfs failed."); return -2;
+    tui_log("Formatting boot partition (FAT32, 34 MiB)...");
+    int rc;
+    if ((rc = fat32_mkfs(drive, boot_lba, boot_count)) != 0) {
+        tui_log_rc("  ERROR: boot mkfs failed (need >= 33 MiB for FAT32).", rc);
+        return -2;
     }
 
     tui_log("Mounting boot partition...");
     if (fat32_mounted()) fat32_unmount();
-    if (fat32_mount(drive, boot_lba) != 0) {
-        tui_log("  ERROR: boot mount failed."); return -3;
+    if ((rc = fat32_mount(drive, boot_lba)) != 0) {
+        tui_log_rc("  ERROR: boot mount failed.", rc); return -3;
     }
     g_root_fs = ROOTFS_FAT32;
 
     tui_log("Creating boot directory tree...");
-    fat32_mkdir("/boot");
-    fat32_mkdir("/limine");
+    if ((rc = fat32_mkdir("/boot"))   != 0) tui_log_rc("  WARNING: mkdir /boot failed.", rc);
+    if ((rc = fat32_mkdir("/limine")) != 0) tui_log_rc("  WARNING: mkdir /limine failed.", rc);
 
     tui_log("Copying kernel...");
     copy_one("/boot/makar.kernel", "/boot/makar.kernel");
@@ -701,9 +739,9 @@ static int do_install(uint8_t drive, uint32_t disk_sectors, int fs)
     copy_one(LIMINE_SYS_ISO_PATH, "/limine/limine-bios.sys");
 
     tui_log("Writing limine.conf...");
-    if (rfs_write("/limine/limine.conf", limine_conf,
-                  (uint32_t)(sizeof(limine_conf) - 1)) != 0)
-        tui_log("  WARNING: failed to write limine.conf.");
+    if ((rc = rfs_write("/limine/limine.conf", limine_conf,
+                        (uint32_t)(sizeof(limine_conf) - 1))) != 0)
+        tui_log_rc("  WARNING: failed to write limine.conf.", rc);
 
     fat32_unmount();
 
@@ -713,13 +751,22 @@ static int do_install(uint8_t drive, uint32_t disk_sectors, int fs)
                                : "Formatting data partition (FAT32)...");
     int mk = (fs == ROOTFS_EXT2) ? ext2_mkfs(drive, data_lba, data_count)
                                   : fat32_mkfs(drive, data_lba, data_count);
-    if (mk != 0) { tui_log("  ERROR: data mkfs failed."); return -4; }
+    if (mk != 0) {
+        tui_log_rc(fs == ROOTFS_EXT2
+                       ? "  ERROR: data mkfs (ext2) failed."
+                       : "  ERROR: data mkfs (FAT32) failed.", mk);
+        return -4;
+    }
 
     tui_log("Mounting data partition...");
     if (fat32_mounted()) fat32_unmount();
     int mnt = (fs == ROOTFS_EXT2) ? ext2_mount(drive, data_lba)
                                    : fat32_mount(drive, data_lba);
-    if (mnt != 0) { tui_log("  ERROR: data mount failed."); return -5; }
+    if (mnt != 0) {
+        tui_log_rc(fs == ROOTFS_EXT2 ? "  ERROR: data mount (ext2) failed."
+                                      : "  ERROR: data mount (FAT32) failed.", mnt);
+        return -5;
+    }
     g_root_fs = fs;
 
     copy_tree("/apps");
@@ -801,13 +848,18 @@ void installer_run(void)
 {
     tui_geometry();
     Serial_WriteString("INSTALL>welcome\n");
+    /* Pin /log/install.log as soon as the installer is entered so the
+     * post-mortem `cat /log/install.log` always has something to show --
+     * even if the user immediately Esc's out of the welcome screen, the
+     * file still exists with a startup banner. */
+    tui_log("Installer started.");
 
     /* Welcome. */
     if (g_gui) {
         tui_frame("Makar OS Installer", "Press Enter to begin, Esc to cancel");
         tui_center(6,  "Install Makar to a hard disk.", C_FG, C_BG);
         tui_center(8,  "This will ERASE the drive you choose.", C_WARN, C_BG);
-        tui_center(10, "50 MiB FAT32 boot + data partition (ext2 or FAT32) + apps + docs + src", C_DIM, C_BG);
+        tui_center(10, "34 MiB FAT32 boot + data partition (ext2 or FAT32) + apps + docs + src", C_DIM, C_BG);
         unsigned char c = getkey();
         if (c == 0x1B) return;
     } else {
@@ -841,10 +893,10 @@ void installer_run(void)
     static const char *fs_items[] = { "ext2  (Unix-style, recommended)", "FAT32 (EFI-style)" };
     static const char *fs_descs[] = {
         "Apps / docs / src land on an ext2 data partition.\n"
-        "  A separate FAT32 boot partition (50 MiB) holds the\n"
+        "  A separate FAT32 boot partition (34 MiB) holds the\n"
         "  kernel and Limine stage 3 (limine-bios.sys).",
         "Apps / docs / src land on a FAT32 data partition.\n"
-        "  A separate FAT32 boot partition (50 MiB) holds the\n"
+        "  A separate FAT32 boot partition (34 MiB) holds the\n"
         "  kernel and Limine stage 3 (limine-bios.sys)." };
     Serial_WriteString("INSTALL>fs\n");
     int fs_pick = tui_menu("Root filesystem", NULL, fs_items, 2, fs_descs);
@@ -855,7 +907,7 @@ void installer_run(void)
     static const char *pm_items[] = { "Use entire disk (recommended)",
                                        "Advanced: edit layout in cfdisk" };
     static const char *pm_descs[] = {
-        "Auto: 50 MiB FAT32 boot partition + data partition spanning rest.",
+        "Auto: 34 MiB FAT32 boot partition + data partition spanning rest.",
         "Quit here and run 'cfdisk' yourself, then re-run install." };
     Serial_WriteString("INSTALL>partition\n");
     int pm = tui_menu("Partitioning", NULL, pm_items, 2, pm_descs);

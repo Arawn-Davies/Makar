@@ -48,7 +48,11 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_COMPRESS: '1'
       CCACHE_MAXSIZE: 500M
-      HDD_SIZE_MB: 64    # smaller test image -> faster artifact upload
+      # CI scratch HDD size -- must match MAKAR_HDD_TEST_SIZE_MB in run.sh.
+      # Release HDDs use MAKAR_HDD_SIZE_MB (256) via generate-hdd.sh's
+      # default; this 64 MiB image is the CI / gdb-hdd test artifact.
+      HDD_SIZE_MB: 96
+      MAKAR_HDD_TEST_SIZE_MB: 96
 
     steps:
       - name: Checkout

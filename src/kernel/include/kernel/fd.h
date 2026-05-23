@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <kernel/vfs.h>     /* VFS_PATH_MAX */
 
 /*
  * Per-task file descriptor table.
@@ -11,9 +12,14 @@
  * stdin (keyboard), stdout (VGA), stderr (VGA + serial) at task creation
  * time to mirror POSIX. Higher fds are allocated by SYS_OPEN.
  *
- * Files are read eagerly into a heap buffer (cap SYSCALL_FILE_MAX),
- * preserving the pre-slice behaviour. The lazy/streaming model belongs to
- * a future slice (musl libc port).
+ * FD_KIND_FILE slots hold the file in a kmalloc'd, growable heap buffer.
+ * Read-mode opens eager-load the whole file (capped at SYSCALL_FILE_MAX).
+ * Write-mode opens start at SYSCALL_FILE_INITIAL and grow via krealloc on
+ * demand; the buffer is flushed back via vfs_write_file on close when the
+ * `dirty` bit is set.  The path the fd was opened against is kept inline
+ * on the slot so close-flush can name the destination without a second
+ * lookup; the open_file_t refactor that would deduplicate this lives on
+ * the slice list for pipe(2)/dup(2).
  */
 
 #define TASK_MAX_FDS  16
@@ -38,10 +44,15 @@ typedef struct {
     fd_kind_t kind;
     /* file-kind state (zero/NULL for other kinds) */
     uint8_t  *data;     /* kmalloc'd buffer, owned by this slot      */
-    uint32_t  size;     /* total bytes valid in data (or device size) */
+    uint32_t  size;     /* logical EOF in data (also device size for BLOCKDEV) */
+    uint32_t  capacity; /* FILE: bytes allocated in *data; size <= capacity */
     uint32_t  pos;      /* current read/seek position                 */
     uint32_t  flags;    /* FD_FLAG_*; per-fd modes (e.g. O_NONBLOCK)  */
     int       dev_node; /* FD_KIND_BLOCKDEV: devfs node index         */
+    uint8_t   dirty;    /* FILE: data differs from on-disk; flush on close */
+    uint8_t   writable; /* FILE: opened with O_WRONLY or O_RDWR        */
+    uint8_t   append;   /* FILE: O_APPEND -- force pos = size before write */
+    char      path[VFS_PATH_MAX];  /* FILE: absolute path for close-flush */
 } fd_entry_t;
 
 typedef struct fd_table {

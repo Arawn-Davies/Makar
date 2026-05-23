@@ -66,6 +66,18 @@ then port `dash` (or extend the in-kernel shell), then bring up TCC
 for in-place compile-run.  Detailed plan in
 [Userland libc](userland-libc.md).
 
+**TCC port progress (May 2026):** Phases 1 & 2 of the
+[TCC feasibility plan](tcc-feasibility.md) are shipped.  Phase 1
+delivered the kernel-side writable `FD_KIND_FILE`, `O_CREAT`/`O_TRUNC`/
+`O_APPEND`, `SYS_STAT/FSTAT`, `SYS_READDIR`, growable buffers
+(`SYSCALL_FILE_MAX` lifted to 8 MiB).  Phase 2 delivered the userspace
+libc shim: `malloc`/`free`/`realloc`/`calloc` over `SYS_BRK`,
+`<ctype.h>`, `strtol`/`atoi`/`strdup`/`qsort`/`sscanf`/`getenv`,
+`setjmp`/`longjmp`, and a `FILE*` layer with `snprintf` family.
+Coverage: `filetest.elf` + `alloctest.elf` (12 sub-tests each ish) +
+`test_file_fd` ktest suite.  Phase 3 (cross-build `tcc.elf`) is the
+next milestone.
+
 Slices 15+16 closed the `fork`/`execve`/`wait4` half of [#121](https://github.com/Arawn-Davies/Makar/issues/121);
 the remaining libc/musl/dash half is still open under the same issue.
 Slice 20 (paused) carries the userland-shell follow-on.

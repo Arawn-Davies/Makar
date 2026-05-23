@@ -150,7 +150,7 @@ Per-task state (`task_t` in `kernel/task.h`):
 - `cwd[VFS_PATH_MAX]` - authoritative per-task working directory; inherited from creator on `task_create`; `vfs_getcwd()` / `vfs_cd()` route here through `task_current()`. Pre-tasking-init, `vfs.c` falls back to `s_boot_cwd`, which `tasking_init` then hands off to `idle->cwd`. VT0 at `/proc` and VT1 at `/mnt/cdrom/apps` are fully independent.
 - `tty` - TTY index (TASK_TTY_NONE for unbound); not yet authoritative (vtty.c still uses `vtty_tasks[]`)
 - `sig_pending` / `sig_mask`  Linux-style signal bitmasks (subsystem to follow)
-- `fd_table` - per-task fd table (`kernel/fd.h`); fds 0/1/2 pre-bound to stdin/stdout/stderr at `task_create`
+- `fd_table` - per-task fd table (`kernel/fd.h`); fds 0/1/2 pre-bound to stdin/stdout/stderr at `task_create`.  `FD_KIND_FILE` slots hold a growable kmalloc'd buffer plus `capacity`/`dirty`/`writable`/`append`/inline `path[VFS_PATH_MAX]`; `fd_close` flushes dirty buffers via `vfs_write_file(path,...)`.  `fd_table_clone` (fork) deep-copies each FILE buffer and **clears `dirty` on the child copy** so only the parent's eventual close re-writes the file — a deliberate non-POSIX shortcut, undone by the future `open_file_t` refactor (pipe(2)/dup(2) slice).
 - `exec_params` - kmalloc'd `exec_params_t` set by `shell_exec_elf` and consumed by `exec_task_entry`. Per-task so two shells on different TTYs can `exec` concurrently without trampling each other's argv/path (the prior static-globals approach caused a `CS=0x3F8` ring-3 panic under load); reaped on slot reuse.
 - `user_brk`, `page_dir`, `state`, `name`, `esp`, `stack`, `next`
 
@@ -162,9 +162,11 @@ Authoritative table in `src/kernel/include/kernel/syscall.h`. Selected entries:
 | 1   | SYS_EXIT         | EBX = status.  Sets `task_current()->exit_status` before transitioning to ZOMBIE/DEAD (see SYS_WAIT4). |
 | 2   | SYS_FORK         | -.  COW-clone the calling task; returns child pid in parent, 0 in child, -EAGAIN on failure. (slice 15) |
 | 3   | SYS_READ         | EBX = fd (0=stdin keyboard, ≥3=VFS), ECX = buf, EDX = count |
-| 4   | SYS_WRITE        | EBX = fd, ECX = buf, EDX = count. fd 1 = VGA, fd 2 = VGA + COM1, ≥3 = VFS.  A `FD_KIND_BLOCKDEV` fd writes via `devfs_pwrite` at the fd's byte offset. |
-| 5   | SYS_OPEN         | EBX = path, ECX = flags (returns fd).  A `/dev` block device binds as `FD_KIND_BLOCKDEV` (no eager buffer); other paths eager-buffer up to `SYSCALL_FILE_MAX`. |
-| 6   | SYS_CLOSE        | EBX = fd |
+| 4   | SYS_WRITE        | EBX = fd, ECX = buf, EDX = count. fd 1 = VGA, fd 2 = VGA + COM1, ≥3 = VFS.  A `FD_KIND_BLOCKDEV` fd writes via `devfs_pwrite` at the fd's byte offset.  A writable `FD_KIND_FILE` fd mutates its in-memory buffer (krealloc grow, geometric doubling); the dirty buffer is flushed back via `vfs_write_file(path, ...)` on `SYS_CLOSE`. |
+| 5   | SYS_OPEN         | EBX = path, ECX = flags (`O_RDONLY/WRONLY/RDWR` ∨ `O_CREAT 0100` ∨ `O_TRUNC 01000` ∨ `O_APPEND 02000`; Linux i386 values).  Returns fd.  `/dev` block devices bind as `FD_KIND_BLOCKDEV` (no eager buffer); other paths eager-buffer existing content up to `SYSCALL_FILE_MAX` (8 MiB).  `O_CREAT` creates an empty buffer when the path doesn't exist; `O_TRUNC` discards the eager-load and starts empty.  The opened path is kept inline on the fd slot so the close-time flush doesn't need a second lookup. |
+| 6   | SYS_CLOSE        | EBX = fd.  Flushes any dirty `FD_KIND_FILE` buffer via `vfs_write_file`; returns -1 if the backend rejects the flush (the buffer is freed regardless). |
+| 106 | SYS_STAT         | EBX = path, ECX = `struct stat *`.  Populates `st_mode`/`st_size`/`st_nlink`/`st_blksize`/`st_ino`; other fields zero-filled.  `st_ino` is a stable-per-boot FNV-1a-32 hash of the path. |
+| 108 | SYS_FSTAT        | EBX = fd, ECX = `struct stat *`.  Same shape as SYS_STAT; for `FD_KIND_FILE` `st_size` reflects pending (unflushed) writes. |
 | 11  | SYS_EXECVE       | EBX = path, ECX = argv (NULL-terminated `char *const argv[]`), EDX = envp (ignored).  On success doesn't return.  (slice 16a) |
 | 19  | SYS_LSEEK        | EBX = fd, ECX = offset, EDX = whence (works on `FD_KIND_FILE` and `FD_KIND_BLOCKDEV`) |
 | 37  | SYS_KILL         | EBX = pid, ECX = signo |

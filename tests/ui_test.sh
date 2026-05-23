@@ -543,6 +543,74 @@ sendkey ret" \
         "mnt-flow-done"
 }
 
+test_filetest() {
+    # Phase-1-of-TCC-port slice: exercises the writable FD_KIND_FILE path
+    # end-to-end against a real FAT32 volume.  Formats /dev/hda FAT32, mounts
+    # it at /mnt/hd, then runs filetest.elf which drives:
+    #   - O_CREAT|O_TRUNC + write + flush-on-close
+    #   - O_RDONLY reopen + fstat + read + memcmp
+    #   - O_APPEND
+    #   - sys_stat() reflecting the appended size
+    #   - 256 KiB grow past the old 64 KiB cap
+    #   - no-flush on a read-only close
+    # All milestones print over COM1; we assert on every PASS line plus the
+    # final "[filetest] PASS".  If any sub-test fails, filetest.elf exits
+    # with a "[filetest] FAIL: <reason>" line which the assert misses,
+    # so the scenario fails loudly.
+    # Use ext2 -- /dev/hda is the runner's raw scratch disk with no MBR, so
+    # mkfs.fat32 refuses it ("partition too small"); mkfs.ext2 takes the whole
+    # device as a single ext2 volume (same pattern as test_mnt_mountpoint).
+    # /mnt/hd is the default HD mountpoint (already in the table), so no
+    # mkdir is needed.  We sync on filetest's own "[filetest] PASS" marker
+    # so the next shell command is never typed while filetest is still
+    # running (which otherwise drops the first keystroke into the kernel
+    # keyboard ring at a bad moment).  it_until already calls reset_shell
+    # internally -- don't call it again here or you get a visible double
+    # "^C / cd /" sequence on screen.
+    it_until "filetest" \
+"$(keys "mkfs.ext2 /dev/hda")
+sendkey ret
+$(keys "mount /dev/hda /mnt/hd")
+sendkey ret
+$(keys "exec $P_CDROM_APPS/filetest.elf /mnt/hd")
+sendkey ret" \
+        "[filetest] PASS" 60
+    assert_serial_contains \
+        "[filetest] dir=/mnt/hd" \
+        "[filetest] create+write+close ok" \
+        "[filetest] reopen+fstat+read ok size=13" \
+        "[filetest] append+close ok" \
+        "[filetest] stat ok size=19" \
+        "[filetest] grow-256k ok" \
+        "[filetest] no-flush-on-rdonly ok" \
+        "[filetest] PASS"
+}
+
+test_alloctest() {
+    # Phase-2-of-TCC-port slice: userspace heap (malloc.c) + ctype.h +
+    # stdlib.h (strtol/atoi).  alloctest.elf prints "[alloctest] PASS" on
+    # full success or "[alloctest] FAIL: <reason>" on the first failure.
+    # No leading reset_shell -- it_until already calls reset_shell.
+    it_until "alloctest" \
+"$(keys "exec $P_CDROM_APPS/alloctest.elf")
+sendkey ret" \
+        "[alloctest] PASS" 20
+    assert_serial_contains \
+        "[alloctest] malloc/free 64B ok" \
+        "[alloctest] reuse ok" \
+        "[alloctest] realloc grow ok" \
+        "[alloctest] calloc zeroes ok" \
+        "[alloctest] ctype ok" \
+        "[alloctest] strtol ok" \
+        "[alloctest] atoi ok" \
+        "[alloctest] setjmp/longjmp ok" \
+        "[alloctest] snprintf ok" \
+        "[alloctest] FILE* roundtrip ok" \
+        "[alloctest] readdir ok" \
+        "[alloctest] strdup/qsort/sscanf/getenv ok" \
+        "[alloctest] PASS"
+}
+
 test_install() {
     # Full TUI installer against the blank scratch disk (/dev/hda).  Drives the
     # wizard deterministically: installer_run prints an `INSTALL>...` serial
@@ -605,7 +673,7 @@ sendkey ret"
     # case the installer is parked on its final "press a key" screen.
     send_script 'sendkey esc'
     sleep 0.5
-    send_script "$(keys "cat /log")
+    send_script "$(keys "cat /log/install.log")
 sendkey ret"
     [ "$completed" = "0" ] && sleep 2 || sleep 1
 
@@ -795,7 +863,7 @@ sendkey ret"
 
 # --- Driver -----------------------------------------------------------------
 
-ALL_TESTS=(glob_proc tab_path exec_hello cd_root ls_dev ls_mnt per_tty_cwd calc_brackets ctrlc_kills_child no_dead_in_proctasks typo_doesnt_clear vt_roundtrip_keeps_maktop_focused vt_all_roundtrips fork_cow fork_execve user_sigusr1_handler makbox_pwd shell_scripting_vars demo_script bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch mnt_mountpoint)
+ALL_TESTS=(glob_proc tab_path exec_hello cd_root ls_dev ls_mnt per_tty_cwd calc_brackets ctrlc_kills_child no_dead_in_proctasks typo_doesnt_clear vt_roundtrip_keeps_maktop_focused vt_all_roundtrips fork_cow fork_execve user_sigusr1_handler makbox_pwd shell_scripting_vars demo_script bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch mnt_mountpoint filetest alloctest)
 
 declare -a TO_RUN
 if [ $# -eq 0 ]; then

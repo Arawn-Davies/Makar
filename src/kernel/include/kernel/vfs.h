@@ -140,6 +140,20 @@ int vfs_write_file(const char *path, const void *buf, uint32_t size);
 /* Return 1 if path exists and is readable, 0 otherwise. */
 int vfs_file_exists(const char *path);
 
+/* Lean stat -- fills only the fields the kernel can know cheaply, so
+ * SYS_STAT / SYS_FSTAT don't have to eager-load the file data just to
+ * read st_size.  `kind` is one of VFS_STAT_* below. */
+#define VFS_STAT_FILE     1
+#define VFS_STAT_DIR      2
+#define VFS_STAT_BLOCKDEV 3
+#define VFS_STAT_CHARDEV  4
+typedef struct {
+    uint32_t size;
+    uint8_t  kind;   /* VFS_STAT_* */
+} vfs_stat_info_t;
+/* Returns 0 on success, -1 if path doesn't resolve to a known node. */
+int vfs_stat(const char *path, vfs_stat_info_t *out);
+
 /*
  * Compatibility wrappers around the synthetic /log directory (see logfs.h).
  * /log is now a writable in-RAM log tree (/log/kernel.log, /log/install.log,

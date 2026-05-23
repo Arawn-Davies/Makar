@@ -745,8 +745,199 @@ static void test_fd_table(void)
     aux->slots[c].kind = FD_KIND_FILE;
     aux->slots[c].data = (uint8_t *)kmalloc(8);
     aux->slots[c].size = 8;
+    /* Leave path[0] = '\0' so the destroy-time flush is a no-op
+     * (fd_flush_one short-circuits on empty paths). */
     fd_table_destroy(aux);   /* no leaks even with an open file */
     fd_table_destroy(NULL);  /* must accept NULL */
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
+ * Suite: file_fd
+ *
+ * Phase-1-of-TCC-port slice -- verifies the writable FD_KIND_FILE state
+ * machine in isolation (no real filesystem round-trips; those land in
+ * the filetest.elf userland scenario).  Pins:
+ *   A. SYS_WRITE on a writable FILE slot grows the buffer past the old
+ *      64 KiB cap (covers krealloc path + doubling).
+ *   B. lseek-past-EOF + SYS_WRITE zero-fills the gap.
+ *   C. SYS_STAT on /proc/uname returns S_IFREG + non-zero size.
+ *   D. SYS_STAT on a missing path returns -1.
+ *   E. fd_table_clone clears `dirty` on child FILE slots and gives them
+ *      their own buffer (no aliasing back to the parent).
+ *   F. fd_close on a dirty FILE slot whose path points at a non-writable
+ *      route returns -1 (flush propagates the backend error).
+ * --------------------------------------------------------------------------- */
+static void test_file_fd(void)
+{
+    ktest_begin("file_fd",
+                "growable FD_KIND_FILE buffer, lseek-past-EOF zero-fill, "
+                "SYS_STAT, fork-clone-clears-dirty, flush-error propagation");
+
+    task_t *cur = task_current();
+    KTEST_ASSERT(cur != NULL);
+    KTEST_ASSERT(cur->fd_table != NULL);
+
+    /* ---- A. growable buffer (write 192 KiB past the old 64 KiB cap) ---- */
+    int fd = fd_alloc(cur->fd_table);
+    KTEST_ASSERT(fd >= 0);
+    fd_entry_t *e = &cur->fd_table->slots[fd];
+    memset(e, 0, sizeof(*e));
+    e->kind     = FD_KIND_FILE;
+    e->writable = 1;
+    /* path[0] = '\0' so close-flush is a no-op (no fs needed). */
+    /* No initial allocation; SYS_WRITE will grow from zero. */
+
+    const uint32_t GROW_BYTES = 192u * 1024u;   /* well past 64 KiB */
+    static uint8_t pattern[4096];
+    for (uint32_t off = 0; off < GROW_BYTES; off += 4096u) {
+        for (uint32_t i = 0; i < 4096u; i++)
+            pattern[i] = (uint8_t)((off + i) & 0xFFu);
+        registers_t r;
+        memset(&r, 0, sizeof(r));
+        r.eax = SYS_WRITE;
+        r.ebx = (uint32_t)fd;
+        r.ecx = (uint32_t)(uintptr_t)pattern;
+        r.edx = 4096u;
+        syscall_dispatch(&r);
+        KTEST_ASSERT(r.eax == 4096u);
+    }
+    KTEST_ASSERT(e->size == GROW_BYTES);
+    KTEST_ASSERT(e->capacity >= GROW_BYTES);
+    KTEST_ASSERT(e->dirty == 1);
+    /* spot-check first and last byte against pattern */
+    KTEST_ASSERT(e->data[0]                == (uint8_t)(0u & 0xFFu));
+    KTEST_ASSERT(e->data[GROW_BYTES - 1u]  == (uint8_t)((GROW_BYTES - 1u) & 0xFFu));
+    /* Clear dirty so close doesn't try to flush an empty path. */
+    e->dirty = 0;
+    KTEST_ASSERT(fd_close(cur->fd_table, fd) == 0);
+
+    /* ---- B. lseek-past-EOF zero-fill ---- */
+    fd = fd_alloc(cur->fd_table);
+    KTEST_ASSERT(fd >= 0);
+    e = &cur->fd_table->slots[fd];
+    memset(e, 0, sizeof(*e));
+    e->kind     = FD_KIND_FILE;
+    e->writable = 1;
+
+    /* Write "A" at offset 0 first so size is 1. */
+    {
+        registers_t r; memset(&r, 0, sizeof(r));
+        r.eax = SYS_WRITE; r.ebx = (uint32_t)fd;
+        r.ecx = (uint32_t)(uintptr_t)"A"; r.edx = 1u;
+        syscall_dispatch(&r);
+        KTEST_ASSERT(r.eax == 1u);
+    }
+    /* Seek to 100. */
+    {
+        registers_t r; memset(&r, 0, sizeof(r));
+        r.eax = SYS_LSEEK; r.ebx = (uint32_t)fd;
+        r.ecx = 100u; r.edx = 0u;   /* SEEK_SET */
+        syscall_dispatch(&r);
+        KTEST_ASSERT(r.eax == 100u);   /* writable fd: not clamped to size */
+    }
+    /* Write "Z". */
+    {
+        registers_t r; memset(&r, 0, sizeof(r));
+        r.eax = SYS_WRITE; r.ebx = (uint32_t)fd;
+        r.ecx = (uint32_t)(uintptr_t)"Z"; r.edx = 1u;
+        syscall_dispatch(&r);
+        KTEST_ASSERT(r.eax == 1u);
+    }
+    KTEST_ASSERT(e->size == 101u);
+    KTEST_ASSERT(e->data[0]   == 'A');
+    KTEST_ASSERT(e->data[100] == 'Z');
+    /* Zero-fill in the gap. */
+    for (uint32_t i = 1; i < 100u; i++)
+        KTEST_ASSERT(e->data[i] == 0);
+    e->dirty = 0;
+    KTEST_ASSERT(fd_close(cur->fd_table, fd) == 0);
+
+    /* ---- C. SYS_STAT on /proc/uname ---- */
+    {
+        struct stat st;
+        memset(&st, 0xAB, sizeof(st));   /* poison: catch un-set fields */
+        registers_t r; memset(&r, 0, sizeof(r));
+        r.eax = SYS_STAT;
+        r.ebx = (uint32_t)(uintptr_t)"/proc/uname";
+        r.ecx = (uint32_t)(uintptr_t)&st;
+        syscall_dispatch(&r);
+        KTEST_ASSERT(r.eax == 0);
+        KTEST_ASSERT((st.st_mode & S_IFMT) == S_IFREG);
+        KTEST_ASSERT(st.st_size > 0);
+        KTEST_ASSERT(st.st_blksize == 4096);
+    }
+
+    /* ---- D. SYS_STAT on a missing path ---- */
+    {
+        struct stat st;
+        registers_t r; memset(&r, 0, sizeof(r));
+        r.eax = SYS_STAT;
+        r.ebx = (uint32_t)(uintptr_t)"/no/such/file/anywhere";
+        r.ecx = (uint32_t)(uintptr_t)&st;
+        syscall_dispatch(&r);
+        KTEST_ASSERT(r.eax == (uint32_t)-1);
+    }
+
+    /* ---- E. fork-clone clears dirty + gives the child its own buffer ---- */
+    {
+        fd_table_t *parent = fd_table_create_default();
+        KTEST_ASSERT(parent != NULL);
+        int pfd = fd_alloc(parent);
+        KTEST_ASSERT(pfd >= 0);
+        fd_entry_t *pe = &parent->slots[pfd];
+        memset(pe, 0, sizeof(*pe));
+        pe->kind     = FD_KIND_FILE;
+        pe->writable = 1;
+        pe->data     = (uint8_t *)kmalloc(32);
+        pe->capacity = 32;
+        pe->size     = 4;
+        pe->dirty    = 1;
+        memcpy(pe->data, "abcd", 4);
+        /* No path so any accidental flush is harmless. */
+
+        fd_table_t *child = fd_table_clone(parent);
+        KTEST_ASSERT(child != NULL);
+        fd_entry_t *ce = &child->slots[pfd];
+        KTEST_ASSERT(ce->kind == FD_KIND_FILE);
+        KTEST_ASSERT(ce->data != pe->data);          /* deep copy */
+        KTEST_ASSERT(ce->size == 4);
+        KTEST_ASSERT(ce->dirty == 0);                /* the key invariant */
+        KTEST_ASSERT(memcmp(ce->data, "abcd", 4) == 0);
+
+        /* Mutating the parent buffer must not show up in the child. */
+        pe->data[0] = 'X';
+        KTEST_ASSERT(ce->data[0] == 'a');
+
+        /* Tear down without flushing (path empty). */
+        pe->dirty = 0;
+        fd_table_destroy(parent);
+        fd_table_destroy(child);
+    }
+
+    /* ---- F. flush-error propagation ---- */
+    {
+        fd_table_t *t = fd_table_create_default();
+        KTEST_ASSERT(t != NULL);
+        int xfd = fd_alloc(t);
+        fd_entry_t *xe = &t->slots[xfd];
+        memset(xe, 0, sizeof(*xe));
+        xe->kind     = FD_KIND_FILE;
+        xe->writable = 1;
+        xe->data     = (uint8_t *)kmalloc(8);
+        xe->capacity = 8;
+        xe->size     = 2;
+        xe->dirty    = 1;
+        memcpy(xe->data, "ab", 2);
+        /* /mnt/cdrom is read-only; vfs_write_file refuses with -1. */
+        const char *bad = "/mnt/cdrom/should-not-write";
+        uint32_t i = 0;
+        while (bad[i] && i < VFS_PATH_MAX - 1) { xe->path[i] = bad[i]; i++; }
+        xe->path[i] = '\0';
+        KTEST_ASSERT(fd_close(t, xfd) == -1);   /* flush error surfaces */
+        fd_table_destroy(t);
+    }
 
     ktest_summary();
 }
@@ -1905,6 +2096,10 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
+    test_file_fd();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
     test_cwd();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
@@ -1999,6 +2194,7 @@ void ktest_bg_task(void)
     RUN(test_task);
     RUN(test_syscall);
     RUN(test_fd_table);
+    RUN(test_file_fd);
     RUN(test_cwd);
     RUN(test_signal);
     RUN(test_preempt);

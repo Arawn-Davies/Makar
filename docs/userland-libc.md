@@ -67,13 +67,14 @@ into `libk.a`.  User ELF binaries currently link against `libk.a` via
 | `SYS_DELETE_DIR(path)` | 210 | ✅ deletes empty FAT32 directory |
 | `SYS_GETCWD(buf, size)` | 215 | ✅ slice 14 |
 
+| `SYS_STAT(106)` / `SYS_FSTAT(108)` | ✅ Linux i386 `struct stat`; FNV-1a inode (TCC Phase 1) |
+| `SYS_READDIR(141)` | ✅ index-addressed `struct dirent`; wraps `vfs_complete` (TCC Phase 1 follow-up) |
+
 What is **not** yet present:
 
 | Missing piece | Needed for |
 |---|---|
-| `SYS_WRITE(fd, buf, len)` to open files | Full file-write from userspace |
-| `SYS_READDIR` (streaming `getdents`-style) | `opendir()` / `readdir()` and userland-shell tab complete |
-| `SYS_PIPE` / `SYS_DUP2` | Shell pipelines.  Needs a refcounted `open_file_t` layer underneath `fd_table_t` so a forked child shares the parent's seek position (today `fd_table_clone` deep-copies FILE buffers per-fd, non-POSIX). |
+| `SYS_PIPE` / `SYS_DUP2` | Shell pipelines.  Needs a refcounted `open_file_t` layer underneath `fd_table_t` so a forked child shares the parent's seek position (today `fd_table_clone` deep-copies FILE buffers per-fd, and the dirty bit is cleared on the child copy so only the parent's close flushes -- non-POSIX shortcut). |
 | `SYS_MMAP(MAP_ANONYMOUS)` | musl's large-allocation fallback |
 
 ---
@@ -197,6 +198,26 @@ i686-elf-gcc -ffreestanding -nostartfiles \
     -o my_app.elf
 ```
 
+### 6b. Shipped freestanding shim (May 2026)
+
+While the full musl/uClibc-ng port is the long-term goal, a lean shim
+needed for the TCC bring-up landed first (see
+[tcc-feasibility](tcc-feasibility.md) Phase 2).  Files in
+`src/userspace/`:
+
+| Header / object | Surface |
+|---|---|
+| `malloc.{h,c}` | `malloc`/`free`/`realloc`/`calloc` over `SYS_BRK`, first-fit free list with coalescing |
+| `ctype.h` | `is*`, `tolower`, `toupper` (ASCII, inline) |
+| `stdlib.h` | `strtol`/`atoi`, `strdup`, `qsort`, `sscanf`, `getenv` (stub) |
+| `setjmp.{h,S}` | i386 SysV `jmp_buf[6]`, POSIX 0→1 quirk respected |
+| `stdio.{h,c}` | `FILE*` over fd syscalls; `fopen`/`fread`/`fwrite`/`fclose`/`fputs`/`fputc`/`fgetc`/`fflush`; `snprintf`/`vsnprintf`/`fprintf`/`printf` |
+
+Coverage lives in `src/userspace/alloctest.c` (12 sub-tests, run via
+`./run.sh ui alloctest`).  Each piece is small enough to read in one
+sitting and is replaceable behind the same headers when uClibc-ng
+ports cleanly.
+
 ### 7. In-kernel compilation (long-term goal)
 
 Once musl or uClibc-ng is linked, the goal is to build simple C programs
@@ -220,10 +241,14 @@ SYS_WRITE(fd,buf,len)            ✅
             └── fd table          ✅ (slice 12)
                     └── SYS_GETCWD ✅ (slice 14)
                             └── fork + execve + wait4   ✅ (slices 15-16)
-                                    └── SYS_READDIR + SYS_PIPE + open_file_t  ⏭
-                                            └── musl / uClibc-ng static link
-                                                    ├── userland shell (dash/ash)
-                                                    └── tcc in-kernel compiler
+                                    └── SYS_OPEN(O_CREAT|O_TRUNC|O_APPEND)   ✅ (TCC phase 1)
+                                    └── SYS_STAT/FSTAT + writable FD_KIND_FILE ✅
+                                    └── SYS_READDIR + struct dirent          ✅ (TCC phase 1+)
+                                    └── userspace libc shim (malloc/stdio/setjmp/ctype/stdlib) ✅ (TCC phase 2)
+                                            └── tcc cross-build (Phase 3)    ⏭
+                                            └── SYS_PIPE + open_file_t       ⏭
+                                                    └── musl / uClibc-ng static link
+                                                            └── userland shell (dash/ash)
 ```
 
 `fork + execve + wait4` landed earlier than this graph originally

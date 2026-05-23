@@ -5,9 +5,14 @@ nav_order: 5
 
 # Porting TCC to run inside Makar — feasibility spike
 
-**Status:** research only (no production code). Goal: get TCC compiled as a
-cross-target, inventory exactly what it needs to *run* on a live Makar system
-and compile/link other apps, and lay out a concrete phased plan.
+**Status:** Phases 1 & 2 shipped (May 2026). The kernel-side file I/O
+foundation and the userspace libc shim needed by TCC are both in tree
+with ktest + ui_test coverage. Phase 3 (cross-build TCC against the
+new sysroot) is the remaining milestone.
+
+Goal: get TCC compiled as a cross-target, inventory exactly what it
+needs to *run* on a live Makar system and compile/link other apps, and
+lay out a concrete phased plan.
 
 **Conclusion up front:** TCC the *compiler* is portable and i386 is a
 first-class TCC target, so the compiler core is not the hard part. The hard
@@ -109,39 +114,77 @@ trap.
 
 ---
 
+## Status at-a-glance (May 2026)
+
+| Layer | Surface | Status |
+|---|---|---|
+| Kernel | `O_CREAT/O_TRUNC/O_APPEND`, writable `FD_KIND_FILE` (krealloc grow), flush-on-close, `SYS_STAT/FSTAT`, `vfs_stat`, `ext2_stat`, `SYS_READDIR(141)` + `struct dirent` | ✅ Phase 1 (+ readdir slice) |
+| libc heap | `malloc`/`free`/`realloc`/`calloc` over `SYS_BRK` (`src/userspace/malloc.[ch]`) | ✅ Phase 2a |
+| libc strings | `<ctype.h>`, `strdup`, `strtol`/`atoi`, `sscanf` (`src/userspace/{ctype,stdlib}.h`) | ✅ Phase 2a |
+| libc control | `setjmp`/`longjmp` (`src/userspace/setjmp.{h,S}`) | ✅ Phase 2a |
+| libc stdio | `FILE*` + `fopen`/`fread`/`fwrite`/`fclose`/`fputs`/`fputc`/`fgetc`/`fflush`, `snprintf`/`vsnprintf`/`fprintf`/`printf` (`src/userspace/stdio.[ch]`) | ✅ Phase 2b |
+| libc misc | `qsort`, `getenv` (stub) | ✅ Phase 2c |
+| Coverage | `filetest.elf`, `alloctest.elf` (12 sub-tests + 8 ktests in `test_file_fd`) | ✅ |
+| TCC bring-up | Cross-build, ELF base = `USER_CODE_BASE`, sysroot header tree, in-OS `tcc hello.c -o hello.elf` | ⏭ Phase 3 |
+| Follow-ups | Move bootfs off FAT32 to enable <33 MiB (limine BIOS is FAT32/ISO9660-only today — would need a FAT12/16-capable bootloader, not a Phase-3 dependency); refcounted `open_file_t` to make fork-shared file offsets POSIX-correct | ⏭ |
+
 ## Phased plan
 
-**Phase 0 — spike (this doc), + confirm the build.** Cross-build TCC in the
+**Phase 0 — spike (this doc), + confirm the build. ✅ done.** Cross-build TCC in the
 existing Docker toolchain (`arawn780/gcc-cross-i686-elf:fast`) as a sanity
 check that the i386 backend targets our triple, and capture its exact
 undefined-symbol set (`i686-elf-nm`/link errors) to pin the libc surface
 empirically rather than from this table. *No kernel changes.*
 
-**Phase 1 — kernel file I/O (own PR).** Make files writable+creatable from
-userspace, the prerequisite shared with the parked libc work:
-- `SYS_OPEN`: honour `O_CREAT`/`O_TRUNC`/`O_WRONLY`; create an empty
-  `FD_KIND_FILE` buffer instead of failing on missing path.
-- `SYS_WRITE` on `FD_KIND_FILE`: write into the fd buffer (grow as needed),
-  mark dirty.
-- `SYS_CLOSE` (`fd.c:94`): flush a dirty `FD_KIND_FILE` back via
-  `vfs_write_file`. (`/log` already accepts writes after this slice's work.)
-- Add `SYS_STAT`/`SYS_FSTAT`. Lift or stream past `SYSCALL_FILE_MAX`.
-- ktest + a `ui_test` scenario for create→write→close→readback.
+**Phase 1 — kernel file I/O (own PR). ✅ shipped.**
+- `SYS_OPEN` honours `O_CREAT`/`O_TRUNC`/`O_WRONLY`/`O_APPEND`; growable
+  `FD_KIND_FILE` buffer via `krealloc` doubling; close flushes via
+  `vfs_write_file` and propagates backend errors.
+- `SYS_LSEEK` past EOF on writable fds; next `SYS_WRITE` zero-fills the gap.
+- `SYS_STAT(106)`/`SYS_FSTAT(108)` populate Linux i386 `struct stat`;
+  `st_ino` is FNV-1a-32 of the resolved path.
+- `vfs_stat` dispatches to `ext2_stat` (new) and `fat32_read_file(NULL,…)`
+  / `iso9660_read_file(NULL,…)` for lean size probes; falls back to
+  scratch-read on `procfs`/`logfs`.
+- `SYSCALL_FILE_MAX` lifted from 64 KiB → 8 MiB.
+- `fd_table_clone` (fork) deep-copies the FILE buffer but clears `dirty`
+  on the child copy so only the parent flushes — pragmatic non-POSIX
+  shortcut until the `open_file_t` refactor lands.
+- Coverage: `test_file_fd` ktest suite (8 sub-tests) + `filetest.elf`
+  ui scenario.
 
-**Phase 2 — hosted libc.** Implement shim (A) *or* port uClibc-ng (B) and
-install it into the sysroot (`usr/lib/libc.a`, `usr/include/`) alongside the
-existing `libk.a`/`crt0.o` (`docs/userland-libc.md` §6 already sketches the
-layout). Validate with a non-trivial hosted test app (malloc + fopen/fwrite).
+**Phase 2 — hosted libc shim. ✅ shipped.**
+Path (A) -- Makar-specific shim, header-only where possible.  Lives
+under `src/userspace/`:
 
-**Phase 3 — cross-build `tcc.elf`.** Link TCC against the Phase-2 libc + crt0
-at `USER_CODE_BASE`; configure its target so emitted programs are
-Makar-loadable ET_EXEC. Ship a minimal `/usr/include` header tree + `crt0.o` +
-`libc.a`/`libk.a` on the OS filesystem so in-OS compiles can resolve headers
-and link.
+| File | Provides |
+|---|---|
+| `malloc.{h,c}` | First-fit free-list over `SYS_BRK`, address-sorted coalescing |
+| `ctype.h` | `is*`/`tolower`/`toupper` ASCII inlines |
+| `stdlib.h` | `strtol`/`atoi`/`strdup`/`qsort`/`sscanf`/`getenv` (stub) |
+| `setjmp.{h,S}` | i386 SysV `jmp_buf[6]` (ebx/esi/edi/ebp/esp/eip) |
+| `stdio.{h,c}` | `FILE*` + `fopen`/`fread`/`fwrite`/`fclose`/`fputs`/`fputc`/`fgetc`/`fflush`, `snprintf`/`vsnprintf`/`fprintf`/`printf` |
 
-**Phase 4 — in-OS bring-up.** `tcc hello.c -o hello.elf` on a running Makar,
-then `exec hello.elf`. Iterate on size limits, header coverage, and self-host
-(building Makar userspace apps in-OS).
+Validated end-to-end by `alloctest.elf` (12 sub-tests: heap reuse,
+realloc grow, calloc zero, ctype, strtol, atoi, setjmp/longjmp +
+POSIX 0→1 quirk, snprintf format + truncation, FILE\* roundtrip,
+`sys_readdir`, strdup/qsort/sscanf/getenv).
+
+Path (B) -- uClibc-ng static -- still the long-term direction once
+the kernel-side `SYS_PIPE`/`SYS_DUP2`/`SYS_MMAP(MAP_ANONYMOUS)` gaps
+close.  The shim above can be replaced behind the same headers when
+that lands.
+
+**Phase 3 — cross-build `tcc.elf`. ⏭ next.** Link TCC against the
+Phase-2 shim + `crt0.o` at `USER_CODE_BASE`; configure its target so
+emitted programs are Makar-loadable `ET_EXEC` (`-Wl,-Ttext,0x40000000
+-nostdlib -static`).  Ship `/usr/include` header tree on the OS image
+so in-OS compiles can resolve headers, and ship the shim object files
+(or pre-archive into `libc.a`) so emitted programs can link.
+
+**Phase 4 — in-OS bring-up.** `tcc hello.c -o hello.elf` on a running
+Makar, then `exec hello.elf`. Iterate on size limits, header coverage,
+and self-host (building Makar userspace apps in-OS).
 
 ---
 

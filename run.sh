@@ -59,7 +59,14 @@ DOCKER_BIN=${DOCKER_BIN:-docker}
 DOCKER_PLATFORM=${DOCKER_PLATFORM:-linux/amd64}
 HDD_IMG=${HDD_IMG:-makar-hdd.img}
 HDD_TEST_IMG=${HDD_TEST_IMG:-makar-hdd-test.img}
-export DOCKER_PLATFORM
+# Single source of truth for HDD image sizes.  Release images carry the full
+# bootfs (32 MiB: limine + multiple kernels + breathing room) and rootfs
+# (224 MiB: apps + src + docs + user data + headroom).  CI / iso-test
+# scratch images are sized for fast artifact upload but still big enough to
+# accept the full apps tree (bootfs 16 + rootfs 48 = 64 MiB).
+MAKAR_HDD_SIZE_MB=${MAKAR_HDD_SIZE_MB:-96}
+MAKAR_HDD_TEST_SIZE_MB=${MAKAR_HDD_TEST_SIZE_MB:-96}
+export DOCKER_PLATFORM MAKAR_HDD_SIZE_MB MAKAR_HDD_TEST_SIZE_MB
 
 # Portable bounded-run wrapper for host commands.  GNU coreutils ships
 # `timeout(1)`; macOS doesn't, but Homebrew coreutils provides `gtimeout`.
@@ -353,11 +360,12 @@ _check_ktest() {
 # so this works inside the GitHub Actions container job.
 _make_fat32_disk() {
     local _img="${1:-iso-test-hdd.img}"
-    echo "==> Creating 32 MiB FAT32 test disk ($REPO_ROOT/$_img)..."
+    local _sz="${MAKAR_HDD_TEST_SIZE_MB:-64}"
+    echo "==> Creating ${_sz} MiB FAT32 test disk ($REPO_ROOT/$_img)..."
     rm -f "$REPO_ROOT/$_img"
-    _drun -- \
+    _drun --env "MAKAR_DISK_MB=$_sz" -- \
         "IMG='/work/$_img'
-         truncate -s 32M \"\$IMG\"
+         truncate -s \${MAKAR_DISK_MB}M \"\$IMG\"
          printf 'label: dos\nstart=2048, type=c\n' | sfdisk \"\$IMG\" >/dev/null 2>&1
          mkfs.fat -F 32 -n MAKAR --offset 2048 \"\$IMG\" >/dev/null
          echo '  FAT32 test disk ready.'"
@@ -754,7 +762,8 @@ case "$MODE" in
 "iso boot")
     _build_iso "CFLAGS='-O0 -g3'"
     if [ ! -f "$REPO_ROOT/hdd.img" ]; then
-        _drun --as-root -- "qemu-img create -f raw hdd.img 512M"
+        _drun --as-root --env "MAKAR_HDD_SIZE_MB=$MAKAR_HDD_SIZE_MB" -- \
+            "qemu-img create -f raw hdd.img \${MAKAR_HDD_SIZE_MB}M"
     fi
     _run_qemu_interactive \
         "-drive file=/work/hdd.img,format=raw,if=ide,index=0 \
@@ -782,16 +791,18 @@ case "$MODE" in
 "hdd build")
     _build_kernel "CFLAGS='-O0 -g3'"
     rm -f "$REPO_ROOT/$HDD_TEST_IMG"
-    HDD_IMG="$HDD_TEST_IMG" DOCKER_BIN="$DOCKER_BIN" DOCKER_PLATFORM="$DOCKER_PLATFORM" \
+    HDD_IMG="$HDD_TEST_IMG" HDD_SIZE_MB="$MAKAR_HDD_TEST_SIZE_MB" \
+        DOCKER_BIN="$DOCKER_BIN" DOCKER_PLATFORM="$DOCKER_PLATFORM" \
         "$REPO_ROOT/generate-hdd.sh"
-    echo "==> Artifacts: $HDD_TEST_IMG, src/kernel/makar.kernel"
+    echo "==> Artifacts: $HDD_TEST_IMG (${MAKAR_HDD_TEST_SIZE_MB} MiB), src/kernel/makar.kernel"
     ;;
 
 # ── hdd boot ──────────────────────────────────────────────────────────────────
 "hdd boot")
     _build_kernel "CFLAGS='-O0 -g3'"
     rm -f "$REPO_ROOT/$HDD_IMG"
-    HDD_IMG="$HDD_IMG" DOCKER_BIN="$DOCKER_BIN" DOCKER_PLATFORM="$DOCKER_PLATFORM" \
+    HDD_IMG="$HDD_IMG" HDD_SIZE_MB="$MAKAR_HDD_SIZE_MB" \
+        DOCKER_BIN="$DOCKER_BIN" DOCKER_PLATFORM="$DOCKER_PLATFORM" \
         "$REPO_ROOT/generate-hdd.sh"
     _run_qemu_interactive \
         "-drive file=/work/$HDD_IMG,format=raw,if=ide,index=0 \
@@ -805,7 +816,8 @@ case "$MODE" in
         echo "ERROR: src/kernel/makar.kernel not found after build." >&2; exit 1
     fi
     rm -f "$REPO_ROOT/$HDD_TEST_IMG"
-    HDD_IMG="$HDD_TEST_IMG" DOCKER_BIN="$DOCKER_BIN" DOCKER_PLATFORM="$DOCKER_PLATFORM" \
+    HDD_IMG="$HDD_TEST_IMG" HDD_SIZE_MB="$MAKAR_HDD_TEST_SIZE_MB" \
+        DOCKER_BIN="$DOCKER_BIN" DOCKER_PLATFORM="$DOCKER_PLATFORM" \
         "$REPO_ROOT/generate-hdd.sh"
     _run_gdb_hdd_test "$HDD_TEST_IMG"
     echo ""
@@ -818,9 +830,10 @@ case "$MODE" in
 "hdd release")
     _build_kernel "CFLAGS='-O2 -g'"
     rm -f "$REPO_ROOT/$HDD_IMG"
-    HDD_IMG="$HDD_IMG" DOCKER_BIN="$DOCKER_BIN" DOCKER_PLATFORM="$DOCKER_PLATFORM" \
+    HDD_IMG="$HDD_IMG" HDD_SIZE_MB="$MAKAR_HDD_SIZE_MB" \
+        DOCKER_BIN="$DOCKER_BIN" DOCKER_PLATFORM="$DOCKER_PLATFORM" \
         "$REPO_ROOT/generate-hdd.sh"
-    echo "==> HDD image ready: $REPO_ROOT/$HDD_IMG"
+    echo "==> HDD image ready: $REPO_ROOT/$HDD_IMG (${MAKAR_HDD_SIZE_MB} MiB)"
     ;;
 
 # ── gdb iso ──────────────────────────────────────────────────────────────────
