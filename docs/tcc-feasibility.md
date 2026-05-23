@@ -5,10 +5,10 @@ nav_order: 5
 
 # Porting TCC to run inside Makar — feasibility spike
 
-**Status:** Phases 1 & 2 shipped (May 2026). The kernel-side file I/O
-foundation and the userspace libc shim needed by TCC are both in tree
-with ktest + ui_test coverage. Phase 3 (cross-build TCC against the
-new sysroot) is the remaining milestone.
+**Status:** Phases 1, 2 & 3 shipped (May 2026). TCC cross-builds cleanly
+against the Makar libc shim and ships on every ISO image as
+`/mnt/cdrom/apps/tcc.elf`. The sysroot (`/usr/lib/`, `/usr/include/`,
+`/usr/lib/tcc/`) is auto-staged by `build-tcc.sh`, called from `iso.sh`.
 
 Goal: get TCC compiled as a cross-target, inventory exactly what it
 needs to *run* on a live Makar system and compile/link other apps, and
@@ -17,9 +17,9 @@ lay out a concrete phased plan.
 **Conclusion up front:** TCC the *compiler* is portable and i386 is a
 first-class TCC target, so the compiler core is not the hard part. The hard
 part **was** that Makar had no hosted libc — that gap is now closed by the
-freestanding shim shipped in Phase 2 (see below). The remaining work is
-Phase 3: cross-building the TCC source against that shim, patching out the
-JIT/signal paths Makar can't host, and shipping `tcc.elf` on the OS image.
+freestanding shim shipped in Phase 2. Phase 3 is complete: TCC cross-builds
+against the shim, and `tcc.elf` ships on every OS image alongside the full
+sysroot (CRT objects, `libc.a`, `libtcc1.a`, headers).
 
 ---
 
@@ -79,9 +79,8 @@ resulting ELF, all on bare metal.
 
 ## Compiling hello.elf inside Makar
 
-> **Status: not yet possible.** `tcc.elf` has not been cross-built yet
-> (Phase 3). The walkthrough below describes the intended workflow once
-> Phase 3 ships.
+> **Status: ready.** `tcc.elf` ships on every ISO at `/mnt/cdrom/apps/`.
+> The walkthrough below describes the workflow.
 
 ### The example source
 
@@ -107,7 +106,7 @@ int main(int argc, char **argv, char **envp)
 VGA framebuffer **and** the serial port — ideal for both interactive use
 and automated test assertions.
 
-### Workflow (once tcc.elf ships)
+### Workflow
 
 Boot Makar and reach the shell prompt. Then:
 
@@ -239,23 +238,22 @@ references: heap (`malloc.{h,c}`), `FILE*` I/O (`stdio.{h,c}`),
 `tcc_compat.c` (`open`/`close`/`read`/`write`/`lseek`/`fseek`/`ftell`/
 `fdopen`/`sprintf`/`strtoll`/`exit`/`abort`/`mmap` stub/`getcwd`/etc.).
 
-### TCC source porting — ⏭ remaining work
+### TCC source porting — ✅ complete
 
-`build-tcc.sh` currently **probes** the compile but does not yet produce a
-clean `tcc.o`. The concrete gaps surfaced by the probe build are:
+`build-tcc.sh` produces a clean `tcc.o` and links `tcc.elf` at
+`USER_CODE_BASE = 0x40000000`. The concrete approach:
 
-| TCC source file | What it pulls in | Fix strategy |
+| TCC source file | What it pulls in | Fix applied |
 |---|---|---|
-| `tccrun.c` | `<signal.h>` (`SA_RESETHAND`, `siginfo_t`), `<sys/ucontext.h>`, `<sys/mman.h>` (real `mmap`/`mprotect`) | Cordon the whole JIT path with `#ifdef TCC_IS_NATIVE` or a new `CONFIG_TCC_NO_RUN` — Makar will never host `-run` without `PROT_EXEC` mmap |
-| `tccpp.c` | `<time.h>` (`struct tm`, `localtime`) for `__DATE__`/`__TIME__` | Stub `localtime()` exists in `tcc_compat.c`; may need minor header wiring |
-| `libtcc.c` | `fdopen`, `fseek`, `ftell`, `exit`, `strtoll` | ✅ Already in `tcc_compat.c` — link-resolution only |
+| `tccrun.c` | JIT path (`-run`) | Already guarded by `#ifdef TCC_IS_NATIVE`; `CONFIG_TCCBOOT` prevents `TCC_IS_NATIVE` from being defined |
+| `tccpp.c` | `<time.h>` (`struct tm`, `localtime`) | Stub `localtime()` in `tcc_compat.c`; stub `time.h` in build-stubs |
+| `libtcc.c` | `fdopen`, `fseek`, `ftell`, `exit`, `strtoll` | ✅ All in `tcc_compat.c` |
 | `tccelf.c` | `ssize_t` | ✅ Declared in stub `stdint.h` |
+| `i386-link.c` | `ELF_START_ADDR` defaulting to `0x08048000` | Patched to `0x40000000` under `CONFIG_TCCBOOT` (patch `001-makar-elf-start-addr.patch`) |
 
-The stub headers at `vendor/tinycc/build-stubs/` (`errno.h`, `fcntl.h`,
-`time.h`, `signal.h`, `sys/stat.h`, `sys/mman.h`, `sys/ucontext.h`,
-`unistd.h`, etc.) satisfy `#include` resolution; the real work is
-patching `tccrun.c` so the JIT code-paths don't drag in symbols that
-can't resolve against the shim.
+The build also produces:
+- `libtcc1.a` (TCC's runtime library for compiled programs, providing 64-bit arithmetic helpers)
+- CRT stubs (`crt1.o` = copy of `crt0.o`, empty `crti.o`/`crtn.o`) so TCC's default link path works without `-nostdlib`
 
 ---
 
@@ -270,7 +268,7 @@ can't resolve against the shim.
 | libc stdio | `FILE*` + `fopen`/`fread`/`fwrite`/`fclose`/`fputs`/`fputc`/`fgetc`/`fflush`, `snprintf`/`vsnprintf`/`fprintf`/`printf` (`src/userspace/stdio.[ch]`) | ✅ Phase 2b |
 | libc misc | `qsort`, `getenv` (stub) | ✅ Phase 2c |
 | Coverage | `filetest.elf`, `alloctest.elf` (12 sub-tests + 8 ktests in `test_file_fd`) | ✅ |
-| TCC bring-up | Cross-build, ELF base = `USER_CODE_BASE`, sysroot header tree, in-OS `tcc hello.c -o hello.elf` | ⏭ Phase 3 |
+| TCC bring-up | Cross-build, ELF base = `USER_CODE_BASE`, sysroot header tree, `tcc.elf` on ISO | ✅ Phase 3 |
 | Follow-ups | Move bootfs off FAT32 to enable <33 MiB (limine BIOS is FAT32/ISO9660-only today — would need a FAT12/16-capable bootloader, not a Phase-3 dependency); refcounted `open_file_t` to make fork-shared file offsets POSIX-correct | ⏭ |
 
 ## Phased plan
@@ -320,12 +318,14 @@ the kernel-side `SYS_PIPE`/`SYS_DUP2`/`SYS_MMAP(MAP_ANONYMOUS)` gaps
 close.  The shim above can be replaced behind the same headers when
 that lands.
 
-**Phase 3 — cross-build `tcc.elf`. ⏭ next.** Link TCC against the
-Phase-2 shim + `crt0.o` at `USER_CODE_BASE`; configure its target so
-emitted programs are Makar-loadable `ET_EXEC` (`-Wl,-Ttext,0x40000000
--nostdlib -static`).  Ship `/usr/include` header tree on the OS image
-so in-OS compiles can resolve headers, and ship the shim object files
-(or pre-archive into `libc.a`) so emitted programs can link.
+**Phase 3 — cross-build `tcc.elf`. ✅ shipped.** `build-tcc.sh` compiles
+`vendor/tinycc/tcc.c` (with `ONE_SOURCE=1`) against the Phase-2 shim using
+`i686-elf-gcc`, links at `USER_CODE_BASE = 0x40000000`, and ships `tcc.elf`
+on the ISO. Also builds `libtcc1.a` (64-bit arithmetic runtime) and CRT
+stubs (`crt1.o`/`crti.o`/`crtn.o`). The ELF start address is patched to
+`0x40000000` via `patches/001-makar-elf-start-addr.patch`. TCC's
+`CONFIG_TCC_SYSINCLUDEPATHS` resolves `/usr/include` (libc) and
+`{B}/include` (TCC builtins: `stdarg.h`, `stddef.h`, etc.).
 
 **Phase 4 — in-OS bring-up.** `tcc hello.c -o hello.elf` on a running
 Makar, then `exec hello.elf`. Iterate on size limits, header coverage,
@@ -335,12 +335,10 @@ and self-host (building Makar userspace apps in-OS).
 
 ## Risks / open questions
 
-- **ELF base/shape mismatch** (Phase 3) — TCC defaults to Linux i386 base
-  `0x08048000`; Makar's `elf_exec()` requires `ET_EXEC` segments above
-  `USER_CODE_BASE = 0x40000000`. TCC-on-Makar must link target programs
-  with `-Wl,-Ttext,0x40000000 -static -nostdlib` against `crt0.o` +
-  `libc.a`. Validate early with a hand-linked stub — this is the most
-  likely "compiles but won't load" failure mode.
+- **ELF base/shape** — ✅ resolved. TCC's i386 default (`0x08048000`) is
+  patched to `0x40000000` via `patches/001-makar-elf-start-addr.patch`,
+  gated on `CONFIG_TCCBOOT`. Programs compiled by TCC in-OS will emit
+  `ET_EXEC` at the correct base address automatically.
 - **Heap pressure** — TCC holds the whole TU + symbol tables in RAM; the
   ring-3 `SYS_BRK` heap and kernel heap (`HEAP_MAX−HEAP_START` ≈ 16 MiB) must
   comfortably fit a real compile. Measure during Phase 3.
