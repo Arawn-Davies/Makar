@@ -16,13 +16,64 @@ lay out a concrete phased plan.
 
 **Conclusion up front:** TCC the *compiler* is portable and i386 is a
 first-class TCC target, so the compiler core is not the hard part. The hard
-part is that **Makar has no hosted libc** — `src/userspace/` apps are
-freestanding (`syscall.h` wrappers + the kernel's `libk.a` string/printf
-subset). TCC needs `malloc/free/realloc`, buffered `stdio` (`FILE*`,
-`fopen/fread/fwrite`), and real file create/write. Those don't exist in
-userspace yet. The kernel-side syscall gaps are small and well-scoped; the
-libc is the real work, and it's the same parked work the roadmap already
-tracks (target: uClibc-ng, see `CLAUDE.roadmap.md` and `docs/userland-libc.md`).
+part **was** that Makar had no hosted libc — that gap is now closed by the
+freestanding shim shipped in Phase 2 (see below). The remaining work is
+Phase 3: cross-building the TCC source against that shim, patching out the
+JIT/signal paths Makar can't host, and shipping `tcc.elf` on the OS image.
+
+---
+
+## How TCC fits into Makar
+
+TCC (Tiny C Compiler, `vendor/tinycc/`, v0.9.27) is being ported as an
+**in-OS C compiler** — the end-state is a CP/M-style workflow where a user
+can boot Makar, write a `.c` file in VIX, compile it with `tcc`, and run the
+resulting ELF, all on bare metal.
+
+### Architecture at a glance
+
+```
+ ┌─────────────────────── Makar (ring 0) ────────────────────────┐
+ │  kernel: syscalls, VFS, FAT32/ext2/ISO 9660, scheduler, VMM  │
+ └──────────────┬──────────────────────────────────┬─────────────┘
+                │ int 0x80                         │
+ ┌──────────────▼──────────┐  ┌────────────────────▼─────────────┐
+ │  tcc.elf  (ring 3)      │  │  hello.elf  (ring 3)             │
+ │  cross-built from       │  │  compiled by tcc.elf on a        │
+ │  vendor/tinycc/ against │  │  running Makar system, linked    │
+ │  the userspace libc     │  │  against crt0.o + libc.a at      │
+ │  shim (libc.a)          │  │  /usr/lib, headers at            │
+ │                         │  │  /usr/include                    │
+ └─────────────────────────┘  └──────────────────────────────────┘
+```
+
+- **TCC runs in userspace (ring 3)**, not inside the kernel. It is a
+  regular ELF binary loaded by `elf_exec()` and dispatched via the shell's
+  `exec` command, like any other app (`calc.elf`, `vix.elf`, etc.).
+- **No JIT (`tcc -run`)**: Makar has no `mmap(PROT_EXEC)`, so the
+  in-memory JIT path is out of scope. TCC compiles to a static ELF file on
+  disk, which is then `exec`'d from the shell.
+- **Sysroot on the OS image**: `make install` (in `src/userspace/Makefile`)
+  ships `crt0.o` and `libc.a` to `/usr/lib/`, headers to `/usr/include/`,
+  and example sources to `/usr/share/examples/` on the ISO/HDD image.
+  TCC's `CONFIG_TCC_SYSINCLUDEPATHS` and `CONFIG_TCC_LIBPATHS` are
+  configured to point at these paths.
+- **`build-tcc.sh`** is the cross-build script at the repo root. It
+  compiles `vendor/tinycc/tcc.c` (with `ONE_SOURCE=1`) against the Makar
+  sysroot using the `i686-elf-gcc` cross-compiler, then links
+  `tcc.elf` at `USER_CODE_BASE = 0x40000000`.
+
+### Key source files
+
+| File | Role |
+|---|---|
+| `vendor/tinycc/` | Upstream TCC v0.9.27 snapshot (LGPL-2.1), unmodified except for `patches/` |
+| `build-tcc.sh` | Cross-build script: probe-compile → link → `tcc.elf` |
+| `src/userspace/tcc_compat.c` | POSIX-wrapper shim (`open`/`close`/`read`/`write`/`lseek`/`fseek`/`ftell`/`fdopen`/`strtoll`/`sprintf`/`exit`/`mmap` stub, etc.) — linked into `libc.a` |
+| `src/userspace/hello-tcc.c` | Canonical test source shipped at `/usr/share/examples/hello-tcc.c` |
+| `src/userspace/libc.a` | Archive of the freestanding libc shim (malloc, stdio, setjmp, string, tcc_compat) |
+| `src/userspace/Makefile` | Builds `libc.a`, ships sysroot to `/usr/{lib,include}` on the image |
+| `docs/tcc-feasibility.md` | This document |
 
 ---
 
@@ -31,15 +82,16 @@ tracks (target: uClibc-ng, see `CLAUDE.roadmap.md` and `docs/userland-libc.md`).
 TCC (mob/0.9.27 line) is ~100–200 KiB of C. As a *hosted* program it calls,
 roughly:
 
-| Category | Symbols TCC uses | Makar userspace today |
+| Category | Symbols TCC uses | Makar userspace status |
 |---|---|---|
-| Heap | `malloc free realloc calloc` | ❌ none (only raw `SYS_BRK`) |
-| Buffered I/O | `fopen fdopen fclose fread fwrite fputs fprintf vfprintf fflush fseek ftell` | ❌ no `FILE*` layer |
-| Raw file I/O | `open close read write lseek unlink` | ⚠️ partial — see gaps |
-| String/mem | `memcpy memmove memset strcmp strncmp strcpy strncpy strcat strlen strchr strrchr strstr strdup` | ✅ in `libk.a` (except `strdup`) |
-| Formatting | `snprintf vsnprintf sscanf` | ⚠️ `printf` exists; `snprintf`/`sscanf` missing |
-| Control flow | `setjmp longjmp` | ❌ none |
-| Misc | `qsort getenv atoi strtol strtod exit abort` + `<ctype.h>` | ❌ mostly missing |
+| Heap | `malloc free realloc calloc` | ✅ `malloc.{h,c}` over `SYS_BRK` |
+| Buffered I/O | `fopen fdopen fclose fread fwrite fputs fprintf vfprintf fflush fseek ftell` | ✅ `stdio.{h,c}` + `tcc_compat.c` |
+| Raw file I/O | `open close read write lseek unlink` | ✅ `tcc_compat.c` wrappers over syscalls |
+| String/mem | `memcpy memmove memset strcmp strncmp strcpy strncpy strcat strlen strchr strrchr strstr strdup` | ✅ `libk.a` + `strdup` in `stdlib.h` |
+| Formatting | `snprintf vsnprintf sscanf sprintf vsprintf` | ✅ `stdio.{h,c}` + `tcc_compat.c` |
+| Control flow | `setjmp longjmp` | ✅ `setjmp.{h,S}` |
+| Misc | `qsort getenv atoi strtol strtoll strtod exit abort` + `<ctype.h>` | ✅ `stdlib.h` + `ctype.h` + `tcc_compat.c` |
+| Stubs (JIT path) | `mmap munmap mprotect` + signal types | ✅ stub-only (return `MAP_FAILED`/`-1`); JIT path unreachable |
 
 For **emitting** a program, TCC also needs to:
 1. **Create and write an output file** (`fopen(out,"wb")` → many `fwrite`s).
@@ -56,61 +108,41 @@ realistic model is *compile to an ELF file, then `exec` it from the shell*
 
 ---
 
-## Makar gap analysis (verified against the tree)
+## Makar gap analysis — what's left for Phase 3
 
-### Kernel syscall gaps — small, well-scoped
+### Kernel syscall layer — ✅ complete
 
-1. **No file create / no `O_CREAT`/`O_TRUNC`.** `SYS_OPEN` (`syscall.c:542`)
-   always `vfs_read_file()`s the path into a heap buffer and **fails for a
-   nonexistent file**. TCC can't create its output object.
-2. **`SYS_WRITE` on a `FD_KIND_FILE` returns −1** (`syscall.c:360`, "not
-   writable through this fd today"). File writes today only go through
-   `SYS_WRITE_FILE` (whole-buffer, overwrite) — `vfs_write_file`. No
-   incremental write, no append-on-fd, no flush-on-close.
-3. **64 KiB file cap.** `SYSCALL_FILE_MAX` (`syscall.h:89`) caps both the
-   eager read buffer and the practical write size. Fine for `hello.c`, but a
-   ceiling for real sources/outputs.
-4. **No `SYS_STAT`/`SYS_FSTAT`.** TCC stats include files / output paths.
-5. **No `SYS_READDIR`.** Only needed if TCC scans an include dir; usually it
-   opens explicit header paths, so this is optional for v1.
-6. **`SYS_BRK` exists** (`syscall.c:611`) and grows the user heap on demand —
-   good enough to back a `malloc`.
-7. **`fork`/`execve`/`wait4` exist** — so a future `tcc`-driven build script,
-   or running the compiled output, works.
+All syscalls TCC needs are in place: `SYS_OPEN` with `O_CREAT`/`O_TRUNC`/
+`O_APPEND`, writable `FD_KIND_FILE` with krealloc grow and flush-on-close,
+`SYS_STAT`/`SYS_FSTAT`, `SYS_READDIR`, `SYS_BRK`, `SYS_LSEEK`,
+`fork`/`execve`/`wait4`. `SYSCALL_FILE_MAX` is 8 MiB.
 
-### Userspace libc gap — the real work
+### Userspace libc shim — ✅ complete
 
-There is **no hosted libc**. `src/userspace/*.c` each roll their own buffers
-and call `syscall.h` directly; `libk.a` provides only `string.*`, `memset`,
-`printf`/`puts`/`putchar`, `abort`. Missing for TCC: a heap allocator, the
-entire `FILE*`/`stdio` buffering layer, `snprintf`/`sscanf`, `setjmp`,
-`<ctype.h>`, `qsort`, `getenv`, `strtol`/`strtod`, `strdup`.
+The freestanding shim in `src/userspace/` covers every symbol TCC
+references: heap (`malloc.{h,c}`), `FILE*` I/O (`stdio.{h,c}`),
+`setjmp`/`longjmp` (`setjmp.{h,S}`), `<ctype.h>`, `strtol`/`atoi`/
+`strdup`/`qsort`/`sscanf`/`getenv`, and the POSIX wrappers in
+`tcc_compat.c` (`open`/`close`/`read`/`write`/`lseek`/`fseek`/`ftell`/
+`fdopen`/`sprintf`/`strtoll`/`exit`/`abort`/`mmap` stub/`getcwd`/etc.).
 
-Two ways to close it:
+### TCC source porting — ⏭ remaining work
 
-- **(A) Minimal hosted shim** (Makar-specific, ~1–2k LoC): `malloc` over
-  `SYS_BRK`; a small `FILE*` over the fd syscalls; `snprintf`/`sscanf`;
-  `setjmp.S`; `ctype`; `qsort`; stub `getenv`. Smallest path to *just TCC*,
-  fully under our control, no porting friction.
-- **(B) uClibc-ng static** (roadmap's stated target): a real, complete libc.
-  More upfront porting (config for no-MMU/no-thread/static, wire its syscall
-  layer to Makar's numbers) but pays off for every future app, not just TCC.
+`build-tcc.sh` currently **probes** the compile but does not yet produce a
+clean `tcc.o`. The concrete gaps surfaced by the probe build are:
 
-For a *spike → first working tcc*, (A) is the fastest credible route; (B) is
-the right long-term investment. They're not mutually exclusive — a shim now
-de-risks the compiler bring-up; uClibc-ng can replace it later behind the same
-headers.
+| TCC source file | What it pulls in | Fix strategy |
+|---|---|---|
+| `tccrun.c` | `<signal.h>` (`SA_RESETHAND`, `siginfo_t`), `<sys/ucontext.h>`, `<sys/mman.h>` (real `mmap`/`mprotect`) | Cordon the whole JIT path with `#ifdef TCC_IS_NATIVE` or a new `CONFIG_TCC_NO_RUN` — Makar will never host `-run` without `PROT_EXEC` mmap |
+| `tccpp.c` | `<time.h>` (`struct tm`, `localtime`) for `__DATE__`/`__TIME__` | Stub `localtime()` exists in `tcc_compat.c`; may need minor header wiring |
+| `libtcc.c` | `fdopen`, `fseek`, `ftell`, `exit`, `strtoll` | ✅ Already in `tcc_compat.c` — link-resolution only |
+| `tccelf.c` | `ssize_t` | ✅ Declared in stub `stdint.h` |
 
-### ELF shape (loader constraints)
-
-`elf.c:85` requires **`ET_EXEC`**, maps `PT_LOAD` segments, and expects them
-**above `USER_CODE_BASE = 0x40000000`** (`crt0.S` + `link.ld`). TCC defaults
-to the Linux i386 base `0x08048000` and emits a Linux-flavoured static exe.
-So TCC-on-Makar must link target programs with an explicit base/text address
-matching `link.ld` (e.g. `-Wl,-Ttext,0x40000000` or a Makar `link.ld` fed to
-TCC's linker), `-static`, `-nostdlib`, against `crt0.o` + `libk.a`/`libc.a`.
-This needs validation early — it's the most likely "compiles but won't load"
-trap.
+The stub headers at `vendor/tinycc/build-stubs/` (`errno.h`, `fcntl.h`,
+`time.h`, `signal.h`, `sys/stat.h`, `sys/mman.h`, `sys/ucontext.h`,
+`unistd.h`, etc.) satisfy `#include` resolution; the real work is
+patching `tccrun.c` so the JIT code-paths don't drag in symbols that
+can't resolve against the shim.
 
 ---
 
@@ -190,15 +222,19 @@ and self-host (building Makar userspace apps in-OS).
 
 ## Risks / open questions
 
-- **ELF base/shape mismatch** (Phase 3) — most likely failure mode; validate
-  the link recipe against `elf.c` early with a hand-linked stub.
-- **64 KiB I/O ceiling** — TCC sources/outputs may exceed it; Phase 1 should
-  raise or remove the cap, not just paper over it.
+- **ELF base/shape mismatch** (Phase 3) — TCC defaults to Linux i386 base
+  `0x08048000`; Makar's `elf_exec()` requires `ET_EXEC` segments above
+  `USER_CODE_BASE = 0x40000000`. TCC-on-Makar must link target programs
+  with `-Wl,-Ttext,0x40000000 -static -nostdlib` against `crt0.o` +
+  `libc.a`. Validate early with a hand-linked stub — this is the most
+  likely "compiles but won't load" failure mode.
 - **Heap pressure** — TCC holds the whole TU + symbol tables in RAM; the
   ring-3 `SYS_BRK` heap and kernel heap (`HEAP_MAX−HEAP_START` ≈ 16 MiB) must
-  comfortably fit a real compile. Measure during Phase 0/3.
-- **Shim vs uClibc-ng** — decision point at Phase 2 (see above); spike result
-  (Phase 0 symbol set) should inform it.
+  comfortably fit a real compile. Measure during Phase 3.
+- **No floating point in the kernel** — `CR0.MP` is not set and there's no
+  `#NM` handler, so TCC's float-constant lexer paths (`strtod`/`strtof`/
+  `strtold`) are stubbed to return 0. Integer-only sources work; programs
+  with float literals will misfold until x87 FPU init lands.
 
 ---
 

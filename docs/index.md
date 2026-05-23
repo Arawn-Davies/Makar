@@ -26,6 +26,7 @@ how language choice shapes the implementation.
 - **[Testing](testing.md)** — ktest, GDB checkpoint suite, UI sendkey tests
 - **[BASIC](basic.md)** — the C64-style integer BASIC interpreter (`basic.elf`)
 - **[Userland libc](userland-libc.md)** — porting roadmap toward musl/dash
+- **[TCC in-OS compiler](tcc-feasibility.md)** — porting TCC to compile C on a running Makar system
 - **[Makar × Medli](makar-medli.md)** — sibling-project co-operation roadmap and VIX→VICS history
 - **[Repo on GitHub](https://github.com/Arawn-Davies/Makar)**
 
