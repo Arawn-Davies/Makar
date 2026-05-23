@@ -77,6 +77,119 @@ resulting ELF, all on bare metal.
 
 ---
 
+## Compiling hello.elf inside Makar
+
+> **Status: not yet possible.** `tcc.elf` has not been cross-built yet
+> (Phase 3). The walkthrough below describes the intended workflow once
+> Phase 3 ships.
+
+### The example source
+
+A canonical test program ships on every Makar image at
+`/usr/share/examples/hello-tcc.c`. It deliberately avoids the libc
+shim's `stdio.h` so the very first in-OS compile doesn't need TCC to
+resolve buffered-I/O headers — it talks directly to the kernel via
+`syscall.h`:
+
+```c
+/* hello-tcc.c */
+#include "syscall.h"
+
+int main(int argc, char **argv, char **envp)
+{
+    (void)argc; (void)argv; (void)envp;
+    sys_write(2, "Hello, TCC\n", 11);
+    return 0;
+}
+```
+
+`sys_write(2, ...)` writes to fd 2 (stderr), which prints to both the
+VGA framebuffer **and** the serial port — ideal for both interactive use
+and automated test assertions.
+
+### Workflow (once tcc.elf ships)
+
+Boot Makar and reach the shell prompt. Then:
+
+```
+# 1. Compile — TCC reads hello-tcc.c, links against
+#    /usr/lib/crt0.o + /usr/lib/libc.a, and writes hello.elf
+#    to the current directory (writable FAT32 at /mnt/hd).
+cd /mnt/hd
+tcc /usr/share/examples/hello-tcc.c -o hello.elf
+
+# 2. Run the result.
+exec hello.elf
+```
+
+Expected output on screen and serial:
+
+```
+Hello, TCC
+```
+
+### What happens under the hood
+
+1. The shell resolves `tcc` to `/mnt/cdrom/apps/tcc.elf` via the
+   `PATH` variable and dispatches it through `elf_exec()`.
+2. TCC runs in **ring 3** as a regular userspace task. It opens the
+   source file via `SYS_OPEN`, reads it via `SYS_READ`, compiles the
+   translation unit in RAM (heap via `SYS_BRK`), and writes the output
+   ELF via `SYS_OPEN(O_CREAT|O_TRUNC)` + `SYS_WRITE` + `SYS_CLOSE`
+   (the close flushes the dirty buffer to disk).
+3. TCC's `CONFIG_TCC_SYSINCLUDEPATHS` is set to `/usr/include`, so
+   `#include "syscall.h"` resolves to the shipped copy. Its
+   `CONFIG_TCC_CRTPREFIX` and `CONFIG_TCC_LIBPATHS` point to `/usr/lib`,
+   where `crt0.o` and `libc.a` live.
+4. The emitted ELF is a **static `ET_EXEC`** linked at
+   `USER_CODE_BASE = 0x40000000` — the same base address as every other
+   Makar userspace binary. Makar's `elf_exec()` loads it, maps a fresh
+   user page directory, and enters ring 3.
+5. `hello.elf` calls `sys_write(2, "Hello, TCC\n", 11)` via `int 0x80`,
+   the kernel writes to VGA + serial, then `main` returns 0 and `crt0`
+   issues `SYS_EXIT(0)`.
+
+### Writing your own programs
+
+You can also write a source file from within Makar using the VIX editor,
+then compile and run it — the full CP/M-style edit → compile → run loop:
+
+```
+# 1. Write a new source file on the writable FAT32 volume.
+cd /mnt/hd
+vix myapp.c
+
+# 2. Compile it (headers at /usr/include, libs at /usr/lib).
+tcc myapp.c -o myapp.elf
+
+# 3. Run it.
+exec myapp.elf
+```
+
+Programs that include `<stdio.h>` (for `printf`, `fopen`, etc.) or
+`<stdlib.h>` (for `malloc`, `atoi`, etc.) will resolve those headers
+from `/usr/include` and link against `libc.a` at `/usr/lib`
+automatically. The libc shim provides:
+
+- **Heap**: `malloc` / `free` / `realloc` / `calloc` (over `SYS_BRK`)
+- **Buffered I/O**: `fopen` / `fread` / `fwrite` / `fclose` / `fprintf` / `printf`
+- **Strings**: `strlen` / `strcmp` / `strcpy` / `strdup` / `memcpy` / `memset`
+- **Misc**: `atoi` / `strtol` / `qsort` / `setjmp` / `longjmp`
+
+### Limitations
+
+- **No `tcc -run`** — Makar has no `mmap(PROT_EXEC)`, so TCC cannot
+  JIT-execute in memory. You must compile to a file and `exec` it.
+- **No floating point** — the kernel doesn't initialise the x87 FPU, so
+  `float` / `double` literals will misfold. Integer-only programs work.
+- **8 MiB file cap** — `SYSCALL_FILE_MAX` limits any single file
+  (source or output) to 8 MiB.
+- **Output must go to writable storage** — the ISO 9660 CD-ROM
+  (`/mnt/cdrom`) is read-only. Write output files to the FAT32 volume at
+  `/mnt/hd` (or an ext2 volume if mounted).
+
+---
+
 ## What TCC needs at runtime
 
 TCC (mob/0.9.27 line) is ~100–200 KiB of C. As a *hosted* program it calls,
