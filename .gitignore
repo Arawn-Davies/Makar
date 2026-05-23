@@ -30,4 +30,6 @@ src/userspace/*.elf
 vendor/tinycc/build-stubs/
 vendor/tinycc/build-tcc.log
 vendor/tinycc/*.o
+vendor/tinycc/lib/*.o
+vendor/tinycc/lib/*.a
 vendor/tinycc/config.h
