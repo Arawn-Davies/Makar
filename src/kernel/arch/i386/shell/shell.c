@@ -865,6 +865,13 @@ static void shell_print_prompt(void)
     if (t && t->tty >= 0 && t->tty < 4) tty = t->tty;
     shell_apply_scheme_for_tty(tty);
 
+    /* Guarantee the prompt starts on a fresh line.  Some ELFs exit without
+     * terminating their last line of output, which would otherwise glue
+     * "root@makar ..." onto the tail of the program's output. */
+    uint32_t cur_col = vesa_tty_is_ready() ? vesa_tty_get_col()
+                                           : (uint32_t)t_column;
+    if (cur_col != 0) t_putchar('\n');
+
     t_writestring(SHELL_USERNAME "@" SHELL_HOSTNAME " ");
     t_writestring(vfs_getcwd());
     t_writestring("~> ");
