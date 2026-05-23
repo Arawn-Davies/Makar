@@ -39,6 +39,21 @@
 #define SYS_DRAW_LINE    217
 #define SYS_CARET_STYLE  218
 #define SYS_FCNTL        55
+#define SYS_STAT        106
+#define SYS_FSTAT       108
+#define SYS_READDIR     141
+
+/* dirent shape -- must match kernel struct dirent in kernel/syscall.h. */
+#define DIRENT_NAME_MAX 256
+#define DT_UNKNOWN 0
+#define DT_DIR     4
+#define DT_REG     8
+struct dirent {
+    unsigned int   d_ino;
+    unsigned char  d_type;
+    unsigned char  __pad[3];
+    char           d_name[DIRENT_NAME_MAX];
+};
 
 /* fcntl cmds */
 #define F_GETFL          3
@@ -77,10 +92,46 @@ typedef void (*sig_handler_t)(int);
 #define SIG_DFL  ((sig_handler_t)0)
 #define SIG_IGN  ((sig_handler_t)1)
 
-/* open() flags */
+/* open() flags -- low 2 bits are access mode; the rest are status flags.
+ * Values mirror Linux i386. */
 #define O_RDONLY    0
 #define O_WRONLY    1
 #define O_RDWR      2
+#define O_ACCMODE   3
+#define O_CREAT     0100
+#define O_TRUNC     01000
+#define O_APPEND    02000
+
+/* Linux i386 struct stat (must match kernel/syscall.h). */
+struct stat {
+    unsigned int   st_dev;
+    unsigned int   st_ino;
+    unsigned short st_mode;
+    unsigned short st_nlink;
+    unsigned short st_uid;
+    unsigned short st_gid;
+    unsigned int   st_rdev;
+    unsigned int   st_size;
+    unsigned int   st_blksize;
+    unsigned int   st_blocks;
+    unsigned int   st_atime;
+    unsigned int   st_atime_nsec;
+    unsigned int   st_mtime;
+    unsigned int   st_mtime_nsec;
+    unsigned int   st_ctime;
+    unsigned int   st_ctime_nsec;
+    unsigned int   __unused4;
+    unsigned int   __unused5;
+};
+#define S_IFMT   0170000
+#define S_IFREG  0100000
+#define S_IFDIR  0040000
+#define S_IFCHR  0020000
+#define S_IFBLK  0060000
+#define S_ISREG(m)  (((m) & S_IFMT) == S_IFREG)
+#define S_ISDIR(m)  (((m) & S_IFMT) == S_IFDIR)
+#define S_ISBLK(m)  (((m) & S_IFMT) == S_IFBLK)
+#define S_ISCHR(m)  (((m) & S_IFMT) == S_IFCHR)
 
 /* lseek() whence */
 #define SEEK_SET    0
@@ -310,6 +361,22 @@ static inline int sys_close(int fd)
 static inline long sys_lseek(int fd, int offset, int whence)
 {
     return syscall3(SYS_LSEEK, (long)fd, (long)offset, (long)whence);
+}
+
+static inline int sys_stat(const char *path, struct stat *st)
+{
+    return (int)syscall2(SYS_STAT, (long)path, (long)st);
+}
+
+static inline int sys_fstat(int fd, struct stat *st)
+{
+    return (int)syscall2(SYS_FSTAT, (long)fd, (long)st);
+}
+
+/* readdir: returns 1 if `*de` was filled, 0 at end-of-directory, -1 on error. */
+static inline int sys_readdir(const char *path, unsigned int idx, struct dirent *de)
+{
+    return (int)syscall3(SYS_READDIR, (long)path, (long)idx, (long)de);
 }
 
 static inline long sys_brk(void *addr)

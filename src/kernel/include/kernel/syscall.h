@@ -24,6 +24,9 @@
 #define SYS_KILL       37   /* int kill(int pid, int signo)                     */
 #define SYS_BRK        45   /* void *brk(void *addr)                            */
 #define SYS_SIGNAL     48   /* sig_handler_t signal(int signo, sig_handler_t)   */
+#define SYS_STAT      106   /* int stat(const char *path, struct stat *st)      */
+#define SYS_FSTAT     108   /* int fstat(int fd, struct stat *st)               */
+#define SYS_READDIR   141   /* int readdir(path, idx, struct dirent *)          */
 #define SYS_SIGRETURN  119  /* void sigreturn(void) -- not for direct use      */
 #define SYS_DEBUG      100  /* void debug(uint32_t cp)      [Makar ext]         */
 #define SYS_YIELD      158  /* void sched_yield(void)                           */
@@ -75,18 +78,80 @@ typedef struct {
     uint8_t clr;
 } tty_cell_t;
 
-/* open() flags */
+/* open() flags -- low 2 bits are access mode; the rest are status flags.
+ * Values mirror the Linux i386 ABI so a future uClibc-ng / musl port doesn't
+ * need a translation shim. */
 #define O_RDONLY    0
 #define O_WRONLY    1
 #define O_RDWR      2
+#define O_ACCMODE   3       /* mask: (flags & O_ACCMODE) is the access mode */
+#define O_CREAT     0100    /* create file if it doesn't exist              */
+#define O_TRUNC     01000   /* truncate to zero length on open              */
+#define O_APPEND    02000   /* writes always land at e->size                */
 
 /* Well-known file descriptors */
 #define FD_STDIN    0
 #define FD_STDOUT   1
 #define FD_STDERR   2
 
-/* Maximum size of a file that can be opened via SYS_OPEN (64 KiB). */
-#define SYSCALL_FILE_MAX  (64u * 1024u)
+/* Maximum size of a regular file backed by an in-memory FD_KIND_FILE buffer.
+ * Reads cap the eager-load here; writes may grow the buffer up to this hard
+ * limit (8 MiB) before SYS_WRITE returns -1 (EFBIG).  Kernel heap is roughly
+ * 16 MiB total, so a single open file can hold a realistic TCC TU + output
+ * without starving everything else. */
+#define SYSCALL_FILE_MAX     (8u * 1024u * 1024u)
+/* Initial heap allocation for a freshly-created (O_CREAT) or O_TRUNC'd fd.
+ * Subsequent SYS_WRITEs grow geometrically (doubling). */
+#define SYSCALL_FILE_INITIAL (4u * 1024u)
+
+/* -------------------------------------------------------------------------
+ * struct stat -- Linux i386 layout (the 32-bit `struct stat`, not stat64).
+ * Fields we cannot populate from Makar's filesystems are zero-filled by the
+ * SYS_STAT / SYS_FSTAT implementation.
+ * ---------------------------------------------------------------------- */
+struct stat {
+    uint32_t st_dev;
+    uint32_t st_ino;
+    uint16_t st_mode;
+    uint16_t st_nlink;
+    uint16_t st_uid;
+    uint16_t st_gid;
+    uint32_t st_rdev;
+    uint32_t st_size;
+    uint32_t st_blksize;
+    uint32_t st_blocks;
+    uint32_t st_atime;
+    uint32_t st_atime_nsec;
+    uint32_t st_mtime;
+    uint32_t st_mtime_nsec;
+    uint32_t st_ctime;
+    uint32_t st_ctime_nsec;
+    uint32_t __unused4;
+    uint32_t __unused5;
+};
+
+/* Index-addressed dirent for SYS_READDIR(141).  Stable shape for both
+ * kernel and userspace headers; the name buffer is sized for the longest
+ * VFS path component (VFS_PATH_MAX is the full-path cap). */
+#define DIRENT_NAME_MAX 256
+struct dirent {
+    uint32_t d_ino;             /* synthetic; same FNV-1a as stat */
+    uint8_t  d_type;            /* DT_REG / DT_DIR / DT_UNKNOWN */
+    uint8_t  __pad[3];
+    char     d_name[DIRENT_NAME_MAX];
+};
+#define DT_UNKNOWN 0
+#define DT_DIR     4
+#define DT_REG     8
+
+/* File type bits in st_mode (octal, matching Linux/POSIX). */
+#define S_IFMT      0170000
+#define S_IFREG     0100000
+#define S_IFDIR     0040000
+#define S_IFCHR     0020000
+#define S_IFBLK     0060000
+#define S_IFIFO     0010000
+#define S_IFLNK     0120000
 
 /*
  * g_ring3_last_cp - last SYS_DEBUG checkpoint value received from ring-3.

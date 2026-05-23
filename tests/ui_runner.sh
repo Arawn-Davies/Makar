@@ -31,10 +31,16 @@ GUI=${GUI:-0}
 #                        from GRUB's "next available device" entry.  Used to
 #                        verify an `install` end-to-end.  No -no-reboot, so the
 #                        guest actually resets into GRUB instead of exiting.
+#   stay               - send nothing; LEAVE QEMU running at the live shell
+#                        prompt so you can poke around by hand (e.g. inspect
+#                        /log).  Blocks until you close the window / Ctrl-C.
 UI_END=${UI_END:-shutdown}
 if [ "$GUI" = "1" ]; then
     DISPLAY_ARG=${QEMU_DISPLAY:+-display $QEMU_DISPLAY}
-    KEY_DELAY=${KEY_DELAY:-0.15}
+    # 0.4 s/key in GUI mode: the visible window + TCG can lag the PS/2 IRQ ->
+    # ring -> shell_readline pipeline, and a too-fast burst drops characters or
+    # races a VT switch.  Override with KEY_DELAY=… for a specific run.
+    KEY_DELAY=${KEY_DELAY:-0.4}
     if [ "$UI_END" = "reboot" ]; then
         REBOOT_ARG=""
     else
@@ -184,6 +190,15 @@ sendkey ret'
         echo "  (or Ctrl-C here) when done."
         wait "$QEMU_PID" 2>/dev/null
         return 0
+    elif [ "$GUI" = "1" ] && [ "$UI_END" = "stay" ]; then
+        # Stay mode: tests are done; leave the guest at its live shell prompt
+        # so the operator can drive it by hand.  No keystrokes, no kill -- block
+        # until the window is closed (or Ctrl-C here).
+        echo "UI_END=stay: tests done; QEMU left running at the shell."
+        echo "  Poke around (e.g. 'ls /log', 'cat /log/kernel.log'); close the"
+        echo "  QEMU window (or Ctrl-C here) when done."
+        wait "$QEMU_PID" 2>/dev/null
+        return 0
     elif [ "$GUI" = "1" ]; then
         # GUI mode drives a real kernel shutdown (acpi -> port 0x604) so
         # the watcher sees a "Shutting down..." final frame.
@@ -291,7 +306,11 @@ sendkey ret'
     # unmounted at boot); the scenario formats it with mkfs.ext2 and mounts
     # it itself.  Lives in LOGDIR so it's cleaned up with everything else.
     SCRATCH_HDD="$LOGDIR/scratch-hda.img"
-    dd if=/dev/zero of="$SCRATCH_HDD" bs=1M count=32 2>/dev/null
+    # The scratch /dev/hda must fit a release install (FAT32 minimum 33 MiB
+    # bootfs + ext2 rootfs holding apps + src + docs).  Use the release
+    # sizing (default 256 MiB) so the install scenario works; smaller
+    # scenarios (filetest, mnt-mountpoint) are unaffected by the slack.
+    dd if=/dev/zero of="$SCRATCH_HDD" bs=1M count="${MAKAR_HDD_SIZE_MB:-256}" 2>/dev/null
 
     # Boot order: `once=d` boots the CD-ROM on the FIRST boot (the live system
     # that runs the installer); after a guest-initiated reboot QEMU falls back
@@ -378,7 +397,16 @@ sendkey ret'
 # shutdown and stomp the static argv globals in shell_exec_elf.
 # Per-task exec_params (task_t.exec_params) closed that race at the
 # kernel level, so one Ctrl+C is enough now.
+# The first call after boot is a no-op: nothing has run yet, the shell
+# is freshly prompted, and the anchor would only burn ~0.6 s of visible
+# typing for no semantic effect.  Subsequent calls do the full anchor
+# so prior-test state never leaks into the next one.
+RESET_SHELL_CALLED=0
 reset_shell() {
+    if [ "$RESET_SHELL_CALLED" = "0" ]; then
+        RESET_SHELL_CALLED=1
+        return 0
+    fi
     send_script 'sendkey alt-f1
 sendkey ctrl-c
 sendkey c
@@ -415,6 +443,29 @@ wait_for_serial() {
         sleep 0.1
     done
     return 1
+}
+
+# expect_key <pattern> <start_bytes> <sendkey-script> [timeout_s=8]
+#   The "wait for the screen, then act" idiom for driving a multi-screen TUI
+#   deterministically: poll the serial slice (from <start_bytes>) until
+#   <pattern> appears, then send <sendkey-script>.  Returns 1 and flags the
+#   test as failed if the marker never shows.  Re-syncing on each screen's
+#   marker means there is no cumulative pause drift (the flake class that made
+#   the old fixed-PAUSE installer scenario unreliable under TCG).
+#
+#   The brief settle after the marker lets the screen's getkey() register its
+#   keyboard consumer before we type, so the keystroke lands in its ring
+#   rather than racing the marker print.
+expect_key() {
+    local pattern=$1 start=$2 script=$3 timeout=${4:-8}
+    if ! wait_for_serial "$pattern" "$start" "$timeout"; then
+        echo "  - expect_key: timed out waiting for: $pattern"
+        CURRENT_FAILED=1
+        return 1
+    fi
+    sleep "${EXPECT_SETTLE:-1.0}"
+    send_script "$script"
+    return 0
 }
 
 # it_until <label> <sendkey-script> <sync-pattern> [timeout_s=5]

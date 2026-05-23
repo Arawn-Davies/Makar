@@ -543,33 +543,146 @@ sendkey ret" \
         "mnt-flow-done"
 }
 
-test_install() {
-    # Full TUI installer against the blank scratch disk (/dev/hda).  Drives
-    # the wizard: Welcome(Enter) -> drive(Enter) -> fs=ext2(Enter) ->
-    # partition=whole-disk(Enter) -> confirm("yes"+Enter), then waits for the
-    # serial completion marker.  Copies the kernel + /apps + /docs + /src
-    # trees and installs limine, so it is SLOW under TCG and deliberately kept
-    # out of ALL_TESTS - run on demand: ./run.sh ui graphical install
-    reset_shell
-    # Generous pauses between screens: each Enter advances exactly one menu
-    # (getkey blocks), but TCG can drop a bursted sendkey and desync the
-    # wizard, so we wait for each screen to settle before the next key.
-    it_until "install" \
-"$(keys "install")
+test_filetest() {
+    # Phase-1-of-TCC-port slice: exercises the writable FD_KIND_FILE path
+    # end-to-end against a real FAT32 volume.  Formats /dev/hda FAT32, mounts
+    # it at /mnt/hd, then runs filetest.elf which drives:
+    #   - O_CREAT|O_TRUNC + write + flush-on-close
+    #   - O_RDONLY reopen + fstat + read + memcmp
+    #   - O_APPEND
+    #   - sys_stat() reflecting the appended size
+    #   - 256 KiB grow past the old 64 KiB cap
+    #   - no-flush on a read-only close
+    # All milestones print over COM1; we assert on every PASS line plus the
+    # final "[filetest] PASS".  If any sub-test fails, filetest.elf exits
+    # with a "[filetest] FAIL: <reason>" line which the assert misses,
+    # so the scenario fails loudly.
+    # Use ext2 -- /dev/hda is the runner's raw scratch disk with no MBR, so
+    # mkfs.fat32 refuses it ("partition too small"); mkfs.ext2 takes the whole
+    # device as a single ext2 volume (same pattern as test_mnt_mountpoint).
+    # /mnt/hd is the default HD mountpoint (already in the table), so no
+    # mkdir is needed.  We sync on filetest's own "[filetest] PASS" marker
+    # so the next shell command is never typed while filetest is still
+    # running (which otherwise drops the first keystroke into the kernel
+    # keyboard ring at a bad moment).  it_until already calls reset_shell
+    # internally -- don't call it again here or you get a visible double
+    # "^C / cd /" sequence on screen.
+    it_until "filetest" \
+"$(keys "mkfs.ext2 /dev/hda")
 sendkey ret
-PAUSE 1.5
+$(keys "mount /dev/hda /mnt/hd")
 sendkey ret
-PAUSE 1.5
-sendkey ret
-PAUSE 1.5
-sendkey ret
-PAUSE 2.0
-sendkey down
-PAUSE 0.8
+$(keys "exec $P_CDROM_APPS/filetest.elf /mnt/hd")
 sendkey ret" \
-        "INSTALL: complete ok" 360
-    # Progress now renders inside the TUI box (framebuffer only, not mirrored
-    # to serial), so the completion marker is the serial-visible proof.
+        "[filetest] PASS" 60
+    assert_serial_contains \
+        "[filetest] dir=/mnt/hd" \
+        "[filetest] create+write+close ok" \
+        "[filetest] reopen+fstat+read ok size=13" \
+        "[filetest] append+close ok" \
+        "[filetest] stat ok size=19" \
+        "[filetest] grow-256k ok" \
+        "[filetest] no-flush-on-rdonly ok" \
+        "[filetest] PASS"
+}
+
+test_alloctest() {
+    # Phase-2-of-TCC-port slice: userspace heap (malloc.c) + ctype.h +
+    # stdlib.h (strtol/atoi).  alloctest.elf prints "[alloctest] PASS" on
+    # full success or "[alloctest] FAIL: <reason>" on the first failure.
+    # No leading reset_shell -- it_until already calls reset_shell.
+    it_until "alloctest" \
+"$(keys "exec $P_CDROM_APPS/alloctest.elf")
+sendkey ret" \
+        "[alloctest] PASS" 20
+    assert_serial_contains \
+        "[alloctest] malloc/free 64B ok" \
+        "[alloctest] reuse ok" \
+        "[alloctest] realloc grow ok" \
+        "[alloctest] calloc zeroes ok" \
+        "[alloctest] ctype ok" \
+        "[alloctest] strtol ok" \
+        "[alloctest] atoi ok" \
+        "[alloctest] setjmp/longjmp ok" \
+        "[alloctest] snprintf ok" \
+        "[alloctest] FILE* roundtrip ok" \
+        "[alloctest] readdir ok" \
+        "[alloctest] strdup/qsort/sscanf/getenv ok" \
+        "[alloctest] PASS"
+}
+
+test_install() {
+    # Full TUI installer against the blank scratch disk (/dev/hda).  Drives the
+    # wizard deterministically: installer_run prints an `INSTALL>...` serial
+    # marker right before each screen blocks on input, so we sync on the marker
+    # and then send the key that picks the default (recommended) option, rather
+    # than blind-pausing.  Screens, in order:
+    #   welcome   (Enter to begin)
+    #   drive     (Enter -> the one ATA target)
+    #   fs        (Enter -> ext2, the recommended/default item)
+    #   partition (Enter -> "use entire disk", the default)
+    #   confirm   (Down then Enter -> menu defaults to Cancel, move to "Yes")
+    # then we wait for the completion marker.  Copies the kernel + /apps +
+    # /docs + /src trees and installs limine, so it is SLOW under TCG and
+    # deliberately kept out of ALL_TESTS - run on demand:
+    #   ./run.sh ui install            (headless)
+    #   ./run.sh ui graphical install  (watch the wizard)
+    reset_shell
+    CURRENT_NAME=install
+    CURRENT_FAILED=0
+
+    local start_bytes=0
+    [ -f "$SERIAL_LOG" ] && start_bytes=$(wc -c < "$SERIAL_LOG")
+
+    # Launch; installer_run emits INSTALL>welcome before its first getkey.
+    send_script "$(keys "install")
+sendkey ret"
+
+    # Walk the wizard.  Each step waits for that screen's marker (re-syncing
+    # from the install start, since the markers are cumulative + ordered in
+    # the slice) before sending the key, so there is no pause drift to desync.
+    expect_key "INSTALL>welcome"   "$start_bytes" 'sendkey ret'  && \
+    expect_key "INSTALL>drive"     "$start_bytes" 'sendkey ret'  && \
+    expect_key "INSTALL>fs"        "$start_bytes" 'sendkey ret'  && \
+    expect_key "INSTALL>partition" "$start_bytes" 'sendkey ret'
+    # Confirm dialog: tui_menu defaults to "Cancel" (index 0); "Yes - ERASE"
+    # is index 1, so we must press Down once to move the highlight before
+    # Enter.  Send the two keys SEPARATELY with a dwell between them -- bundled
+    # back-to-back the Down arrow gets eaten while the menu repaints to the
+    # framebuffer, leaving Enter to fire on the default (Cancel) and silently
+    # abort the install.  expect_key presses Down after the screen settles;
+    # the explicit dwell then lets the highlight move to "Yes" before Enter.
+    if expect_key "INSTALL>confirm" "$start_bytes" 'sendkey down'; then
+        sleep 1.0
+        send_script 'sendkey ret'
+    fi
+
+    # Copy + limine embed are the slow part under TCG; the progress box paints
+    # to the framebuffer only, so the serial completion marker is the proof.
+    local completed=1
+    if ! wait_for_serial "INSTALL: complete ok" "$start_bytes" 360; then
+        echo "  - installer did not report completion"
+        completed=0
+        CURRENT_FAILED=1
+    fi
+
+    # Whatever the outcome, dump the in-RAM installer log (/log) to serial so
+    # the captured slice records exactly which step the installer reached.
+    # The installer's per-step lines paint to the framebuffer only; /log is
+    # where they (and the kernel debug stream) are mirrored.  Esc first in
+    # case the installer is parked on its final "press a key" screen.
+    send_script 'sendkey esc'
+    sleep 0.5
+    send_script "$(keys "cat /log/install.log")
+sendkey ret"
+    [ "$completed" = "0" ] && sleep 2 || sleep 1
+
+    CURRENT_SEGMENT=$LOGDIR/$CURRENT_NAME.serial
+    CURRENT_DUMP=$LOGDIR/$CURRENT_NAME.ppm
+    rm -f "$CURRENT_SEGMENT" "$CURRENT_DUMP"
+    echo "screendump $CURRENT_DUMP" | nc -U "$MONITOR_SOCK" >/dev/null
+    sleep 0.2
+    dd if="$SERIAL_LOG" bs=1 skip="$start_bytes" 2>/dev/null > "$CURRENT_SEGMENT"
     assert_serial_contains "INSTALL: complete ok"
 }
 
@@ -750,7 +863,7 @@ sendkey ret"
 
 # --- Driver -----------------------------------------------------------------
 
-ALL_TESTS=(glob_proc tab_path exec_hello cd_root ls_dev ls_mnt per_tty_cwd calc_brackets ctrlc_kills_child no_dead_in_proctasks typo_doesnt_clear vt_roundtrip_keeps_maktop_focused vt_all_roundtrips fork_cow fork_execve user_sigusr1_handler makbox_pwd shell_scripting_vars demo_script bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch mnt_mountpoint)
+ALL_TESTS=(glob_proc tab_path exec_hello cd_root ls_dev ls_mnt per_tty_cwd calc_brackets ctrlc_kills_child no_dead_in_proctasks typo_doesnt_clear vt_roundtrip_keeps_maktop_focused vt_all_roundtrips fork_cow fork_execve user_sigusr1_handler makbox_pwd shell_scripting_vars demo_script bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch mnt_mountpoint filetest alloctest)
 
 declare -a TO_RUN
 if [ $# -eq 0 ]; then

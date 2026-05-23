@@ -27,6 +27,7 @@
 #include <kernel/iso9660.h>
 #include <kernel/procfs.h>
 #include <kernel/devfs.h>
+#include <kernel/logfs.h>
 #include <kernel/ide.h>
 #include <kernel/partition.h>
 #include <kernel/tty.h>
@@ -136,7 +137,20 @@ static char *cwd_buf(void)
 #define VFS_FS_DEV     4
 #define VFS_FS_MNT     5
 #define VFS_FS_MNT_EMPTY 6   /* /mnt/<name> placeholder, no fs bound yet */
+#define VFS_FS_LOG     7     /* "/log" – synthetic, writable in-RAM log tree */
 #define VFS_FS_UNKNOWN (-1)
+
+/* -------------------------------------------------------------------------
+ * /log – synthetic, writable in-RAM log directory (see fs/logfs.c).
+ *
+ * The flat dmesg buffer that used to live here is now a directory of named
+ * files (kernel.log, install.log, …) owned by logfs.  These compatibility
+ * wrappers keep the old kernel-facing klog API working: they target
+ * /log/kernel.log, the serial debug tee.
+ * ---------------------------------------------------------------------- */
+void vfs_klog_reset(void)                  { logfs_kreset(); }
+void vfs_klog_write(const char *s, uint32_t n) { logfs_kwrite(s, n); }
+void vfs_klog_append(const char *line)     { logfs_append_line("kernel.log", line); }
 
 /* Mount-point prefix for disk filesystems.  Disk volumes live under
  * /mnt: /mnt/boot (FAT32 boot partition), /mnt/root (data partition,
@@ -259,6 +273,15 @@ static int vfs_route(const char *abs, const char **drv_path, int *out_fs)
         return VFS_FS_ROOT;
     }
 
+    /* "/log" – the synthetic writable log directory (dmesg-style tree). */
+    if (memcmp(abs, LOGFS_MOUNT, LOGFS_MOUNT_LEN) == 0 &&
+        (abs[LOGFS_MOUNT_LEN] == '/' || abs[LOGFS_MOUNT_LEN] == '\0')) {
+        *drv_path = (abs[LOGFS_MOUNT_LEN] == '/')
+                        ? (abs + LOGFS_MOUNT_LEN)
+                        : "/";
+        return VFS_FS_LOG;
+    }
+
     /* Disk filesystems live under /mnt (Linux convention).  The FAT32
      * volume mounts at a caller-chosen component under /mnt (default
      * "hd", the OS drive); the CD-ROM is fixed at /mnt/cdrom.
@@ -326,6 +349,7 @@ static void ls_root(void)
     t_writestring("[mnt]\n");    /* hd / cdrom live here                 */
     t_writestring("[proc]\n");   /* always present - synthesised         */
     t_writestring("[dev]\n");    /* always present - synthesised         */
+    t_writestring("[log]\n");    /* in-RAM writable log tree (dmesg)     */
 }
 
 /* List /mnt - the disk-filesystem mount container. */
@@ -775,6 +799,9 @@ int vfs_ls(const char *path)
     case VFS_FS_DEV:
         return devfs_ls(drv);
 
+    case VFS_FS_LOG:
+        return logfs_ls(drv);
+
     default:
         t_writestring("ls: path not found\n");
         return -1;
@@ -844,6 +871,16 @@ int vfs_cd(const char *path)
         t_writestring("cd: not a directory\n");
         return -1;
 
+    case VFS_FS_LOG:
+        /* /log is flat: only "/log" itself is a directory. */
+        if (drv[0] == '/' && drv[1] == '\0') {
+            strncpy(cwd, abs, VFS_PATH_MAX - 1);
+            cwd[VFS_PATH_MAX - 1] = '\0';
+            return 0;
+        }
+        t_writestring("cd: not a directory\n");
+        return -1;
+
     default:
         t_writestring("cd: path not found\n");
         return -1;
@@ -888,6 +925,10 @@ int vfs_cat(const char *path)
 
     case VFS_FS_PROC:
         err = procfs_read_file(drv, buf, CAT_MAX, &got);
+        break;
+
+    case VFS_FS_LOG:
+        err = (logfs_read(drv, buf, CAT_MAX, &got) < 0) ? -1 : 0;
         break;
 
     case VFS_FS_DEV: {
@@ -1000,6 +1041,9 @@ int vfs_read_file(const char *path, void *buf, uint32_t bufsz, uint32_t *out_sz)
     case VFS_FS_PROC:
         return procfs_read_file(drv, buf, bufsz, out_sz);
 
+    case VFS_FS_LOG:
+        return (logfs_read(drv, buf, bufsz, out_sz) < 0) ? -1 : 0;
+
     case VFS_FS_DEV: {
         int idx = devfs_lookup(drv);
         if (idx < 0) return -1;
@@ -1021,7 +1065,14 @@ int vfs_write_file(const char *path, const void *buf, uint32_t size)
 
     const char *drv;
     int hdfs;
-    if (vfs_route(abs, &drv, &hdfs) != VFS_FS_HD) return -1;
+    int fs = vfs_route(abs, &drv, &hdfs);
+
+    /* /log is a writable append store: programs (and the installer) drop
+     * named log files here.  Writes append rather than truncate. */
+    if (fs == VFS_FS_LOG)
+        return (logfs_write(drv, buf, size) < 0) ? -1 : 0;
+
+    if (fs != VFS_FS_HD) return -1;
     return hd_write_file(hdfs, drv, buf, size);
 }
 
@@ -1093,8 +1144,103 @@ int vfs_file_exists(const char *path)
         return procfs_file_exists(drv);
     case VFS_FS_DEV:
         return devfs_file_exists(drv);
+    case VFS_FS_LOG:
+        return logfs_file_exists(drv);
     default:
         return 0;
+    }
+}
+
+/* vfs_stat -- lean per-backend size + kind probe.  Avoids loading file data
+ * for sized backends (ext2 inode, FAT32 dir entry, ISO9660 PVD descriptor,
+ * devfs node table); falls back to a small scratch read for synthetic FSes
+ * (procfs / logfs) whose files are bounded by construction. */
+int vfs_stat(const char *path, vfs_stat_info_t *out)
+{
+    if (!out) return -1;
+    out->size = 0; out->kind = VFS_STAT_FILE;
+
+    char abs[VFS_PATH_MAX];
+    path_resolve(path, abs);
+
+    const char *drv;
+    int hdfs;
+    int r = vfs_route(abs, &drv, &hdfs);
+
+    switch (r) {
+    case VFS_FS_ROOT:
+    case VFS_FS_MNT:
+    case VFS_FS_MNT_EMPTY:
+        out->kind = VFS_STAT_DIR;
+        return 0;
+
+    case VFS_FS_HD:
+        if (hdfs == HD_FS_EXT2) {
+            uint32_t sz = 0; int isdir = 0;
+            if (ext2_stat(drv, &sz, &isdir) != 0) return -1;
+            out->size = sz;
+            out->kind = isdir ? VFS_STAT_DIR : VFS_STAT_FILE;
+            return 0;
+        } else {
+            /* FAT32: read_file with buf=NULL returns 0 with *out_sz set
+             * to the directory-entry size, without touching file data.
+             * Returns nonzero on missing path or directory entry. */
+            uint32_t sz = 0;
+            int rc = fat32_read_file(drv, NULL, 0xFFFFFFFFu, &sz);
+            if (rc == 0) { out->size = sz; out->kind = VFS_STAT_FILE; return 0; }
+            /* Directory or missing.  Probe as directory: try ls? cheaper
+             * to just say "exists as dir" if fat32_file_exists is false
+             * but path resolves under /mnt.  Best-effort: treat a non-zero
+             * return as directory iff the basename is empty (root). */
+            return -1;
+        }
+
+    case VFS_FS_CDROM:
+        if (s_cdrom_drive < 0) return -1;
+        {
+            uint32_t sz = 0;
+            if (iso9660_read_file((uint8_t)s_cdrom_drive, drv,
+                                  NULL, 0xFFFFFFFFu, &sz) == 0) {
+                out->size = sz; out->kind = VFS_STAT_FILE; return 0;
+            }
+            return -1;
+        }
+
+    case VFS_FS_PROC: {
+        /* procfs files are small and synthetic; use a 4 KiB scratch. */
+        if (!procfs_file_exists(drv)) return -1;
+        uint8_t *scratch = (uint8_t *)kmalloc(4096);
+        if (!scratch) return -1;
+        uint32_t got = 0;
+        int rc = procfs_read_file(drv, scratch, 4096, &got);
+        kfree(scratch);
+        if (rc != 0) return -1;
+        out->size = got; out->kind = VFS_STAT_FILE;
+        return 0;
+    }
+
+    case VFS_FS_LOG: {
+        /* logfs entries are bounded by their ring; 64 KiB is plenty. */
+        uint8_t *scratch = (uint8_t *)kmalloc(64u * 1024u);
+        if (!scratch) return -1;
+        uint32_t got = 0;
+        int rc = (logfs_read(drv, scratch, 64u * 1024u, &got) < 0) ? -1 : 0;
+        kfree(scratch);
+        if (rc != 0) return -1;
+        out->size = got; out->kind = VFS_STAT_FILE;
+        return 0;
+    }
+
+    case VFS_FS_DEV: {
+        uint32_t dev_sz = 0;
+        int node = vfs_blockdev_lookup(abs, &dev_sz);
+        if (node < 0) return -1;
+        out->size = dev_sz; out->kind = VFS_STAT_BLOCKDEV;
+        return 0;
+    }
+
+    default:
+        return -1;
     }
 }
 
@@ -1147,6 +1293,7 @@ int vfs_complete(const char *dir, const char *prefix,
             cb("mnt",   1, ctx);
             cb("proc",  1, ctx);
             cb("dev",   1, ctx);
+            cb("log",   1, ctx);
         }
         return 0;
     }
@@ -1169,6 +1316,8 @@ int vfs_complete(const char *dir, const char *prefix,
         return procfs_complete(drv, prefix, cb, ctx);
     case VFS_FS_DEV:
         return devfs_complete(drv, prefix, cb, ctx);
+    case VFS_FS_LOG:
+        return logfs_complete(drv, prefix, cb, ctx);
     default:
         return -1;
     }

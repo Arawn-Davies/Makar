@@ -357,8 +357,40 @@ void syscall_dispatch(registers_t *regs)
             long r = vfs_blockdev_pwrite(e->dev_node, buf, len, e->pos);
             if (r < 0) { regs->eax = (uint32_t)-1; }
             else { e->pos += (uint32_t)r; regs->eax = (uint32_t)r; }
+        } else if (e->kind == FD_KIND_FILE) {
+            if (!e->writable) { regs->eax = (uint32_t)-1; break; }
+            if (e->append) e->pos = e->size;
+            /* Refuse writes that would push the buffer past the hard cap. */
+            uint64_t want_end = (uint64_t)e->pos + (uint64_t)len;
+            if (want_end > SYSCALL_FILE_MAX) {
+                regs->eax = (uint32_t)-1;   /* EFBIG */
+                break;
+            }
+            /* Grow geometrically (doubling) so many small TCC-style writes
+             * stay amortised O(1).  Floor the first allocation at INITIAL. */
+            if (want_end > e->capacity) {
+                uint32_t new_cap = e->capacity ? e->capacity : SYSCALL_FILE_INITIAL;
+                while ((uint64_t)new_cap < want_end) new_cap <<= 1;
+                if (new_cap > SYSCALL_FILE_MAX) new_cap = SYSCALL_FILE_MAX;
+                uint8_t *p = (uint8_t *)krealloc(e->data, new_cap);
+                if (!p) { regs->eax = (uint32_t)-1; break; }  /* ENOMEM */
+                /* Zero the newly-allocated tail so leftover heap garbage
+                 * never leaks into ring-3 reads. */
+                if (new_cap > e->capacity)
+                    memset(p + e->capacity, 0, new_cap - e->capacity);
+                e->data     = p;
+                e->capacity = new_cap;
+            }
+            /* lseek-past-EOF: zero-fill the gap between current EOF and pos. */
+            if (e->pos > e->size)
+                memset(e->data + e->size, 0, e->pos - e->size);
+            memcpy(e->data + e->pos, buf, len);
+            e->pos += len;
+            if (e->pos > e->size) e->size = e->pos;
+            e->dirty = 1;
+            regs->eax = len;
         } else {
-            /* KEYBOARD and FILE: not writable through this fd today. */
+            /* KEYBOARD: not writable. */
             regs->eax = (uint32_t)-1;
         }
         break;
@@ -540,48 +572,113 @@ void syscall_dispatch(registers_t *regs)
      * Allocated in the calling task's per-task fd table.
      * ------------------------------------------------------------------ */
     case SYS_OPEN: {
-        const char *path  = (const char *)(uintptr_t)regs->ebx;
-        /* flags (ecx) reserved for future use */
+        const char *path = (const char *)(uintptr_t)regs->ebx;
+        uint32_t    flags = regs->ecx;
 
         if (!path) { regs->eax = (uint32_t)-1; break; }
+        /* Reject paths that wouldn't fit in fd_entry_t.path[] -- otherwise
+         * close-flush would write back to the wrong (truncated) path. */
+        {
+            uint32_t n = 0;
+            while (n < VFS_PATH_MAX && path[n]) n++;
+            if (n >= VFS_PATH_MAX) { regs->eax = (uint32_t)-1; break; }
+        }
 
         task_t *cur = task_current();
         if (!cur || !cur->fd_table) { regs->eax = (uint32_t)-1; break; }
 
         int fd = fd_alloc(cur->fd_table);
-        if (fd < 0) { regs->eax = (uint32_t)-1; break; }  /* too many open files */
+        if (fd < 0) { regs->eax = (uint32_t)-1; break; }  /* EMFILE */
 
-        /* Block devices under /dev are not eager-buffered: a disk can be
-         * far larger than SYSCALL_FILE_MAX.  Bind the fd to the devfs node
-         * and serve reads/writes via sector I/O on demand. */
+        /* Block devices under /dev are not eager-buffered. */
         uint32_t dev_sz = 0;
         int dev_node = vfs_blockdev_lookup(path, &dev_sz);
         if (dev_node >= 0) {
             fd_entry_t *de = &cur->fd_table->slots[fd];
+            memset(de, 0, sizeof(*de));
             de->kind     = FD_KIND_BLOCKDEV;
-            de->data     = NULL;
             de->size     = dev_sz;
-            de->pos      = 0;
             de->dev_node = dev_node;
             regs->eax = (uint32_t)fd;
             break;
         }
 
-        uint8_t *buf = (uint8_t *)kmalloc(SYSCALL_FILE_MAX);
-        if (!buf)   { regs->eax = (uint32_t)-1; break; }
-
-        uint32_t out_sz = 0;
-        if (vfs_read_file(path, buf, SYSCALL_FILE_MAX, &out_sz) != 0) {
-            kfree(buf);
-            regs->eax = (uint32_t)-1;
-            break;
-        }
+        int acc      = (int)(flags & O_ACCMODE);
+        int writable = (acc != O_RDONLY);
+        int o_creat  = (flags & O_CREAT)  != 0;
+        int o_trunc  = (flags & O_TRUNC)  != 0;
+        int o_append = (flags & O_APPEND) != 0;
+        int exists   = vfs_file_exists(path);
 
         fd_entry_t *e = &cur->fd_table->slots[fd];
-        e->kind = FD_KIND_FILE;
-        e->data = buf;
-        e->size = out_sz;
-        e->pos  = 0;
+        memset(e, 0, sizeof(*e));
+
+        if (!exists) {
+            if (!o_creat) { regs->eax = (uint32_t)-1; break; }
+            /* Create: allocate an empty growable buffer and mark dirty
+             * so close flushes (even if no writes follow) -- this is
+             * what makes `touch`-style "create empty file" work. */
+            uint8_t *buf = (uint8_t *)kmalloc(SYSCALL_FILE_INITIAL);
+            if (!buf) { regs->eax = (uint32_t)-1; break; }
+            memset(buf, 0, SYSCALL_FILE_INITIAL);
+            e->kind     = FD_KIND_FILE;
+            e->data     = buf;
+            e->size     = 0;
+            e->capacity = SYSCALL_FILE_INITIAL;
+            e->dirty    = 1;
+        } else if (writable && o_trunc) {
+            /* Truncate-on-open: skip the eager-load and start empty. */
+            uint8_t *buf = (uint8_t *)kmalloc(SYSCALL_FILE_INITIAL);
+            if (!buf) { regs->eax = (uint32_t)-1; break; }
+            memset(buf, 0, SYSCALL_FILE_INITIAL);
+            e->kind     = FD_KIND_FILE;
+            e->data     = buf;
+            e->size     = 0;
+            e->capacity = SYSCALL_FILE_INITIAL;
+            e->dirty    = 1;
+        } else {
+            /* Read existing file content into the buffer.  Size the
+             * allocation to the actual file (probed via vfs_stat), not
+             * SYSCALL_FILE_MAX -- otherwise every open()/close() pair on
+             * a tiny log file would kmalloc + kfree 8 MiB, which is both
+             * slow on TCG and stressful for the kernel heap.  For writable
+             * fds, round up to at least SYSCALL_FILE_INITIAL so the first
+             * write doesn't have to grow immediately. */
+            vfs_stat_info_t si;
+            uint32_t cap;
+            if (vfs_stat(path, &si) == 0) {
+                cap = si.size;
+                if (writable && cap < SYSCALL_FILE_INITIAL) cap = SYSCALL_FILE_INITIAL;
+                if (cap == 0) cap = SYSCALL_FILE_INITIAL;   /* empty file: 1 page */
+                if (cap > SYSCALL_FILE_MAX) cap = SYSCALL_FILE_MAX;
+            } else {
+                /* vfs_stat unsupported on this backend; fall back to the
+                 * conservative large allocation. */
+                cap = SYSCALL_FILE_MAX;
+            }
+            uint8_t *buf = (uint8_t *)kmalloc(cap);
+            if (!buf) { regs->eax = (uint32_t)-1; break; }
+            uint32_t out_sz = 0;
+            if (vfs_read_file(path, buf, cap, &out_sz) != 0) {
+                kfree(buf);
+                regs->eax = (uint32_t)-1;
+                break;
+            }
+            e->kind     = FD_KIND_FILE;
+            e->data     = buf;
+            e->size     = out_sz;
+            e->capacity = cap;
+        }
+
+        e->writable = writable ? 1 : 0;
+        e->append   = o_append ? 1 : 0;
+        /* Inline-copy the path for close-flush. */
+        {
+            uint32_t n = 0;
+            while (n < VFS_PATH_MAX - 1 && path[n]) { e->path[n] = path[n]; n++; }
+            e->path[n] = '\0';
+        }
+        e->pos = o_append ? e->size : 0;
 
         regs->eax = (uint32_t)fd;
         break;
@@ -685,9 +782,127 @@ void syscall_dispatch(registers_t *regs)
         else if (whence == 1) new_pos = (uint32_t)((int)e->pos + offset);
         else if (whence == 2) new_pos = (uint32_t)((int)e->size + offset);
         else { regs->eax = (uint32_t)-1; break; }
-        if (new_pos > e->size) new_pos = e->size;
+        /* Writable FILE fds allow seek-past-EOF (SYS_WRITE will zero-fill
+         * the gap on the next write).  Read-only fds and block devices
+         * still clamp at e->size as before. */
+        if (e->kind == FD_KIND_FILE && e->writable) {
+            if (new_pos > SYSCALL_FILE_MAX) new_pos = SYSCALL_FILE_MAX;
+        } else {
+            if (new_pos > e->size) new_pos = e->size;
+        }
         e->pos = new_pos;
         regs->eax = new_pos;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_STAT(106) / SYS_FSTAT(108): fill a Linux i386 struct stat.
+     * Only st_mode / st_size / st_ino / st_blksize / st_nlink are
+     * populated; the rest are zero-filled.  st_ino is the FNV-1a-32
+     * hash of the resolved path (stable per boot, sufficient for TCC).
+     * ------------------------------------------------------------------ */
+    case SYS_STAT: {
+        const char  *upath = (const char *)(uintptr_t)regs->ebx;
+        struct stat *ust   = (struct stat *)(uintptr_t)regs->ecx;
+        if (!upath || !ust) { regs->eax = (uint32_t)-1; break; }
+        vfs_stat_info_t si;
+        if (vfs_stat(upath, &si) != 0) { regs->eax = (uint32_t)-1; break; }
+        struct stat st; memset(&st, 0, sizeof st);
+        /* FNV-1a 32-bit over the (user-supplied, unresolved) path. */
+        uint32_t h = 2166136261u;
+        for (const char *p = upath; *p; p++) {
+            h ^= (uint8_t)*p; h *= 16777619u;
+        }
+        st.st_ino     = h;
+        st.st_nlink   = 1;
+        st.st_blksize = 4096;
+        st.st_size    = si.size;
+        if      (si.kind == VFS_STAT_DIR)      st.st_mode = S_IFDIR | 0755;
+        else if (si.kind == VFS_STAT_BLOCKDEV) st.st_mode = S_IFBLK | 0644;
+        else if (si.kind == VFS_STAT_CHARDEV)  st.st_mode = S_IFCHR | 0644;
+        else                                   st.st_mode = S_IFREG | 0644;
+        memcpy(ust, &st, sizeof st);
+        regs->eax = 0;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_READDIR(141): index-addressed directory enumeration.
+     * EBX = path, ECX = index, EDX = struct dirent *.
+     * Returns 1 if filled, 0 if index past end, -1 on error.
+     * Wraps vfs_complete; bounded by an internal collector since vfs_complete
+     * uses callback-per-entry rather than streaming -- fine for the
+     * modest directory sizes Makar handles today.
+     * ------------------------------------------------------------------ */
+    case SYS_READDIR: {
+        const char    *path = (const char *)(uintptr_t)regs->ebx;
+        uint32_t       idx  = regs->ecx;
+        struct dirent *ude  = (struct dirent *)(uintptr_t)regs->edx;
+        if (!path || !ude) { regs->eax = (uint32_t)-1; break; }
+        struct rd_ctx { uint32_t target; uint32_t cur; int found;
+                        const char *name; int is_dir; };
+        struct rd_ctx ctx = { idx, 0, 0, 0, 0 };
+        /* Callback captures the Nth entry into a static buffer.  The
+         * complete() backends can be re-entered (slow), but a static
+         * buffer is fine in non-reentrant kernel context. */
+        static char  s_name[DIRENT_NAME_MAX];
+        static int   s_is_dir;
+        static struct rd_ctx *s_ctx;
+        s_ctx = &ctx;
+        void cb(const char *n, int is_dir, void *vctx) {
+            struct rd_ctx *c = (struct rd_ctx *)vctx;
+            if (c->found) return;
+            if (c->cur == c->target) {
+                uint32_t i = 0;
+                while (n[i] && i < DIRENT_NAME_MAX - 1) { s_name[i] = n[i]; i++; }
+                s_name[i] = '\0';
+                s_is_dir = is_dir;
+                c->found = 1;
+            }
+            c->cur++;
+        }
+        if (vfs_complete(path, "", cb, &ctx) != 0) {
+            regs->eax = (uint32_t)-1; break;
+        }
+        if (!ctx.found) { regs->eax = 0; break; }
+        memset(ude, 0, sizeof(*ude));
+        uint32_t h = 2166136261u;
+        for (const char *q = s_name; *q; q++) { h ^= (uint8_t)*q; h *= 16777619u; }
+        ude->d_ino  = h;
+        ude->d_type = s_is_dir ? DT_DIR : DT_REG;
+        uint32_t i = 0;
+        while (s_name[i] && i < DIRENT_NAME_MAX - 1) { ude->d_name[i] = s_name[i]; i++; }
+        ude->d_name[i] = '\0';
+        regs->eax = 1;
+        break;
+    }
+
+    case SYS_FSTAT: {
+        int          fd  = (int)regs->ebx;
+        struct stat *ust = (struct stat *)(uintptr_t)regs->ecx;
+        if (!ust) { regs->eax = (uint32_t)-1; break; }
+        task_t *cur = task_current();
+        fd_entry_t *e = fd_get(cur ? cur->fd_table : NULL, fd);
+        if (!e) { regs->eax = (uint32_t)-1; break; }
+        struct stat st; memset(&st, 0, sizeof st);
+        st.st_nlink   = 1;
+        st.st_blksize = 4096;
+        if (e->kind == FD_KIND_FILE) {
+            st.st_mode = S_IFREG | 0644;
+            st.st_size = e->size;
+            uint32_t h = 2166136261u;
+            for (const char *p = e->path; *p; p++) {
+                h ^= (uint8_t)*p; h *= 16777619u;
+            }
+            st.st_ino = h;
+        } else if (e->kind == FD_KIND_BLOCKDEV) {
+            st.st_mode = S_IFBLK | 0644;
+            st.st_size = e->size;
+        } else {
+            st.st_mode = S_IFCHR | 0644;
+        }
+        memcpy(ust, &st, sizeof st);
+        regs->eax = 0;
         break;
     }
 
