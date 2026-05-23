@@ -42,6 +42,8 @@
 #include <kernel/vesa_font.h>
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
+#include <kernel/task.h>
+#include <kernel/signal.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -624,6 +626,23 @@ static void kernel_panic(const char *fault_type, const char *msg,
         }
         Serial_WriteChar('\n');
     }
+    /* Which task was running when this fired?  Useful even for ring-0
+     * panics (e.g. a kernel-side null-deref while servicing a syscall
+     * tells you which userspace process triggered the path). */
+    task_t *cur = task_current();
+    if (cur) {
+        Serial_WriteString("  Task: pid=");
+        Serial_WriteDec((uint32_t)cur->pid);
+        Serial_WriteString(" (");
+        Serial_WriteString((char *)(cur->name ? cur->name : "?"));
+        Serial_WriteString(")");
+        if (r) {
+            Serial_WriteString(" ring=");
+            Serial_WriteString((r->cs & 3) == 3 ? "3" : "0");
+        }
+        Serial_WriteChar('\n');
+    }
+
     Serial_WriteString("--- registers ---\n");
     if (r) serial_dump(r);
 
@@ -736,8 +755,50 @@ static void double_fault_handler(registers_t *regs)
     kernel_panic("DOUBLE FAULT", NULL, NULL, NULL, 0, 0, 0, regs);
 }
 
+/* kill_userspace_fault -- if the faulting frame was in ring 3 (CS&3 == 3),
+ * log the fault and terminate the offending task with the given signal so
+ * the kernel can keep running.  Returns only when the offender cannot be
+ * killed (unkillable task -- shells, idle): caller falls through to panic. */
+static int kill_userspace_fault(const char *fault_type, int signo,
+                                 registers_t *r, uint32_t fault_addr,
+                                 int show_addr)
+{
+    if (!r || (r->cs & 3) != 3)
+        return 0;  /* ring-0 fault -- real kernel bug, fall through to panic */
+
+    task_t *t = task_current();
+    if (!t || t->unkillable)
+        return 0;  /* no task to blame, or it's the shell/idle: panic. */
+
+    Serial_WriteString("[fault] ");
+    Serial_WriteString((char *)fault_type);
+    Serial_WriteString(" in pid=");
+    Serial_WriteDec((uint32_t)t->pid);
+    Serial_WriteString(" (");
+    Serial_WriteString((char *)(t->name ? t->name : "?"));
+    Serial_WriteString(") EIP=");
+    ser_hex(r->eip);
+    if (show_addr) {
+        Serial_WriteString(" addr=");
+        ser_hex(fault_addr);
+    }
+    Serial_WriteString(" err=");
+    ser_hex(r->err_code);
+    Serial_WriteString(" -- delivering SIG");
+    Serial_WriteString(signo == SIGSEGV ? "SEGV" :
+                       signo == SIGILL  ? "ILL"  :
+                       signo == SIGFPE  ? "FPE"  : "?");
+    Serial_WriteChar('\n');
+
+    /* Linux wstatus convention: low 7 bits = signo for signal death. */
+    t->exit_status = signo & 0x7F;
+    task_exit();  /* noreturn -- scheduler picks another task */
+}
+
 static void gpf_handler(registers_t *regs)
 {
+    if (kill_userspace_fault("GENERAL PROTECTION FAULT", SIGSEGV, regs, 0, 0))
+        return;  /* unreachable -- task_exit is noreturn */
     kernel_panic("GENERAL PROTECTION FAULT", NULL, NULL, NULL, 0, 0, 0, regs);
 }
 
@@ -821,6 +882,13 @@ static void page_fault_handler(registers_t *regs)
 
     if (try_handle_cow_fault(fault_addr, regs->err_code))
         return;
+
+    /* Ring-3 page fault: a userspace bug (null deref, stack overflow,
+     * unmapped access).  Don't take the kernel down with it -- log the
+     * fault, deliver SIGSEGV, and let the scheduler reap the offender.
+     * Ring-0 faults are real kernel bugs and still panic. */
+    if (kill_userspace_fault("PAGE FAULT", SIGSEGV, regs, fault_addr, 1))
+        return;  /* unreachable -- task_exit is noreturn */
 
     kernel_panic("PAGE FAULT", NULL, NULL, NULL, 0, fault_addr, 1, regs);
 }

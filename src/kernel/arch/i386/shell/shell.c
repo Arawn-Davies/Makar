@@ -212,6 +212,18 @@ void shell_readline(char *buf, size_t max)
     int    hist_pos = -1;            /* -1 = not in history-navigation mode   */
     char   work[SHELL_MAX_INPUT];    /* in-progress line saved on first ↑     */
 
+    /* zsh-style tab cycling state.  When `tc_active`, repeated Tab presses
+     * cycle through `tc_matches[0..tc_n)` replacing the basename at
+     * `tc_name_start..tc_name_start+tc_cur_len` in `buf`.  Any non-Tab key
+     * commits the current cycle (clears tc_active). */
+    int    tc_active = 0;
+    int    tc_n      = 0;
+    int    tc_idx    = 0;
+    size_t tc_name_start = 0;
+    size_t tc_cur_len    = 0;
+    char   tc_matches[32][64];
+    int    tc_is_dir[32];
+
     buf[0]  = '\0';
     work[0] = '\0';
 
@@ -240,6 +252,13 @@ void shell_readline(char *buf, size_t max)
 
     while (1) {
         unsigned char c = keyboard_getchar();
+
+        /* Any non-Tab key commits an in-progress tab cycle: the currently
+         * pasted match stays in buf, and `c` proceeds to its normal
+         * handler below.  FOCUS_GAIN is a sentinel ignored downstream;
+         * don't let it nuke the cycle. */
+        if (c != '\t' && c != KEY_FOCUS_GAIN)
+            tc_active = 0;
 
         if (c == '\n' || c == '\r') {
             /* Sync VGA tty state to end of line, then emit newline. */
@@ -360,6 +379,35 @@ void shell_readline(char *buf, size_t max)
 
         /* Tab completion. */
         if (c == '\t') {
+            /* Already cycling?  Advance to the next match and replace the
+             * basename region in-place; no re-collection of matches. */
+            if (tc_active && tc_n > 1 && cur == len) {
+                tc_idx = (tc_idx + 1) % tc_n;
+                /* Erase current cycled name. */
+                size_t erase_n = tc_cur_len;
+                if (erase_n > cur - tc_name_start) erase_n = cur - tc_name_start;
+                len -= erase_n;
+                cur -= erase_n;
+                /* Paste new match. */
+                const char *m = tc_matches[tc_idx];
+                size_t mlen = strlen(m);
+                if (mlen > 63) mlen = 63;
+                size_t inserted = 0;
+                for (size_t i = 0; i < mlen && len < max - 1; i++) {
+                    buf[cur++] = m[i]; len++; inserted++;
+                }
+                if (tc_is_dir[tc_idx] && len < max - 1) {
+                    buf[cur++] = '/'; len++; inserted++;
+                }
+                buf[len] = '\0';
+                tc_cur_len = inserted;
+                size_t etc = (drawn > len) ? drawn : len;
+                drawn = len;
+                readline_redraw(buf, len, cur, etc,
+                                rl_col, rl_row, vesa_rl_col, vesa_rl_row);
+                continue;
+            }
+            tc_active = 0;
             /* Find word start (scan left for space or start of buf). */
             size_t ws = cur;
             while (ws > 0 && buf[ws - 1] != ' ') ws--;
@@ -500,27 +548,92 @@ void shell_readline(char *buf, size_t max)
                 readline_redraw(buf, len, cur, et3,
                                 rl_col, rl_row, vesa_rl_col, vesa_rl_row);
             } else if (nmatches > 1) {
-                /* Print all matches, then redisplay prompt + line. */
-                t_putchar('\n');
-                for (int i = 0; i < nmatches; i++) {
-                    t_writestring(vctx.matches[i]);
-                    if (vctx.is_dir[i]) t_putchar('/');
-                    t_putchar(' ');
+                /* Compute longest common prefix across matches.  If the LCP
+                 * extends beyond what the user has typed, insert the
+                 * extension and stay in non-cycling mode (zsh's first-Tab
+                 * "smart" extension).  Otherwise enter cycling mode so the
+                 * next Tab presses cycle through the matches in place. */
+                size_t lcp = strlen(vctx.matches[0]);
+                for (int i = 1; i < nmatches; i++) {
+                    size_t k = 0;
+                    while (k < lcp && vctx.matches[i][k] == vctx.matches[0][k])
+                        k++;
+                    lcp = k;
                 }
-                t_putchar('\n');
-                /* Reprint prompt and update readline anchor. */
-                t_writestring(SHELL_USERNAME "@" SHELL_HOSTNAME " ");
-                t_writestring(vfs_getcwd());
-                t_writestring("~> ");
-                rl_col = t_column;
-                rl_row = t_row;
-                if (vesa_tty_is_ready()) {
-                    vesa_rl_col = vesa_tty_get_col();
-                    vesa_rl_row = vesa_tty_get_row();
+
+                /* Only the basename portion is what the user has typed
+                 * (path-style completions strip the dir part), so compare
+                 * lcp to match_prefix_len. */
+                if (lcp > match_prefix_len && cur == len) {
+                    /* Extend by LCP - already-typed.  No cycling yet. */
+                    for (size_t i = match_prefix_len; i < lcp && len < max - 1; i++) {
+                        buf[cur++] = vctx.matches[0][i]; len++;
+                    }
+                    buf[len] = '\0';
+                    size_t etL = (drawn > len) ? drawn : len;
+                    drawn = len;
+                    readline_redraw(buf, len, cur, etL,
+                                    rl_col, rl_row, vesa_rl_col, vesa_rl_row);
+                    continue;
                 }
-                size_t et4 = (drawn > len) ? drawn : len;
+
+                /* Cycling only makes sense when the cursor is at the end
+                 * of the line; otherwise the in-place erase/insert below
+                 * would mangle the trailing characters.  Fall back to the
+                 * old listing behaviour for that edge case. */
+                if (cur != len) {
+                    t_putchar('\n');
+                    for (int i = 0; i < nmatches; i++) {
+                        t_writestring(vctx.matches[i]);
+                        if (vctx.is_dir[i]) t_putchar('/');
+                        t_putchar(' ');
+                    }
+                    t_putchar('\n');
+                    t_writestring(SHELL_USERNAME "@" SHELL_HOSTNAME " ");
+                    t_writestring(vfs_getcwd());
+                    t_writestring("~> ");
+                    rl_col = t_column;
+                    rl_row = t_row;
+                    if (vesa_tty_is_ready()) {
+                        vesa_rl_col = vesa_tty_get_col();
+                        vesa_rl_row = vesa_tty_get_row();
+                    }
+                    size_t et4 = (drawn > len) ? drawn : len;
+                    drawn = len;
+                    readline_redraw(buf, len, cur, et4,
+                                    rl_col, rl_row, vesa_rl_col, vesa_rl_row);
+                    continue;
+                }
+
+                /* Enter cycle mode: snapshot matches, erase the typed
+                 * basename, and paste matches[0].  Subsequent Tabs hit
+                 * the tc_active branch at the top. */
+                tc_n   = nmatches;
+                tc_idx = 0;
+                memcpy(tc_matches, vctx.matches, sizeof(tc_matches));
+                memcpy(tc_is_dir, vctx.is_dir, sizeof(tc_is_dir));
+                /* name_start = where the basename begins in buf. */
+                tc_name_start = cur - match_prefix_len;
+                /* Erase the typed prefix from buf. */
+                len -= match_prefix_len;
+                cur -= match_prefix_len;
+                /* Paste matches[0]. */
+                const char *m = tc_matches[0];
+                size_t mlen = strlen(m);
+                if (mlen > 63) mlen = 63;
+                size_t inserted = 0;
+                for (size_t i = 0; i < mlen && len < max - 1; i++) {
+                    buf[cur++] = m[i]; len++; inserted++;
+                }
+                if (tc_is_dir[0] && len < max - 1) {
+                    buf[cur++] = '/'; len++; inserted++;
+                }
+                buf[len] = '\0';
+                tc_cur_len = inserted;
+                tc_active = 1;
+                size_t etc0 = (drawn > len) ? drawn : len;
                 drawn = len;
-                readline_redraw(buf, len, cur, et4,
+                readline_redraw(buf, len, cur, etc0,
                                 rl_col, rl_row, vesa_rl_col, vesa_rl_row);
             }
             continue;

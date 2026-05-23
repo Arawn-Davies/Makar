@@ -18,11 +18,16 @@ managed runtime), booted via GRUB Multiboot 2. Makar is the
 **C / GCC sibling** of [Medli](https://github.com/Arawn-Davies/Medli) -
 two independent implementations of the same OS concept, sharing a
 command vocabulary, filesystem layout, and long-term binary format
-goals. Current version: **0.7.1** (see `include/kernel/version.h`).
+goals. Current version: **0.8.0** (see `include/kernel/version.h`) —
+the in-OS TCC milestone: `tcc.elf` runs on bare metal, `calc.elf` and
+`sh.elf` self-rebuild from their in-tree source, and ring-3 page faults
+cleanly deliver SIGSEGV instead of panicking the kernel.
 
 Self-contained: kernel, libc fragment, ring-3 userspace, ELF loader, **four
-independent TTYs (Alt+F1–F4 to switch)**, and an in-kernel `vi`-style
-editor - all under one repo.
+independent TTYs (Alt+F1–F4 to switch)**, **in-OS TinyCC compiler**
+(`tcc.elf`), an experimental **ring-3 shell** (`sh.elf`) that runs
+alongside the in-kernel shell, and an in-kernel `vi`-style editor — all
+under one repo.
 
 Built with the [`i686-elf-gcc`](https://github.com/Arawn-Davies/quick-i686)
 cross-compiler. Designed and tested in QEMU; runs on real hardware once
@@ -49,12 +54,13 @@ private kernel stack and (for ring-3 programs) its own page directory.
 | **Display** | VESA framebuffer (Bochs VBE, 720p default), VGA 80×50 fallback. Pane API (`vesa_pane_t`) for split-screen. |
 | **Multi-TTY** | 4 independent shell tasks (`shell0`–`shell3`), **Alt+F1–F4** to switch focus, per-pane redraws on `KEY_FOCUS_GAIN`. |
 | **VIX editor** | Pane-aware vi-style editor (FUZIX/ELKS-inspired). Resolution-agnostic. |
-| **Storage** | FAT32 + **ext2** (HDD/USB) + ISO 9660 (CD-ROM) via IDE PIO. Auto-mount FAT32 at `/mnt/hd`, CD-ROM at `/mnt/cdrom`. `mount /dev/hdaN /mnt/<name>` auto-detects FAT32 vs ext2; the two coexist at separate mountpoints. Read+write+delete+rename+mkdir on both; `mkfs.fat32` / `mkfs.ext2`. |
-| **Memory** | PMM bitmap allocator, paging (256 MiB identity + per-task 4 KiB user pages), kernel heap (`kmalloc`/`kfree`/`krealloc`). |
-| **Tasking** | **Preemptive** round-robin scheduler. PIT at **100 Hz**, `SCHED_QUANTUM = 4` ticks → 40 ms time slice. Per-task `pid`, `cwd`, `tty`, fd-table placeholder, signal bitmasks. |
-| **Userspace** | Ring-3 via `iret`. ELF loader with argc/argv. Full POSIX fork + execve + wait4 (COW). Apps: `hello`, `calc`, `vix`, `diskinfo`, `fdisk`, `cfdisk`, `basic`, `clock`, `maktop`, `kbtester`, `makbox` (busybox-style `ls`/`cat`/`cp`/`mv`/`rm`/`rmdir`/`echo`/`pwd`). |
-| **Syscalls** | Linux i386 ABI subset over `int 0x80` - `SYS_EXIT`, `SYS_READ`, `SYS_WRITE` (fd 1 = VGA, fd 2 = VGA + COM1 serial), `SYS_OPEN`, `SYS_CLOSE`, `SYS_LSEEK`, `SYS_BRK`, `SYS_DEBUG`, `SYS_YIELD`, plus Makar extensions for terminal/file ops and `SYS_WRITE_SERIAL` (211). |
-| **Shell** | Inline editing, history (16 entries), tab completion, Ctrl+C. Built-ins: `ls`, `cd`, `cat`, `cp`, `mv`, `mkdir`, `rm`, `rmdir`, `mount`, `meminfo`, `uptime` (humanised h/m/s), `lsdisks`, `lspart`, `mkpart`, `readsector`, `exec`, `ktest`, `ring3test`, `vixtest`. `lsman` / `man <cmd>` for help. |
+| **Storage** | FAT32 + **ext2** (HDD/USB) + ISO 9660 (CD-ROM) via IDE PIO. **HDD root layout** (v0.8): the volume hosting `/usr/lib/crt0.o` is elevated to `/` so `/usr`, `/etc`, `/home`, `/bin`, `/src` resolve at the Linux paths; a FAT32 mount named "boot" is elevated to `/boot`; `/mnt` shows only manually mounted volumes. `mount /dev/hdaN /mnt/<name>` still works for ad-hoc mounts. `mkfs.fat32` / `mkfs.ext2`. |
+| **Memory** | PMM bitmap allocator, paging (256 MiB identity + per-task 4 KiB user pages), **32 MiB kernel heap** (`kmalloc`/`kfree`/`krealloc`). |
+| **Tasking** | **Preemptive** round-robin scheduler. PIT at **100 Hz**, `SCHED_QUANTUM = 4` ticks → 40 ms time slice. Per-task `pid`, `cwd`, `tty`, fd-table placeholder, signal bitmasks. **Ring-3 page faults / GPFs now deliver SIGSEGV** and reap the offender via `task_exit` — userspace bugs no longer panic the kernel. |
+| **Userspace** | Ring-3 via `iret`. ELF loader with argc/argv. Full POSIX fork + execve + wait4 (COW). Apps: `hello`, `calc`, `vix`, `diskinfo`, `fdisk`, `cfdisk`, `basic`, `clock`, `maktop`, `kbtester`, `makbox` (busybox-style `ls`/`cat`/`cp`/`mv`/`rm`/`rmdir`/`echo`/`pwd`), **`sh.elf`** (ring-3 shell MVP — exec it from any kernel shell prompt), **`tcc.elf`** (in-OS TinyCC). |
+| **Syscalls** | Linux i386 ABI subset over `int 0x80` — `SYS_EXIT`, `SYS_FORK`, `SYS_READ`, `SYS_WRITE`, `SYS_OPEN`, `SYS_CLOSE`, `SYS_EXECVE`, `SYS_CHDIR` (v0.8), `SYS_LSEEK`, `SYS_BRK`, `SYS_WAIT4`, `SYS_STAT`, `SYS_FSTAT`, `SYS_READDIR`, `SYS_KILL`, `SYS_SIGNAL`, plus Makar extensions for terminal/file ops, `SYS_GETCWD`, `SYS_WRITE_SERIAL`. |
+| **Shell** | Inline editing, history (16 entries), **zsh-style tab cycling** (first Tab → longest common prefix; subsequent Tabs cycle matches; any non-Tab key commits), Ctrl+C. Built-ins: `ls`, `cd`, `cat`, `cp`, `mv`, `mkdir`, `rm`, `rmdir`, `mount`, `meminfo`, `uptime`, `lsdisks`, `lspart`, `mkpart`, `readsector`, `exec`, `ktest`, `ring3test`, `vixtest`. `lsman` / `man <cmd>` for help. |
+| **Compiler** | **In-OS TinyCC** (`/apps/tcc.elf`, v0.9.27, cross-built and shipped on every ISO). Sysroot at `/usr/{include,lib}` with `crt0.o` + `libc.a`. `tcc hello.c -o hello.elf` compiles to a Makar-loadable ELF. Verified self-host: `tcc /src/userspace/calc.c -o /tmp/calc.elf` and `tcc /src/userspace/sh.c -o /tmp/sh.elf` rebuild + run correctly via `./run.sh ui libc`. |
 | **Drivers** | Serial (16550 UART, 38400 baud), PIT, PS/2 keyboard (set 1 + e0 extended), ATA/IDE PIO (28-bit LBA, 4 drives), MBR + GPT partition tables. |
 | **Debug** | INT 1 / INT 3 GDB-friendly handlers, kernel panic screen, ktest harness with VESA + serial output. |
 
@@ -65,7 +71,11 @@ private kernel stack and (for ring-3 programs) its own page directory.
 ./run.sh iso test       # full CI suite: ktest + GDB boot-checkpoint + UI sendkey tests
 ./run.sh hdd boot       # build & run from a 512 MiB FAT32 HDD image
 ./run.sh hdd test       # HDD-only GDB boot test (no CD-ROM)
-./run.sh ui        # UI tests against an existing makar.iso (sendkey + serial grep)
+./run.sh ui                       # headless UI tests (default: all groups)
+./run.sh ui fast                  # dev inner loop — skips disk + TCC compile tests
+./run.sh ui libc                  # alloctest + TCC scenarios (calc + sh self-rebuild)
+./run.sh ui shell|cd|fs|posix|vt|bughunt   # other named scenario groups
+./run.sh gui [group_or_scenario]  # same UI tests with a visible QEMU window
 ./run.sh clean
 ```
 
@@ -86,16 +96,25 @@ used directly; otherwise Docker takes over transparently.
 
 ## Roadmap (near-term)
 
-Tracked in the [roadmap](docs/roadmap.md) under "Slice queue". Next on deck:
+Tracked in the [roadmap](docs/roadmap.md) under "Slice queue". Recent
+shipping (May 2026):
 
-- **Slice 14 (NEXT)** — Per-task FD table. Replaces the global keyboard
-  owner + placeholder `fd_table` with a real per-task array. Pipe(2) /
-  dup(2) and any libc port depend on it.
-- **Slice 8** — Linux-style signal subsystem (sigaction, `kill()`, htop
-  picker).
-- **Slice 9** — Preemption hardening (interrupt-safe `schedule()`, per-task
-  tick accounting, runtime-tunable quantum).
-- **Slice 15** — VFS `task->cwd` authoritative; drop the `s_cwd` global.
-- **Slice 16** — VGA-text fallback per-TTY backing buffers.
+- **v0.8 in-OS TCC milestone** ✅ — `tcc.elf` ships on every ISO; `calc.elf`
+  and `sh.elf` self-rebuild via `./run.sh ui libc`.
+- **HDD root layout** ✅ — `/usr`, `/etc`, `/home`, `/boot` resolved via
+  rootfs/bootfs prefix probes; `/mnt` only shows manual mounts.
+- **Ring-3 page faults → SIGSEGV** ✅ — userspace bugs no longer panic the
+  kernel; panic screen now names the faulting task/pid/ring when ring-0.
+- **Zsh-style tab cycling** ✅ — first Tab extends to longest common prefix;
+  subsequent Tabs cycle matches in place.
+- **Ring-3 shell MVP** ✅ — `/apps/sh.elf` coexists with the in-kernel shell.
+
+Next on deck:
+
+- **Lift more shell out of the kernel** — pipe(2) / job control inside
+  `sh.elf`; PATH lookup; eventually drop the in-kernel shell entirely.
+- **x87 FPU init** — unblocks BASIC floats + TCC self-compile of `tcc.c`.
+- **Streaming file I/O** (`open_file_t` refactor) — replace eager kmalloc
+  load so files >16 MiB stream through reads/writes.
 
 <!-- ci-trigger-test: this comment is intentionally docs-only to verify the workflow path filter skips this commit. -->

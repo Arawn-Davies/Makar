@@ -99,7 +99,9 @@ _usage() {
     echo "  hdd   build | boot | test | release"
     echo "  gdb   iso | hdd"
     echo "  ktest [graphical]"
-    echo "  ui    [graphical] [scenario_names...]"
+    echo "  ui    [scenario_or_group...]    -- headless ui tests"
+    echo "  gui   [scenario_or_group...]    -- ui tests with visible QEMU window"
+    echo "        groups: all (default) | fast | shell | cd_pwd | fs | posix | libc | vt | bughunt"
     echo "  all   [graphical]   -- gdb checkpoints + bg-ktest + ui in one QEMU"
     echo "  clean"
     echo ""
@@ -119,11 +121,14 @@ case "${1:-}" in
             MODE="ktest"; shift 1
         fi ;;
     ui)
-        if [ "${2:-}" = "graphical" ]; then
-            MODE="ui graphical"; shift 2
-        else
-            MODE="ui"; shift 1
-        fi ;;
+        MODE="ui"; shift 1 ;;
+    gui)
+        # Alias for the visible-window ui-test run.  Replaces the
+        # awkward `ui graphical <scenarios>` form where arg order
+        # mattered (`ui foo graphical` was silently parsed as headless,
+        # with `graphical` treated as a scenario name).  With `gui`,
+        # any remaining args are scenarios or group names.
+        MODE="ui graphical"; shift 1 ;;
     all)
         if [ "${2:-}" = "graphical" ]; then
             MODE="all graphical"; shift 2

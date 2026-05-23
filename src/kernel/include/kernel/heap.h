@@ -8,7 +8,10 @@
    8 MiB identity-mapped boot window.  heap_init() maps this region via
    paging_map_region() before setting up the free-list. */
 #define HEAP_START  0x800000u   /*  8 MiB – first byte past the boot mapping */
-#define HEAP_MAX    0x1800000u  /* 24 MiB – exclusive upper bound (16 MiB heap) */
+#define HEAP_MAX    0x2800000u  /* 40 MiB – exclusive upper bound (32 MiB heap).
+                                 * Doubled from 16 MiB so SYSCALL_FILE_MAX could
+                                 * be raised to 16 MiB without exhausting the heap
+                                 * on multi-fd workloads (TCC self-compile). */
 
 /*
  * Initialise the heap.  Must be called after paging_init() and before any

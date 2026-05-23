@@ -36,7 +36,17 @@ GUI=${GUI:-0}
 #                        /log).  Blocks until you close the window / Ctrl-C.
 UI_END=${UI_END:-shutdown}
 if [ "$GUI" = "1" ]; then
-    DISPLAY_ARG=${QEMU_DISPLAY:+-display $QEMU_DISPLAY}
+    # Pick a sane default display backend per OS so `ui graphical` opens
+    # a visible window without the caller having to set QEMU_DISPLAY.
+    # macOS: cocoa; Linux: gtk; fallback: sdl.  Override with QEMU_DISPLAY.
+    if [ -z "${QEMU_DISPLAY:-}" ]; then
+        case "$(uname -s)" in
+            Darwin)  QEMU_DISPLAY=cocoa ;;
+            Linux)   QEMU_DISPLAY=gtk ;;
+            *)       QEMU_DISPLAY=sdl ;;
+        esac
+    fi
+    DISPLAY_ARG="-display $QEMU_DISPLAY"
     # 0.4 s/key in GUI mode: the visible window + TCG can lag the PS/2 IRQ ->
     # ring -> shell_readline pipeline, and a too-fast burst drops characters or
     # races a VT switch.  Override with KEY_DELAY=… for a specific run.
@@ -553,8 +563,29 @@ it() {
     dd if="$SERIAL_LOG" bs=1 skip="$start_bytes" 2>/dev/null > "$CURRENT_SEGMENT"
 }
 
+# Render the current serial slice for inline failure context: compact
+# whitespace, cap at 800 bytes (long enough to see what actually
+# happened, short enough not to drown the failure summary).
+_assert_render_serial() {
+    if [ ! -s "$CURRENT_SEGMENT" ]; then
+        echo "(empty)"
+        return
+    fi
+    # Use Read-via-shell rather than cat to keep this hook-friendly:
+    # awk reads the file, normalises whitespace, prints up to 800 bytes.
+    awk 'BEGIN { RS=""; ORS="" } { gsub(/\r/, ""); gsub(/[ \t]+/, " "); print }' \
+        "$CURRENT_SEGMENT" \
+        | awk -v max=800 '{
+            if (length($0) > max) {
+                print substr($0, 1, max) " ...[truncated " (length($0) - max) " bytes]"
+            } else { print }
+          }'
+}
+
 # assert_serial_contains <needle>... -- every needle must appear as a
-# fixed-string substring of the current test's serial slice.
+# fixed-string substring of the current test's serial slice.  On failure
+# prints each missing needle alongside a snippet of what *was* in serial
+# so the operator can see the divergence without opening the log file.
 assert_serial_contains() {
     local missing=()
     for needle in "$@"; do
@@ -564,7 +595,12 @@ assert_serial_contains() {
     done
     if [ ${#missing[@]} -ne 0 ]; then
         CURRENT_FAILED=1
-        echo "  - missing in serial: ${missing[*]}"
+        local got
+        got=$(_assert_render_serial)
+        for needle in "${missing[@]}"; do
+            echo "  - expected (missing): \"$needle\""
+        done
+        echo "  - got: $got"
     fi
 }
 
@@ -578,7 +614,12 @@ assert_serial_not_contains() {
     done
     if [ ${#present[@]} -ne 0 ]; then
         CURRENT_FAILED=1
-        echo "  - unexpectedly present in serial: ${present[*]}"
+        for needle in "${present[@]}"; do
+            echo "  - unexpected (forbidden but present): \"$needle\""
+        done
+        local got
+        got=$(_assert_render_serial)
+        echo "  - got: $got"
     fi
 }
 

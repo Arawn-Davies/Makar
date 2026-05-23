@@ -41,6 +41,21 @@ sendkey ret"
     assert_serial_contains "vendor_id" "MemFree" "Makar $MAKAR_VERSION"
 }
 
+test_tab_cycle() {
+    # Multi-match Tab now zsh-cycles instead of listing -- first Tab
+    # enters cycle mode and pastes matches[0]; Ctrl+C aborts the line.
+    # A follow-up `echo` proves the shell survived the cycle entry and
+    # the abort.  Doesn't depend on cycle ordering -- the goal here is
+    # "cycle entry didn't crash readline".
+    it "tab-cycle" \
+"$(keys "ls /proc/")
+sendkey tab
+sendkey ctrl-c
+$(keys "echo cycle-done")
+sendkey ret"
+    assert_serial_contains "cycle-done" "^C"
+}
+
 test_tab_path() {
     # `cat<TAB>/proc/c<TAB><Enter>` should expand to `cat /proc/cpuinfo`
     # and dump the cpuinfo content.  Verifies tab on unique cmd match,
@@ -89,19 +104,17 @@ sendkey alt-f1" \
 }
 
 test_cd_root() {
-    # `cd /<TAB><TAB><Enter>` then `pwd` - tab on `/<TAB><TAB>` lists
-    # the root entries; the trailing Enter commits the half-typed
-    # `cd /`, leaving us at the virtual root.  Then verify with pwd.
-    # Disk filesystems now live under /mnt, so the root tab listing shows
-    # the [mnt] container alongside the synthetic [proc] / [dev] trees.
+    # `cd /` -> `pwd` confirms cwd lands at the virtual root.  Post
+    # zsh-style tab cycling, tabbing on `cd /<TAB>` would cycle through
+    # root entries instead of listing them; the listing test moved to
+    # test_tab_path and test_tab_cycle.  Here we just verify the cd
+    # plumbing reaches the root.
     it "cd-root-listing" \
 "$(keys "cd /")
-sendkey tab
-sendkey tab
 sendkey ret
 $(keys "pwd")
 sendkey ret"
-    assert_serial_contains "mnt"
+    assert_serial_contains "[makbox:pwd] /"
 }
 
 test_ls_dev() {
@@ -116,13 +129,16 @@ sendkey ret"
 }
 
 test_ls_mnt() {
-    # `ls /mnt` lists the disk-filesystem mounts.  The ui runner boots
-    # from CD, so /mnt/cdrom is the stable entry to assert on.  Covers the
-    # VFS_FS_MNT route + ls_mnt() after the /hd,/cdrom -> /mnt move.
+    # `ls /mnt` lists the disk-filesystem mount container.  Post-rootfs
+    # elevation, the CD-ROM is mounted at / (live boot's rootfs) and is
+    # hidden from /mnt; the always-registered HD placeholders ("boot",
+    # "root", "hd") still show as empty mountpoints.  Asserting on one
+    # of those placeholders proves the VFS_FS_MNT route + ls_mnt()
+    # listing still work end-to-end.
     it "ls-mnt" \
 "$(keys "ls $P_MNT")
 sendkey ret"
-    assert_serial_contains "cdrom"
+    assert_serial_contains "hd"
 }
 
 test_calc_brackets() {
@@ -637,6 +653,87 @@ sendkey ret"
     assert_serial_contains "stdio.h"
 }
 
+test_usershell_smoke() {
+    # First-ever ring-3 userspace shell scenario.  Drops from the
+    # in-kernel shell into /apps/sh.elf, exercises pwd + cd + pwd to
+    # prove SYS_GETCWD round-trips AND the new SYS_CHDIR(12) actually
+    # mutates the calling task's cwd, then `exit`s back to the kernel
+    # shell.  Asserts the new "$ " prompt appears (proves sh.elf
+    # started), the cwd line after `cd /proc` reads /proc (proves
+    # SYS_CHDIR), and a final pwd via the kernel makbox proves the
+    # parent shell is responsive after sh.elf returned.
+    reset_shell
+    it_until "usershell-smoke" \
+"$(keys "exec /apps/sh.elf")
+sendkey ret
+PAUSE 0.8
+$(keys "pwd")
+sendkey ret
+$(keys "cd /proc")
+sendkey ret
+$(keys "pwd")
+sendkey ret
+$(keys "exit")
+sendkey ret
+$(keys "pwd")
+sendkey ret" \
+        "[makbox:pwd]" 15
+    assert_serial_contains "sh.elf: ring-3 userspace shell" "/proc" "[makbox:pwd]"
+    assert_serial_not_contains "Kernel panic" "SIGSEGV"
+}
+
+test_usershell_execve() {
+    # Proves the ring-3 shell's fork+execve+wait4 dispatch path: drop
+    # into sh.elf, then run /apps/calc.elf and feed it (2+3)*4=20,
+    # then `exit` calc (back to sh.elf), then `exit` sh.elf (back to
+    # the kernel shell).  Asserts the answer reached serial AND that
+    # nothing along the path SIGSEGV'd or panicked.
+    reset_shell
+    it_until "usershell-execve" \
+"$(keys "exec /apps/sh.elf")
+sendkey ret
+PAUSE 0.8
+$(keys "/apps/calc.elf")
+sendkey ret
+PAUSE 0.8
+$(keys "(2+3)*4")
+sendkey ret
+$(keys "exit")
+sendkey ret
+$(keys "exit")
+sendkey ret" \
+        "20" 15
+    assert_serial_contains "sh.elf: ring-3 userspace shell" "20"
+    assert_serial_not_contains "Kernel panic" "SIGSEGV"
+}
+
+test_tcc_rebuild_sh() {
+    # Self-host milestone for the ring-3 shell: in-OS TCC rebuilds
+    # sh.c from its in-tree source.  Same pattern as test_tcc_rebuild_calc
+    # but on a more complex program (fork/execve/wait4/getcwd/chdir).
+    # Two-stage send to avoid the typing race that bit test_tcc_rebuild_calc:
+    # type the compile + Enter, wait for shell-ready, THEN exec and drive
+    # the rebuilt shell.
+    reset_shell
+    CURRENT_NAME=tcc-rebuild-sh
+    local sb1=$(wc -c < "$SERIAL_LOG")
+    send_script "$(keys "tcc /src/userspace/sh.c -o /tmp/sh-rebuilt.elf")
+sendkey ret"
+    wait_for_serial '\[shell:ready vt=0\]' "$sb1" 90 || \
+        echo "  - stage1: tcc compile of sh.c never returned to prompt"
+    it_until "tcc-rebuild-sh" \
+"$(keys "exec /tmp/sh-rebuilt.elf")
+sendkey ret
+PAUSE 0.8
+$(keys "pwd")
+sendkey ret
+$(keys "exit")
+sendkey ret" \
+        "sh.elf: ring-3 userspace shell" 15
+    assert_serial_contains "sh.elf: ring-3 userspace shell"
+    assert_serial_not_contains "Kernel panic" "SIGSEGV"
+}
+
 test_tcc_hello() {
     # Phase-3-of-TCC-port slice: cross-built tcc.elf compiles a known C
     # source on a running Makar guest and the freshly-emitted ELF is
@@ -656,6 +753,65 @@ $(keys "exec /tmp/hello.elf")
 sendkey ret" \
         "Hello, TCC" 60
     assert_serial_contains "Hello, TCC"
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)"
+}
+
+test_tcc_rebuild_calc() {
+    # Self-host milestone: in-OS Makar rebuilds calc.elf from its
+    # in-tree source via TCC, then runs the rebuilt binary against the
+    # same arithmetic vector test_calc_brackets uses.  Source shipped
+    # by iso.sh (isodir/src/userspace/calc.c) and reachable two ways:
+    #   /mnt/cdrom/src/userspace/calc.c   (explicit CD path)
+    #   /src/userspace/calc.c             (via the rootfs fallthrough
+    #                                      added with the HDD-root work)
+    # We use the rootfs path so this scenario also exercises that route.
+    # Asserts: the rebuilt binary computes correctly AND nothing along
+    # the path panicked or delivered SIGSEGV.  90 s budget because TCC
+    # compile under TCG is slow.
+    # Two-stage send: type the compile + Enter, wait for the shell prompt
+    # to come back (proves tcc exited cleanly and isn't still consuming
+    # keys), THEN type the exec + REPL inputs.  Without this sync the
+    # second batch's first byte can race ahead and arrive while tcc is
+    # still running -- the keys queue up in HMP and the keyboard ring
+    # drops chars on drain, producing flakes like "ex/calc-rebuilt.elf"
+    # instead of "exec /tmp/calc-rebuilt.elf".
+    reset_shell
+    CURRENT_NAME=tcc-rebuild-calc
+    local sb1=$(wc -c < "$SERIAL_LOG")
+    send_script "$(keys "tcc /src/userspace/calc.c -o /tmp/calc-rebuilt.elf")
+sendkey ret"
+    wait_for_serial '\[shell:ready vt=0\]' "$sb1" 90 || \
+        echo "  - stage1: tcc compile never returned to prompt"
+    it_until "tcc-rebuild-calc" \
+"$(keys "exec /tmp/calc-rebuilt.elf")
+sendkey ret
+PAUSE 0.8
+$(keys "(2+3)*4")
+sendkey ret
+$(keys "exit")
+sendkey ret" \
+        "20" 15
+    assert_serial_contains "20"
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
+}
+
+test_tcc_hello_relpath() {
+    # cd into the examples dir then `tcc hello-tcc.c -o /tmp/relhello.elf`
+    # exercises the kernel's path_resolve (cwd-join for relative inputs)
+    # AND TCC's own internal open() shim.  The output stays absolute so
+    # /tmp is independent of cwd.  Distinct output name + greeting search
+    # so this scenario doesn't false-pass on a stale /tmp/hello.elf from
+    # test_tcc_hello.
+    it_until "tcc-hello-relpath" \
+"$(keys "cd /usr/share/examples")
+sendkey ret
+$(keys "tcc hello-tcc.c -o /tmp/relhello.elf")
+sendkey ret
+$(keys "exec /tmp/relhello.elf")
+sendkey ret" \
+        "Hello, TCC" 60
+    assert_serial_contains "Hello, TCC"
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)"
 }
 
 test_install() {
@@ -910,18 +1066,63 @@ sendkey ret"
 
 # --- Driver -----------------------------------------------------------------
 
-ALL_TESTS=(glob_proc tab_path exec_hello cd_root ls_dev ls_mnt per_tty_cwd calc_brackets ctrlc_kills_child no_dead_in_proctasks typo_doesnt_clear vt_roundtrip_keeps_maktop_focused vt_all_roundtrips fork_cow fork_execve user_sigusr1_handler makbox_pwd shell_scripting_vars demo_script bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch mnt_mountpoint filetest alloctest)
-# tmp_roundtrip + usr_resolves + tcc_hello are opt-in -- the kernel-side
-# ktests (test_tmpfs, test_usr) cover the same ground without depending
-# on the shell's `verbose on` mirroring, which is racy under TCG's slow
-# bg-ktest pacing.  Invoke explicitly: `./run.sh ui tcc_hello`.
+# Scenarios are organized into themed groups so a topic-focused change
+# only needs to re-run the relevant slice during development.  Each group
+# is a bash array; `ALL_TESTS` is the concatenation in stable order.  A
+# CLI arg matching a group name expands to that group's members; arg
+# `fast` expands to FAST_TESTS (the dev-inner-loop slice with no disk
+# mkfs / long compiles).
+#
+# tmp_roundtrip + usr_resolves stay opt-in -- the kernel-side ktests
+# (test_tmpfs, test_usr) cover the same ground without the shell's
+# `verbose on` mirroring being racy under TCG's slow bg-ktest pacing.
+# Invoke explicitly: `./run.sh ui tmp_roundtrip`.
+#
+# per_vt_palettes and bughunt_vix_palette_on_vt3 are palette-only visual
+# checks with no serial assertion; opt-in for manual inspection.
+
+SHELL_TESTS=(glob_proc tab_path tab_cycle typo_doesnt_clear shell_scripting_vars calc_brackets makbox_pwd demo_script)
+CD_PWD_TESTS=(cd_root per_tty_cwd)
+FS_TESTS=(ls_dev ls_mnt mnt_mountpoint filetest)
+POSIX_TESTS=(exec_hello fork_cow fork_execve user_sigusr1_handler ctrlc_kills_child usershell_smoke usershell_execve)
+LIBC_TESTS=(alloctest tcc_hello tcc_hello_relpath tcc_rebuild_calc tcc_rebuild_sh)
+VT_TESTS=(vt_roundtrip_keeps_maktop_focused vt_all_roundtrips no_dead_in_proctasks)
+BUGHUNT_TESTS=(bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch)
+
+ALL_TESTS=("${SHELL_TESTS[@]}" "${CD_PWD_TESTS[@]}" "${FS_TESTS[@]}" "${POSIX_TESTS[@]}" "${LIBC_TESTS[@]}" "${VT_TESTS[@]}" "${BUGHUNT_TESTS[@]}")
+
+# FAST_TESTS: skip anything that mkfs's a disk, compiles C, or runs a long
+# script -- excludes filetest, mnt_mountpoint, alloctest, tcc_hello,
+# demo_script.  Aimed at the dev inner loop where you want a sub-minute
+# regression sweep before pushing.
+FAST_TESTS=(glob_proc tab_path tab_cycle typo_doesnt_clear shell_scripting_vars calc_brackets makbox_pwd cd_root per_tty_cwd ls_dev ls_mnt exec_hello fork_cow fork_execve user_sigusr1_handler ctrlc_kills_child vt_roundtrip_keeps_maktop_focused vt_all_roundtrips no_dead_in_proctasks)
+
+# Expand a single argument: if it names a known group, emit the group's
+# members; otherwise emit it unchanged (with dashes->underscores).
+expand_arg() {
+    local a=${1//-/_}
+    case $a in
+        all)      printf '%s\n' "${ALL_TESTS[@]}" ;;
+        fast)     printf '%s\n' "${FAST_TESTS[@]}" ;;
+        shell)    printf '%s\n' "${SHELL_TESTS[@]}" ;;
+        cd_pwd|cd) printf '%s\n' "${CD_PWD_TESTS[@]}" ;;
+        fs)       printf '%s\n' "${FS_TESTS[@]}" ;;
+        posix)    printf '%s\n' "${POSIX_TESTS[@]}" ;;
+        libc)     printf '%s\n' "${LIBC_TESTS[@]}" ;;
+        vt)       printf '%s\n' "${VT_TESTS[@]}" ;;
+        bughunt)  printf '%s\n' "${BUGHUNT_TESTS[@]}" ;;
+        *)        printf '%s\n' "$a" ;;
+    esac
+}
 
 declare -a TO_RUN
 if [ $# -eq 0 ]; then
     TO_RUN=("${ALL_TESTS[@]}")
 else
     for arg in "$@"; do
-        TO_RUN+=("${arg//-/_}")
+        while IFS= read -r t; do
+            TO_RUN+=("$t")
+        done < <(expand_arg "$arg")
     done
 fi
 

@@ -22,7 +22,7 @@ All build, test, and boot operations go through a single entrypoint:
 ./run.sh hdd release    # HDD image only
 
 ./run.sh ui        # black-box UI tests (headless QEMU, sendkey + serial grep)
-./run.sh ui graphical    # same but with visible QEMU window + paced typing
+./run.sh gui       # same but with visible QEMU window + paced typing (replaces the old "ui graphical" form; arg order no longer matters)
 
 # CI-style split modes (build once, run many — used by .github/workflows/build-test.yml)
 ./run.sh iso build      # kernel + makar.iso + makar-test.iso, no run
@@ -104,10 +104,14 @@ At boot (when `test_mode` is *not* in the cmdline), `ktest_bg_task` runs all sui
 **Black-box UI tests** (`tests/ui_test.sh`, fronted by `./run.sh ui` / `ui-test-gui`): boots `makar.iso`, drives keyboard input through QEMU's **HMP** (Human Monitor Protocol — the text-based control channel exposed by `-monitor unix:...`) via the `sendkey` command, and asserts on substrings in the serial mirror. Covers user-visible flows that `iso-test` doesn't: ELF exec → syscalls → output, shell tab completion, glob expansion, `cd`/`pwd`. **Not wired into CI** (the per-merge job was dropped in `a9b7474` — the framework's reliance on HMP timing made it flaky under the **TCG** (Tiny Code Generator — QEMU's interpreted/JIT CPU emulator, used because KVM is off by default per the note above) emulation that runs in the CI containers). Run locally before opening any PR that touches syscalls, shell, ELF exec, VFS, keyboard, or display:
 ```sh
 ./run.sh ui                                # headless: all scenarios
+./run.sh ui fast                           # headless: dev inner-loop subset
+./run.sh ui libc                           # headless: alloctest + TCC self-rebuild scenarios
+./run.sh ui shell|cd|fs|posix|vt|bughunt   # other named scenario groups
 ./run.sh ui exec-hello                     # headless: one scenario
-./run.sh ui graphical                            # visible window + paced typing (watch it run)
-./run.sh ui graphical exec-hello                 # one scenario, visible
-QEMU_DISPLAY=cocoa ./run.sh ui graphical         # override QEMU display backend (cocoa|gtk|sdl)
+./run.sh gui                               # visible window + paced typing (watch it run)
+./run.sh gui exec-hello                    # one scenario, visible
+./run.sh gui libc                          # libc group, visible (good for watching TCC compile)
+QEMU_DISPLAY=cocoa ./run.sh gui            # override QEMU display backend (cocoa|gtk|sdl)
 KEY_DELAY=0.3      ./run.sh ui graphical         # slower typing (default 0.15 s/key)
 UI_TEST_LOGDIR=/tmp/uilogs ./run.sh ui     # keep logs (serial + PPM screen dump)
 ```
@@ -145,6 +149,8 @@ The `setmode` shell command can switch freely between any supported resolution a
 ### Tasking
 Round-robin scheduler with timer-driven preemption (PIT 100 Hz; IRQ 0 yields every `SCHED_QUANTUM=4` ticks ≈ 40 ms). Cooperative `task_yield()` is also available for explicit yields. Context switch via `task_asm.S` (callee-saved + EFLAGS). `task_exit()` marks the task DEAD and yields; the scheduler reaps the dead task's user page directory after switching CR3 away from it (`schedule()` reaper, `task.c`). Pool is fixed-size (`MAX_TASKS=8`).
 
+**Ring-3 fault handling (v0.8):** page faults and GPFs in ring 3 no longer panic the kernel.  `kill_userspace_fault` in `arch/i386/debug/debug.c` logs `[fault] PAGE FAULT in pid=N (name) EIP=... addr=... err=... -- delivering SIGSEGV` to serial, sets `exit_status = SIGSEGV & 0x7F`, and calls `task_exit` so the scheduler reaps the offender — the shell stays up and the user sees their command come back to the prompt.  Ring-0 faults (CS&3 == 0) still panic; the panic screen + serial dump now print the running task's pid+name+ring so kernel bugs are easier to triage.  Unkillable tasks (idle, shells) still panic on ring-3 faults rather than being silently killed.
+
 Per-task state (`task_t` in `kernel/task.h`):
 - `pid` - monotonically assigned (idle = 1, others from 2)
 - `cwd[VFS_PATH_MAX]` - authoritative per-task working directory; inherited from creator on `task_create`; `vfs_getcwd()` / `vfs_cd()` route here through `task_current()`. Pre-tasking-init, `vfs.c` falls back to `s_boot_cwd`, which `tasking_init` then hands off to `idle->cwd`. VT0 at `/proc` and VT1 at `/mnt/cdrom/apps` are fully independent.
@@ -163,17 +169,18 @@ Authoritative table in `src/kernel/include/kernel/syscall.h`. Selected entries:
 | 2   | SYS_FORK         | -.  COW-clone the calling task; returns child pid in parent, 0 in child, -EAGAIN on failure. (slice 15) |
 | 3   | SYS_READ         | EBX = fd (0=stdin keyboard, ≥3=VFS), ECX = buf, EDX = count |
 | 4   | SYS_WRITE        | EBX = fd, ECX = buf, EDX = count. fd 1 = VGA, fd 2 = VGA + COM1, ≥3 = VFS.  A `FD_KIND_BLOCKDEV` fd writes via `devfs_pwrite` at the fd's byte offset.  A writable `FD_KIND_FILE` fd mutates its in-memory buffer (krealloc grow, geometric doubling); the dirty buffer is flushed back via `vfs_write_file(path, ...)` on `SYS_CLOSE`. |
-| 5   | SYS_OPEN         | EBX = path, ECX = flags (`O_RDONLY/WRONLY/RDWR` ∨ `O_CREAT 0100` ∨ `O_TRUNC 01000` ∨ `O_APPEND 02000`; Linux i386 values).  Returns fd.  `/dev` block devices bind as `FD_KIND_BLOCKDEV` (no eager buffer); other paths eager-buffer existing content up to `SYSCALL_FILE_MAX` (8 MiB).  `O_CREAT` creates an empty buffer when the path doesn't exist; `O_TRUNC` discards the eager-load and starts empty.  The opened path is kept inline on the fd slot so the close-time flush doesn't need a second lookup. |
+| 5   | SYS_OPEN         | EBX = path, ECX = flags (`O_RDONLY/WRONLY/RDWR` ∨ `O_CREAT 0100` ∨ `O_TRUNC 01000` ∨ `O_APPEND 02000`; Linux i386 values).  Returns fd.  `/dev` block devices bind as `FD_KIND_BLOCKDEV` (no eager buffer); other paths eager-buffer existing content up to `SYSCALL_FILE_MAX` (16 MiB, bumped from 8 MiB in v0.8).  `O_CREAT` creates an empty buffer when the path doesn't exist; `O_TRUNC` discards the eager-load and starts empty.  The opened path is kept inline on the fd slot so the close-time flush doesn't need a second lookup. |
 | 6   | SYS_CLOSE        | EBX = fd.  Flushes any dirty `FD_KIND_FILE` buffer via `vfs_write_file`; returns -1 if the backend rejects the flush (the buffer is freed regardless). |
 | 106 | SYS_STAT         | EBX = path, ECX = `struct stat *`.  Populates `st_mode`/`st_size`/`st_nlink`/`st_blksize`/`st_ino`; other fields zero-filled.  `st_ino` is a stable-per-boot FNV-1a-32 hash of the path. |
 | 108 | SYS_FSTAT        | EBX = fd, ECX = `struct stat *`.  Same shape as SYS_STAT; for `FD_KIND_FILE` `st_size` reflects pending (unflushed) writes. |
-| 11  | SYS_EXECVE       | EBX = path, ECX = argv (NULL-terminated `char *const argv[]`), EDX = envp (ignored).  On success doesn't return.  (slice 16a) |
+| 11  | SYS_EXECVE       | EBX = path, ECX = argv (NULL-terminated `char *const argv[]`), EDX = envp (ignored).  On success doesn't return.  Also auto-transfers keyboard focus + VT foreground to the new image (job-control shorthand for shells; pairs with SYS_WAIT4's reverse transfer on child reap). |
+| 12  | SYS_CHDIR        | EBX = path.  Sets calling task's cwd via vfs_cd (normalises ../ and //).  Returns 0/-1.  Added v0.8 for the ring-3 sh.elf. |
 | 19  | SYS_LSEEK        | EBX = fd, ECX = offset, EDX = whence (works on `FD_KIND_FILE` and `FD_KIND_BLOCKDEV`) |
 | 37  | SYS_KILL         | EBX = pid, ECX = signo |
 | 45  | SYS_BRK          | EBX = new break (returns current/new break) |
 | 48  | SYS_SIGNAL       | EBX = signo, ECX = handler (returns previous handler) |
 | 100 | SYS_DEBUG        | EBX = uint32 checkpoint (prints to VGA + serial) |
-| 114 | SYS_WAIT4        | EBX = pid (-1 = any child), ECX = `int *status`, EDX = options (WNOHANG=1), ESI = rusage ptr (ignored).  Returns child pid, 0 (WNOHANG no zombie), or -ECHILD.  (slice 16b) |
+| 114 | SYS_WAIT4        | EBX = pid (-1 = any child), ECX = `int *status`, EDX = options (WNOHANG=1), ESI = rusage ptr (ignored).  Returns child pid, 0 (WNOHANG no zombie), or -ECHILD.  When a child is reaped, keyboard focus + VT foreground transfer back to the wait4-ing parent (counterpart to SYS_EXECVE's forward transfer).  (slice 16b) |
 | 119 | SYS_SIGRETURN    | - (sigframe trampoline, not for direct use) |
 | 158 | SYS_YIELD        | - |
 | 200 | SYS_GETKEY       | raw single-char keyboard read |
@@ -205,7 +212,7 @@ Stack: PS/2 IRQ → scancode (set-1 + 0xE0 prefix) → keycode (HID-style abstra
 - History navigation (↑/↓ arrows), up to 16 entries.
 - `!!` recalls and runs the most recent history entry (echoes the recalled line first so the operator sees what's about to run).
 - Ctrl+C: abort current input line (prints `^C`, returns empty line to REPL).
-- Tab completion: first token completes command names; subsequent tokens complete VFS paths via `vfs_complete()` → `fat32_complete()`.
+- Tab completion: **zsh-style cycling** (v0.8) — first Tab on an ambiguous prefix extends to the longest common prefix; subsequent Tabs cycle through matches in place (`tc_active`/`tc_idx` state in `shell_readline`); any non-Tab key commits the current pick.  Single-match Tab still completes + appends `/` (dir) or ` ` (file).  First token completes command names; subsequent tokens complete VFS paths via `vfs_complete()` → `fat32_complete()`.
 - `exec <path>`: loads and runs an ELF binary from the VFS. Ctrl+C during exec force-kills the child task.
 - **makbox fallback is restricted**: bare command names route through makbox **only** if they match an actual applet (`ls cat cp mv rm rmdir echo pwd`). Anything else hits the shell's "Unknown command" path — typos no longer trigger makbox's usage banner.
 - `datetime` / `date` / `time` builtins — one-line `YYYY-MM-DD HH:MM:SS` from `/proc/rtc`.  Scriptable; for fullscreen use see `clock.elf`.
@@ -253,7 +260,8 @@ Freestanding ELF binaries built with the cross-compiler. Link against `crt0.S` +
 | `cfdisk.elf` | Full-screen cfdisk-style MBR editor (the `cfdisk` command) — partition/free-space table with arrow-key row selection and a bottom action bar (`Bootable`/`Delete`/`New`/`Type`/`Write`/`Quit`).  MBR primary-only.  Type picker accepts names (`fat32`/`ext2`/`swap`/`ntfs`) or hex.  Clean-room (no util-linux source); renders via the same full-screen syscalls as `vix` and respects the makmux status row |
 | `vix.elf` | vi-style text editor (the `vix` command — runs as its own ring-3 task, shows in maktop).  Vim-style line-number gutter, word wrap with `+` continuation markers, `~` past-EOF rows, flashing block caret (`SYS_CARET_STYLE`), resolution-agnostic via `SYS_TERM_SIZE`; uses `SYS_PUTCH_AT` / `SYS_SET_CURSOR`.  Ctrl+S save, Ctrl+Q quit (double-press when dirty).  Replaced the former in-kernel `vix` builtin (`proc/vix.c`, removed) |
 | `kbtester.elf` | keyboard diagnostic — logs every event (scancode/keycode/sentinel/modifier) to serial via `SYS_WRITE_SERIAL` |
-| `tcc.elf` | TinyCC v0.9.27 — in-OS C compiler.  `tcc hello.c -o hello.elf` compiles a C source to a Makar-loadable ELF; `exec hello.elf` runs it.  Sysroot: `/usr/include/` (libc headers), `/usr/lib/` (`crt1.o` + `libc.a`), `/usr/lib/tcc/` (`libtcc1.a` + TCC builtins).  No `-run` (no `mmap PROT_EXEC`); no floats (no x87 FPU init).  Cross-built by `build-tcc.sh`, called from `iso.sh` |
+| `tcc.elf` | TinyCC v0.9.27 — in-OS C compiler.  `tcc hello.c -o hello.elf` compiles a C source to a Makar-loadable ELF; `exec hello.elf` runs it.  Sysroot: `/usr/include/` (libc headers), `/usr/lib/` (`crt1.o` + `libc.a`), `/usr/lib/tcc/` (`libtcc1.a` + TCC builtins).  No `-run` (no `mmap PROT_EXEC`); no floats (no x87 FPU init).  Cross-built by `build-tcc.sh`, called from `iso.sh`.  **Self-host milestones (v0.8): `tcc /src/userspace/calc.c -o /tmp/calc.elf` and `tcc /src/userspace/sh.c -o /tmp/sh.elf` both rebuild correct binaries in-OS — verified by `test_tcc_rebuild_calc` + `test_tcc_rebuild_sh`.** |
+| `sh.elf` | Ring-3 userspace shell, MVP (v0.8).  Freestanding (only `#include "syscall.h"`, no libc shim) so TCC can rebuild it in-OS.  Prompt + line input (`sys_read` from fd 0) + tokenize on whitespace + builtins (`cd` via SYS_CHDIR, `pwd` via SYS_GETCWD, `exit`) + external commands (`fork`+`execve`+`wait4`; argv[0] must be an absolute or relative path — no PATH search).  Coexists with the in-kernel shell: `exec /apps/sh.elf` from any kernel shell drops into a `$ ` prompt; `exit` or Ctrl-D returns.  First concrete step toward the long-term goal of lifting the shell out of the kernel into userspace. |
 | `help.elf` | replaced by `lsman` / `man <cmd>` shell builtins; kept for compatibility |
 
 ### ktest harness
