@@ -274,7 +274,12 @@ RUN "cp src/userspace/crt0.o src/userspace/crt1.o && \
 
 # ── Stage TCC sysroot into isodir ───────────────────────────────────────────
 echo "==> Staging TCC sysroot into isodir/ ..."
-mkdir -p "$ISO_DIR/usr/lib/tcc/include"
+mkdir -p "$ISO_DIR/usr/lib/tcc/include" "$ISO_DIR/apps"
+
+# tcc.elf itself — the Makefile's $(wildcard tcc.elf) only fires on warm
+# builds; on a clean CI build tcc.elf doesn't exist yet when Make runs,
+# so we always copy it here to guarantee it ships on the ISO.
+cp "$USER_DIR/tcc.elf" "$ISO_DIR/apps/"
 
 # TCC's own built-in headers (stdarg.h, stddef.h, stdbool.h, float.h, varargs.h)
 cp "$TCC_DIR/include/"*.h "$ISO_DIR/usr/lib/tcc/include/"
