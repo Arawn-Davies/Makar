@@ -253,6 +253,7 @@ Freestanding ELF binaries built with the cross-compiler. Link against `crt0.S` +
 | `cfdisk.elf` | Full-screen cfdisk-style MBR editor (the `cfdisk` command) — partition/free-space table with arrow-key row selection and a bottom action bar (`Bootable`/`Delete`/`New`/`Type`/`Write`/`Quit`).  MBR primary-only.  Type picker accepts names (`fat32`/`ext2`/`swap`/`ntfs`) or hex.  Clean-room (no util-linux source); renders via the same full-screen syscalls as `vix` and respects the makmux status row |
 | `vix.elf` | vi-style text editor (the `vix` command — runs as its own ring-3 task, shows in maktop).  Vim-style line-number gutter, word wrap with `+` continuation markers, `~` past-EOF rows, flashing block caret (`SYS_CARET_STYLE`), resolution-agnostic via `SYS_TERM_SIZE`; uses `SYS_PUTCH_AT` / `SYS_SET_CURSOR`.  Ctrl+S save, Ctrl+Q quit (double-press when dirty).  Replaced the former in-kernel `vix` builtin (`proc/vix.c`, removed) |
 | `kbtester.elf` | keyboard diagnostic — logs every event (scancode/keycode/sentinel/modifier) to serial via `SYS_WRITE_SERIAL` |
+| `tcc.elf` | TinyCC v0.9.27 — in-OS C compiler.  `tcc hello.c -o hello.elf` compiles a C source to a Makar-loadable ELF; `exec hello.elf` runs it.  Sysroot: `/usr/include/` (libc headers), `/usr/lib/` (`crt1.o` + `libc.a`), `/usr/lib/tcc/` (`libtcc1.a` + TCC builtins).  No `-run` (no `mmap PROT_EXEC`); no floats (no x87 FPU init).  Cross-built by `build-tcc.sh`, called from `iso.sh` |
 | `help.elf` | replaced by `lsman` / `man <cmd>` shell builtins; kept for compatibility |
 
 ### ktest harness
