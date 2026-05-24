@@ -18,6 +18,7 @@ Test groups:
   vesa              – VESA framebuffer driver state and TTY output-path check
   ktest_bg          – background ktest completed (ktest_bg_done == 1)
   hdd_mount         – fat32_mounted() non-zero, confirming the HDD rootfs is up
+  root_home         – vfs_file_exists("/root") (vfs_ensure_root_home mkdir'd it)
   hdd_content       – expected files exist on the FAT32 filesystem
 
 Adding a new group: create tests/groups/<name>.py with NAME and run(), then
@@ -40,6 +41,7 @@ from groups import vesa              # noqa: E402
 from groups import ktest_bg          # noqa: E402
 from groups import hdd_mount         # noqa: E402
 from groups import hdd_content       # noqa: E402
+from groups import root_home         # noqa: E402
 
 MULTIBOOT2_MAGIC = 0x36D76289
 
@@ -50,6 +52,7 @@ GROUPS = [
     ktest_bg,
     hdd_mount,
     hdd_content,
+    root_home,
 ]
 
 
