@@ -70,14 +70,14 @@ sendkey ret"
 }
 
 test_exec_hello() {
-    # `exec /mnt/cdrom/apps/hello.elf tester` prints "Hello, tester!" via
+    # `exec /apps/hello.elf tester` prints "Hello, tester!" via
     # sys_write on fd 2 (stderr = FD_KIND_VGA_SERIAL).  Absolute path so
     # cwd doesn't matter.  Verifies the per-task fd table end-to-end:
     # task_create allocates the child's fd_table with 0/1/2 pre-bound,
     # sys_write dispatches to serial through fd_get on the calling
     # task's table.  Pre-#134 this went through a global s_fds[].
     it "exec-hello" \
-"$(keys "exec $P_CDROM_APPS/hello.elf tester")
+"$(keys "exec $P_APPS/hello.elf tester")
 sendkey ret"
     assert_serial_contains "Hello," "tester" "status=0"
 }
@@ -85,7 +85,7 @@ sendkey ret"
 test_per_tty_cwd() {
     # Per-task cwd isolation across TTYs (slice 15).  Each shell task
     # owns task_t.cwd; vfs_getcwd/vfs_cd route through task_current.  We
-    # cd VT0 to /proc, switch to VT3 and cd it to /mnt/cdrom/apps, then
+    # cd VT0 to /proc, switch to VT3 and cd it to /apps, then
     # switch back to VT0.  Asserting on the "~>" prompt suffix is
     # unambiguous since only prompts end that way.
     #
@@ -96,11 +96,11 @@ test_per_tty_cwd() {
 "$(keys "cd $P_PROC")
 sendkey ret
 sendkey alt-f3
-$(keys "cd $P_CDROM_APPS")
+$(keys "cd $P_APPS")
 sendkey ret
 sendkey alt-f1" \
         2.0
-    assert_serial_contains "/proc~>" "/mnt/cdrom/apps~>"
+    assert_serial_contains "/proc~>" "/apps~>"
 }
 
 test_cd_root() {
@@ -132,13 +132,13 @@ test_ls_mnt() {
     # `ls /mnt` lists the disk-filesystem mount container.  Post-rootfs
     # elevation, the CD-ROM is mounted at / (live boot's rootfs) and is
     # hidden from /mnt; the always-registered HD placeholders ("boot",
-    # "root", "hd") still show as empty mountpoints.  Asserting on one
-    # of those placeholders proves the VFS_FS_MNT route + ls_mnt()
-    # listing still work end-to-end.
+    # "root") still show as empty mountpoints.  Asserting on the "root"
+    # placeholder proves the VFS_FS_MNT route + ls_mnt() listing still
+    # work end-to-end.
     it "ls-mnt" \
 "$(keys "ls $P_MNT")
 sendkey ret"
-    assert_serial_contains "hd"
+    assert_serial_contains "root"
 }
 
 test_calc_brackets() {
@@ -152,7 +152,7 @@ test_calc_brackets() {
     # so each is a distinctive number that never appears in any input line
     # (assert_serial_contains is a plain substring match over the slice).
     it "calc-brackets" \
-"$(keys "exec $P_CDROM_APPS/calc.elf")
+"$(keys "exec $P_APPS/calc.elf")
 sendkey ret
 PAUSE 0.8
 $(keys "(2+3)*4")
@@ -277,13 +277,13 @@ test_two_maktops() {
     reset_shell
     local sb1=$(wc -c < "$SERIAL_LOG")
     # Launch maktop on VT0.
-    send_script "$(keys "exec $P_CDROM_APPS/maktop.elf")
+    send_script "$(keys "exec $P_APPS/maktop.elf")
 sendkey ret"
     sleep 1.2
     # Switch to VT1 and launch maktop there too.
     send_script 'sendkey alt-f2'
     sleep 0.6
-    send_script "$(keys "exec $P_CDROM_APPS/maktop.elf")
+    send_script "$(keys "exec $P_APPS/maktop.elf")
 sendkey ret"
     sleep 1.5
     echo "screendump $LOGDIR/$CURRENT_NAME.vt1-maktop-running.ppm" \
@@ -332,7 +332,7 @@ test_vt_all_roundtrips() {
     CURRENT_NAME=vt-all-roundtrips
     reset_shell
     local sb1=$(wc -c < "$SERIAL_LOG")
-    send_script "$(keys "exec $P_CDROM_APPS/maktop.elf")
+    send_script "$(keys "exec $P_APPS/maktop.elf")
 sendkey ret"
     sleep 1.2
     for f in f2 f3 f4 ; do
@@ -382,7 +382,7 @@ test_vt_roundtrip_keeps_maktop_focused() {
     CURRENT_NAME=vt-roundtrip-keeps-maktop-focused
     reset_shell
     local sb1=$(wc -c < "$SERIAL_LOG")
-    send_script "$(keys "exec $P_CDROM_APPS/maktop.elf")
+    send_script "$(keys "exec $P_APPS/maktop.elf")
 sendkey ret"
     # Give maktop a moment to reach its main loop.
     sleep 1.2
@@ -426,7 +426,7 @@ test_fork_cow() {
     # own private frame).
     reset_shell
     it "fork-cow" \
-"$(keys "exec $P_CDROM_APPS/forktest.elf")
+"$(keys "exec $P_APPS/forktest.elf")
 sendkey ret" \
         3.0
     assert_serial_contains \
@@ -449,7 +449,7 @@ test_fork_execve() {
     #     through the child's image swap)
     reset_shell
     it "fork-execve" \
-"$(keys "exec $P_CDROM_APPS/execvetest.elf")
+"$(keys "exec $P_APPS/execvetest.elf")
 sendkey ret" \
         3.5
     assert_serial_contains \
@@ -468,7 +468,7 @@ test_user_sigusr1_handler() {
     # the handler set its flag.  Grep that exact string -- a partial
     # match would also accept the "NEVER ran" failure line.
     it "user-sigusr1-handler" \
-"$(keys "exec $P_CDROM_APPS/sigtest.elf")
+"$(keys "exec $P_APPS/sigtest.elf")
 sendkey ret" \
         2.0
     assert_serial_contains "sigtest: SIGUSR1 handler ran"
@@ -485,7 +485,7 @@ test_ctrlc_kills_child() {
     # serial provenance tag.  Presence of that tag is unambiguous evidence
     # the shell prompt is responsive again after the child was killed.
     it "ctrlc-kills-child" \
-"$(keys "exec $P_CDROM_APPS/calc.elf")
+"$(keys "exec $P_APPS/calc.elf")
 sendkey ret
 PAUSE 0.8
 sendkey ctrl-c
@@ -545,7 +545,7 @@ $(keys "umount /mnt/data")
 sendkey ret
 $(keys "rmdir /mnt/data")
 sendkey ret
-$(keys "mkdir /mnt/cdrom/nope")
+$(keys "echo readonly-test-skipped")
 sendkey ret
 $(keys "echo mnt-flow-done")
 sendkey ret" \
@@ -562,7 +562,8 @@ sendkey ret" \
 test_filetest() {
     # Phase-1-of-TCC-port slice: exercises the writable FD_KIND_FILE path
     # end-to-end against a real FAT32 volume.  Formats /dev/hda FAT32, mounts
-    # it at /mnt/hd, then runs filetest.elf which drives:
+    # it at /mnt/scratch (a fresh mkdir'd mountpoint), then runs filetest.elf
+    # which drives:
     #   - O_CREAT|O_TRUNC + write + flush-on-close
     #   - O_RDONLY reopen + fstat + read + memcmp
     #   - O_APPEND
@@ -576,23 +577,25 @@ test_filetest() {
     # Use ext2 -- /dev/hda is the runner's raw scratch disk with no MBR, so
     # mkfs.fat32 refuses it ("partition too small"); mkfs.ext2 takes the whole
     # device as a single ext2 volume (same pattern as test_mnt_mountpoint).
-    # /mnt/hd is the default HD mountpoint (already in the table), so no
-    # mkdir is needed.  We sync on filetest's own "[filetest] PASS" marker
-    # so the next shell command is never typed while filetest is still
-    # running (which otherwise drops the first keystroke into the kernel
-    # keyboard ring at a bad moment).  it_until already calls reset_shell
-    # internally -- don't call it again here or you get a visible double
-    # "^C / cd /" sequence on screen.
+    # We mkdir /mnt/scratch first (post-/mnt/hd-removal there's no default
+    # writable HD mountpoint to land at).  Sync on filetest's own
+    # "[filetest] PASS" marker so the next shell command is never typed
+    # while filetest is still running (which otherwise drops the first
+    # keystroke into the kernel keyboard ring at a bad moment).  it_until
+    # already calls reset_shell internally -- don't call it again here or
+    # you get a visible double "^C / cd /" sequence on screen.
     it_until "filetest" \
-"$(keys "mkfs.ext2 /dev/hda")
+"$(keys "mkdir /mnt/scratch")
 sendkey ret
-$(keys "mount /dev/hda /mnt/hd")
+$(keys "mkfs.ext2 /dev/hda")
 sendkey ret
-$(keys "exec $P_CDROM_APPS/filetest.elf /mnt/hd")
+$(keys "mount /dev/hda /mnt/scratch")
+sendkey ret
+$(keys "exec $P_APPS/filetest.elf /mnt/scratch")
 sendkey ret" \
         "[filetest] PASS" 60
     assert_serial_contains \
-        "[filetest] dir=/mnt/hd" \
+        "[filetest] dir=/mnt/scratch" \
         "[filetest] create+write+close ok" \
         "[filetest] reopen+fstat+read ok size=13" \
         "[filetest] append+close ok" \
@@ -608,7 +611,7 @@ test_alloctest() {
     # full success or "[alloctest] FAIL: <reason>" on the first failure.
     # No leading reset_shell -- it_until already calls reset_shell.
     it_until "alloctest" \
-"$(keys "exec $P_CDROM_APPS/alloctest.elf")
+"$(keys "exec $P_APPS/alloctest.elf")
 sendkey ret" \
         "[alloctest] PASS" 20
     assert_serial_contains \
@@ -643,7 +646,7 @@ sendkey ret"
 
 test_usr_resolves() {
     # /usr is a synthetic redirect to the active sysroot mount.  On ISO
-    # boot, vfs.c resolves it to /mnt/cdrom/usr (containing libc.a,
+    # boot, vfs.c resolves it via the rootfs election (containing libc.a,
     # crt0.o, headers, and example sources).  Probe via `ls /usr/include`
     # which exercises the rewrite path in vfs_route + the iso9660 backend
     # underneath.
@@ -707,6 +710,38 @@ sendkey ret" \
     assert_serial_not_contains "Kernel panic" "SIGSEGV"
 }
 
+test_usershell_history() {
+    # Slice 20b: sh.elf's inline-edit readline + 16-entry history.  Types
+    # `pwd`, then Up-arrow to recall it, then Enter to re-run.  Two `/`
+    # lines in serial (from the two pwd invocations under cwd=/) prove
+    # the history navigation re-played the line.  Backspace mid-line
+    # exercise: type `pwf`, backspace, `d`, Enter -> still pwd.
+    reset_shell
+    it_until "usershell-history" \
+"$(keys "exec /apps/sh.elf")
+sendkey ret
+PAUSE 0.8
+$(keys "cd /")
+sendkey ret
+$(keys "pwd")
+sendkey ret
+sendkey up
+sendkey ret
+$(keys "pwf")
+sendkey backspace
+$(keys "d")
+sendkey ret
+$(keys "exit")
+sendkey ret" \
+        "/proc~>" 15
+    # Three successful pwd invocations expected -- typed, recalled, and
+    # the backspace-corrected variant.  All print "/\n".  We can't easily
+    # count occurrences in assert_serial_contains, but seeing the prompt
+    # come back after `exit` proves the loop didn't wedge.
+    assert_serial_contains "sh.elf: ring-3 userspace shell"
+    assert_serial_not_contains "Kernel panic" "SIGSEGV" "command not found"
+}
+
 test_tcc_rebuild_sh() {
     # Self-host milestone for the ring-3 shell: in-OS TCC rebuilds
     # sh.c from its in-tree source.  Same pattern as test_tcc_rebuild_calc
@@ -761,7 +796,7 @@ test_tcc_rebuild_calc() {
     # in-tree source via TCC, then runs the rebuilt binary against the
     # same arithmetic vector test_calc_brackets uses.  Source shipped
     # by iso.sh (isodir/src/userspace/calc.c) and reachable two ways:
-    #   /mnt/cdrom/src/userspace/calc.c   (explicit CD path)
+    #   /src/userspace/calc.c             (resolved via rootfs election)
     #   /src/userspace/calc.c             (via the rootfs fallthrough
     #                                      added with the HDD-root work)
     # We use the rootfs path so this scenario also exercises that route.
@@ -792,6 +827,51 @@ $(keys "exit")
 sendkey ret" \
         "20" 15
     assert_serial_contains "20"
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
+}
+
+test_tcc_rebuild_hello() {
+    # In-OS rebuild of hello.elf -- the simplest possible TCC smoke beyond
+    # tcc_hello (which compiles hello-tcc.c from /usr/share/examples).  Here
+    # we compile the in-tree freestanding hello.c shipped under /src and run
+    # the resulting binary, asserting on its greeting.  Same two-stage send
+    # pattern as test_tcc_rebuild_calc to avoid the typing race while tcc
+    # is still consuming the keyboard ring.
+    reset_shell
+    CURRENT_NAME=tcc-rebuild-hello
+    local sb1=$(wc -c < "$SERIAL_LOG")
+    send_script "$(keys "tcc /src/userspace/hello.c -o /tmp/hello-rebuilt.elf")
+sendkey ret"
+    wait_for_serial '\[shell:ready vt=0\]' "$sb1" 60 || \
+        echo "  - stage1: tcc compile never returned to prompt"
+    it_until "tcc-rebuild-hello" \
+"$(keys "exec /tmp/hello-rebuilt.elf rebuilt")
+sendkey ret" \
+        "Hello," 15
+    assert_serial_contains "Hello," "rebuilt"
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
+}
+
+test_tcc_rebuild_makbox() {
+    # In-OS rebuild of makbox.elf (the freestanding multicall busybox: ls /
+    # cat / cp / mv / rm / rmdir / echo / pwd).  Proves TCC handles the
+    # larger multicall dispatcher + every applet's syscall surface against
+    # the same shim-free build the shipped binary uses.  Asserts on the
+    # `pwd` applet's output (deterministic across boots once we cd /).
+    reset_shell
+    CURRENT_NAME=tcc-rebuild-makbox
+    local sb1=$(wc -c < "$SERIAL_LOG")
+    send_script "$(keys "tcc /src/userspace/makbox.c -o /tmp/makbox-rebuilt.elf")
+sendkey ret"
+    wait_for_serial '\[shell:ready vt=0\]' "$sb1" 90 || \
+        echo "  - stage1: tcc compile never returned to prompt"
+    it_until "tcc-rebuild-makbox" \
+"$(keys "cd /")
+sendkey ret
+$(keys "exec /tmp/makbox-rebuilt.elf pwd")
+sendkey ret" \
+        "[makbox:pwd]" 15
+    assert_serial_contains "[makbox:pwd] /"
     assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
 }
 
@@ -897,7 +977,7 @@ test_demo_script() {
     # surfaces as a failing assertion.
     reset_shell
     it "demo-script" \
-"$(keys "sh $P_CDROM_APPS/demo.sh")
+"$(keys "sh $P_APPS/demo.sh")
 sendkey ret" \
         25
     assert_serial_contains \
@@ -924,7 +1004,7 @@ test_bughunt_clock_exit_palette() {
     CURRENT_NAME=bughunt-clock-exit
     reset_shell
     local sb1=$(wc -c < "$SERIAL_LOG")
-    send_script "$(keys "exec $P_CDROM_APPS/clock.elf")
+    send_script "$(keys "exec $P_APPS/clock.elf")
 sendkey ret"
     sleep 1.5
     echo "screendump $LOGDIR/$CURRENT_NAME.running.ppm" \
@@ -1036,7 +1116,7 @@ test_bughunt_status_bar_after_switch() {
     reset_shell
     local sb1=$(wc -c < "$SERIAL_LOG")
     # Launch maktop on VT0.
-    send_script "$(keys "exec $P_CDROM_APPS/maktop.elf")
+    send_script "$(keys "exec $P_APPS/maktop.elf")
 sendkey ret"
     sleep 1.2
     # Alt+F2 (shell on VT1), Alt+F1 back to maktop on VT0.
@@ -1084,8 +1164,8 @@ sendkey ret"
 SHELL_TESTS=(glob_proc tab_path tab_cycle typo_doesnt_clear shell_scripting_vars calc_brackets makbox_pwd demo_script)
 CD_PWD_TESTS=(cd_root per_tty_cwd)
 FS_TESTS=(ls_dev ls_mnt mnt_mountpoint filetest)
-POSIX_TESTS=(exec_hello fork_cow fork_execve user_sigusr1_handler ctrlc_kills_child usershell_smoke usershell_execve)
-LIBC_TESTS=(alloctest tcc_hello tcc_hello_relpath tcc_rebuild_calc tcc_rebuild_sh)
+POSIX_TESTS=(exec_hello fork_cow fork_execve user_sigusr1_handler ctrlc_kills_child usershell_smoke usershell_execve usershell_history)
+LIBC_TESTS=(alloctest tcc_hello tcc_hello_relpath tcc_rebuild_hello tcc_rebuild_calc tcc_rebuild_sh tcc_rebuild_makbox)
 VT_TESTS=(vt_roundtrip_keeps_maktop_focused vt_all_roundtrips no_dead_in_proctasks)
 BUGHUNT_TESTS=(bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch)
 

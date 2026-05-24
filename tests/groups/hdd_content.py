@@ -1,6 +1,7 @@
 """HDD content verification group.
 
-Checks that expected files exist on the FAT32 filesystem at /hd.
+Checks that expected files exist on the rootfs partition (mounted at
+/mnt/root after vfs_auto_mount, and elevated to / via the rootfs election).
 Runs after keyboard_getchar is reached (vfs_auto_mount has completed).
 """
 
@@ -9,9 +10,9 @@ import gdb
 NAME = 'HDD content'
 
 EXPECTED_FILES = [
-    '/mnt/hd/boot/makar.kernel',
-    '/mnt/hd/apps/hello.elf',
-    '/mnt/hd/apps/calc.elf',
+    '/mnt/root/boot/makar.kernel',
+    '/mnt/root/apps/hello.elf',
+    '/mnt/root/apps/calc.elf',
 ]
 
 

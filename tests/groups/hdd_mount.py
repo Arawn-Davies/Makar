@@ -1,7 +1,8 @@
 """HDD mount verification group.
 
-Verifies that vfs_auto_mount() successfully mounted the FAT32 partition
-from the boot HDD at /hd.
+Verifies that vfs_auto_mount() successfully mounted the boot HDD's
+rootfs partition (single-partition disks bind at /mnt/root, dual-partition
+installer layouts bind data at /mnt/root and boot at /mnt/boot).
 
 The ktest_bg group runs before this one and always advances execution to
 keyboard_getchar() - guaranteeing that vfs_auto_mount() has already completed
@@ -29,11 +30,11 @@ def run():
         return False
 
     if not mounted:
-        print('FAIL: fat32_mounted() returned 0 - /mnt/hd was NOT mounted',
+        print('FAIL: fat32_mounted() returned 0 - HDD rootfs was NOT mounted',
               flush=True)
         return False
 
-    print('PASS: fat32_mounted() returned {} - /mnt/hd is mounted'.format(mounted),
+    print('PASS: fat32_mounted() returned {} - HDD rootfs is mounted'.format(mounted),
           flush=True)
     print('GROUP PASS: ' + NAME, flush=True)
     return True

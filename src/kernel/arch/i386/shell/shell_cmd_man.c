@@ -114,26 +114,26 @@ static const man_entry_t man_table[] = {
       "Formats the specified partition as FAT32.  DESTRUCTIVE - all data lost.\n"
     },
     { "mount",
-      "mount a FAT32 partition at /mnt/hd",
-      "Usage: mount /dev/hdaN /mnt/hd\n       mount <drv> <part#>   (legacy)\n\n"
-      "Mounts a FAT32 partition at /mnt/hd (the default OS drive).  Prefer the\n"
-      "device-path form, e.g. `mount /dev/hda1 /mnt/hd`; the legacy numeric\n"
-      "form still works.  /mnt/hd is currently the only supported mountpoint.\n"
+      "bind a FAT32 or ext2 volume at /mnt/<name>",
+      "Usage: mount /dev/hdaN /mnt/<name>\n\n"
+      "Binds the named device to an empty mountpoint.  Create the mountpoint\n"
+      "first with `mkdir /mnt/<name>` (the legacy numeric form and the /mnt/hd\n"
+      "default were retired in favour of explicit, Linux-style mountpoints).\n"
     },
     { "umount",
       "unmount a volume",
-      "Usage: umount [/mnt/<name>]\n\nWith no argument (or the FAT32 mountpoint) flushes and unmounts the\n"
-      "FAT32 volume.  `umount /mnt/cdrom` unmounts and ejects the CD-ROM.\n"
+      "Usage: umount [/mnt/<name>]\n\nWith no argument unmounts the sole bound HD volume, if unique.\n"
+      "`umount /mnt/cdrom` unmounts and ejects the CD-ROM.\n"
     },
     { "ls",
       "list directory contents",
       "Usage: ls [path]\n\n"
-      "Lists files and subdirectories.  Works on both /mnt/hd (FAT32)\n"
-      "and /mnt/cdrom (ISO 9660).\n"
+      "Lists files and subdirectories.  Works across every mount: rootfs\n"
+      "(ext2/FAT32 at /), /mnt/cdrom (ISO 9660), synthetic /proc /dev /tmp /log.\n"
     },
     { "cd",
       "change working directory",
-      "Usage: cd <path>\n\nChanges the shell CWD.  Use /mnt/hd for the HDD, /mnt/cdrom for the CD.\n"
+      "Usage: cd <path>\n\nChanges the shell CWD.  The rootfs is elevated to /; CD-ROM at /mnt/cdrom.\n"
     },
     { "cat",
       "print file contents to terminal",
@@ -147,7 +147,7 @@ static const man_entry_t man_table[] = {
       "create/overwrite a file with text",
       "Usage: write <file> <text...>\n\n"
       "Writes all remaining arguments as a single line to the file.\n"
-      "Requires FAT32 volume mounted at /mnt/hd.\n"
+      "Requires a writable rootfs (ext2 or FAT32 elevated to /).\n"
     },
     { "touch",
       "create an empty file",
@@ -173,10 +173,10 @@ static const man_entry_t man_table[] = {
       "  Backspace    delete; join lines at col 0\n"
       "  Enter        split line at cursor\n"
       "  Tab          insert 4 spaces\n"
-      "  Ctrl+S       save (requires FAT32 volume at /mnt/hd)\n"
+      "  Ctrl+S       save (requires a writable rootfs)\n"
       "  Ctrl+Q       quit (press twice to discard unsaved changes)\n\n"
-      "Note: files on /mnt/cdrom are read-only (ISO 9660).  Save will fail with an\n"
-      "error if the file path does not resolve to the FAT32 /mnt/hd volume.\n"
+      "Note: files on a CD-ROM rootfs are read-only.  Save will fail with an\n"
+      "error if the file path does not resolve to a writable backend.\n"
     },
     { "kbtester",
       "press-all-keys keyboard tester (ring-3 ELF)",

@@ -26,9 +26,10 @@ Ctrl+C (aborts line, prints `^C`), history navigation (↑/↓ up to 16 entries)
 and Tab completion. First token completes against the union of built-in
 command names and `*.elf` basenames found in `s_app_path`. Subsequent
 tokens complete VFS paths via `vfs_complete()` - cross-filesystem, so
-`cd /<TAB>` enumerates the root (`mnt`, `proc`, `dev`), `cd /mnt/<TAB>`
-lists the live disk mounts (`hd`, `cdrom`), `cat /proc/c<TAB>` matches
-`cpuinfo`, and `ls /mnt/hd/<TAB>` walks the FAT32 root. Globbing
+`cd /<TAB>` enumerates the root (`mnt`, `proc`, `dev`, `usr`, `apps`,
+`root`, ...), `cd /mnt/<TAB>` lists the live disk mounts (`boot`, `root`,
+`cdrom`), `cat /proc/c<TAB>` matches `cpuinfo`, and `ls /apps/<TAB>` walks
+the rootfs apps directory. Globbing
 (`*`, `?`) on argv is expanded via `shell_glob.c`
 before dispatch using the same `vfs_complete()` enumerator.
 
@@ -61,7 +62,7 @@ If no built-in matches, the shell tries `try_exec_path()` on the
 literal argv[0] (if it's a path-style `/abs` or `./rel`), then walks
 the **PATH** directories appending `[.elf]`. PATH is the per-task
 `PATH` shell variable (settable like any var) and falls back to the
-built-in default `/mnt/cdrom/apps:/mnt/hd/apps`; both command dispatch
+built-in default `/apps`; both command dispatch
 and first-token tab completion iterate it via `shell_path_dir()`.
 Successful ELF execution is also followed by `shell_restore_screen()` -
 any ring-3 binary is treated as potentially-fullscreen. `vix` is no
@@ -76,12 +77,12 @@ own ring-3 task (so it shows up in `maktop`).
 
 | Command | Description |
 |---|---|
-| `ls [path]` | List directory; supports `/mnt/hd/`, `/mnt/cdrom/`, `/dev`, `/proc` |
+| `ls [path]` | List directory; supports `/`, `/apps`, `/usr`, `/mnt/cdrom/`, `/dev`, `/proc` |
 | `cd <path>` | Change VFS working directory |
 | `cat <path>` | Print file contents |
-| `mkdir <path>` | Create directory (FAT32 only) |
-| `mount /dev/hdaN /mnt/<name>` | Mount a FAT32 partition at a chosen mountpoint under `/mnt` (default OS drive is `/mnt/hd`). Legacy `mount <drive> <part#>` still works and lands at `/mnt/hd` |
-| `umount [/mnt/<name>]` | Flush + unmount the FAT32 volume; `umount /mnt/cdrom` unmounts + ejects the CD-ROM |
+| `mkdir <path>` | Create directory (FAT32 only); `mkdir /mnt/<name>` creates an empty mountpoint |
+| `mount /dev/hdaN /mnt/<name>` | Bind a FAT32 or ext2 partition to an empty mountpoint (mkdir `/mnt/<name>` first; the legacy numeric form and `/mnt/hd` default were retired) |
+| `umount [/mnt/<name>]` | Unmount the sole bound HD volume if unique; `umount /mnt/cdrom` unmounts + ejects the CD-ROM |
 | `mkfs <drive> <part>` | Format partition as FAT32 |
 | `isols [path]` | List ISO9660 directory (CD-ROM) |
 | `write <path> <text…>` | Create/overwrite file with text arguments |

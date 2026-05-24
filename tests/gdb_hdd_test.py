@@ -17,7 +17,7 @@ Test groups:
   hardware_state    – CR0/CR3 paging state and PIT liveness
   vesa              – VESA framebuffer driver state and TTY output-path check
   ktest_bg          – background ktest completed (ktest_bg_done == 1)
-  hdd_mount         – fat32_mounted() non-zero, confirming /hd is up
+  hdd_mount         – fat32_mounted() non-zero, confirming the HDD rootfs is up
   hdd_content       – expected files exist on the FAT32 filesystem
 
 Adding a new group: create tests/groups/<name>.py with NAME and run(), then

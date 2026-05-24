@@ -22,7 +22,7 @@ unset NAME [...]     # remove vars
 
 `PATH` is a special variable: command dispatch and first-token tab completion
 search its colon-separated directories for `<cmd>[.elf]`. Unset, it defaults to
-`/mnt/cdrom/apps:/mnt/hd/apps`; set it like any other var to change where the
+`/apps`; set it like any other var to change where the
 shell looks for executables.
 
 ## Tests
@@ -66,9 +66,9 @@ Multi-statement lines split on `;` are supported (`if [ X ]; then A; elif [ Y ];
 ## Running scripts
 
 ```sh
-sh /mnt/cdrom/apps/demo.sh
+sh /apps/demo.sh
 ./script.sh               # path ending in .sh goes through the interpreter
-/mnt/cdrom/apps/script.sh # absolute path, same dispatch
+/apps/script.sh           # absolute path, same dispatch
 ```
 
 The `sh` builtin writes the script's final `$?` to serial as `sh: exit=N` so test runners can scrape the value.
@@ -95,14 +95,14 @@ The `sh` builtin writes the script's final `$?` to serial as `sh: exit=N` so tes
 
 ## Worked example
 
-`src/userspace/demo.sh` is bundled into `/mnt/cdrom/apps/demo.sh` and `/mnt/hd/apps/demo.sh`.  It exercises every feature listed above with section markers (`cwd-ok`, `gt-ok`, `elif-correct-blue`, etc.) so a regression in any layer fails loudly.  Run with:
+`src/userspace/demo.sh` is bundled into `/apps/demo.sh` (rootfs election routes to whichever volume is the active boot medium).  It exercises every feature listed above with section markers (`cwd-ok`, `gt-ok`, `elif-correct-blue`, etc.) so a regression in any layer fails loudly.  Run with:
 
 ```sh
-sh /mnt/cdrom/apps/demo.sh
+sh /apps/demo.sh
 ```
 
 or the bash-style equivalent:
 
 ```sh
-/mnt/cdrom/apps/demo.sh
+/apps/demo.sh
 ```

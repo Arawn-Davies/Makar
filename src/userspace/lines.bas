@@ -1,5 +1,5 @@
 10 REM String-art / moire - accumulates forever, runs until Ctrl-C
-20 REM run with:  basic /mnt/cdrom/apps/lines.bas
+20 REM run with:  basic /apps/lines.bas
 30 CLS
 40 W=XMAX:H=YMAX
 50 GOSUB 200

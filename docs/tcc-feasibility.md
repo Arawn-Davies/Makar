@@ -7,7 +7,7 @@ nav_order: 5
 
 **Status:** Phases 1, 2 & 3 shipped (May 2026). TCC cross-builds cleanly
 against the Makar libc shim and ships on every ISO image as
-`/mnt/cdrom/apps/tcc.elf`. The sysroot (`/usr/lib/`, `/usr/include/`,
+`/apps/tcc.elf`. The sysroot (`/usr/lib/`, `/usr/include/`,
 `/usr/lib/tcc/`) is auto-staged by `build-tcc.sh`, called from `iso.sh`.
 
 Goal: get TCC compiled as a cross-target, inventory exactly what it
@@ -79,7 +79,7 @@ resulting ELF, all on bare metal.
 
 ## Compiling hello.elf inside Makar
 
-> **Status: ready.** `tcc.elf` ships on every ISO at `/mnt/cdrom/apps/`.
+> **Status: ready.** `tcc.elf` ships on every ISO at `/apps/`.
 > The walkthrough below describes the workflow.
 
 ### The example source
@@ -113,8 +113,8 @@ Boot Makar and reach the shell prompt. Then:
 ```
 # 1. Compile — TCC reads hello-tcc.c, links against
 #    /usr/lib/crt0.o + /usr/lib/libc.a, and writes hello.elf
-#    to the current directory (writable FAT32 at /mnt/hd).
-cd /mnt/hd
+#    to the current directory (writable rootfs, or /tmp ramdisk).
+cd /tmp
 tcc /usr/share/examples/hello-tcc.c -o hello.elf
 
 # 2. Run the result.
@@ -129,7 +129,7 @@ Hello, TCC
 
 ### What happens under the hood
 
-1. The shell resolves `tcc` to `/mnt/cdrom/apps/tcc.elf` via the
+1. The shell resolves `tcc` to `/apps/tcc.elf` via the
    `PATH` variable and dispatches it through `elf_exec()`.
 2. TCC runs in **ring 3** as a regular userspace task. It opens the
    source file via `SYS_OPEN`, reads it via `SYS_READ`, compiles the
@@ -154,8 +154,8 @@ You can also write a source file from within Makar using the VIX editor,
 then compile and run it — the full CP/M-style edit → compile → run loop:
 
 ```
-# 1. Write a new source file on the writable FAT32 volume.
-cd /mnt/hd
+# 1. Write a new source file on the writable rootfs (or /tmp).
+cd /tmp
 vix myapp.c
 
 # 2. Compile it (headers at /usr/include, libs at /usr/lib).
@@ -184,8 +184,8 @@ automatically. The libc shim provides:
 - **8 MiB file cap** — `SYSCALL_FILE_MAX` limits any single file
   (source or output) to 8 MiB.
 - **Output must go to writable storage** — the ISO 9660 CD-ROM
-  (`/mnt/cdrom`) is read-only. Write output files to the FAT32 volume at
-  `/mnt/hd` (or an ext2 volume if mounted).
+  (`/mnt/cdrom`) is read-only. Write output files to the writable rootfs
+  (ext2/FAT32 if installed) or to `/tmp` (in-RAM ramdisk).
 
 ---
 

@@ -239,12 +239,17 @@ static void cmd_eject(int argc, char **argv)
     const char *target = argv[1];
 
     if (strcmp(target, "hdd") == 0) {
-        if (!fat32_mounted()) {
+        /* Unmount the sole bound HD volume (FAT32 or ext2).  Multi-mount
+         * boots need explicit `umount /mnt/<name>` instead. */
+        int r = vfs_umount_hd(NULL);
+        if (r == -20) {
+            t_writestring("eject: multiple HD volumes mounted - use 'umount /mnt/<name>'\n");
+            return;
+        }
+        if (r != 0) {
             t_writestring("eject: no HDD volume is mounted\n");
             return;
         }
-        fat32_unmount();
-        vfs_notify_hd_unmounted();
         t_writestring("HDD volume unmounted.\n");
         return;
     }

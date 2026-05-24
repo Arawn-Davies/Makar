@@ -68,13 +68,13 @@ restore doesn't wipe it instantly.
 
 ## Samples
 
-Shipped in `/mnt/cdrom/apps`:
+Shipped in `/apps`:
 
 - `mandelbrot.bas` — full-screen Mandelbrot via fixed-point integers (scale
   1000) drawn as a grid of `RECT` blocks across `XMAX`/`YMAX`.
 - `lines.bas` — bouncing-endpoint string-art moiré; accumulates until Ctrl-C.
 
 ```
-basic /mnt/cdrom/apps/mandelbrot.bas
-basic /mnt/cdrom/apps/lines.bas
+basic /apps/mandelbrot.bas
+basic /apps/lines.bas
 ```

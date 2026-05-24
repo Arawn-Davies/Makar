@@ -29,7 +29,7 @@ Boots `makar-test.iso` (single grub menuentry with `timeout=0`, `multiboot2 /boo
 **Phase 2 - GDB boot-checkpoint tests**
 
 Builds a normal debug ISO. Creates a 32 MiB FAT32 test disk and attaches it
-on IDE:0 alongside the CD-ROM so the kernel can mount `/mnt/hd`. Launches QEMU
+on IDE:0 alongside the CD-ROM so the kernel can auto-mount it at `/mnt/root`. Launches QEMU
 with the GDB stub and runs `tests/gdb_boot_test.py`. Output: `gdb-test.log`.
 
 Exit code 0 = everything passed; 1 = any failure or timeout.
@@ -65,7 +65,7 @@ boot medium:
 | `boot_checkpoints` | Every major boot function reached in order: `kernel_main` → `terminal_initialize` → … → `shell_run` |
 | `hardware_state` | CR0.PG set (paging enabled), CR3 non-zero (page directory loaded), `timer_callback` fires (PIT ticking) |
 | `vesa` | VESA framebuffer active and TTY initialised (or absent without crashing - graceful headless) |
-| `hdd_mount` | `fat32_mounted()` non-zero - FAT32 partition auto-mounted at `/mnt/hd` after `shell_run` |
+| `hdd_mount` | `fat32_mounted()` non-zero - HDD rootfs auto-mounted (single-partition → `/mnt/root`; dual-partition → `/mnt/boot` + `/mnt/root`) after `shell_run` |
 
 The `hdd_mount` check advances execution to `keyboard_getchar` (the shell's
 read-loop entry) before inspecting `fat32_mounted()`, ensuring
@@ -150,7 +150,7 @@ the instant the kernel says it's ready and bounds via the timeout.
 |---|---|
 | `glob-proc` | `cat /proc/*` glob-expands across the synthetic FS |
 | `tab-complete-path` | `cat<TAB> /proc/c<TAB><Enter>` resolves to `cat /proc/cpuinfo` |
-| `exec-hello` | `exec /mnt/cdrom/apps/hello.elf tester` reaches `sys_exit(0)` and prints the expected greeting |
+| `exec-hello` | `exec /apps/hello.elf tester` reaches `sys_exit(0)` and prints the expected greeting |
 | `cd-root-listing` | `cd /<TAB><TAB>` lists mounts; subsequent `pwd` confirms cwd |
 | `per-tty-cwd` | Per-task cwd isolation across `Alt+F1`/`Alt+F3` switches |
 | `calc-brackets` | `calc.elf` evaluates parenthesised arithmetic |

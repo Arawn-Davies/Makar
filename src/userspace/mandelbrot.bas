@@ -1,5 +1,5 @@
 10 REM Mandelbrot set - full screen (fixed point, scale 1000)
-20 REM run with:  basic /mnt/cdrom/apps/mandelbrot.bas
+20 REM run with:  basic /apps/mandelbrot.bas
 30 CLS
 40 SW=XMAX+1:SH=YMAX+1
 50 GW=128:GH=80

@@ -37,10 +37,10 @@ int main(int argc, char **argv)
     PUTS("  mkpart <drv> <mbr|gpt>       create partition table\n");
     PUTS("  readsector <drv> <lba>       hex-dump one sector\n");
     PUTS("\n");
-    PUTS("Filesystem (VFS: /mnt/hd for HDD, /mnt/cdrom for CD-ROM):\n");
+    PUTS("Filesystem (rootfs at /; mount user volumes at /mnt/<name>):\n");
     PUTS("  mkfs <drv> <part#>           format partition as FAT32\n");
-    PUTS("  mount <drv> <part#>          mount FAT32 at /mnt/hd/\n");
-    PUTS("  umount                       unmount FAT32\n");
+    PUTS("  mount /dev/hdaN /mnt/<name>  bind a volume to an empty mountpoint\n");
+    PUTS("  umount /mnt/<name>           unmount a volume\n");
     PUTS("  ls [path]                    list directory\n");
     PUTS("  cd <path>                    change directory\n");
     PUTS("  cat <file>                   print file contents\n");

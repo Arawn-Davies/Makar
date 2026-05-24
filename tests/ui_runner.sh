@@ -120,21 +120,20 @@ send_script() {
 }
 
 # Canonical VFS path roots -- single source of truth so scenarios never
-# hand-spell a path (and never drift when mountpoints move, e.g. the
-# /cdrom,/hd -> /mnt/cdrom,/mnt/hd migration).  Compose app paths as
-# "$P_CDROM_APPS/foo.elf".
+# hand-spell a path.  The rootfs (CD-ROM on live boot, ext2/FAT32 on HDD
+# boot) is elevated to "/", so /apps, /usr, /etc, /home, /root resolve
+# transparently regardless of which medium is active.  Compose app paths
+# as "$P_APPS/foo.elf"; /mnt/cdrom and /mnt/hd are deprecated -- the only
+# explicit /mnt path retained is $P_MNT itself, for `ls /mnt` coverage.
 P_PROC=/proc
 P_DEV=/dev
 P_MNT=/mnt
-P_CDROM=/mnt/cdrom
-P_CDROM_APPS=/mnt/cdrom/apps
-P_HD=/mnt/hd
-P_HD_APPS=/mnt/hd/apps
+P_APPS=/apps
 
 # keys "STRING" -- emit one `sendkey <name>` line per character of STRING,
 # translating punctuation to QEMU HMP key names.  No trailing Enter, so
 # callers append `sendkey ret` themselves.  This is the ONE place that knows
-# how to type text: scenarios write `$(keys "exec $P_CDROM_APPS/hello.elf")`
+# how to type text: scenarios write `$(keys "exec $P_APPS/hello.elf")`
 # instead of a 25-line hand-expanded sendkey block.  Feed the result to
 # `it` or `send_script` (both consume newline-separated `sendkey` lines).
 keys() {

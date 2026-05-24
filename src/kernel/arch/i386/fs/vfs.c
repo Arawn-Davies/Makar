@@ -2,9 +2,13 @@
  * vfs.c - lightweight Virtual Filesystem routing layer.
  *
  * Path namespace:
- *   /              virtual root (ls shows mount-points)
- *   /mnt/hd/…      FAT32 hard-disk partition (mountpoint name configurable)
- *   /mnt/cdrom/…   ISO9660 CD-ROM
+ *   /              virtual root (rootfs election elevates a disk volume here)
+ *   /mnt/<name>    user-mountable disk volumes (mkdir /mnt/<name> then mount)
+ *
+ * The rootfs election (resolve_rootfs_prefix) picks whichever mounted
+ * volume contains /usr/lib/crt0.o and exposes its tree under "/", so
+ * Linux-style paths (/usr, /etc, /home, /apps, /root, /bin) "just work"
+ * regardless of which medium is the live boot source.
  *
  * All VFS paths are absolute after normalisation.  Relative paths are
  * resolved against the calling task's cwd (task_current()->cwd).
@@ -12,8 +16,8 @@
  * During boot (before tasking_init), there is no task_current().  Writers
  * fall back to s_boot_cwd, which is then handed off to idle->cwd inside
  * tasking_init via vfs_getcwd().  Post-tasking, every cwd read/write is
- * per-task, so VT0 may sit in /mnt/hd/apps while VT1 sits in /mnt/cdrom/boot
- * without cross-contamination.
+ * per-task, so VT0 may sit in /apps while VT1 sits in /proc without
+ * cross-contamination.
  *
  * Path normalisation handles:
  *   - Multiple consecutive '/' characters  → collapsed to one
@@ -156,7 +160,7 @@ void vfs_klog_append(const char *line)     { logfs_append_line("kernel.log", lin
 
 /* Mount-point prefix for disk filesystems.  Disk volumes live under
  * /mnt: /mnt/boot (FAT32 boot partition), /mnt/root (data partition,
- *       ext2 or FAT32), /mnt/hd (legacy single-partition), and /mnt/cdrom. */
+ *       ext2 or FAT32), /mnt/cdrom (CD-ROM), plus any user-created mountpoint. */
 #define VFS_MNT      "/mnt"
 #define VFS_MNT_LEN  4
 
@@ -498,7 +502,7 @@ static int vfs_route(const char *abs, const char **drv_path, int *out_fs)
 
     /* Disk filesystems live under /mnt (Linux convention).  The FAT32
      * volume mounts at a caller-chosen component under /mnt (default
-     * "hd", the OS drive); the CD-ROM is fixed at /mnt/cdrom.
+     * "root", the OS drive); the CD-ROM is fixed at /mnt/cdrom.
      *
      * Under /mnt we split off the first path component and match it
      * against the live mountpoints; the remainder becomes the
@@ -676,8 +680,9 @@ void vfs_init(void)
      * installer.  Entries are empty (HD_FS_NONE) until a backend is bound.
      *   /mnt/boot – FAT32 boot partition (kernel + limine stage 3)
      *   /mnt/root – data partition        (apps / docs / src; ext2 or FAT32)
-     *   /mnt/hd   – legacy single-partition compatibility mount point        */
-    static const char *prebuilt[] = { "boot", "root", "hd" };
+     * Single-partition disks fold into /mnt/root; the legacy /mnt/hd slot
+     * was retired (consumers reach the rootfs via "/" instead).            */
+    static const char *prebuilt[] = { "boot", "root" };
     for (size_t i = 0; i < sizeof(prebuilt) / sizeof(prebuilt[0]); i++) {
         hd_mount_t *m = &s_mounts[s_nmounts++];
         strncpy(m->name, prebuilt[i], VFS_MOUNT_NAME_MAX - 1);
@@ -762,7 +767,9 @@ static void apply_cwd_fixup(cwd_fixup_fn fn)
  * `mkdir /mnt/<name>`); mount binds a backend into it but never creates one. */
 int vfs_mount_hd(uint8_t drive, uint32_t lba, const char *name, int *out_fs)
 {
-    if (!name || !*name) name = "hd";
+    /* No legacy default: every mount must name an existing mountpoint
+     * (mkdir /mnt/<name> first; same model as Linux's mount(8)). */
+    if (!name || !*name) return -1;
     for (const char *q = name; *q; q++) if (*q == '/') return -1;
     if (strlen(name) >= VFS_MOUNT_NAME_MAX) return -1;
     if (strcmp(name, "cdrom") == 0) return -13;
@@ -866,33 +873,6 @@ void vfs_prepare_shutdown(void)
     s_nmounts = 0;
 }
 
-/*
- * vfs_notify_hd_mounted / _unmounted - compatibility shims for callers that
- * drive the FAT32 backend directly (auto-mount, installer): keep the canonical
- * "hd" FAT32 entry in the mount table in sync and run the cwd fixup.
- */
-void vfs_notify_hd_mounted(void)
-{
-    int mi = hd_find("hd", 2);
-    if (mi < 0 && s_nmounts < MAX_HD_MOUNTS) {
-        mi = s_nmounts++;
-        memcpy(s_mounts[mi].name, "hd", 3);
-    }
-    if (mi >= 0) s_mounts[mi].fs = HD_FS_FAT32;
-    s_fixup_name = "hd";
-    apply_cwd_fixup(fixup_cwd_mounted);
-    vfs_usr_invalidate();
-}
-
-void vfs_notify_hd_unmounted(void)
-{
-    s_fixup_name = "hd";
-    apply_cwd_fixup(fixup_cwd_unmounted);
-    int mi = hd_find("hd", 2);
-    if (mi >= 0) s_mounts[mi].fs = HD_FS_NONE;   /* revert to empty mountpoint */
-    vfs_usr_invalidate();
-}
-
 void vfs_notify_cdrom_ejected(void)
 {
     s_cdrom_drive = -1;
@@ -919,8 +899,8 @@ static disk_parts_t s_auto_parts;
  *   partition 0 – FAT32 boot  → /mnt/boot  (kernel + limine stage 3)
  *   partition 1 – ext2/FAT32  → /mnt/root  (apps / docs / src)
  *
- * Single-partition layout (test disk, legacy):
- *   partition 0 – FAT32       → /mnt/hd    (backward compatibility)
+ * Single-partition layout (test disk):
+ *   partition 0 – ext2/FAT32  → /mnt/root  (rootfs election lifts it to "/")
  *
  * Returns 1 if at least one partition was mounted, 0 otherwise.
  */
@@ -936,17 +916,26 @@ static int try_mount_drive(uint8_t drive)
     if (s_auto_parts.count == 0)
         return 0;
 
-    /* ---- Single-partition path: legacy /mnt/hd ---- */
+    /* ---- Single-partition path: bind the volume at /mnt/root and let
+     *      the rootfs election elevate it to "/". ---- */
     if (s_auto_parts.count == 1) {
         const part_info_t *p = &s_auto_parts.parts[0];
-        if (fat32_mount(drive, p->lba_start) == 0) {
-            vfs_notify_hd_mounted();
-            t_writestring("Auto-mounted FAT32 (drive ");
-            t_dec(drive);
-            t_writestring(", partition 1) at /mnt/hd\n");
-            return 1;
-        }
-        return 0;
+        int data_mi = hd_find_name("root");
+        if (data_mi < 0 || s_mounts[data_mi].fs != HD_FS_NONE) return 0;
+        int fs = ext2_probe(drive, p->lba_start) ? HD_FS_EXT2 : HD_FS_FAT32;
+        int r  = (fs == HD_FS_EXT2) ? ext2_mount(drive, p->lba_start)
+                                     : fat32_mount(drive, p->lba_start);
+        if (r != 0) return 0;
+        s_mounts[data_mi].fs = fs;
+        s_fixup_name = s_mounts[data_mi].name;
+        apply_cwd_fixup(fixup_cwd_mounted);
+        vfs_usr_invalidate();
+        t_writestring("Auto-mounted ");
+        t_writestring(hd_fsname(fs));
+        t_writestring(" (drive ");
+        t_dec(drive);
+        t_writestring(", partition 1) at /mnt/root\n");
+        return 1;
     }
 
     /* ---- Dual-partition path ---- */
@@ -1600,7 +1589,7 @@ long vfs_blockdev_pwrite(int node, const void *buf, uint32_t len, uint32_t off)
  * cb     : invoked for each entry found.
  * ctx    : opaque pointer forwarded to cb.
  *
- * Returns 0 on success, -1 if the path is not under /mnt/hd or not mounted.
+ * Returns 0 on success, -1 if the backend rejects the enumeration.
  * ---------------------------------------------------------------------- */
 int vfs_complete(const char *dir, const char *prefix,
                  fat32_complete_cb_t cb, void *ctx)

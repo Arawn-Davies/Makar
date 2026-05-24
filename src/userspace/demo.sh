@@ -1,5 +1,5 @@
 # demo.sh -- exercise every part of the Makar shell scripting layer.
-# Run with:  sh /mnt/cdrom/apps/demo.sh   (or /mnt/hd/apps/demo.sh)
+# Run with:  sh /apps/demo.sh   (rootfs election routes to the active volume)
 # No user input required -- safe to invoke from ui-test.
 
 echo === Makar shell-script demo ===
