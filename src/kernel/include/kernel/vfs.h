@@ -45,17 +45,40 @@ void vfs_init(void);
 void vfs_set_boot_drive(uint32_t biosdev);
 
 /*
- * vfs_auto_mount – automatically mount the appropriate filesystem.
+ * vfs_mount_root – elect and bind the rootfs at "/".
  *
- * Must be called after both vfs_init() and ide_init().
+ * Must be called after vfs_init() and ide_init(), before vfs_auto_mount().
  *
- * Probes every ATA drive: single-partition disks bind at /mnt/root;
- * dual-partition installer layouts bind partition 0 at /mnt/boot
- * (FAT32) and partition 1 at /mnt/root (ext2 or FAT32).  ISO9660
- * CD-ROMs are pre-registered at /mnt/cdrom by vfs_init.  The rootfs
- * election then promotes whichever volume holds /usr/lib/crt0.o to "/".
+ *   spec  -- value of the Multiboot2 `root=` cmdline arg (or NULL/"auto"
+ *            for auto-detect; "none" to skip election entirely).
+ *
+ * Election order: explicit /dev/hdaN spec → ext2/FAT32 auto-detect
+ * (first ATA partition whose /usr/lib/crt0.o exists) → ISO9660 CD-ROM
+ * fallback (live boot) → no rootfs (overlays-only / dev-friendly boot).
+ */
+void vfs_mount_root(const char *spec);
+
+/*
+ * vfs_auto_mount – bind ATA volumes at /mnt/boot + /mnt/root.
+ *
+ * Must be called after vfs_init() and ide_init().  Single-partition
+ * disks bind at /mnt/root; dual-partition installer layouts bind
+ * partition 0 at /mnt/boot (FAT32, also mirrored at /boot) and
+ * partition 1 at /mnt/root (ext2 or FAT32).  ISO9660 CD-ROMs are
+ * pre-registered at /mnt/cdrom by vfs_init.  Rootfs election
+ * (vfs_mount_root) runs first and may have already elevated one of
+ * these volumes to "/".
  */
 void vfs_auto_mount(void);
+
+/*
+ * vfs_ensure_root_home – best-effort mkdir /root on a writable rootfs.
+ *
+ * Called after vfs_auto_mount.  No-op when the rootfs is ISO9660 (RO),
+ * unbound, or /root already exists.  Failures are logged-only -- this
+ * is convenience, not gate-on.
+ */
+void vfs_ensure_root_home(void);
 
 /* -------------------------------------------------------------------------
  * State notifications (called by mount/umount commands)

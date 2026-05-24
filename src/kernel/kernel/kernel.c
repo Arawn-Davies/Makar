@@ -140,6 +140,9 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	                             * on after boot so the shell mirrors to
 	                             * COM1.  Linux-style: dmesg + tty over
 	                             * serial.  Used by ui_test scenarios. */
+	const char *root_spec = NULL;   /* `root=...` cmdline arg, NULL = auto */
+	static char root_spec_buf[64];  /* copy out of cmdline tag (still alive
+	                                 * for the boot, but we own it) */
 	{
 		uint32_t biosdev = 0xFFu;
 
@@ -163,6 +166,17 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 						test_mode = 1;
 					if (strstr(cmd->string, "console=ttyS0"))
 						console_serial = 1;
+					const char *rp = strstr(cmd->string, "root=");
+					if (rp) {
+						rp += 5;
+						size_t j = 0;
+						while (*rp && *rp != ' ' && *rp != '\t' &&
+						       j + 1 < sizeof(root_spec_buf)) {
+							root_spec_buf[j++] = *rp++;
+						}
+						root_spec_buf[j] = '\0';
+						root_spec = root_spec_buf;
+					}
 				}
 				tag_ptr += (tag->size + 7u) & ~7u;
 			}
@@ -172,7 +186,9 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	}
 
 	vfs_init();
+	vfs_mount_root(root_spec);
 	vfs_auto_mount();
+	vfs_ensure_root_home();
 
 	t_writestring("\nAll subsystems ready.\n\n");
 

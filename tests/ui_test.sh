@@ -742,6 +742,47 @@ sendkey ret" \
     assert_serial_not_contains "Kernel panic" "SIGSEGV" "command not found"
 }
 
+test_usershell_vars() {
+    # Slice 20c: sh.elf variable table + $VAR/${VAR}/$? expansion +
+    # env/unset/read builtins.  Sets foo=tester, echoes "$foo"
+    # through echo (sh.elf has no PATH lookup or makbox
+    # auto-routing -- that's a kernel-shell behaviour we deliberately
+    # don't replicate), then triggers a known-bad command and checks
+    # $? reflects the non-zero status.  Finally unsets foo and confirms
+    # $foo expands to empty.
+    #
+    # NB: lowercase var names only.  Pre-existing kernel bug: HMP
+    # `sendkey shift-<letter>` drops the letter on its way through the
+    # PS/2 + ring-3 ring path, so uppercase identifiers can't be typed
+    # in ui-tests.  No existing scenario hit it because none typed
+    # shift+letter.  Tracked separately; not gating this slice.
+    reset_shell
+    it_until "usershell-vars" \
+"$(keys "exec /apps/sh.elf")
+sendkey ret
+PAUSE 0.8
+$(keys "foo=tester")
+sendkey ret
+$(keys "echo hello \$foo")
+sendkey ret
+$(keys "/apps/no-such-binary")
+sendkey ret
+$(keys "echo status=\$?")
+sendkey ret
+$(keys "unset foo")
+sendkey ret
+$(keys "echo gone=\$foo=end")
+sendkey ret
+$(keys "exit")
+sendkey ret" \
+        "gone==end" 20
+    assert_serial_contains "sh.elf: ring-3 userspace shell" \
+                           "hello tester" \
+                           "status=127" \
+                           "gone==end"
+    assert_serial_not_contains "Kernel panic" "SIGSEGV"
+}
+
 test_tcc_rebuild_sh() {
     # Self-host milestone for the ring-3 shell: in-OS TCC rebuilds
     # sh.c from its in-tree source.  Same pattern as test_tcc_rebuild_calc
@@ -1164,7 +1205,7 @@ sendkey ret"
 SHELL_TESTS=(glob_proc tab_path tab_cycle typo_doesnt_clear shell_scripting_vars calc_brackets makbox_pwd demo_script)
 CD_PWD_TESTS=(cd_root per_tty_cwd)
 FS_TESTS=(ls_dev ls_mnt mnt_mountpoint filetest)
-POSIX_TESTS=(exec_hello fork_cow fork_execve user_sigusr1_handler ctrlc_kills_child usershell_smoke usershell_execve usershell_history)
+POSIX_TESTS=(exec_hello fork_cow fork_execve user_sigusr1_handler ctrlc_kills_child usershell_smoke usershell_execve usershell_history usershell_vars)
 LIBC_TESTS=(alloctest tcc_hello tcc_hello_relpath tcc_rebuild_hello tcc_rebuild_calc tcc_rebuild_sh tcc_rebuild_makbox)
 VT_TESTS=(vt_roundtrip_keeps_maktop_focused vt_all_roundtrips no_dead_in_proctasks)
 BUGHUNT_TESTS=(bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch)
