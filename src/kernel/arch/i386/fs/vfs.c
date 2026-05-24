@@ -172,6 +172,37 @@ static int backend_in_use(vfs_backend_t b)
     return 0;
 }
 
+/* True if a mount entry already points at exactly this block volume.  The
+ * ext2/fat32 drivers keep one global mounted volume each, so a second VFS
+ * entry for the same (backend, drive, lba) is a bind alias, not a remount. */
+static int backend_volume_in_use(vfs_backend_t b, uint8_t drive, uint32_t lba)
+{
+    for (int i = 0; i < s_nmounts; i++) {
+        if (s_mounts[i].backend == b &&
+            s_mounts[i].drive == drive &&
+            s_mounts[i].lba == lba)
+            return 1;
+    }
+    return 0;
+}
+
+/* True if some entry other than idx still references the same mounted
+ * backend volume.  Used so unmounting a bind alias does not tear down the
+ * elected rootfs backend out from under "/". */
+static int mount_has_alias(int idx)
+{
+    if (idx < 0 || idx >= s_nmounts) return 0;
+    vfs_mount_t *m = &s_mounts[idx];
+    for (int i = 0; i < s_nmounts; i++) {
+        if (i == idx) continue;
+        if (s_mounts[i].backend == m->backend &&
+            s_mounts[i].drive == m->drive &&
+            s_mounts[i].lba == m->lba)
+            return 1;
+    }
+    return 0;
+}
+
 /* True if the entry at `idx` is mounted (backend != NONE). */
 static int mount_is_bound(int idx)
 {
@@ -647,10 +678,13 @@ static int try_mount_drive(uint8_t drive)
         const part_info_t *p = &s_auto_parts.parts[0];
         vfs_backend_t b = ext2_probe(drive, p->lba_start) ? VFS_BACKEND_EXT2
                                                           : VFS_BACKEND_FAT32;
-        if (backend_in_use(b)) return 0;        /* single-volume backend */
-        int r = (b == VFS_BACKEND_EXT2) ? ext2_mount(drive, p->lba_start)
-                                         : fat32_mount(drive, p->lba_start);
-        if (r != 0) return 0;
+        if (backend_in_use(b)) {
+            if (!backend_volume_in_use(b, drive, p->lba_start)) return 0;
+        } else {
+            int r = (b == VFS_BACKEND_EXT2) ? ext2_mount(drive, p->lba_start)
+                                             : fat32_mount(drive, p->lba_start);
+            if (r != 0) return 0;
+        }
         s_mounts[root_mi].backend = b;
         s_mounts[root_mi].drive   = drive;
         s_mounts[root_mi].lba     = p->lba_start;
@@ -669,7 +703,19 @@ static int try_mount_drive(uint8_t drive)
     if (root_mi >= 0 && !mount_is_bound(root_mi)) {
         vfs_backend_t b = ext2_probe(drive, data_p->lba_start)
                             ? VFS_BACKEND_EXT2 : VFS_BACKEND_FAT32;
-        if (!backend_in_use(b)) {
+        if (backend_in_use(b) &&
+            backend_volume_in_use(b, drive, data_p->lba_start)) {
+            s_mounts[root_mi].backend = b;
+            s_mounts[root_mi].drive   = drive;
+            s_mounts[root_mi].lba     = data_p->lba_start;
+            apply_cwd_fixup(fixup_cwd_mounted, s_mounts[root_mi].mountpoint);
+            t_writestring("Auto-mounted ");
+            t_writestring(backend_name(b));
+            t_writestring(" (drive ");
+            t_dec(drive);
+            t_writestring(", partition 2) at /mnt/root\n");
+            mounted = 1;
+        } else if (!backend_in_use(b)) {
             int r = (b == VFS_BACKEND_EXT2)
                         ? ext2_mount(drive, data_p->lba_start)
                         : fat32_mount(drive, data_p->lba_start);
@@ -810,7 +856,8 @@ int vfs_umount_hd(const char *name)
     int mi = mount_find_slot(name);
     if (mi < 0) return -1;
     if (!mount_is_bound(mi)) return -15;
-    backend_unmount(s_mounts[mi].backend);
+    if (!mount_has_alias(mi))
+        backend_unmount(s_mounts[mi].backend);
     apply_cwd_fixup(fixup_cwd_unmounted, s_mounts[mi].mountpoint);
     s_mounts[mi].backend = VFS_BACKEND_NONE;
     /* If a /boot promotion-mirror points at this volume, drop it. */
@@ -844,7 +891,8 @@ void vfs_prepare_shutdown(void)
         t_writestring("Syncing ");
         t_writestring(s_mounts[i].mountpoint);
         t_writestring(" ...\n");
-        backend_unmount(b);
+        if (!mount_has_alias(i))
+            backend_unmount(b);
         s_mounts[i].backend = VFS_BACKEND_NONE;
     }
 }

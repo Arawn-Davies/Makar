@@ -43,7 +43,7 @@ volatile int ktest_bg_done = 0;
  * inside the RUN macro in ktest_bg_task; total is fixed at compile time so
  * the bar length is known the moment shell_run starts. */
 volatile int ktest_bg_completed = 0;
-const    int ktest_bg_total     = 18;   /* keep in sync with RUN() calls below */
+const    int ktest_bg_total     = 20;   /* keep in sync with RUN() calls below */
 
 /* When set, suppress VGA output for pass lines and suite headers. */
 int ktest_muted = 0;
@@ -332,6 +332,51 @@ static void test_usr(void)
     vfs_stat_info_t st;
     KTEST_ASSERT(vfs_stat("/usr/lib/libc.a", &st) == 0);
     KTEST_ASSERT(st.size > 0);
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
+ * Suite: rootfs mount layout
+ *
+ * Bulk VFS behavior that should not depend on typed shell commands.  The
+ * rootfs is elected at "/" before ktest runs; on HDD boots vfs_auto_mount()
+ * should also bind that same volume at /mnt/root so documented explicit
+ * paths keep working.  ISO boots keep /mnt/root as an empty placeholder, so
+ * the HDD-only assertions are gated on that slot being bound.
+ * ------------------------------------------------------------------------- */
+
+static void test_rootfs_mount_layout(void)
+{
+    ktest_begin("rootfs_mount_layout", "rootfs at / plus /mnt placeholders and HDD /mnt/root alias");
+
+    vfs_stat_info_t st;
+
+    KTEST_ASSERT(vfs_stat("/", &st) == 0);
+    KTEST_ASSERT(st.kind == VFS_STAT_DIR);
+
+    KTEST_ASSERT(vfs_stat("/mnt", &st) == 0);
+    KTEST_ASSERT(st.kind == VFS_STAT_DIR);
+
+    KTEST_ASSERT(vfs_stat("/mnt/root", &st) == 0);
+    KTEST_ASSERT(st.kind == VFS_STAT_DIR);
+
+    KTEST_ASSERT(vfs_stat("/mnt/boot", &st) == 0);
+    KTEST_ASSERT(st.kind == VFS_STAT_DIR);
+
+    /* The rootfs sentinel should be reachable through the elevated root. */
+    if (vfs_file_exists("/usr/lib/crt0.o")) {
+        KTEST_ASSERT(vfs_file_exists("/apps/hello.elf") == 1);
+        KTEST_ASSERT(vfs_file_exists("/boot/makar.kernel") == 1);
+    }
+
+    /* On HDD boots, /mnt/root is not just a placeholder: it must be a bind
+     * alias for the same elected rootfs volume. */
+    if (strcmp(vfs_hd_fsname("root"), "none") != 0) {
+        KTEST_ASSERT(vfs_file_exists("/mnt/root/usr/lib/crt0.o") == 1);
+        KTEST_ASSERT(vfs_file_exists("/mnt/root/apps/hello.elf") == 1);
+        KTEST_ASSERT(vfs_file_exists("/mnt/root/apps/calc.elf") == 1);
+    }
 
     ktest_summary();
 }
@@ -2173,6 +2218,10 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
+    test_rootfs_mount_layout();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
     test_pmm();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
@@ -2291,6 +2340,7 @@ void ktest_bg_task(void)
     RUN(test_devfs);
     RUN(test_tmpfs);
     RUN(test_usr);
+    RUN(test_rootfs_mount_layout);
     RUN(test_pmm);
     RUN(test_heap);
     RUN(test_vmm);
