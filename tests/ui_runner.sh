@@ -423,11 +423,12 @@ sendkey ret'
 # anchors cwd regardless of where prior tests left us.  alt-f1 first so
 # any Alt+Fn excursion is undone before we type.
 #
-# Used to need two Ctrl+Cs as a timing fence - in shared-VM runs the
-# next test's `cd /` would otherwise race the previous exec's
-# shutdown and stomp the static argv globals in shell_exec_elf.
-# Per-task exec_params (task_t.exec_params) closed that race at the
-# kernel level, so one Ctrl+C is enough now.
+# Previously fenced the next test off from the prior one with a
+# Ctrl+C anchor.  That was needed before per-task exec_params closed
+# the static-argv race; today a half-second settle is sufficient and
+# avoids spurious "^C" bytes landing in the serial mirror that some
+# assertions then trip on.  Tests that explicitly exercise Ctrl+C
+# (calc.elf abort, tab-cycle abort) still send it inline.
 # The first call after boot is a no-op: nothing has run yet, the shell
 # is freshly prompted, and the anchor would only burn ~0.6 s of visible
 # typing for no semantic effect.  Subsequent calls do the full anchor
@@ -438,9 +439,9 @@ reset_shell() {
         RESET_SHELL_CALLED=1
         return 0
     fi
-    send_script 'sendkey alt-f1
-sendkey ctrl-c
-sendkey c
+    send_script 'sendkey alt-f1'
+    sleep 0.5
+    send_script 'sendkey c
 sendkey d
 sendkey spc
 sendkey slash
