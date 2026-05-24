@@ -143,6 +143,12 @@ void syscall_dispatch(registers_t *regs)
                         *ustatus = c->exit_status;
                     int cpid = c->pid;
                     c->state = TASK_DEAD;
+                    /* Counterpart to SYS_EXECVE's "child takes focus" rule:
+                     * when the reaper sees the foreground child go zombie,
+                     * hand focus back to the wait4-ing parent so its REPL
+                     * (sh.elf, kernel shell, ...) becomes the next reader. */
+                    keyboard_set_focus(me);
+                    vtty_set_foreground(me->tty, me);
                     regs->eax = (uint32_t)cpid;
                     Serial_WriteString("[sys_wait4] parent pid=");
                     Serial_WriteDec((uint32_t)me->pid);
@@ -213,6 +219,20 @@ void syscall_dispatch(registers_t *regs)
          * SIG_IGN is also reset (Makar's sig_task_init clears everything,
          * matching the simple-is-better choice). */
         sig_task_init(task_current());
+
+        /* Job-control shorthand: the task running execve is conventionally
+         * the next foreground process for its VT.  Pre-userspace-shell,
+         * shell_cmd_apps did this via keyboard_set_focus before exec; now
+         * that ring-3 shells (sh.elf) drive their own fork+execve, the
+         * kernel does the transfer so userspace doesn't need an extra
+         * syscall + race window between fork and focus-transfer.  No full
+         * process-group / tcsetpgrp model yet -- this is the simple "the
+         * thing you just exec'd takes the keyboard" rule. */
+        task_t *me = task_current();
+        if (me) {
+            keyboard_set_focus(me);
+            vtty_set_foreground(me->tty, me);
+        }
 
         /* elf_exec swaps the PD and iret's to the new entry on success
          * (never returns).  Any return value here means it failed; pass
@@ -461,6 +481,20 @@ void syscall_dispatch(registers_t *regs)
         if (cl + 1 > size) { regs->eax = (uint32_t)-1; break; }
         memcpy(buf, cwd, cl + 1);
         regs->eax = cl;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_CHDIR(12): change the calling task's cwd.
+     * EBX = const char *path.  Returns 0 on success, -1 on failure
+     * (NULL path, missing path, not a directory).  Delegates fully to
+     * vfs_cd, which normalises (../, //) and routes through the per-task
+     * cwd buffer via task_current().
+     * ------------------------------------------------------------------ */
+    case SYS_CHDIR: {
+        const char *path = (const char *)(uintptr_t)regs->ebx;
+        if (!path) { regs->eax = (uint32_t)-1; break; }
+        regs->eax = (uint32_t)(vfs_cd(path) == 0 ? 0 : -1);
         break;
     }
 

@@ -276,12 +276,106 @@ int vfs_file_exists(const char *path);
 static char s_usr_prefix[VFS_PATH_MAX];
 static int  s_usr_resolved;        /* 0 = needs resolve, 1 = cached */
 
+/* Rootfs prefix cache -- declared up here so vfs_usr_invalidate can
+ * clear it.  The resolver itself lives further down.
+ *
+ * `s_rootfs_mount` is the bare mount name ("root", or "cdrom" for live
+ * boots) of the volume elevated to /.  Used to hide that volume's
+ * /mnt/<name> alias so each backing device has exactly one path.
+ *
+ * `s_bootfs_mount` is the bare mount name ("boot") of the FAT32 boot
+ * partition elevated to /boot.  Auto-detected when a non-empty mount
+ * named "boot" is present. */
+static char s_rootfs_prefix[VFS_PATH_MAX];
+static int  s_rootfs_resolved;
+static char s_rootfs_mount[VFS_MOUNT_NAME_MAX];  /* "" = none, "cdrom" = CD */
+static char s_bootfs_mount[VFS_MOUNT_NAME_MAX];  /* "" = none, "boot" if any */
+
 /* Invalidate the cached prefix.  Called from every mount/unmount path so
  * the next /usr/... lookup re-probes the freshly-changed mount layout. */
 static void vfs_usr_invalidate(void)
 {
     s_usr_prefix[0] = '\0';
     s_usr_resolved  = 0;
+    /* The rootfs and bootfs caches share the same invalidation triggers:
+     * any mount-table change can promote/demote a volume. */
+    s_rootfs_prefix[0] = '\0';
+    s_rootfs_resolved  = 0;
+    s_rootfs_mount[0]  = '\0';
+    s_bootfs_mount[0]  = '\0';
+}
+
+/* Resolve the active *rootfs* prefix -- the mount whose / contains a
+ * Linux-style /usr, /etc, /home, etc.  On HDD boot this is the HD
+ * volume hosting the installed system; on live-CD boot it's the ISO.
+ * Returns NULL if no such mount exists.  Used by vfs_route to make
+ * top-level Linux paths (/usr, /etc, /home, /bin, ...) "just work"
+ * without /mnt/cdrom or /mnt/root prefixes.
+ *
+ * Detection re-uses USR_SENTINEL (/usr/lib/crt0.o) -- if a mount has
+ * the sysroot file at <mount>/usr/lib/crt0.o it's the rootfs. */
+static const char *resolve_rootfs_prefix(void)
+{
+    if (s_rootfs_resolved) return s_rootfs_prefix[0] ? s_rootfs_prefix : NULL;
+    s_rootfs_resolved = 1;
+    s_rootfs_prefix[0] = '\0';
+    s_rootfs_mount[0] = '\0';
+    s_bootfs_mount[0] = '\0';
+
+    /* Auto-detect the bootfs: a non-empty mount named "boot" is the
+     * FAT32 boot partition installed alongside the rootfs.  Promote it
+     * to /boot regardless of whether the rootfs scan below succeeds --
+     * /boot is independent of /. */
+    {
+        int bi = hd_find_name("boot");
+        if (bi >= 0 && s_mounts[bi].fs != HD_FS_NONE) {
+            strncpy(s_bootfs_mount, "boot", VFS_MOUNT_NAME_MAX - 1);
+        }
+    }
+
+    /* HDD-resident rootfs takes precedence: that's the installed system. */
+    for (int i = 0; i < s_nmounts; i++) {
+        if (s_mounts[i].fs == HD_FS_NONE) continue;
+        char probe[VFS_PATH_MAX];
+        size_t mn = strlen(s_mounts[i].name);
+        if (5 + mn + sizeof("/" USR_SENTINEL) >= sizeof(probe)) continue;
+        strcpy(probe, "/mnt/");
+        strcat(probe, s_mounts[i].name);
+        strcat(probe, USR_SENTINEL);
+        if (vfs_file_exists(probe)) {
+            strcpy(s_rootfs_prefix, "/mnt/");
+            strcat(s_rootfs_prefix, s_mounts[i].name);
+            strncpy(s_rootfs_mount, s_mounts[i].name, VFS_MOUNT_NAME_MAX - 1);
+            return s_rootfs_prefix;
+        }
+    }
+    /* Fall back to CD-ROM. */
+    if (s_cdrom_drive >= 0 && vfs_file_exists("/mnt/cdrom" USR_SENTINEL)) {
+        strcpy(s_rootfs_prefix, "/mnt/cdrom");
+        strncpy(s_rootfs_mount, "cdrom", VFS_MOUNT_NAME_MAX - 1);
+        return s_rootfs_prefix;
+    }
+    return NULL;
+}
+
+/* Predicates used by route + ls.  Both call resolve_rootfs_prefix first
+ * to ensure the elevation-state cache is populated. */
+static int mount_is_elevated(const char *name, size_t nlen)
+{
+    (void)resolve_rootfs_prefix();
+    if (s_rootfs_mount[0] &&
+        strlen(s_rootfs_mount) == nlen &&
+        memcmp(s_rootfs_mount, name, nlen) == 0) return 1;
+    if (s_bootfs_mount[0] &&
+        strlen(s_bootfs_mount) == nlen &&
+        memcmp(s_bootfs_mount, name, nlen) == 0) return 1;
+    return 0;
+}
+
+static int cdrom_is_elevated(void)
+{
+    (void)resolve_rootfs_prefix();
+    return s_rootfs_mount[0] && strcmp(s_rootfs_mount, "cdrom") == 0;
 }
 
 /* Resolve s_usr_prefix lazily.  Returns the cached prefix string, or
@@ -361,6 +455,29 @@ static int vfs_route(const char *abs, const char **drv_path, int *out_fs)
         return vfs_route(usr_scratch, drv_path, out_fs);
     }
 
+    /* /boot/... – synthetic redirect to the bootfs mount (the FAT32
+     * boot partition holding the kernel + bootloader stage 3).  Same
+     * scratch-rewrite pattern as /usr; only active when a "boot" mount
+     * is non-empty (set by resolve_rootfs_prefix). */
+    if (abs[0] == '/' && abs[1] == 'b' && abs[2] == 'o' && abs[3] == 'o' &&
+        abs[4] == 't' && (abs[5] == '/' || abs[5] == '\0')) {
+        (void)resolve_rootfs_prefix();  /* populate s_bootfs_mount */
+        if (s_bootfs_mount[0]) {
+            static char boot_scratch[VFS_PATH_MAX];
+            /* boot_scratch = "/mnt/" + s_bootfs_mount + abs[5..] */
+            size_t bn = strlen(s_bootfs_mount);
+            const char *suffix = abs + 5;          /* "" or "/X..." */
+            size_t sl = strlen(suffix);
+            if (5 + bn + sl + 1 <= sizeof(boot_scratch)) {
+                memcpy(boot_scratch, "/mnt/", 5);
+                memcpy(boot_scratch + 5, s_bootfs_mount, bn);
+                memcpy(boot_scratch + 5 + bn, suffix, sl + 1);
+                return vfs_route(boot_scratch, drv_path, out_fs);
+            }
+        }
+        /* No bootfs available -- fall through to UNKNOWN / rootfs lookup. */
+    }
+
     /* "/log" – the synthetic writable log directory (dmesg-style tree). */
     if (memcmp(abs, LOGFS_MOUNT, LOGFS_MOUNT_LEN) == 0 &&
         (abs[LOGFS_MOUNT_LEN] == '/' || abs[LOGFS_MOUNT_LEN] == '\0')) {
@@ -399,9 +516,16 @@ static int vfs_route(const char *abs, const char **drv_path, int *out_fs)
         const char *dp = (*rest == '/') ? rest : "/";
 
         if (clen == 5 && memcmp(comp, "cdrom", 5) == 0) {
+            /* /mnt/cdrom stays routable even when CD is the rootfs --
+             * keeps backward compat for the installer + existing shell
+             * commands.  The visible "one path" property is enforced by
+             * ls_mnt filtering it from the listing (cdrom_is_elevated). */
             *drv_path = dp;
             return VFS_FS_CDROM;
         }
+        /* Same compat reasoning as the cdrom case above: keep elevated
+         * HD mounts (rootfs, bootfs) routable via /mnt/<name>; ls_mnt
+         * hides them so the visible mount tree shows each device once. */
         int mi = hd_find(comp, clen);
         if (mi >= 0) {
             *drv_path = dp;
@@ -432,6 +556,28 @@ static int vfs_route(const char *abs, const char **drv_path, int *out_fs)
         return VFS_FS_DEV;
     }
 
+    /* Rootfs fallthrough: anything else under / -- typically Linux-style
+     * paths like /etc, /home, /bin, /var, /root -- routes to the active
+     * rootfs mount (HDD-installed system if present, else the boot CD).
+     * Synthetic overlays (/proc, /dev, /tmp, /log, /mnt) and the /usr
+     * redirect are handled by the dedicated branches above, so this
+     * never shadows them.  Same scratch-buffer recursion pattern as the
+     * /usr rewrite; the rewritten path starts with /mnt/, so the
+     * recursion is at most one level deep. */
+    {
+        const char *prefix = resolve_rootfs_prefix();
+        if (prefix) {
+            static char root_scratch[VFS_PATH_MAX];
+            size_t pl = strlen(prefix);
+            size_t al = strlen(abs);
+            if (pl + al + 1 <= sizeof(root_scratch)) {
+                memcpy(root_scratch, prefix, pl);
+                memcpy(root_scratch + pl, abs, al + 1);
+                return vfs_route(root_scratch, drv_path, out_fs);
+            }
+        }
+    }
+
     *drv_path = abs;
     return VFS_FS_UNKNOWN;
 }
@@ -441,21 +587,50 @@ static int vfs_route(const char *abs, const char **drv_path, int *out_fs)
  * ---------------------------------------------------------------------- */
 static void ls_root(void)
 {
-    /* Disk filesystems now live under /mnt; the root shows the synthetic
-     * trees plus the /mnt container. */
+    /* Synthetic overlays first -- always present, independent of mounts. */
     t_writestring("[mnt]\n");    /* hd / cdrom live here                 */
     t_writestring("[proc]\n");   /* always present - synthesised         */
     t_writestring("[dev]\n");    /* always present - synthesised         */
     t_writestring("[log]\n");    /* in-RAM writable log tree (dmesg)     */
     t_writestring("[tmp]\n");    /* in-RAM writable scratch ramdisk      */
-    if (resolve_usr_prefix())    /* present only when a sysroot is live  */
-        t_writestring("[usr]\n");
+
+    /* /boot, if a bootfs is elevated (set by resolve_rootfs_prefix). */
+    (void)resolve_rootfs_prefix();
+    if (s_bootfs_mount[0])
+        t_writestring("[boot]\n");
+
+    /* Then the active rootfs's top-level entries (usr, etc, home, bin, ...).
+     * Routed by vfs_route's rootfs fallthrough; we ls the prefix and
+     * forward the listing.  No prefix means no rootfs is live -- early
+     * boot with no disk -- and we show nothing extra. */
+    const char *prefix = resolve_rootfs_prefix();
+    if (prefix) {
+        const char *drv;
+        int fs;
+        switch (vfs_route(prefix, &drv, &fs)) {
+        case VFS_FS_CDROM:
+            iso9660_ls(s_cdrom_drive, drv);
+            break;
+        case VFS_FS_HD:
+            if (fs == HD_FS_EXT2)        ext2_ls(drv);
+            else if (fs == HD_FS_FAT32)  fat32_ls(drv);
+            break;
+        default: break;
+        }
+    }
 }
 
-/* List /mnt - the disk-filesystem mount container. */
+/* List /mnt - the disk-filesystem mount container.  Mounts elevated
+ * elsewhere (rootfs at /, bootfs at /boot) are hidden from /mnt so
+ * each backing device has exactly one accessible path. */
 static void ls_mnt(void)
 {
+    (void)resolve_rootfs_prefix();   /* warm elevation-state cache */
+    int shown = 0;
     for (int i = 0; i < s_nmounts; i++) {
+        size_t nlen = strlen(s_mounts[i].name);
+        if (mount_is_elevated(s_mounts[i].name, nlen))
+            continue;
         t_putchar('[');
         t_writestring(s_mounts[i].name);
         t_writestring("]");
@@ -466,9 +641,13 @@ static void ls_mnt(void)
             t_writestring(hd_fsname(s_mounts[i].fs));
         }
         t_putchar('\n');
+        shown++;
     }
-    if (s_cdrom_drive >= 0) t_writestring("[cdrom]\n");
-    if (s_nmounts == 0 && s_cdrom_drive < 0)
+    if (s_cdrom_drive >= 0 && !cdrom_is_elevated()) {
+        t_writestring("[cdrom]\n");
+        shown++;
+    }
+    if (shown == 0)
         t_writestring("(no mountpoints - use 'mkdir /mnt/<name>' then 'mount')\n");
 }
 
@@ -857,15 +1036,14 @@ void vfs_auto_mount(void)
     /* Report CD-ROM status (always registered by vfs_init if present). */
     if (s_cdrom_drive >= 0) {
         t_writestring("CD-ROM detected, accessible at /mnt/cdrom\n");
-        /* If no HDD was mounted, navigate CWD to /mnt/cdrom.  Pre-tasking,
-         * this lands in s_boot_cwd; tasking_init seeds idle->cwd from it. */
-        if (!hd_mounted)
-            memcpy(cwd_buf(), "/mnt/cdrom", 11);   /* 11 includes NUL */
     }
 
-    if (!hd_mounted && s_cdrom_drive < 0) {
-        /* Nothing mounted - leave CWD at "/" and let the user mount manually. */
-    }
+    /* Boot CWD stays at "/" -- with the rootfs fallthrough in vfs_route,
+     * the active rootfs (HDD ext2 if installed, else the CD) is overlaid
+     * onto / for Linux-style paths (/usr, /etc, /home, /bin, ...).
+     * Synthetic overlays (/proc, /dev, /tmp, /log, /mnt) live alongside.
+     * Pre-rootfs-prefix days hard-coded CWD to /mnt/cdrom so ls/cat
+     * "found something" on a fresh boot; no longer needed. */
 }
 
 /* -------------------------------------------------------------------------

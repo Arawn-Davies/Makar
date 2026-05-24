@@ -1,34 +1,18 @@
 #!/bin/sh
-# build-tcc.sh -- Phase-3 follow-up: cross-build TinyCC for Makar.
+# build-tcc.sh -- Cross-build TinyCC (v0.9.27) as a Makar userspace app.
 #
-# STATUS: bring-up scaffolding only.  The userspace sysroot (libc.a,
-# crt0.o, /usr/include) and the kernel-side /usr resolver + /tmp
-# ramdisk are wired up by the rest of this slice and ship in the
-# default `./run.sh iso build`; this script is the next-slice
-# launchpad for actually compiling vendor/tinycc against the shim.
+# Produces:
+#   src/userspace/tcc.elf       The compiler binary (ring 3, 0x40000000)
 #
-# What this script *does* today:
-#   - Confirms vendor/tinycc/ is populated.
-#   - Probes the compile against the Makar sysroot under
-#     vendor/tinycc/build-tcc.log so the operator can read the
-#     concrete porting gaps surfaced by i686-elf-gcc.
+# Also stages TCC's sysroot artifacts into isodir/ (ready for grub-mkrescue):
+#   isodir/usr/lib/tcc/libtcc1.a       TCC's runtime library
+#   isodir/usr/lib/tcc/include/        TCC's built-in headers (stdarg, stddef, etc.)
+#   isodir/usr/lib/crt1.o              CRT startup (copy of crt0.o)
+#   isodir/usr/lib/crti.o              Empty init stub
+#   isodir/usr/lib/crtn.o              Empty fini stub
 #
-# What this script does NOT do (deferred to the TCC-port follow-up):
-#   - Produce src/userspace/tcc.elf.  Upstream TCC 0.9.27 pulls
-#     <signal.h>, <sys/ucontext.h>, <sys/mman.h>, <struct tm>, the
-#     fseek/ftell family, etc.  Each gap needs either a stub backed
-#     by a real Makar syscall, or a `#ifdef MAKAR` cordon around the
-#     dependent TCC code (mostly tccrun.c -- the in-memory JIT --
-#     which Makar can't host without mmap PROT_EXEC anyway).
-#
-# Once `vendor/tinycc/tcc.o` builds clean, the final link step is:
-#     i686-elf-ld -T src/userspace/link.ld -nostdlib -static \
-#         src/userspace/crt0.o vendor/tinycc/tcc.o src/userspace/libc.a \
-#         -o src/userspace/tcc.elf
-# (already present at the foot of this script for when the porting
-# work is in.)
-#
-# Usage:  ./build-tcc.sh
+# Called from iso.sh after build.sh has produced crt0.o and libc.a.
+# Also works standalone: ./build-tcc.sh
 #
 # Environment:
 #   DOCKER_IMAGE     Docker image to compile inside (default upstream toolchain).
@@ -39,13 +23,13 @@ set -e
 REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 TCC_DIR="$REPO_ROOT/vendor/tinycc"
 USER_DIR="$REPO_ROOT/src/userspace"
+ISO_DIR="$REPO_ROOT/isodir"
 DOCKER_BIN=${DOCKER_BIN:-docker}
 DOCKER_IMAGE=${DOCKER_IMAGE:-arawn780/gcc-cross-i686-elf:fast}
 DOCKER_PLATFORM=${DOCKER_PLATFORM:-linux/amd64}
 
 if [ ! -d "$TCC_DIR" ] || [ ! -f "$TCC_DIR/tcc.c" ]; then
-    echo "==> build-tcc: vendor/tinycc/ not populated; nothing to do."
-    echo "    See vendor/tinycc/README.md for the extraction recipe."
+    echo "==> build-tcc: vendor/tinycc/ not populated; skipping."
     exit 0
 fi
 
@@ -71,22 +55,21 @@ else
     exit 1
 fi
 
-# Hand-rolled config.h.  Upstream's ./configure assumes a hosted Linux
-# build environment we don't have; the CONFIG_* paths it normally emits
-# are all supplied as compiler -D flags below.
+# ── config.h ─────────────────────────────────────────────────────────────────
+# Upstream's ./configure assumes a hosted Linux environment; we supply all
+# CONFIG_* values via -D flags instead.
 cat > "$TCC_DIR/config.h" << 'EOF'
 /* Hand-rolled config.h for the Makar cross-build.  The compiler -D
  * flags supplied by build-tcc.sh carry all real configuration; this
  * file just satisfies the `#include "config.h"` line in tcc.h. */
 EOF
 
-# Apply any porting patches.
+# ── Apply porting patches ────────────────────────────────────────────────────
 RUN "cd vendor/tinycc && for p in patches/[0-9]*.patch; do [ -e \$p ] || continue; if ! patch -p1 --dry-run -R < \$p >/dev/null 2>&1; then patch -p1 < \$p; fi; done"
 
-# Stub headers TCC pulls in but our shim doesn't ship yet.  These let
-# the build progress past `#include` resolution; many TCC functions
-# referencing them still won't link.  Iterating these into real
-# backends is the bulk of the TCC port.
+# ── Stub headers ─────────────────────────────────────────────────────────────
+# These satisfy TCC source-level #includes that reference POSIX/hosted headers
+# which Makar doesn't ship.  The real implementations live in tcc_compat.c.
 STUB_INC="$TCC_DIR/build-stubs"
 mkdir -p "$STUB_INC/sys"
 
@@ -160,8 +143,6 @@ EOF
 cat > "$STUB_INC/sys/mman.h" << 'EOF'
 #ifndef _MAKAR_TCC_SYS_MMAN_H
 #define _MAKAR_TCC_SYS_MMAN_H
-/* Used by tccrun.c (TCC's JIT).  Makar can't host PROT_EXEC mmap until
- * SYS_MMAP lands, so the JIT path stays inert. */
 #define PROT_READ   1
 #define PROT_WRITE  2
 #define PROT_EXEC   4
@@ -233,65 +214,85 @@ long   lseek(int fd, long o, int w);
 #endif
 EOF
 
+# ── Common -D flags ──────────────────────────────────────────────────────────
 COMMON_DEFS="\
  -DTCC_TARGET_I386 \
  -DTCC_VERSION=\\\"0.9.27-makar\\\" \
  -DCONFIG_TCCDIR=\\\"/usr/lib/tcc\\\" \
- -DCONFIG_TCC_SYSINCLUDEPATHS=\\\"/usr/include\\\" \
+ -DCONFIG_TCC_SYSINCLUDEPATHS=\\\"/usr/include:{B}/include\\\" \
  -DCONFIG_TCC_LIBPATHS=\\\"/usr/lib\\\" \
  -DCONFIG_TCC_CRTPREFIX=\\\"/usr/lib\\\" \
  -DCONFIG_LDDIR=\\\"lib\\\" \
  -DCONFIG_TCC_STATIC \
  -DCONFIG_TCCBOOT \
- -DCONFIG_TRIPLET=\\\"i386-makar\\\" \
  -DONE_SOURCE=1"
 
-echo "==> Probing tcc.c against the Makar shim (porting smoke test) ..."
+# ── Compile tcc.o ────────────────────────────────────────────────────────────
+echo "==> Compiling tcc.c ..."
 RUN "cd vendor/tinycc && \
-    i686-elf-gcc -O0 -g -std=gnu99 -ffreestanding -fno-stack-protector \
+    i686-elf-gcc -O2 -g -std=gnu99 -ffreestanding -fno-stack-protector \
         -Wall -Wno-unused-parameter -Wno-pointer-sign -Wno-pointer-to-int-cast \
         -Wno-int-to-pointer-cast -Wno-format -Wno-missing-field-initializers \
+        -Wno-unused-function \
         -nostdlib \
         -I. -I build-stubs \
         -I ../../src/userspace \
         $COMMON_DEFS \
-        -c tcc.c -o tcc.o 2>&1 | tee build-tcc.log | tail -40" || true
+        -c tcc.c -o tcc.o 2>&1 | tee build-tcc.log | tail -20" || true
 
 if ! RUN "test -f vendor/tinycc/tcc.o"; then
-    cat <<'EOF'
-
-==> Smoke-test status: tcc.c does NOT yet compile against the Makar
-    libc shim.  The log at vendor/tinycc/build-tcc.log enumerates the
-    remaining porting gaps.  Headline residual deltas as of v0.9.27:
-
-      - tccrun.c (TCC's JIT) drags <signal.h>, <sys/ucontext.h>,
-        <sys/mman.h>, SA_RESETHAND, siginfo_t -- all needed only by
-        the `-run` path Makar can't host.  Cordon with a fresh
-        CONFIG_TCC_NO_RUN ifdef under vendor/tinycc/patches/.
-      - tccpp.c references `struct tm` from <time.h>; either stub a
-        real /proc/rtc-backed localtime() or guard the __DATE__/
-        __TIME__ feature.
-      - tccelf.c uses `ssize_t` widely (now declared in our stdint.h
-        stub, but the surrounding declarations need a wider review).
-      - libtcc.c calls fdopen/fseek/ftell/exit/strtoll -- all
-        additions to the userspace libc shim (or new TCC patches that
-        route to the syscall layer directly).
-
-    None of these are blockers for the rest of the slice; the
-    sysroot + /tmp + /usr scaffolding is committed in this PR and
-    `./run.sh iso build` produces a working OS image without tcc.elf.
-
-EOF
-    exit 0
+    echo "ERROR: tcc.c failed to compile.  See vendor/tinycc/build-tcc.log." >&2
+    exit 1
 fi
 
+# ── Link tcc.elf ─────────────────────────────────────────────────────────────
 echo "==> Linking tcc.elf at USER_CODE_BASE = 0x40000000 ..."
-# Pull libgcc.a alongside libc.a to resolve gcc-emitted helpers
-# (__udivdi3, __umoddi3, ...) used by TCC's 64-bit integer paths.
 RUN "i686-elf-ld -T src/userspace/link.ld -nostdlib -static \
     src/userspace/crt0.o vendor/tinycc/tcc.o src/userspace/libc.a \
     \$(i686-elf-gcc -print-libgcc-file-name) \
     -o src/userspace/tcc.elf"
+echo "==> tcc.elf: $(ls -lh src/userspace/tcc.elf 2>/dev/null | awk '{print $5}')"
 
-echo "==> tcc.elf built:"
-RUN "ls -l src/userspace/tcc.elf"
+# ── Build libtcc1.a (TCC's runtime library for compiled programs) ────────────
+echo "==> Building libtcc1.a ..."
+RUN "cd vendor/tinycc/lib && \
+    i686-elf-gcc -O2 -ffreestanding -fno-stack-protector -nostdlib \
+        -c libtcc1.c -o libtcc1.o && \
+    i686-elf-gcc -O2 -ffreestanding -fno-stack-protector -nostdlib \
+        -c alloca86.S -o alloca86.o && \
+    i686-elf-ar rcs libtcc1.a libtcc1.o alloca86.o"
+echo "==> libtcc1.a: $(ls -lh vendor/tinycc/lib/libtcc1.a 2>/dev/null | awk '{print $5}')"
+
+# ── Build CRT stubs for TCC's default link sequence ─────────────────────────
+# TCC's default link is: crt1.o + crti.o + <user objects> + -lc + crtn.o
+# crt1.o = our crt0.o (provides _start)
+# crti.o / crtn.o = empty stubs (no init/fini section hooks)
+echo "==> Building CRT stubs ..."
+RUN "cp src/userspace/crt0.o src/userspace/crt1.o && \
+    echo '.section .init' | i686-elf-as --32 -o src/userspace/crti.o && \
+    echo '.section .fini' | i686-elf-as --32 -o src/userspace/crtn.o"
+
+# ── Stage TCC sysroot into isodir ───────────────────────────────────────────
+echo "==> Staging TCC sysroot into isodir/ ..."
+mkdir -p "$ISO_DIR/usr/lib/tcc/include" "$ISO_DIR/apps"
+
+# tcc.elf itself — the Makefile's $(wildcard tcc.elf) only fires on warm
+# builds; on a clean CI build tcc.elf doesn't exist yet when Make runs,
+# so we always copy it here to guarantee it ships on the ISO.
+cp "$USER_DIR/tcc.elf" "$ISO_DIR/apps/"
+
+# TCC's own built-in headers (stdarg.h, stddef.h, stdbool.h, float.h, varargs.h)
+cp "$TCC_DIR/include/"*.h "$ISO_DIR/usr/lib/tcc/include/"
+
+# libtcc1.a goes under the TCC lib path
+cp "$TCC_DIR/lib/libtcc1.a" "$ISO_DIR/usr/lib/tcc/"
+
+# CRT objects alongside libc.a at /usr/lib
+cp "$USER_DIR/crt1.o" "$ISO_DIR/usr/lib/"
+cp "$USER_DIR/crti.o" "$ISO_DIR/usr/lib/"
+cp "$USER_DIR/crtn.o" "$ISO_DIR/usr/lib/"
+
+echo "==> TCC build complete."
+echo "    tcc.elf will be shipped at /mnt/cdrom/apps/tcc.elf"
+echo "    Sysroot: /usr/lib/tcc/ (libtcc1.a + include/)"
+echo "    CRT: /usr/lib/{crt1,crti,crtn}.o"

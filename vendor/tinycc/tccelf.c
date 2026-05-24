@@ -1359,6 +1359,13 @@ ST_FUNC void fill_got(TCCState *s1)
 static void fill_local_got_entries(TCCState *s1)
 {
     ElfW_Rel *rel;
+    /* A program with no GOT-relocated symbols (e.g. only static-inline
+     * syscalls, no extern refs) reaches link-time with s1->got allocated
+     * but s1->got->reloc still NULL.  The for_each_elem macro
+     * unconditionally derefs sec->data / sec->data_offset, which would
+     * fault on NULL.  Nothing to fill in that case. */
+    if (!s1->got->reloc)
+        return;
     for_each_elem(s1->got->reloc, 0, rel, ElfW_Rel) {
 	if (ELFW(R_TYPE)(rel->r_info) == R_RELATIVE) {
 	    int sym_index = ELFW(R_SYM) (rel->r_info);

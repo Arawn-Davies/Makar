@@ -15,7 +15,7 @@ LDFLAGS=-T link.ld -nostdlib
 DESTDIR?=
 ISODIR?=$(CURDIR)/../../isodir
 
-PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf kbtester.elf makbox.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf fdisk.elf cfdisk.elf basic.elf filetest.elf alloctest.elf
+PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf kbtester.elf makbox.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf fdisk.elf cfdisk.elf basic.elf filetest.elf alloctest.elf sh.elf
 
 # libc.a -- single archive of the userspace shim (malloc + FILE* stdio +
 # setjmp/longjmp + string/memory helpers).  Shipped under /usr/lib on the
@@ -43,6 +43,9 @@ help.elf: crt0.o help.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 calc.elf: crt0.o calc.o
+	$(LD) $(LDFLAGS) -o $@ $^
+
+sh.elf: crt0.o sh.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 vix.elf: crt0.o vix.o

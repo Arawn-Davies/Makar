@@ -6,6 +6,7 @@
 #define SYS_FORK       2
 #define SYS_READ       3
 #define SYS_EXECVE     11
+#define SYS_CHDIR      12
 #define SYS_WAIT4      114
 /* wait4 `options` flags */
 #define WNOHANG        1
@@ -220,7 +221,11 @@ static inline long syscall3(long nr, long a1, long a2, long a3)
 static inline void sys_exit(int status)
 {
     syscall1(SYS_EXIT, (long)status);
-    __builtin_unreachable();
+    /* SYS_EXIT never returns; the for(;;) is dead code that just
+     * satisfies the compiler's "noreturn function returned" check.
+     * Previously used __builtin_unreachable() but TCC v0.9.27 doesn't
+     * implement that builtin (breaks in-OS sh.elf rebuild). */
+    for (;;) { }
 }
 
 /* fork(2): clone the calling process via COW.  Returns child pid in the
@@ -319,6 +324,14 @@ static inline unsigned int sys_uptime(void)
 static inline int sys_getcwd(char *buf, unsigned int size)
 {
     return (int)syscall2(SYS_GETCWD, (long)buf, (long)size);
+}
+
+/* chdir(2): change the calling task's cwd to `path`.  Delegates to the
+ * kernel's vfs_cd which normalises and validates against the live VFS.
+ * Returns 0 on success, -1 if the path is missing or not a directory. */
+static inline int sys_chdir(const char *path)
+{
+    return (int)syscall1(SYS_CHDIR, (long)path);
 }
 
 /* Query pixel-mode framebuffer geometry.  Returns (width << 16) | height

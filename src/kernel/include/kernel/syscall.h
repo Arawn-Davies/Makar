@@ -19,6 +19,7 @@
 #define SYS_OPEN       5    /* int open(const char *path, int flags)            */
 #define SYS_CLOSE      6    /* int close(int fd)                                */
 #define SYS_EXECVE     11   /* int execve(const char *path, char *const argv[], char *const envp[]) */
+#define SYS_CHDIR      12   /* int chdir(const char *path) -- set calling task's cwd */
 #define SYS_LSEEK      19   /* off_t lseek(int fd, off_t offset, int whence)   */
 #define SYS_WAIT4      114  /* pid_t wait4(pid, int *status, int options, void *rusage) */
 #define SYS_KILL       37   /* int kill(int pid, int signo)                     */
@@ -96,10 +97,11 @@ typedef struct {
 
 /* Maximum size of a regular file backed by an in-memory FD_KIND_FILE buffer.
  * Reads cap the eager-load here; writes may grow the buffer up to this hard
- * limit (8 MiB) before SYS_WRITE returns -1 (EFBIG).  Kernel heap is roughly
- * 16 MiB total, so a single open file can hold a realistic TCC TU + output
- * without starving everything else. */
-#define SYSCALL_FILE_MAX     (8u * 1024u * 1024u)
+ * limit (16 MiB) before SYS_WRITE returns -1 (EFBIG).  Kernel heap is 32 MiB
+ * (see HEAP_MAX in kernel/heap.h), so two simultaneously-open large files
+ * still leave the kernel room to operate.  16 MiB is enough for tcc.c + its
+ * emitted ELF on a self-compile attempt. */
+#define SYSCALL_FILE_MAX     (16u * 1024u * 1024u)
 /* Initial heap allocation for a freshly-created (O_CREAT) or O_TRUNC'd fd.
  * Subsequent SYS_WRITEs grow geometrically (doubling). */
 #define SYSCALL_FILE_INITIAL (4u * 1024u)
