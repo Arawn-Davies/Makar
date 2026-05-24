@@ -181,12 +181,14 @@ All apps in `/Users/arawn/Makar/src/userspace/` compile to `.elf` files and are 
 - `/dev/…` - synthetic block-device tree (`arch/i386/fs/devfs.c`): `/dev/hda[N]` ATA disks/partitions, `/dev/cdrom` ATAPI. Byte-addressed read/write via `devfs_pread`/`devfs_pwrite` over native sector I/O; opened as `FD_KIND_BLOCKDEV`
 
 ### Lifecycle
-- `vfs_init()` - probe IDE for ISO9660; reset CWD to `/`; build the `/dev` node table (`devfs_init`)
+- `vfs_init()` - probe ATAPI for ISO9660 CD-ROM; register synthetic overlays (`/dev`, `/proc`, `/tmp`, `/log`) and `/mnt/cdrom` (when present) as first-class mount-table entries; pre-register empty `/mnt/boot` + `/mnt/root` placeholders; build the `/dev` node table
 - `vfs_set_boot_drive(biosdev)` - record BIOS boot device
-- `vfs_auto_mount()` - probe ATA drives; single-partition disks bind at `/mnt/root`, dual-partition installer layouts bind partition 0 at `/mnt/boot` + partition 1 at `/mnt/root`; rootfs election then elevates the volume holding `/usr/lib/crt0.o` to `/`
+- `vfs_mount_root(spec)` - elect and bind the rootfs at `/`.  Spec resolution: `/dev/hdaN` (explicit), `"none"` (skip), NULL/auto (walk every ATA partition probing for `/usr/lib/crt0.o`; CD-ROM fallback for live boots)
+- `vfs_auto_mount()` - probe ATA drives; single-partition disks bind at `/mnt/root`, dual-partition installer layouts bind partition 0 at `/mnt/boot` (also mirrored at `/boot`) + partition 1 at `/mnt/root`
+- `vfs_ensure_root_home()` - best-effort `mkdir /root` on writable rootfs (ext2/FAT32) boots; no-op on ISO9660 or no-rootfs
 - `vfs_mount_hd(drive, lba, name)` - bind a HD volume into an existing empty mountpoint (`mkdir /mnt/<name>` first); legacy `/mnt/hd` default removed
 - `vfs_prepare_shutdown()` - flush + unmount before power-off/reset (called from `shutdown`/`reboot`)
-- `vfs_notify_cdrom_ejected()` - called after ATAPI eject
+- `vfs_notify_cdrom_ejected()` - called after ATAPI eject; drops every mount-table entry pointing at the CD-ROM (typically `/mnt/cdrom`, plus `/` if it was elected as rootfs)
 
 ### Operations
 - `vfs_ls(path)` - list directory

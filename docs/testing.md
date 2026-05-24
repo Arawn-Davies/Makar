@@ -66,6 +66,7 @@ boot medium:
 | `hardware_state` | CR0.PG set (paging enabled), CR3 non-zero (page directory loaded), `timer_callback` fires (PIT ticking) |
 | `vesa` | VESA framebuffer active and TTY initialised (or absent without crashing - graceful headless) |
 | `hdd_mount` | `fat32_mounted()` non-zero - HDD rootfs auto-mounted (single-partition → `/mnt/root`; dual-partition → `/mnt/boot` + `/mnt/root`) after `shell_run` |
+| `root_home` | (HDD only) `vfs_file_exists("/root")` returns 1, confirming `vfs_ensure_root_home()` mkdir'd it on the writable rootfs |
 
 The `hdd_mount` check advances execution to `keyboard_getchar` (the shell's
 read-loop entry) before inspecting `fat32_mounted()`, ensuring

@@ -131,10 +131,12 @@ Make sure it's a bit of a delay between each test so the startup screen is visib
 1. `terminal_initialize` → `init_serial(COM1)` → `init_descriptor_tables` (GDT+IDT)
 2. Exception handlers, PMM, paging (256 MiB identity map, 4 MiB pages), heap
 3. VESA init + display mode selection: 720p if Bochs VBE available, else 80×50 VGA text
-4. Timer (100 Hz PIT), keyboard (layered PS/2 driver), IDE/VFS
-5. `tasking_init` + `task_create("shell", shell_run)` + `task_create("ktest", ktest_bg_task)`
-6. `syscall_init` (registers `int 0x80` handler at IDT gate DPL=3)
-7. Idle loop: `task_yield` + `hlt`
+4. Timer (100 Hz PIT), keyboard (layered PS/2 driver), IDE
+5. Multiboot2 cmdline parse: extracts `test_mode`, `console=ttyS0`, and `root=<spec>` (spec = `/dev/hdaN` for explicit rootfs selection, `none` to skip election, anything else / NULL = auto-detect)
+6. `vfs_init` → `vfs_mount_root(root_spec)` → `vfs_auto_mount` → `vfs_ensure_root_home` (see § VFS below)
+7. `tasking_init` + `task_create("shell", shell_run)` + `task_create("ktest", ktest_bg_task)`
+8. `syscall_init` (registers `int 0x80` handler at IDT gate DPL=3)
+9. Idle loop: `task_yield` + `hlt`
 
 ### Display mode selection
 At boot, `kernel_main` calls `bochs_vbe_available()`. If the Bochs VBE I/O ports respond (QEMU `-vga std`), it sets 1280×720×32 and initialises the VESA TTY at `font_scale=2` (40-col equivalent at this res). If VBE is absent (hardware or minimal QEMU config), it falls back to VGA 80×50 text mode.
@@ -159,6 +161,26 @@ Per-task state (`task_t` in `kernel/task.h`):
 - `fd_table` - per-task fd table (`kernel/fd.h`); fds 0/1/2 pre-bound to stdin/stdout/stderr at `task_create`.  `FD_KIND_FILE` slots hold a growable kmalloc'd buffer plus `capacity`/`dirty`/`writable`/`append`/inline `path[VFS_PATH_MAX]`; `fd_close` flushes dirty buffers via `vfs_write_file(path,...)`.  `fd_table_clone` (fork) deep-copies each FILE buffer and **clears `dirty` on the child copy** so only the parent's eventual close re-writes the file — a deliberate non-POSIX shortcut, undone by the future `open_file_t` refactor (pipe(2)/dup(2) slice).
 - `exec_params` - kmalloc'd `exec_params_t` set by `shell_exec_elf` and consumed by `exec_task_entry`. Per-task so two shells on different TTYs can `exec` concurrently without trampling each other's argv/path (the prior static-globals approach caused a `CS=0x3F8` ring-3 panic under load); reaped on slot reuse.
 - `user_brk`, `page_dir`, `state`, `name`, `esp`, `stack`, `next`
+
+### VFS (mount table, rootfs election, overlays)
+
+The VFS is a single static mount table (`s_mounts[]` in `src/kernel/arch/i386/fs/vfs.c`, capacity `MAX_MOUNTS=16`).  Each entry is `vfs_mount_t { char mountpoint[VFS_PATH_MAX]; vfs_backend_t backend; uint8_t drive; uint32_t lba; char slot_name[]; }`.
+
+**Routing** (`vfs_route(abs, &drv_path)`): longest-prefix-match against every entry's `mountpoint`.  Returns the matched entry's index and writes the driver-relative path (e.g. `/dev/hda1` → `/dev` mount, drv = `/hda1`).  No path-rewriting, no recursion -- pure data lookup.  Backend dispatch is a `switch (m->backend)` in helpers `backend_ls` / `backend_cd` / `backend_read_file` / `backend_write_file` / `backend_mkdir` / `backend_delete_*` / `backend_file_exists` / `backend_complete` / `backend_unmount`.
+
+**Backends** (`vfs_backend_t` enum): `NONE` (empty mountpoint placeholder), `EXT2`, `FAT32`, `ISO9660`, `DEVFS`, `PROCFS`, `TMPFS`, `LOGFS`.  ext2 + FAT32 are single-volume drivers (one of each at a time -- enforced by `backend_in_use`).
+
+**Boot order** (`kernel_main`):
+1. **`vfs_init`** -- probe ATAPI for an ISO9660 CD-ROM; register synthetic overlays at fixed mountpoints: `/dev` (DEVFS), `/proc` (PROCFS), `/tmp` (TMPFS), `/log` (LOGFS); register CD-ROM at `/mnt/cdrom` if present; pre-register empty `/mnt/boot` + `/mnt/root` placeholders (NONE backend; the installer + auto-mount bind into these).  Build the `/dev` node table.
+2. **`vfs_mount_root(spec)`** -- elect and bind the rootfs at `/`.  Spec resolution: explicit `/dev/hdaN` → `devfs_lookup` → try ext2 then FAT32 → mount at `/`; spec = `"none"` → skip; spec NULL / unrecognised → auto-detect (walk every ATA partition, ext2 → FAT32 probe each, the first whose `/usr/lib/crt0.o` exists wins); CD-ROM fallback for live boots.
+3. **`vfs_auto_mount`** -- bind ATA volumes at `/mnt/root` (single-partition; or partition 1 of dual-partition installer) and `/mnt/boot` (partition 0 FAT32 of dual-partition installer; also mirrored at `/boot` for easy access).  Single-volume backends already in use (e.g. ext2 elevated to `/` by `vfs_mount_root`) cause the matching `/mnt/<name>` slot to stay empty -- the rootfs is reachable via `/` regardless.
+4. **`vfs_ensure_root_home`** -- best-effort `mkdir /root` on writable rootfs (ext2/FAT32) boots; no-op on ISO9660 or no-rootfs.
+
+**`/mnt` is virtual**: there's no entry literally at `/mnt`; `vfs_ls("/mnt")` enumerates every mount whose `mountpoint` starts with `/mnt/` (one component deep).  Same shape for `/` -- enumerates immediate-child mounts AND lists the rootfs's actual directory contents (the union, like Linux).
+
+**Public API**: `vfs_ls`/`cd`/`cat`/`mkdir`/`read_file`/`write_file`/`delete_file`/`delete_dir`/`rename`/`file_exists`/`stat`/`complete`/`blockdev_lookup`/`blockdev_pread`/`blockdev_pwrite`/`mount_root`/`mount_hd`/`umount_hd`/`make_mountpoint`/`remove_mountpoint`/`prepare_shutdown`/`notify_cdrom_ejected`/`ensure_root_home`/`hd_mounted`/`hd_fsname`/`getcwd`/`set_boot_drive`/`auto_mount`/`init`/`klog_*` (legacy logfs shims).
+
+**Path conventions**: rootfs at `/`; Unix paths `/usr` `/etc` `/home` `/apps` `/root` `/bin` `/src` `/docs` resolve via the rootfs's actual directory contents (no special-casing).  `/boot/...` routes to the FAT32 boot partition mirror.  `/mnt/<name>/...` routes to user-mounted volumes.  `/mnt/cdrom/...` always works (whether or not CD is also the rootfs).  `/proc`, `/dev`, `/tmp`, `/log` are first-class overlays.
 
 ### Syscall ABI (`int 0x80`, Linux i386 convention)
 Authoritative table in `src/kernel/include/kernel/syscall.h`. Selected entries:
@@ -303,4 +325,17 @@ To keep this file focused on day-to-day work, longer-lived material lives alongs
 - **`CLAUDE.history.md`** — current subsystem state (May 2026), recently-merged PR log, and FOSS attribution. Consult for "what's already shipped / what does subsystem X do today".
 - **`CLAUDE.roadmap.md`** — the slice queue (done + open), userspace/libc porting plan, hardware/platform notes, and the "serious dev work in-place" (compiler/networking) roadmap. Consult when planning new features or asked about direction.
 
-Published docs: `docs/userland-libc.md` (freestanding libc + TCC path), `SURVEY.md` (full inventory of shell commands / apps / VFS APIs / installer).
+Published docs: `docs/userland-libc.md` (freestanding libc + TCC path), `SURVEY.md` (full inventory of shell commands / apps / VFS APIs / installer), `docs/internals.md` (deep-dive on kernel internals), `docs/kernel/` (per-subsystem pages).
+
+## For agents new to the codebase
+
+If you're an AI agent (Claude, Codex, etc.) picking this up cold:
+
+1. **Read this file first** -- it's the canonical entry point.
+2. **Then `CLAUDE.history.md` + `CLAUDE.roadmap.md`** -- shipped state + queued work.
+3. **For VFS work**: this file's § VFS section explains the mount-table model; `src/kernel/arch/i386/fs/vfs.c` is the source of truth.  Slice 27 (the rootfs+overlay refactor) shipped recently -- no `resolve_rootfs_prefix` or path-rewriting tricks remain.
+4. **For shell work**: there are TWO shells.  The in-kernel `shell.c` (~4.3 KLoc, default on every VT) and the ring-3 `src/userspace/sh.c` (freestanding, opt-in via `exec /apps/sh.elf`).  The userland shell is being lifted into parity over slices 20a–20f; both currently coexist.
+5. **Conventions**: paths follow Linux (`/usr`, `/apps`, `/root`, `/proc`, `/dev`, `/mnt/<name>`, `/mnt/cdrom`).  The legacy `/mnt/hd` and bare `/hd` aliases were retired.  Apps live at `/apps/*.elf`, sources at `/src/`, headers at `/usr/include`, libc at `/usr/lib/libc.a`.
+6. **Testing**: `./run.sh iso test` for kernel-side ktest + GDB checkpoints; `./run.sh ui [scenario]` for headless black-box scenarios; `./run.sh gui [scenario]` for visible-window debugging.  Add a scenario for any user-facing change you ship.
+7. **Commits**: one commit per discrete work item; no `Co-Authored-By` trailers; no `Generated with Claude Code` footers.  Push to the existing PR branch when iterating.
+8. **Build**: `./run.sh iso build` (Docker-wrapped cross-compile via `i686-elf-gcc`).  Clang diagnostics from your IDE will complain about missing kernel headers -- ignore them; the build uses the right include paths.
