@@ -790,6 +790,35 @@ static void test_procfs_tasks(void)
 }
 
 /* ---------------------------------------------------------------------------
+ * Suite: getpid
+ *
+ * SYS_GETPID(20) / SYS_GETPPID(64) return task_current()->pid /
+ * parent_pid.  Drive both via syscall_dispatch with a stack frame, the
+ * same shape as test_syscall.
+ * ------------------------------------------------------------------------- */
+
+static void test_getpid(void)
+{
+    ktest_begin("getpid", "SYS_GETPID/GETPPID return task_current() pid/parent_pid");
+
+    task_t *me = task_current();
+    KTEST_ASSERT(me != NULL);
+
+    registers_t regs;
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_GETPID;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, me->pid);
+
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_GETPPID;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, me->parent_pid);
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
  * Suite: syscall
  *
  * Calls syscall_dispatch directly with a stack-allocated registers_t frame,
@@ -2280,6 +2309,10 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
+    test_getpid();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
     test_syscall();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
@@ -2388,6 +2421,7 @@ void ktest_bg_task(void)
     RUN(test_vmm);
     RUN(test_task);
     RUN(test_procfs_tasks);
+    RUN(test_getpid);
     RUN(test_syscall);
     RUN(test_fd_table);
     RUN(test_file_fd);

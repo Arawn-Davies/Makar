@@ -21,6 +21,7 @@
 #define SYS_EXECVE     11   /* int execve(const char *path, char *const argv[], char *const envp[]) */
 #define SYS_CHDIR      12   /* int chdir(const char *path) -- set calling task's cwd */
 #define SYS_LSEEK      19   /* off_t lseek(int fd, off_t offset, int whence)   */
+#define SYS_GETPID     20   /* pid_t getpid(void)                               */
 #define SYS_WAIT4      114  /* pid_t wait4(pid, int *status, int options, void *rusage) */
 #define SYS_KILL       37   /* int kill(int pid, int signo)                     */
 #define SYS_BRK        45   /* void *brk(void *addr)                            */
@@ -63,6 +64,7 @@
 
 /* Back to Linux i386 ABI numbers for the next set. */
 #define SYS_FCNTL      55   /* int fcntl(int fd, int cmd, int arg) - F_GETFL/F_SETFL */
+#define SYS_GETPPID    64   /* pid_t getppid(void)                              */
 
 /* fcntl cmd values (Linux i386 ABI subset). */
 #define F_GETFL         3

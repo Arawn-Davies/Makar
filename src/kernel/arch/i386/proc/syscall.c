@@ -501,6 +501,22 @@ void syscall_dispatch(registers_t *regs)
     }
 
     /* ------------------------------------------------------------------
+     * SYS_GETPID(20) / SYS_GETPPID(64): identity accessors.
+     * Both fields live on task_t (kernel/task.h:47-48); idle = pid 1,
+     * parent_pid 0 means "no parent / spawned by kernel".
+     * ------------------------------------------------------------------ */
+    case SYS_GETPID: {
+        task_t *t = task_current();
+        regs->eax = (uint32_t)(t ? t->pid : 0);
+        break;
+    }
+    case SYS_GETPPID: {
+        task_t *t = task_current();
+        regs->eax = (uint32_t)(t ? t->parent_pid : 0);
+        break;
+    }
+
+    /* ------------------------------------------------------------------
      * SYS_FB_INFO(216): query framebuffer pixel geometry.
      * Returns (width << 16) | height when VESA is up, 0 when VGA-only.
      * Userspace uses this to pick pixel vs character-cell drawing.

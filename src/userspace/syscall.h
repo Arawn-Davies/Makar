@@ -14,9 +14,11 @@
 #define SYS_OPEN       5
 #define SYS_CLOSE      6
 #define SYS_LSEEK      19
+#define SYS_GETPID     20
 #define SYS_KILL       37
 #define SYS_BRK        45
 #define SYS_SIGNAL     48
+#define SYS_GETPPID    64
 #define SYS_SIGRETURN  119
 #define SYS_DEBUG      100
 #define SYS_YIELD      158
@@ -325,6 +327,12 @@ static inline int sys_getcwd(char *buf, unsigned int size)
 {
     return (int)syscall2(SYS_GETCWD, (long)buf, (long)size);
 }
+
+/* getpid(2) / getppid(2): identity accessors.  pid 1 = idle task.
+ * parent_pid 0 means the caller was created directly by the kernel
+ * (no userspace ancestor). */
+static inline int sys_getpid(void)  { return (int)syscall1(SYS_GETPID,  0); }
+static inline int sys_getppid(void) { return (int)syscall1(SYS_GETPPID, 0); }
 
 /* chdir(2): change the calling task's cwd to `path`.  Delegates to the
  * kernel's vfs_cd which normalises and validates against the live VFS.
