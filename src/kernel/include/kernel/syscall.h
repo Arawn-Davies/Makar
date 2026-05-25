@@ -69,6 +69,16 @@
 /* Back to Linux i386 ABI numbers for the next set. */
 #define SYS_FCNTL      55   /* int fcntl(int fd, int cmd, int arg) - F_GETFL/F_SETFL */
 #define SYS_GETPPID    64   /* pid_t getppid(void)                              */
+#define SYS_GETTIMEOFDAY 78 /* int gettimeofday(struct timeval *, void *)       */
+#define SYS_CLOCK_GETTIME 265 /* int clock_gettime(clockid_t, struct timespec *)*/
+
+/* clockid_t values for SYS_CLOCK_GETTIME. */
+#define CLOCK_REALTIME  0   /* Wall clock from CMOS RTC, seconds since 1970     */
+#define CLOCK_MONOTONIC 1   /* PIT-derived uptime, never jumps backwards        */
+
+/* Timeval / timespec -- Linux i386 layouts. */
+struct timeval  { int32_t tv_sec; int32_t tv_usec; };
+struct timespec { int32_t tv_sec; int32_t tv_nsec; };
 
 /* fcntl cmd values (Linux i386 ABI subset). */
 #define F_GETFL         3

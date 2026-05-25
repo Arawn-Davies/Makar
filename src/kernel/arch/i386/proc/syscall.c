@@ -44,6 +44,7 @@
 #include <kernel/vt.h>
 #include <kernel/ide.h>
 #include <kernel/timer.h>
+#include <kernel/rtc.h>
 #include <string.h>
 #include <kernel/ktest.h>
 
@@ -513,6 +514,51 @@ void syscall_dispatch(registers_t *regs)
     case SYS_GETPPID: {
         task_t *t = task_current();
         regs->eax = (uint32_t)(t ? t->parent_pid : 0);
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_GETTIMEOFDAY(78): write current wall time into struct timeval.
+     * EBX = struct timeval *, ECX = struct timezone * (ignored).
+     * tv_sec is from the CMOS RTC; tv_usec is approximated from the
+     * PIT 100 Hz tick counter (resolution 10 ms, NOT real microseconds).
+     * Returns 0 on success, -1 on bad pointer.
+     * ------------------------------------------------------------------ */
+    case SYS_GETTIMEOFDAY: {
+        struct timeval *tv = (struct timeval *)(uintptr_t)regs->ebx;
+        if (!tv) { regs->eax = (uint32_t)-1; break; }
+        uint32_t secs = 0;
+        if (rtc_unix_time(&secs) != 0) { regs->eax = (uint32_t)-1; break; }
+        tv->tv_sec  = (int32_t)secs;
+        tv->tv_usec = (int32_t)((timer_get_ticks() % 100u) * 10000u);
+        regs->eax = 0;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_CLOCK_GETTIME(265): write current time into struct timespec.
+     * EBX = clockid_t (CLOCK_REALTIME or CLOCK_MONOTONIC), ECX = ts*.
+     * REALTIME mirrors SYS_GETTIMEOFDAY; MONOTONIC is timer ticks since
+     * boot.  Returns 0 / -1.
+     * ------------------------------------------------------------------ */
+    case SYS_CLOCK_GETTIME: {
+        int clk = (int)regs->ebx;
+        struct timespec *ts = (struct timespec *)(uintptr_t)regs->ecx;
+        if (!ts) { regs->eax = (uint32_t)-1; break; }
+        if (clk == CLOCK_REALTIME) {
+            uint32_t secs = 0;
+            if (rtc_unix_time(&secs) != 0) { regs->eax = (uint32_t)-1; break; }
+            ts->tv_sec  = (int32_t)secs;
+            ts->tv_nsec = (int32_t)((timer_get_ticks() % 100u) * 10000000u);
+        } else if (clk == CLOCK_MONOTONIC) {
+            uint32_t ticks = timer_get_ticks();
+            ts->tv_sec  = (int32_t)(ticks / 100u);
+            ts->tv_nsec = (int32_t)((ticks % 100u) * 10000000u);
+        } else {
+            regs->eax = (uint32_t)-1;
+            break;
+        }
+        regs->eax = 0;
         break;
     }
 

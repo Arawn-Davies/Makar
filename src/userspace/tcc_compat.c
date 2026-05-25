@@ -202,7 +202,10 @@ int vfprintf(FILE *f, const char *fmt, __builtin_va_list ap)
 
 unsigned int time(unsigned int *t)
 {
-    unsigned int now = sys_uptime();   /* 100 Hz tick counter */
+    /* POSIX time(2): seconds since 1970-01-01 UTC, from the CMOS RTC. */
+    struct timeval tv;
+    unsigned int now = 0;
+    if (sys_gettimeofday(&tv) == 0) now = (unsigned int)tv.tv_sec;
     if (t) *t = now;
     return now;
 }
@@ -219,10 +222,13 @@ struct tm_stub *localtime(const unsigned int *t)
 int gettimeofday(void *tv, void *tz)
 {
     (void)tz;
-    /* TCC uses gettimeofday only for `-bench` reporting; zero is fine. */
-    if (tv) ((unsigned int *)tv)[0] = sys_uptime(),
-            ((unsigned int *)tv)[1] = 0;
+    if (tv) return sys_gettimeofday((struct timeval *)tv);
     return 0;
+}
+
+int clock_gettime(int clk, struct timespec *ts)
+{
+    return sys_clock_gettime(clk, ts);
 }
 
 /* ---- errno ---------------------------------------------------------- */

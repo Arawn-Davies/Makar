@@ -23,6 +23,7 @@
 #include <kernel/vesa_tty.h>
 #include <kernel/bochs_vbe.h>
 #include <kernel/timer.h>
+#include <kernel/rtc.h>
 #include <kernel/elf.h>
 #include <kernel/vfs.h>
 #include <kernel/devfs.h>
@@ -814,6 +815,69 @@ static void test_getpid(void)
     regs.eax = SYS_GETPPID;
     syscall_dispatch(&regs);
     KTEST_ASSERT_EQ((int)regs.eax, me->parent_pid);
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
+ * Suite: rtc_unix_time
+ *
+ * Verifies the CMOS RTC reader and the SYS_GETTIMEOFDAY/CLOCK_GETTIME
+ * dispatch.  rtc_unix_time must return a seconds-since-1970 value in
+ * the plausible window (>= 2025-01-01, < 2100-01-01).  CLOCK_MONOTONIC
+ * must be non-decreasing across two reads.
+ * ------------------------------------------------------------------------- */
+
+static void test_rtc_unix_time(void)
+{
+    ktest_begin("rtc_unix_time", "RTC -> Unix epoch, SYS_GETTIMEOFDAY, CLOCK_MONOTONIC monotonic");
+
+    /* 2025-01-01 00:00:00 UTC = 1735689600
+     * 2100-01-01 00:00:00 UTC = 4102444800 */
+    uint32_t secs = 0;
+    KTEST_ASSERT(rtc_unix_time(&secs) == 0);
+    KTEST_ASSERT(secs >= 1735689600u);
+    KTEST_ASSERT(secs <  4102444800u);
+
+    registers_t regs;
+    struct timeval tv = { 0, 0 };
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_GETTIMEOFDAY;
+    regs.ebx = (uint32_t)(uintptr_t)&tv;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, 0);
+    KTEST_ASSERT((uint32_t)tv.tv_sec >= 1735689600u);
+
+    struct timespec ts1 = { 0, 0 }, ts2 = { 0, 0 };
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_CLOCK_GETTIME;
+    regs.ebx = CLOCK_MONOTONIC;
+    regs.ecx = (uint32_t)(uintptr_t)&ts1;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, 0);
+
+    /* Spin briefly so the tick advances. */
+    uint32_t t0 = timer_get_ticks();
+    while (timer_get_ticks() - t0 < 2) { /* ~20 ms */ }
+
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_CLOCK_GETTIME;
+    regs.ebx = CLOCK_MONOTONIC;
+    regs.ecx = (uint32_t)(uintptr_t)&ts2;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, 0);
+
+    int monotonic = (ts2.tv_sec > ts1.tv_sec) ||
+                    (ts2.tv_sec == ts1.tv_sec && ts2.tv_nsec >= ts1.tv_nsec);
+    KTEST_ASSERT(monotonic);
+
+    /* Unknown clockid rejected. */
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_CLOCK_GETTIME;
+    regs.ebx = 999;
+    regs.ecx = (uint32_t)(uintptr_t)&ts1;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, -1);
 
     ktest_summary();
 }
@@ -2373,6 +2437,10 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
+    test_rtc_unix_time();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
     test_syscall();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
@@ -2483,6 +2551,7 @@ void ktest_bg_task(void)
     RUN(test_procfs_tasks);
     RUN(test_getpid);
     RUN(test_posix_fs_syscalls);
+    RUN(test_rtc_unix_time);
     RUN(test_syscall);
     RUN(test_fd_table);
     RUN(test_file_fd);

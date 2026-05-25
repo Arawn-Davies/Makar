@@ -23,6 +23,14 @@
 #define SYS_BRK        45
 #define SYS_SIGNAL     48
 #define SYS_GETPPID    64
+#define SYS_GETTIMEOFDAY 78
+#define SYS_CLOCK_GETTIME 265
+#define CLOCK_REALTIME    0
+#define CLOCK_MONOTONIC   1
+
+/* Linux i386 layouts -- must match kernel/syscall.h. */
+struct timeval  { int tv_sec; int tv_usec; };
+struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_SIGRETURN  119
 #define SYS_DEBUG      100
 #define SYS_YIELD      158
@@ -337,6 +345,19 @@ static inline int sys_getcwd(char *buf, unsigned int size)
  * (no userspace ancestor). */
 static inline int sys_getpid(void)  { return (int)syscall1(SYS_GETPID,  0); }
 static inline int sys_getppid(void) { return (int)syscall1(SYS_GETPPID, 0); }
+
+/* gettimeofday(2) / clock_gettime(2).  REALTIME is RTC-derived seconds
+ * since 1970-01-01 UTC; tv_usec/tv_nsec resolution is 10 ms (PIT 100 Hz
+ * tick modulo), NOT real microseconds.  MONOTONIC counts seconds since
+ * boot and never goes backwards. */
+static inline int sys_gettimeofday(struct timeval *tv)
+{
+    return (int)syscall2(SYS_GETTIMEOFDAY, (long)tv, 0);
+}
+static inline int sys_clock_gettime(int clk, struct timespec *ts)
+{
+    return (int)syscall2(SYS_CLOCK_GETTIME, (long)clk, (long)ts);
+}
 
 /* chdir(2): change the calling task's cwd to `path`.  Delegates to the
  * kernel's vfs_cd which normalises and validates against the live VFS.
