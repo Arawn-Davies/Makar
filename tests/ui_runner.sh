@@ -62,6 +62,20 @@ else
     REBOOT_ARG="-no-reboot -no-shutdown"
 fi
 
+# Extra settle injected after every `sendkey ret`.  An Enter keypress is what
+# fires a command, which may spawn-and-reap a child task; the kernel then
+# writes "[sys_exit] ... -> task_exit()" and "[reaper] deferring PD free ..."
+# to serial.  Without a settle, the very next typed keystroke races the
+# reaper-output flush and gets eaten, which used to cascade failures across
+# downstream tests (sh.elf left running, exec typed into the wrong shell, ...).
+# 150 ms is plenty for the reaper burst to drain in headless TCG; bump in GUI
+# mode where TCG + visible-window lag is higher.
+if [ "$GUI" = "1" ]; then
+    POST_RET_DELAY=${POST_RET_DELAY:-0.3}
+else
+    POST_RET_DELAY=${POST_RET_DELAY:-0.15}
+fi
+
 # Time `it` waits after the script finishes typing before snapshotting the
 # serial slice.  Most commands complete in <500 ms; calc and exec-heavy
 # tests can override via `it <name> <script> <wait_secs>`.
@@ -115,7 +129,16 @@ send_script() {
             continue
         fi
         echo "$line" | nc -U "$MONITOR_SOCK" >/dev/null
-        [ "$paced" = "1" ] && sleep "$KEY_DELAY"
+        if [ "$paced" = "1" ]; then
+            sleep "$KEY_DELAY"
+            # An Enter keypress may have just fired a command that
+            # spawn-and-reaps a child; add an extra settle so the
+            # [sys_exit]/[reaper] serial burst drains before the next
+            # typed key (which would otherwise be eaten by the race).
+            if [ "$line" = "sendkey ret" ] && [ -n "${POST_RET_DELAY:-}" ] && [ "$POST_RET_DELAY" != "0" ]; then
+                sleep "$POST_RET_DELAY"
+            fi
+        fi
     done <<< "$script"
 }
 

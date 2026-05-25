@@ -535,9 +535,7 @@ test_mnt_mountpoint() {
     # fixed duration, so the scenario ends the moment rmdir completes
     # rather than idling until a worst-case mkfs timeout elapses.
     it_until "mnt-mountpoint" \
-"$(keys "mkdir /mnt/cdrom/probe")
-sendkey ret
-$(keys "mkfs.ext2 /dev/hda")
+"$(keys "mkfs.ext2 /dev/hda")
 sendkey ret
 $(keys "mkdir /mnt/data")
 sendkey ret
@@ -546,6 +544,8 @@ sendkey ret
 $(keys "umount /mnt/data")
 sendkey ret
 $(keys "rmdir /mnt/data")
+sendkey ret
+$(keys "mkdir /mnt/cdrom/probe")
 sendkey ret
 $(keys "echo mnt-flow-done")
 sendkey ret" \
@@ -678,7 +678,6 @@ $(keys "pwd")
 sendkey ret
 $(keys "exit")
 sendkey ret
-PAUSE 0.5
 $(keys "pwd")
 sendkey ret" \
         "[makbox:pwd]" 15
@@ -766,17 +765,14 @@ $(keys "foo=tester")
 sendkey ret
 $(keys "echo hello \$foo")
 sendkey ret
-PAUSE 0.4
 $(keys "/apps/no-such-binary")
 sendkey ret
 $(keys "echo status=\$?")
 sendkey ret
-PAUSE 0.4
 $(keys "unset foo")
 sendkey ret
 $(keys "echo gone=\$foo=end")
 sendkey ret
-PAUSE 0.4
 $(keys "exit")
 sendkey ret" \
         "gone==end" 20
@@ -826,13 +822,21 @@ test_tcc_hello() {
     # in this checkout).  ui_runner.sh exposes assert_serial_contains
     # which fails the scenario on missing markers; the "skip" path
     # writes a SKIP marker to serial and short-circuits.
+    # Two-stage send: tcc takes several seconds under TCG, so the second
+    # batch's keystrokes would queue in the keyboard ring and lose the
+    # focus-transfer race when tcc finally reaps.  Sync on the kernel
+    # shell prompt returning before typing the `exec` line.
+    reset_shell
+    CURRENT_NAME=tcc-hello
+    local sb1=$(wc -c < "$SERIAL_LOG")
+    send_script "$(keys "tcc /usr/share/examples/hello-tcc.c -o /tmp/hello.elf")
+sendkey ret"
+    wait_for_serial '\[shell:ready vt=0\]' "$sb1" 60 || \
+        echo "  - stage1: tcc compile never returned to prompt"
     it_until "tcc-hello" \
-"$(keys "tcc /usr/share/examples/hello-tcc.c -o /tmp/hello.elf")
-sendkey ret
-PAUSE 0.5
-$(keys "exec /tmp/hello.elf")
+"$(keys "exec /tmp/hello.elf")
 sendkey ret" \
-        "Hello, TCC" 60
+        "Hello, TCC" 15
     assert_serial_contains "Hello, TCC"
     assert_serial_not_contains "Kernel panic" "panic(cpu 0)"
 }
@@ -928,15 +932,22 @@ test_tcc_hello_relpath() {
     # /tmp is independent of cwd.  Distinct output name + greeting search
     # so this scenario doesn't false-pass on a stale /tmp/hello.elf from
     # test_tcc_hello.
+    # Two-stage send: see test_tcc_hello -- sync on the prompt returning
+    # after tcc compiles before sending the `exec` line.  `cd` happens
+    # synchronously up front; the wait targets the tcc compile.
+    reset_shell
+    CURRENT_NAME=tcc-hello-relpath
+    send_script "$(keys "cd /usr/share/examples")
+sendkey ret"
+    local sb1=$(wc -c < "$SERIAL_LOG")
+    send_script "$(keys "tcc hello-tcc.c -o /tmp/relhello.elf")
+sendkey ret"
+    wait_for_serial '\[shell:ready vt=0\]' "$sb1" 60 || \
+        echo "  - stage1: tcc compile never returned to prompt"
     it_until "tcc-hello-relpath" \
-"$(keys "cd /usr/share/examples")
-sendkey ret
-$(keys "tcc hello-tcc.c -o /tmp/relhello.elf")
-sendkey ret
-PAUSE 0.5
-$(keys "exec /tmp/relhello.elf")
+"$(keys "exec /tmp/relhello.elf")
 sendkey ret" \
-        "Hello, TCC" 60
+        "Hello, TCC" 15
     assert_serial_contains "Hello, TCC"
     assert_serial_not_contains "Kernel panic" "panic(cpu 0)"
 }
