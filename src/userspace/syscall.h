@@ -16,6 +16,10 @@
 #define SYS_LSEEK      19
 #define SYS_GETPID     20
 #define SYS_KILL       37
+#define SYS_RENAME     38
+#define SYS_MKDIR      39
+#define SYS_RMDIR      40
+#define SYS_UNLINK     10
 #define SYS_BRK        45
 #define SYS_SIGNAL     48
 #define SYS_GETPPID    64
@@ -493,6 +497,28 @@ static inline int sys_rename_file(const char *old_path, const char *new_path)
 static inline int sys_delete_dir(const char *path)
 {
     return (int)syscall1(SYS_DELETE_DIR, (long)path);
+}
+
+/* POSIX-numbered aliases for the four mutators above.  Same semantics;
+ * libc wrappers (unlink/rmdir/rename) route through these standard
+ * numbers so a future musl/uClibc port doesn't need a translation
+ * shim. */
+static inline int sys_unlink(const char *path)
+{
+    return (int)syscall1(SYS_UNLINK, (long)path);
+}
+static inline int sys_rmdir(const char *path)
+{
+    return (int)syscall1(SYS_RMDIR, (long)path);
+}
+static inline int sys_rename(const char *old_path, const char *new_path)
+{
+    return (int)syscall2(SYS_RENAME, (long)old_path, (long)new_path);
+}
+/* mode is accepted but ignored (no permission model). */
+static inline int sys_mkdir(const char *path, unsigned int mode)
+{
+    return (int)syscall2(SYS_MKDIR, (long)path, (long)mode);
 }
 
 /* Send signo to pid.  Returns 0 on success, -1 on error (no such pid

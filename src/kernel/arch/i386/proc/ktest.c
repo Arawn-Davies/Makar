@@ -819,6 +819,62 @@ static void test_getpid(void)
 }
 
 /* ---------------------------------------------------------------------------
+ * Suite: posix_fs_syscalls
+ *
+ * Proves the new POSIX-numbered aliases (SYS_UNLINK 10, SYS_RENAME 38,
+ * SYS_MKDIR 39, SYS_RMDIR 40) route through syscall_dispatch correctly.
+ * unlink is exercised behaviourally against /tmp (tmpfs supports
+ * delete_file).  mkdir/rmdir/rename are validated on the NULL-arg
+ * rejection path; behavioural coverage on a writable backend happens
+ * via ui-test on the ext2/FAT32 rootfs.
+ * ------------------------------------------------------------------------- */
+
+static void test_posix_fs_syscalls(void)
+{
+    ktest_begin("posix_fs_syscalls", "SYS_UNLINK/RMDIR/RENAME/MKDIR dispatch routing");
+
+    /* Seed a tmpfs file so SYS_UNLINK has something to delete. */
+    const char *body = "posix-unlink-probe";
+    KTEST_ASSERT(vfs_write_file("/tmp/posix_unlink.bin", body,
+                                (uint32_t)strlen(body)) == 0);
+    KTEST_ASSERT(vfs_file_exists("/tmp/posix_unlink.bin") == 1);
+
+    registers_t regs;
+
+    /* SYS_UNLINK(10) on the seeded file -> 0; file gone. */
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_UNLINK;
+    regs.ebx = (uint32_t)(uintptr_t)"/tmp/posix_unlink.bin";
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, 0);
+    KTEST_ASSERT(vfs_file_exists("/tmp/posix_unlink.bin") == 0);
+
+    /* NULL-path rejections.  All four return -1 (the dispatch-level
+     * sanity check) without faulting. */
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_UNLINK; regs.ebx = 0;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, -1);
+
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_RMDIR; regs.ebx = 0;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, -1);
+
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_RENAME; regs.ebx = 0; regs.ecx = (uint32_t)(uintptr_t)"/x";
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, -1);
+
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_MKDIR; regs.ebx = 0;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, -1);
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
  * Suite: syscall
  *
  * Calls syscall_dispatch directly with a stack-allocated registers_t frame,
@@ -2313,6 +2369,10 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
+    test_posix_fs_syscalls();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
     test_syscall();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
@@ -2422,6 +2482,7 @@ void ktest_bg_task(void)
     RUN(test_task);
     RUN(test_procfs_tasks);
     RUN(test_getpid);
+    RUN(test_posix_fs_syscalls);
     RUN(test_syscall);
     RUN(test_fd_table);
     RUN(test_file_fd);

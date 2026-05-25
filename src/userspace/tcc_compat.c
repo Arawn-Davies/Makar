@@ -45,12 +45,29 @@ long lseek(int fd, long offset, int whence)
 
 int unlink(const char *path)
 {
-    return sys_delete_file(path);
+    return sys_unlink(path);
+}
+
+int rmdir(const char *path)
+{
+    return sys_rmdir(path);
+}
+
+int rename(const char *old_path, const char *new_path)
+{
+    return sys_rename(old_path, new_path);
+}
+
+int mkdir(const char *path, unsigned int mode)
+{
+    return sys_mkdir(path, mode);
 }
 
 int remove(const char *path)
 {
-    return sys_delete_file(path);
+    /* POSIX: try unlink first, fall back to rmdir for directories. */
+    if (sys_unlink(path) == 0) return 0;
+    return sys_rmdir(path);
 }
 
 int chmod(const char *path, unsigned int mode)

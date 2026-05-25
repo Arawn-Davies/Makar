@@ -1157,11 +1157,12 @@ void syscall_dispatch(registers_t *regs)
     }
 
     /* ------------------------------------------------------------------
-     * SYS_DELETE_FILE(208): delete a VFS file.
-     * EBX = path.
+     * SYS_DELETE_FILE(208) / SYS_UNLINK(10): delete a VFS file.
+     * EBX = path.  POSIX unlink() is aliased onto the same handler.
      * Returns 0 on success, (uint32_t)-1 on error.
      * ------------------------------------------------------------------ */
-    case SYS_DELETE_FILE: {
+    case SYS_DELETE_FILE:
+    case SYS_UNLINK: {
         const char *path = (const char *)(uintptr_t)regs->ebx;
         if (!path) { regs->eax = (uint32_t)-1; break; }
         regs->eax = (vfs_delete_file(path) == 0) ? 0 : (uint32_t)-1;
@@ -1169,11 +1170,12 @@ void syscall_dispatch(registers_t *regs)
     }
 
     /* ------------------------------------------------------------------
-     * SYS_RENAME_FILE(209): rename/move a file or directory.
+     * SYS_RENAME_FILE(209) / SYS_RENAME(38): rename/move a file or directory.
      * EBX = old_path, ECX = new_path.
      * Returns 0 on success, (uint32_t)-1 on error.
      * ------------------------------------------------------------------ */
-    case SYS_RENAME_FILE: {
+    case SYS_RENAME_FILE:
+    case SYS_RENAME: {
         const char *old_path = (const char *)(uintptr_t)regs->ebx;
         const char *new_path = (const char *)(uintptr_t)regs->ecx;
         if (!old_path || !new_path) { regs->eax = (uint32_t)-1; break; }
@@ -1182,14 +1184,27 @@ void syscall_dispatch(registers_t *regs)
     }
 
     /* ------------------------------------------------------------------
-     * SYS_DELETE_DIR(210): delete an empty directory.
+     * SYS_DELETE_DIR(210) / SYS_RMDIR(40): delete an empty directory.
      * EBX = path.
      * Returns 0 on success, (uint32_t)-1 on error.
      * ------------------------------------------------------------------ */
-    case SYS_DELETE_DIR: {
+    case SYS_DELETE_DIR:
+    case SYS_RMDIR: {
         const char *path = (const char *)(uintptr_t)regs->ebx;
         if (!path) { regs->eax = (uint32_t)-1; break; }
         regs->eax = (vfs_delete_dir(path) == 0) ? 0 : (uint32_t)-1;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_MKDIR(39): create a directory.
+     * EBX = path, ECX = mode (ignored -- no permission model).
+     * Returns 0 on success, (uint32_t)-1 on error.
+     * ------------------------------------------------------------------ */
+    case SYS_MKDIR: {
+        const char *path = (const char *)(uintptr_t)regs->ebx;
+        if (!path) { regs->eax = (uint32_t)-1; break; }
+        regs->eax = (vfs_mkdir(path) == 0) ? 0 : (uint32_t)-1;
         break;
     }
 

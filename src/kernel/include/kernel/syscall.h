@@ -18,12 +18,16 @@
 #define SYS_WRITE      4    /* ssize_t write(int fd, const void *buf, size_t)   */
 #define SYS_OPEN       5    /* int open(const char *path, int flags)            */
 #define SYS_CLOSE      6    /* int close(int fd)                                */
+#define SYS_UNLINK     10   /* int unlink(const char *path)  -- alias of 208    */
 #define SYS_EXECVE     11   /* int execve(const char *path, char *const argv[], char *const envp[]) */
 #define SYS_CHDIR      12   /* int chdir(const char *path) -- set calling task's cwd */
 #define SYS_LSEEK      19   /* off_t lseek(int fd, off_t offset, int whence)   */
 #define SYS_GETPID     20   /* pid_t getpid(void)                               */
 #define SYS_WAIT4      114  /* pid_t wait4(pid, int *status, int options, void *rusage) */
 #define SYS_KILL       37   /* int kill(int pid, int signo)                     */
+#define SYS_RENAME     38   /* int rename(const char *old, const char *new)     */
+#define SYS_MKDIR      39   /* int mkdir(const char *path, mode_t mode)         */
+#define SYS_RMDIR      40   /* int rmdir(const char *path)                      */
 #define SYS_BRK        45   /* void *brk(void *addr)                            */
 #define SYS_SIGNAL     48   /* sig_handler_t signal(int signo, sig_handler_t)   */
 #define SYS_STAT      106   /* int stat(const char *path, struct stat *st)      */
