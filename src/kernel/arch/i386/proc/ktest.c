@@ -43,7 +43,7 @@ volatile int ktest_bg_done = 0;
  * inside the RUN macro in ktest_bg_task; total is fixed at compile time so
  * the bar length is known the moment shell_run starts. */
 volatile int ktest_bg_completed = 0;
-const    int ktest_bg_total     = 20;   /* keep in sync with RUN() calls below */
+const    int ktest_bg_total     = 21;   /* keep in sync with RUN() calls below */
 
 /* When set, suppress VGA output for pass lines and suite headers. */
 int ktest_muted = 0;
@@ -747,6 +747,44 @@ static void test_task(void)
         task_yield();
     KTEST_ASSERT(noop_ran);
     KTEST_ASSERT(t1->state == TASK_DEAD || t2->state == TASK_DEAD);
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
+ * Suite: procfs task listing
+ *
+ * /proc/tasks is bulk kernel behavior, not a keyboard/UI behavior.  Dead task
+ * slots can linger until task_create reclaims them, but procfs must hide those
+ * slots from user-facing listings so tools like maktop and `cat /proc/tasks`
+ * only show live work.
+ * ------------------------------------------------------------------------- */
+
+static void test_procfs_tasks(void)
+{
+    ktest_begin("procfs_tasks", "/proc/tasks hides lingering TASK_DEAD slots");
+
+    int saw_dead_slot = 0;
+    int n = task_count();
+    for (int i = 0; i < n; i++) {
+        task_t *t = task_get(i);
+        if (t && t->state == TASK_DEAD) {
+            saw_dead_slot = 1;
+            break;
+        }
+    }
+
+    KTEST_ASSERT(saw_dead_slot == 1);
+
+    char buf[1024];
+    uint32_t got = 0;
+    KTEST_ASSERT(vfs_read_file("/proc/tasks", buf, sizeof(buf) - 1, &got) == 0);
+    KTEST_ASSERT(got > 0);
+    if (got >= sizeof(buf)) got = sizeof(buf) - 1;
+    buf[got] = '\0';
+
+    KTEST_ASSERT(strstr(buf, "PID NAME") != NULL);
+    KTEST_ASSERT(strstr(buf, "DEAD") == NULL);
 
     ktest_summary();
 }
@@ -2238,6 +2276,10 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
+    test_procfs_tasks();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
     test_syscall();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
@@ -2345,6 +2387,7 @@ void ktest_bg_task(void)
     RUN(test_heap);
     RUN(test_vmm);
     RUN(test_task);
+    RUN(test_procfs_tasks);
     RUN(test_syscall);
     RUN(test_fd_table);
     RUN(test_file_fd);

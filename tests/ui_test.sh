@@ -1194,10 +1194,9 @@ sendkey ret"
 # `fast` expands to FAST_TESTS (the dev-inner-loop slice with no disk
 # mkfs / long compiles).
 #
-# tmp_roundtrip + usr_resolves stay opt-in -- the kernel-side ktests
-# (test_tmpfs, test_usr) cover the same ground without the shell's
-# `verbose on` mirroring being racy under TCG's slow bg-ktest pacing.
-# Invoke explicitly: `./run.sh ui tmp_roundtrip`.
+# tmp_roundtrip, usr_resolves, and no_dead_in_proctasks stay opt-in -- the
+# kernel-side ktests cover the same ground without shell typing or serial
+# mirroring races. Invoke explicitly, e.g. `./run.sh ui no_dead_in_proctasks`.
 #
 # per_vt_palettes and bughunt_vix_palette_on_vt3 are palette-only visual
 # checks with no serial assertion; opt-in for manual inspection.
@@ -1207,7 +1206,7 @@ CD_PWD_TESTS=(cd_root per_tty_cwd)
 FS_TESTS=(ls_dev ls_mnt mnt_mountpoint filetest)
 POSIX_TESTS=(exec_hello fork_cow fork_execve user_sigusr1_handler ctrlc_kills_child usershell_smoke usershell_execve usershell_history usershell_vars)
 LIBC_TESTS=(alloctest tcc_hello tcc_hello_relpath tcc_rebuild_hello tcc_rebuild_calc tcc_rebuild_sh tcc_rebuild_makbox)
-VT_TESTS=(vt_roundtrip_keeps_maktop_focused vt_all_roundtrips no_dead_in_proctasks)
+VT_TESTS=(vt_roundtrip_keeps_maktop_focused vt_all_roundtrips)
 BUGHUNT_TESTS=(bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch)
 
 ALL_TESTS=("${SHELL_TESTS[@]}" "${CD_PWD_TESTS[@]}" "${FS_TESTS[@]}" "${POSIX_TESTS[@]}" "${LIBC_TESTS[@]}" "${VT_TESTS[@]}" "${BUGHUNT_TESTS[@]}")
@@ -1216,7 +1215,7 @@ ALL_TESTS=("${SHELL_TESTS[@]}" "${CD_PWD_TESTS[@]}" "${FS_TESTS[@]}" "${POSIX_TE
 # script -- excludes filetest, mnt_mountpoint, alloctest, tcc_hello,
 # demo_script.  Aimed at the dev inner loop where you want a sub-minute
 # regression sweep before pushing.
-FAST_TESTS=(glob_proc tab_path tab_cycle typo_doesnt_clear shell_scripting_vars calc_brackets makbox_pwd cd_root per_tty_cwd ls_dev ls_mnt exec_hello fork_cow fork_execve user_sigusr1_handler ctrlc_kills_child vt_roundtrip_keeps_maktop_focused vt_all_roundtrips no_dead_in_proctasks)
+FAST_TESTS=(glob_proc tab_path tab_cycle typo_doesnt_clear shell_scripting_vars calc_brackets makbox_pwd cd_root per_tty_cwd ls_dev ls_mnt exec_hello fork_cow fork_execve user_sigusr1_handler ctrlc_kills_child vt_roundtrip_keeps_maktop_focused vt_all_roundtrips)
 
 # Expand a single argument: if it names a known group, emit the group's
 # members; otherwise emit it unchanged (with dashes->underscores).
