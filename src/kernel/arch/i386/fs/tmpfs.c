@@ -1,8 +1,8 @@
 /*
  * tmpfs.c - synthetic, writable /tmp directory.  See kernel/tmpfs.h.
  *
- * Flat table of in-RAM scratch files.  Each file is lazily allocated
- * from the kernel heap on first write; later writes overwrite the
+ * Flat in-RAM scratch directory.  File records and payload buffers are
+ * allocated from the kernel heap on demand; later writes overwrite the
  * buffer wholesale (no ring, unlike logfs).  The intended consumer is
  * tcc(1) producing an ELF in /tmp before the shell `exec`s it.
  */
@@ -13,19 +13,18 @@
 #include <string.h>
 #include <stddef.h>
 
-#define TMPFS_MAX_FILES   16
 #define TMPFS_NAME_MAX    64
-#define TMPFS_FILE_CAP    (512u * 1024u)   /* 512 KiB per file -- ample for hello.elf */
+#define TMPFS_FILE_MAX    (16u * 1024u * 1024u)
 
-typedef struct {
+typedef struct tmpfile {
     char     name[TMPFS_NAME_MAX];
     char    *buf;
     uint32_t cap;
     uint32_t len;
-    int      in_use;
+    struct tmpfile *next;
 } tmpfile_t;
 
-static tmpfile_t s_files[TMPFS_MAX_FILES];
+static tmpfile_t *s_files;
 
 /* Strip the leading '/' from a tmpfs-relative path, rejecting deeper paths
  * (/tmp is flat).  Returns the bare name, or NULL for "/" / malformed. */
@@ -41,34 +40,29 @@ static const char *leaf_name(const char *path)
 /* Find an existing file by bare name. */
 static tmpfile_t *find(const char *name)
 {
-    for (int i = 0; i < TMPFS_MAX_FILES; i++)
-        if (s_files[i].in_use && strcmp(s_files[i].name, name) == 0)
-            return &s_files[i];
+    for (tmpfile_t *f = s_files; f; f = f->next)
+        if (strcmp(f->name, name) == 0) return f;
     return NULL;
 }
 
-/* Find or lazily create a heap-backed file by bare name.  Returns NULL
- * if the name is too long, the table is full, or the heap allocation
- * fails. */
+/* Find or lazily create a heap-backed file record by bare name.  Returns
+ * NULL if the name is too long or the heap allocation fails. */
 static tmpfile_t *find_or_create(const char *name)
 {
     tmpfile_t *f = find(name);
     if (f) return f;
     if (strlen(name) >= TMPFS_NAME_MAX) return NULL;
 
-    for (int i = 0; i < TMPFS_MAX_FILES; i++) {
-        if (s_files[i].in_use) continue;
-        char *buf = (char *)kmalloc(TMPFS_FILE_CAP);
-        if (!buf) return NULL;
-        strncpy(s_files[i].name, name, TMPFS_NAME_MAX - 1);
-        s_files[i].name[TMPFS_NAME_MAX - 1] = '\0';
-        s_files[i].buf    = buf;
-        s_files[i].cap    = TMPFS_FILE_CAP;
-        s_files[i].len    = 0;
-        s_files[i].in_use = 1;
-        return &s_files[i];
-    }
-    return NULL;   /* table full */
+    f = (tmpfile_t *)kmalloc(sizeof(tmpfile_t));
+    if (!f) return NULL;
+    strncpy(f->name, name, TMPFS_NAME_MAX - 1);
+    f->name[TMPFS_NAME_MAX - 1] = '\0';
+    f->buf  = NULL;
+    f->cap  = 0;
+    f->len  = 0;
+    f->next = s_files;
+    s_files = f;
+    return f;
 }
 
 /* -------------------------------------------------------------------------
@@ -94,7 +88,13 @@ long tmpfs_write(const char *path, const void *buf, uint32_t len)
     if (!name) return -1;
     tmpfile_t *f = find_or_create(name);
     if (!f) return -1;
-    if (len > f->cap) return -1;       /* refuse oversized write */
+    if (len > TMPFS_FILE_MAX) return -1;       /* refuse oversized write */
+    if (len > f->cap) {
+        char *newbuf = (char *)krealloc(f->buf, len);
+        if (!newbuf) return -1;
+        f->buf = newbuf;
+        f->cap = len;
+    }
     if (len > 0 && buf)
         memcpy(f->buf, buf, len);
     f->len = len;
@@ -117,9 +117,8 @@ int tmpfs_ls(const char *path)
                                               : ": No such entry\n");
         return -1;
     }
-    for (int i = 0; i < TMPFS_MAX_FILES; i++) {
-        if (!s_files[i].in_use) continue;
-        t_writestring(s_files[i].name);
+    for (tmpfile_t *f = s_files; f; f = f->next) {
+        t_writestring(f->name);
         t_putchar('\n');
     }
     return 0;
@@ -131,10 +130,9 @@ int tmpfs_complete(const char *dir, const char *prefix,
     (void)dir;   /* /tmp is flat; dir is always "/tmp" */
     if (!cb) return -1;
     size_t plen = prefix ? strlen(prefix) : 0;
-    for (int i = 0; i < TMPFS_MAX_FILES; i++) {
-        if (!s_files[i].in_use) continue;
-        if (plen == 0 || strncmp(s_files[i].name, prefix, plen) == 0)
-            cb(s_files[i].name, 0, ctx);
+    for (tmpfile_t *f = s_files; f; f = f->next) {
+        if (plen == 0 || strncmp(f->name, prefix, plen) == 0)
+            cb(f->name, 0, ctx);
     }
     return 0;
 }
@@ -150,13 +148,14 @@ long tmpfs_size(const char *path)
 int tmpfs_delete(const char *path)
 {
     const char *name = leaf_name(path);
-    tmpfile_t  *f    = name ? find(name) : NULL;
-    if (!f) return -1;
+    if (!name) return -1;
+    tmpfile_t **link = &s_files;
+    while (*link && strcmp((*link)->name, name) != 0)
+        link = &(*link)->next;
+    if (!*link) return -1;
+    tmpfile_t *f = *link;
+    *link = f->next;
     kfree(f->buf);
-    f->buf    = NULL;
-    f->cap    = 0;
-    f->len    = 0;
-    f->name[0] = '\0';
-    f->in_use = 0;
+    kfree(f);
     return 0;
 }

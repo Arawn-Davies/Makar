@@ -115,8 +115,9 @@ static const man_entry_t man_table[] = {
     },
     { "mount",
       "bind a FAT32 or ext2 volume at /mnt/<name>",
-      "Usage: mount /dev/hdaN /mnt/<name>\n\n"
-      "Binds the named device to an empty mountpoint.  Create the mountpoint\n"
+      "Usage: mount [ /dev/hdaN /mnt/<name> ]\n\n"
+      "With no arguments, lists mounted/in-use VFS mountpoints.\n"
+      "With arguments, binds the named device to an empty mountpoint.  Create the mountpoint\n"
       "first with `mkdir /mnt/<name>` (the legacy numeric form and the /mnt/hd\n"
       "default were retired in favour of explicit, Linux-style mountpoints).\n"
     },
@@ -240,11 +241,15 @@ void cmd_lsman(int argc, char **argv)
     t_writestring("-------         -----------\n");
 
     for (int k = 0; man_table[k].name; k++) {
+        if (shell_cancel_requested())
+            return;
         t_writestring("  ");
         print_padded(man_table[k].name, COL);
         t_writestring(man_table[k].brief);
         t_putchar('\n');
     }
+    if (shell_cancel_requested())
+        return;
     t_putchar('\n');
     t_writestring("Run 'man <cmd>' for full details.\n");
 }

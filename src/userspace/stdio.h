@@ -11,6 +11,7 @@
 #define _USERSPACE_STDIO_H
 
 #include "syscall.h"
+#include "stdarg.h"
 
 #define STDIO_BUFSZ 1024
 
@@ -37,7 +38,7 @@ int   feof  (FILE *f);
 /* Format helpers.  Supported conversions: %s %c %d %i %u %x %X %p %%
  * and the field-width prefix (e.g. %5d, %08x).  No floats (no FPU). */
 int snprintf (char *buf, unsigned int sz, const char *fmt, ...);
-int vsnprintf(char *buf, unsigned int sz, const char *fmt, __builtin_va_list ap);
+int vsnprintf(char *buf, unsigned int sz, const char *fmt, va_list ap);
 int fprintf  (FILE *f, const char *fmt, ...);
 int printf   (const char *fmt, ...);
 

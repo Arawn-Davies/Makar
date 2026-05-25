@@ -6,8 +6,10 @@
  *
  * /tmp is a scratch ramdisk for programs that need a writable filesystem
  * without first having to mkfs+mount a real disk.  Cousins of logfs:
- * same flat per-name table, same lazy heap allocation on first write,
+ * same flat namespace, heap-backed file records created on first write,
  * but with OVERWRITE semantics instead of logfs's append-only ring.
+ * There is no fixed file-table limit; available kernel heap is the real
+ * limit, with a per-file guard to keep one write from consuming all RAM.
  * That makes it suitable as a tcc(1) output sink: a successive
  * sys_open(O_TRUNC) + sys_write loop replaces the file rather than
  * tacking on the end of the previous run.
@@ -29,7 +31,7 @@
 long tmpfs_read(const char *path, void *buf, uint32_t bufsz, uint32_t *out_sz);
 
 /* Replace the contents of a tmpfs file (creating it on first write).
- * Returns the byte count written, or -1 on bad path / table full /
+ * Returns the byte count written, or -1 on bad path / oversize write /
  * OOM.  Unlike logfs_write this overwrites - there is no ring. */
 long tmpfs_write(const char *path, const void *buf, uint32_t len);
 

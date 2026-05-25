@@ -124,53 +124,7 @@ static inline void qsort(void *base, unsigned int nmemb, unsigned int sz,
     }
 }
 
-/* sscanf: tiny subset -- %d, %u, %x, %s, %c, optional width.  Returns
- * the number of successfully matched conversions (POSIX). */
-static inline int sscanf(const char *s, const char *fmt, ...)
-{
-    __builtin_va_list ap; __builtin_va_start(ap, fmt);
-    int matched = 0;
-    while (*fmt) {
-        if (isspace((unsigned char)*fmt)) {
-            while (isspace((unsigned char)*s)) s++;
-            fmt++; continue;
-        }
-        if (*fmt != '%') {
-            if (*s != *fmt) break;
-            s++; fmt++; continue;
-        }
-        fmt++;                  /* consume '%' */
-        int width = 0;
-        while (*fmt >= '0' && *fmt <= '9') { width = width*10 + (*fmt - '0'); fmt++; }
-        if (*fmt == 'd' || *fmt == 'i' || *fmt == 'u' || *fmt == 'x') {
-            int base = (*fmt == 'x') ? 16 : 10;
-            while (isspace((unsigned char)*s)) s++;
-            char *end;
-            long v = strtol(s, &end, base);
-            if (end == s) break;
-            if (*fmt == 'u' || *fmt == 'x') *__builtin_va_arg(ap, unsigned int *) = (unsigned int)v;
-            else                              *__builtin_va_arg(ap, int *)         = (int)v;
-            s = end; matched++; fmt++;
-        } else if (*fmt == 's') {
-            while (isspace((unsigned char)*s)) s++;
-            char *out = __builtin_va_arg(ap, char *);
-            int wrote = 0;
-            while (*s && !isspace((unsigned char)*s) && (width == 0 || wrote < width)) {
-                out[wrote++] = *s++;
-            }
-            out[wrote] = '\0';
-            if (wrote == 0) break;
-            matched++; fmt++;
-        } else if (*fmt == 'c') {
-            char *out = __builtin_va_arg(ap, char *);
-            if (!*s) break;
-            *out = *s++; matched++; fmt++;
-        } else {
-            break;              /* unknown conversion */
-        }
-    }
-    __builtin_va_end(ap);
-    return matched;
-}
+/* sscanf: tiny subset -- %d, %u, %x, %s, %c, optional width. */
+int sscanf(const char *s, const char *fmt, ...);
 
 #endif /* _USERSPACE_STDLIB_H */

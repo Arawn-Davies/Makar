@@ -292,6 +292,22 @@ static void test_tmpfs(void)
     KTEST_ASSERT(vfs_delete_file("/tmp/probe.bin") == 0);
     KTEST_ASSERT(vfs_file_exists("/tmp/probe.bin") == 0);
 
+    /* Dynamic file records: more than the historical 16-slot table should
+     * work, and deleting them should release the records again. */
+    char path[] = "/tmp/many-00.tmp";
+    for (int i = 0; i < 24; i++) {
+        path[10] = (char)('0' + (i / 10));
+        path[11] = (char)('0' + (i % 10));
+        KTEST_ASSERT(vfs_write_file(path, "x", 1) == 0);
+        KTEST_ASSERT(vfs_file_exists(path) == 1);
+    }
+    for (int i = 0; i < 24; i++) {
+        path[10] = (char)('0' + (i / 10));
+        path[11] = (char)('0' + (i % 10));
+        KTEST_ASSERT(vfs_delete_file(path) == 0);
+        KTEST_ASSERT(vfs_file_exists(path) == 0);
+    }
+
     ktest_summary();
 }
 

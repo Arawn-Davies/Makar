@@ -141,6 +141,14 @@ sendkey ret"
     assert_serial_contains "root"
 }
 
+test_mount_noargs() {
+    it "mount-noargs" \
+"$(keys "mount")
+sendkey ret"
+    assert_serial_contains "/ type " "/dev type devfs" "/proc type procfs"
+    assert_serial_not_contains "Usage: mount"
+}
+
 test_calc_brackets() {
     # Full arithmetic exercise of calc.elf: every operator (+ - * / %),
     # BIDMAS/operator precedence, nested parentheses, and the
@@ -494,6 +502,22 @@ $(keys "pwd")
 sendkey ret" \
         2.0
     assert_serial_contains "[makbox:pwd]"
+}
+
+test_ctrlc_cat() {
+    # makbox cat installs a SIGINT handler and writes in small yielded
+    # chunks, so Ctrl+C should stop a large stream promptly and return the
+    # shell to an interactive prompt.
+    it "ctrlc-cat" \
+"$(keys "cat /log/kernel.log")
+sendkey ret
+PAUSE 0.2
+sendkey ctrl-c
+PAUSE 0.4
+$(keys "echo after-cat")
+sendkey ret" \
+        4.0
+    assert_serial_contains "status=130" "after-cat"
 }
 
 test_makbox_pwd() {
@@ -917,6 +941,261 @@ sendkey ret" \
     assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
 }
 
+TCC_COMPILE_FAILED=0
+
+tcc_compile_user_app() {
+    local app=$1
+    local timeout=${2:-90}
+
+    TCC_COMPILE_FAILED=0
+    reset_shell
+    CURRENT_NAME=tcc-rebuild-$app
+    local sb1=$(wc -c < "$SERIAL_LOG")
+    send_script "$(keys "tcc /src/userspace/$app.c -o /tmp/tcc-rebuilt.elf")
+sendkey ret"
+    if ! wait_for_serial '\[shell:ready vt=0\]' "$sb1" "$timeout"; then
+        echo "  - stage1: tcc compile of $app.c never returned to prompt"
+        TCC_COMPILE_FAILED=1
+    fi
+    local compile_segment=$LOGDIR/$CURRENT_NAME.compile.serial
+    dd if="$SERIAL_LOG" bs=1 skip="$sb1" 2>/dev/null > "$compile_segment"
+    if grep -qE -- '(^|[[:space:]])error:' "$compile_segment"; then
+        echo "  - stage1: tcc reported an error for $app.c"
+        awk 'BEGIN { RS=""; ORS="" } { gsub(/\r/, ""); gsub(/[ \t]+/, " "); print }' \
+            "$compile_segment" \
+            | awk -v max=800 '{
+                if (length($0) > max) print "  - compile: " substr($0, 1, max) " ...[truncated]"
+                else print "  - compile: " $0
+              }'
+        TCC_COMPILE_FAILED=1
+    fi
+}
+
+tcc_assert_compile_ok() {
+    if [ "$TCC_COMPILE_FAILED" != "0" ]; then
+        CURRENT_FAILED=1
+    fi
+}
+
+test_tcc_rebuild_help() {
+    tcc_compile_user_app help 60
+    it_until "tcc-rebuild-help" \
+"$(keys "exec /tmp/tcc-rebuilt.elf")
+sendkey ret" \
+        '\[shell:ready vt=0\]' 15
+    assert_serial_contains "vix <file>"
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
+    tcc_assert_compile_ok
+}
+
+test_tcc_rebuild_diskinfo() {
+    tcc_compile_user_app diskinfo 60
+    it_until "tcc-rebuild-diskinfo" \
+"$(keys "exec /tmp/tcc-rebuilt.elf")
+sendkey ret" \
+        '\[shell:ready vt=0\]' 15
+    assert_serial_contains "drive 0: ATA"
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
+    tcc_assert_compile_ok
+}
+
+test_tcc_rebuild_sigtest() {
+    tcc_compile_user_app sigtest 60
+    it_until "tcc-rebuild-sigtest" \
+"$(keys "exec /tmp/tcc-rebuilt.elf")
+sendkey ret" \
+        "sigtest: SIGUSR1 handler ran" 20
+    assert_serial_contains "sigtest: SIGUSR1 handler ran"
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
+    tcc_assert_compile_ok
+}
+
+test_tcc_rebuild_forktest() {
+    tcc_compile_user_app forktest 60
+    it_until "tcc-rebuild-forktest" \
+"$(keys "exec /tmp/tcc-rebuilt.elf")
+sendkey ret" \
+        '\[forktest\] PARENT-POST' 20
+    assert_serial_contains "[forktest] PARENT-POST"
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
+    tcc_assert_compile_ok
+}
+
+test_tcc_rebuild_execvetest() {
+    tcc_compile_user_app execvetest 60
+    it_until "tcc-rebuild-execvetest" \
+"$(keys "exec /tmp/tcc-rebuilt.elf")
+sendkey ret" \
+        '\[execve-test\] POST-EXEC' 20
+    assert_serial_contains "[execve-test] POST-EXEC"
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
+    tcc_assert_compile_ok
+}
+
+test_tcc_rebuild_alloctest() {
+    tcc_compile_user_app alloctest 90
+    it_until "tcc-rebuild-alloctest" \
+"$(keys "exec /tmp/tcc-rebuilt.elf")
+sendkey ret" \
+        '\[alloctest\] PASS' 30
+    assert_serial_contains "[alloctest] PASS"
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
+    tcc_assert_compile_ok
+}
+
+test_tcc_rebuild_filetest() {
+    tcc_compile_user_app filetest 90
+    it_until "tcc-rebuild-filetest" \
+"$(keys "mkdir /mnt/scratch")
+sendkey ret
+$(keys "mkfs.ext2 /dev/hda")
+sendkey ret
+$(keys "mount /dev/hda /mnt/scratch")
+sendkey ret
+$(keys "exec /tmp/tcc-rebuilt.elf /mnt/scratch")
+sendkey ret" \
+        '\[filetest\] PASS' 60
+    assert_serial_contains \
+        "[filetest] dir=/mnt/scratch" \
+        "[filetest] create+write+close ok" \
+        "[filetest] reopen+fstat+read ok size=13" \
+        "[filetest] append+close ok" \
+        "[filetest] stat ok size=19" \
+        "[filetest] grow-256k ok" \
+        "[filetest] no-flush-on-rdonly ok" \
+        "[filetest] PASS"
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
+    tcc_assert_compile_ok
+}
+
+test_tcc_rebuild_basic() {
+    tcc_compile_user_app basic 120
+    it_until "tcc-rebuild-basic" \
+"$(keys "exec /tmp/tcc-rebuilt.elf")
+sendkey ret
+PAUSE 0.8
+$(keys "10 PRINT 2+3")
+sendkey ret
+$(keys "RUN")
+sendkey ret
+$(keys "QUIT")
+sendkey ret" \
+        "READY." 30
+    assert_serial_contains "Makar BASIC" "5" "READY."
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
+    tcc_assert_compile_ok
+}
+
+test_tcc_rebuild_fdisk() {
+    tcc_compile_user_app fdisk 90
+    it_until "tcc-rebuild-fdisk" \
+"$(keys "exec /tmp/tcc-rebuilt.elf /dev/hda")
+sendkey ret
+PAUSE 0.8
+$(keys "q")
+sendkey ret" \
+        "fdisk>" 20
+    assert_serial_contains "fdisk>"
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
+    tcc_assert_compile_ok
+}
+
+test_tcc_rebuild_cfdisk() {
+    tcc_compile_user_app cfdisk 120
+    it_until "tcc-rebuild-cfdisk" \
+"$(keys "exec /tmp/tcc-rebuilt.elf /dev/hda")
+sendkey ret
+PAUSE 1.2
+sendkey q
+PAUSE 0.8
+$(keys "pwd")
+sendkey ret" \
+        '\[makbox:pwd\]' 20
+    assert_serial_contains "[makbox:pwd] /"
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
+    tcc_assert_compile_ok
+}
+
+test_tcc_rebuild_maktop() {
+    tcc_compile_user_app maktop 120
+    it_until "tcc-rebuild-maktop" \
+"$(keys "exec /tmp/tcc-rebuilt.elf")
+sendkey ret
+PAUSE 1.2
+sendkey q
+PAUSE 0.8
+$(keys "pwd")
+sendkey ret" \
+        '\[makbox:pwd\]' 20
+    assert_serial_contains "[makbox:pwd] /"
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
+    tcc_assert_compile_ok
+}
+
+test_tcc_rebuild_clock() {
+    tcc_compile_user_app clock 90
+    it_until "tcc-rebuild-clock" \
+"$(keys "exec /tmp/tcc-rebuilt.elf")
+sendkey ret
+PAUSE 1.2
+sendkey q
+PAUSE 0.8
+$(keys "pwd")
+sendkey ret" \
+        '\[makbox:pwd\]' 20
+    assert_serial_contains "[makbox:pwd] /"
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
+    tcc_assert_compile_ok
+}
+
+test_tcc_rebuild_lines() {
+    tcc_compile_user_app lines 90
+    it_until "tcc-rebuild-lines" \
+"$(keys "exec /tmp/tcc-rebuilt.elf")
+sendkey ret
+PAUSE 1.2
+sendkey q
+PAUSE 0.8
+$(keys "pwd")
+sendkey ret" \
+        '\[makbox:pwd\]' 20
+    assert_serial_contains "[makbox:pwd] /"
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
+    tcc_assert_compile_ok
+}
+
+test_tcc_rebuild_vix() {
+    tcc_compile_user_app vix 120
+    it_until "tcc-rebuild-vix" \
+"$(keys "exec /tmp/tcc-rebuilt.elf /tmp/tcc-vix.txt")
+sendkey ret
+PAUSE 1.2
+sendkey ctrl-q
+PAUSE 0.8
+$(keys "pwd")
+sendkey ret" \
+        '\[makbox:pwd\]' 20
+    assert_serial_contains "[makbox:pwd] /"
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
+    tcc_assert_compile_ok
+}
+
+test_tcc_rebuild_kbtester() {
+    tcc_compile_user_app kbtester 120
+    it_until "tcc-rebuild-kbtester" \
+"$(keys "exec /tmp/tcc-rebuilt.elf")
+sendkey ret
+PAUSE 1.2
+sendkey ctrl-c
+PAUSE 1.0
+$(keys "pwd")
+sendkey ret" \
+        '\[makbox:pwd\]' 30
+    assert_serial_contains "KBTESTER_BEGIN" "[makbox:pwd] /"
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
+    tcc_assert_compile_ok
+}
+
 test_tcc_hello_relpath() {
     # cd into the examples dir then `tcc hello-tcc.c -o /tmp/relhello.elf`
     # exercises the kernel's path_resolve (cwd-join for relative inputs)
@@ -1212,11 +1491,19 @@ sendkey ret"
 
 SHELL_TESTS=(glob_proc tab_path tab_cycle typo_doesnt_clear shell_scripting_vars calc_brackets makbox_pwd demo_script)
 CD_PWD_TESTS=(cd_root per_tty_cwd)
-FS_TESTS=(ls_dev ls_mnt mnt_mountpoint filetest)
-POSIX_TESTS=(exec_hello fork_cow fork_execve user_sigusr1_handler ctrlc_kills_child usershell_smoke usershell_execve usershell_history usershell_vars)
-LIBC_TESTS=(tcc_hello tcc_hello_relpath tcc_rebuild_hello tcc_rebuild_calc tcc_rebuild_sh tcc_rebuild_makbox)
-# alloctest dropped from LIBC_TESTS -- now covered by the in-kernel
-# incore.sh driver (see test_incore), which exercises it via exec + $?
+FS_TESTS=(ls_dev ls_mnt mount_noargs mnt_mountpoint filetest)
+POSIX_TESTS=(exec_hello fork_cow fork_execve user_sigusr1_handler ctrlc_kills_child ctrlc_cat usershell_smoke usershell_execve usershell_history usershell_vars)
+TCC_REBUILD_TESTS=(
+    tcc_rebuild_hello tcc_rebuild_calc tcc_rebuild_sh tcc_rebuild_makbox
+    tcc_rebuild_help tcc_rebuild_diskinfo tcc_rebuild_sigtest
+    tcc_rebuild_forktest tcc_rebuild_execvetest tcc_rebuild_alloctest
+    tcc_rebuild_filetest tcc_rebuild_basic tcc_rebuild_fdisk
+    tcc_rebuild_cfdisk tcc_rebuild_maktop tcc_rebuild_clock
+    tcc_rebuild_lines tcc_rebuild_vix tcc_rebuild_kbtester
+)
+LIBC_TESTS=(tcc_hello tcc_hello_relpath "${TCC_REBUILD_TESTS[@]}")
+# alloctest still has the fast in-kernel incore.sh coverage; the TCC
+# rebuild group additionally proves it links against the shipped libc.a.
 INCORE_TESTS=(incore)
 VT_TESTS=(vt_roundtrip_keeps_maktop_focused vt_all_roundtrips)
 BUGHUNT_TESTS=(bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch)
@@ -1241,6 +1528,7 @@ expand_arg() {
         fs)       printf '%s\n' "${FS_TESTS[@]}" ;;
         posix)    printf '%s\n' "${POSIX_TESTS[@]}" ;;
         libc)     printf '%s\n' "${LIBC_TESTS[@]}" ;;
+        tcc_rebuild|tcc) printf '%s\n' "${TCC_REBUILD_TESTS[@]}" ;;
         incore)   printf '%s\n' "${INCORE_TESTS[@]}" ;;
         vt)       printf '%s\n' "${VT_TESTS[@]}" ;;
         bughunt)  printf '%s\n' "${BUGHUNT_TESTS[@]}" ;;

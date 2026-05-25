@@ -40,8 +40,13 @@ static const char *mountpoint_name(const char *mp)
  * was retired with the /mnt/hd slot. */
 static void cmd_mount(int argc, char **argv)
 {
+    if (argc == 1) {
+        vfs_print_mounts();
+        return;
+    }
+
     if (argc < 3 || strncmp(argv[1], "/dev/", 5) != 0) {
-        t_writestring("Usage: mount /dev/hdaN /mnt/<name>\n");
+        t_writestring("Usage: mount [ /dev/hdaN /mnt/<name> ]\n");
         return;
     }
 

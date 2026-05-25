@@ -114,6 +114,7 @@ int         vfs_mount_hd(uint8_t drive, uint32_t lba, const char *name, int *out
 int         vfs_umount_hd(const char *name);
 int         vfs_hd_mounted(void);
 const char *vfs_hd_fsname(const char *name);
+void        vfs_print_mounts(void);
 
 /* Empty-mountpoint management (Linux-style: a mountpoint is a directory under
  * /mnt that `mount` later binds a filesystem into).
