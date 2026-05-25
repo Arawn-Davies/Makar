@@ -535,7 +535,9 @@ test_mnt_mountpoint() {
     # fixed duration, so the scenario ends the moment rmdir completes
     # rather than idling until a worst-case mkfs timeout elapses.
     it_until "mnt-mountpoint" \
-"$(keys "mkfs.ext2 /dev/hda")
+"$(keys "mkdir /mnt/cdrom/probe")
+sendkey ret
+$(keys "mkfs.ext2 /dev/hda")
 sendkey ret
 $(keys "mkdir /mnt/data")
 sendkey ret
@@ -544,8 +546,6 @@ sendkey ret
 $(keys "umount /mnt/data")
 sendkey ret
 $(keys "rmdir /mnt/data")
-sendkey ret
-$(keys "echo readonly-test-skipped")
 sendkey ret
 $(keys "echo mnt-flow-done")
 sendkey ret" \
