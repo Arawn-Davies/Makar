@@ -15,6 +15,17 @@
 #include "stdio.h"
 #include "stdlib.h"
 #include "string.h"
+#include "errno.h"
+
+/* Local helper: set errno from a Makar -1 return and translate the
+ * common cases.  Kernel-side dispatch returns plain -1 today (not a
+ * negative errno), so the best we can do is map by syscall context.
+ * Each wrapper passes the errno value to use when the call failed. */
+static int set_err_if_neg(long ret, int err)
+{
+    if (ret < 0) { errno = err; return -1; }
+    return (int)ret;
+}
 
 /* ---- POSIX file I/O wrappers ---------------------------------------- */
 
@@ -45,29 +56,29 @@ long lseek(int fd, long offset, int whence)
 
 int unlink(const char *path)
 {
-    return sys_unlink(path);
+    return set_err_if_neg(sys_unlink(path), ENOENT);
 }
 
 int rmdir(const char *path)
 {
-    return sys_rmdir(path);
+    return set_err_if_neg(sys_rmdir(path), ENOENT);
 }
 
 int rename(const char *old_path, const char *new_path)
 {
-    return sys_rename(old_path, new_path);
+    return set_err_if_neg(sys_rename(old_path, new_path), ENOENT);
 }
 
 int mkdir(const char *path, unsigned int mode)
 {
-    return sys_mkdir(path, mode);
+    return set_err_if_neg(sys_mkdir(path, mode), EEXIST);
 }
 
 int remove(const char *path)
 {
     /* POSIX: try unlink first, fall back to rmdir for directories. */
     if (sys_unlink(path) == 0) return 0;
-    return sys_rmdir(path);
+    return set_err_if_neg(sys_rmdir(path), ENOENT);
 }
 
 int chmod(const char *path, unsigned int mode)
@@ -81,7 +92,7 @@ int access(const char *path, int mode)
 {
     (void)mode;
     struct stat st;
-    return sys_stat(path, &st) == 0 ? 0 : -1;
+    return set_err_if_neg(sys_stat(path, &st), ENOENT);
 }
 
 int stat(const char *path, struct stat *st)
@@ -231,13 +242,13 @@ struct tm_stub *localtime(const unsigned int *t)
 int gettimeofday(void *tv, void *tz)
 {
     (void)tz;
-    if (tv) return sys_gettimeofday((struct timeval *)tv);
-    return 0;
+    if (!tv) return 0;
+    return set_err_if_neg(sys_gettimeofday((struct timeval *)tv), EFAULT);
 }
 
 int clock_gettime(int clk, struct timespec *ts)
 {
-    return sys_clock_gettime(clk, ts);
+    return set_err_if_neg(sys_clock_gettime(clk, ts), EINVAL);
 }
 
 /* ---- errno ---------------------------------------------------------- */

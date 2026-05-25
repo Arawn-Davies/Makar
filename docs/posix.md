@@ -29,9 +29,17 @@ are filled.
 | 6 | `close` | Full; flushes dirty `FD_KIND_FILE` buffer back to disk |
 | 11 | `execve` | Full; `envp` ignored |
 | 12 | `chdir` | Full |
+| 10 | `unlink` | Full (alias of `SYS_DELETE_FILE 208`) |
 | 19 | `lseek` | Full (`SEEK_SET/CUR/END`) |
+| 20 | `getpid` | Full |
 | 37 | `kill` | Full |
+| 38 | `rename` | Full (alias of `SYS_RENAME_FILE 209`) |
+| 39 | `mkdir` | Full; `mode` arg accepted but ignored (no permission model) |
+| 40 | `rmdir` | Full (alias of `SYS_DELETE_DIR 210`) |
 | 45 | `brk` | Full (heap break) |
+| 64 | `getppid` | Full; returns 0 for tasks created by the kernel |
+| 78 | `gettimeofday` | `tv_sec` from CMOS RTC; `tv_usec` resolution is 10 ms (PIT 100 Hz modulo) |
+| 265 | `clock_gettime` | `CLOCK_REALTIME` + `CLOCK_MONOTONIC`; same 10 ms resolution |
 | 48 | `signal` | Per-signo handler install, returns prev |
 | 55 | `fcntl` | Only `F_GETFL` / `F_SETFL` |
 | 106 | `stat` | `st_mode/st_size/st_nlink/st_blksize/st_ino` only; perms not enforced |
@@ -45,15 +53,11 @@ are filled.
 
 | Name | Why it's not here | Workaround |
 |---|---|---|
-| `getpid` / `getppid` | Never wired -- task_t.pid is kernel-visible, ring-3 has no accessor | `/proc/tasks` parse |
 | `pipe` / `dup` / `dup2` | Slice 28 not started | -- |
 | `mmap` / `munmap` | No anon-mapping ABI, no `PROT_EXEC` | `brk` for heap; ELF loader for code |
 | `ioctl` | No device tree past `/dev` block devices | Makar-ext `SYS_PUTCH_AT` etc. |
 | `select` / `poll` / `epoll` | Kernel has no fd-readiness model | `SYS_GETKEY` blocks on the focused TTY |
-| `access` | -- | `stat` + check mode |
-| `mkdir` / `rmdir` / `unlink` / `rename` | Have shell builtins + kernel ext syscalls (`SYS_DELETE_FILE 208`, `SYS_RENAME_FILE 209`, `SYS_DELETE_DIR 210`); no POSIX-named syscalls | Use Makar exts |
 | `getuid` / `setuid` / etc | No user model -- everything runs as the implicit root | -- |
-| `clock_gettime` / `gettimeofday` | No userspace time API yet | `SYS_UPTIME` (100 Hz ticks) |
 | `pthread_*` | No userspace threading; kernel has tasks but no clone | -- |
 
 ### Makar extensions (200+)
@@ -80,14 +84,14 @@ to `/usr/include/`.
 | `<stdlib.h>` | `malloc`/`free`/`calloc`/`realloc`/`strtol`/`atoi`/`qsort`/`getenv`/`strdup`/`exit`/`abort`/`sscanf` | No `bsearch`, `system`, `mblen`, `wcs*`; no `setenv`/`putenv`/`unsetenv` (env is read-only via `getenv`) |
 | `<ctype.h>` | Full ASCII set | No locale awareness (always C locale) |
 | `<setjmp.h>` | `setjmp`/`longjmp` | No `sigsetjmp`/`siglongjmp` |
-| `<errno.h>` | Minimal; most syscalls return `-1` without setting `errno` | Not POSIX-conformant |
-| `<unistd.h>` | Thin syscall wrappers | No `sleep`, `alarm`, `pause`, `pipe`, `dup` |
+| `<errno.h>` | Defines (`EPERM`, `ENOENT`, `EBADF`, ...) shipped; the 30a–30e wrappers set `errno`; legacy syscalls still return `-1` without setting it | Partially POSIX-conformant |
+| `<unistd.h>` | Thin syscall wrappers; `access()`, `getpid()`, `getppid()`, `unlink()`, `rmdir()` present | No `sleep`, `alarm`, `pause`, `pipe`, `dup` |
 | `<fcntl.h>` | `O_RDONLY/WRONLY/RDWR/CREAT/TRUNC/APPEND` constants only | No `O_NONBLOCK`, `O_SYNC`; no `creat`, `posix_fadvise` |
-| `<sys/stat.h>` | `struct stat` with limited fields (see syscall table) | No `mkdir`/`chmod`/`umask` |
-| `<dirent.h>` | `struct dirent` via `SYS_READDIR` | No `opendir`/`readdir`/`closedir` *as POSIX defines them* -- API is `readdir(path, idx, &de)` |
+| `<sys/stat.h>` | `struct stat` with limited fields (see syscall table); `mkdir()` wrapper present (mode ignored) | No `chmod`/`umask` enforcement |
+| `<dirent.h>` | Full POSIX shape: `DIR *`, `opendir`/`readdir`/`closedir` over `SYS_READDIR(141)` | -- |
 | `<signal.h>` | `signal()`, `kill()`, sigframe trampoline | No `sigaction`, `sigprocmask`, `sigsuspend`, `pthread_kill` |
 | `<math.h>` | **Absent** | No FPU init in kernel (x87 state not saved across switches) -- fixed-point only |
-| `<time.h>` | Minimal | `SYS_UPTIME` ticks only; no `clock_gettime`, `struct tm`, `mktime`, `strftime` |
+| `<time.h>` / `<sys/time.h>` | `time()`, `gettimeofday()`, `clock_gettime()` (REALTIME + MONOTONIC); `struct timeval`/`timespec` | No `struct tm`, `mktime`, `strftime`, `nanosleep` |
 | `<pthread.h>` | **Absent** | No userspace threads |
 | `<locale.h>` / `<wchar.h>` | **Absent** | C locale assumed; no wide chars |
 

@@ -32,7 +32,7 @@ TCC_ELF=$(wildcard tcc.elf)
 
 # Headers shipped to /usr/include on the OS image so userland (and
 # tcc-compiled programs) can resolve `#include <name.h>` directly.
-SYSROOT_HEADERS=malloc.h stdio.h stdlib.h ctype.h setjmp.h string.h syscall.h dirent.h
+SYSROOT_HEADERS=malloc.h stdio.h stdlib.h ctype.h setjmp.h string.h syscall.h dirent.h errno.h
 
 
 all: $(PROGS) libc.a

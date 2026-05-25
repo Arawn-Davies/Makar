@@ -202,10 +202,18 @@ Authoritative table in `src/kernel/include/kernel/syscall.h`. Selected entries:
 | 108 | SYS_FSTAT        | EBX = fd, ECX = `struct stat *`.  Same shape as SYS_STAT; for `FD_KIND_FILE` `st_size` reflects pending (unflushed) writes. |
 | 11  | SYS_EXECVE       | EBX = path, ECX = argv (NULL-terminated `char *const argv[]`), EDX = envp (ignored).  On success doesn't return.  Also auto-transfers keyboard focus + VT foreground to the new image (job-control shorthand for shells; pairs with SYS_WAIT4's reverse transfer on child reap). |
 | 12  | SYS_CHDIR        | EBX = path.  Sets calling task's cwd via vfs_cd (normalises ../ and //).  Returns 0/-1.  Added v0.8 for the ring-3 sh.elf. |
+| 10  | SYS_UNLINK       | EBX = path.  POSIX alias of SYS_DELETE_FILE(208). |
 | 19  | SYS_LSEEK        | EBX = fd, ECX = offset, EDX = whence (works on `FD_KIND_FILE` and `FD_KIND_BLOCKDEV`) |
+| 20  | SYS_GETPID       | Returns `task_current()->pid` (idle = 1). |
 | 37  | SYS_KILL         | EBX = pid, ECX = signo |
+| 38  | SYS_RENAME       | EBX = old, ECX = new.  POSIX alias of SYS_RENAME_FILE(209). |
+| 39  | SYS_MKDIR        | EBX = path, ECX = mode (ignored).  Calls `vfs_mkdir`. |
+| 40  | SYS_RMDIR        | EBX = path.  POSIX alias of SYS_DELETE_DIR(210). |
 | 45  | SYS_BRK          | EBX = new break (returns current/new break) |
 | 48  | SYS_SIGNAL       | EBX = signo, ECX = handler (returns previous handler) |
+| 64  | SYS_GETPPID      | Returns `task_current()->parent_pid` (0 = no userspace ancestor). |
+| 78  | SYS_GETTIMEOFDAY | EBX = `struct timeval *`, ECX = `struct timezone *` (ignored).  `tv_sec` from CMOS RTC; `tv_usec` resolution = 10 ms (PIT tick modulo). |
+| 265 | SYS_CLOCK_GETTIME| EBX = clockid (`CLOCK_REALTIME=0`, `CLOCK_MONOTONIC=1`), ECX = `struct timespec *`.  Same 10 ms resolution. |
 | 100 | SYS_DEBUG        | EBX = uint32 checkpoint (prints to VGA + serial) |
 | 114 | SYS_WAIT4        | EBX = pid (-1 = any child), ECX = `int *status`, EDX = options (WNOHANG=1), ESI = rusage ptr (ignored).  Returns child pid, 0 (WNOHANG no zombie), or -ECHILD.  When a child is reaped, keyboard focus + VT foreground transfer back to the wait4-ing parent (counterpart to SYS_EXECVE's forward transfer).  (slice 16b) |
 | 119 | SYS_SIGRETURN    | - (sigframe trampoline, not for direct use) |
