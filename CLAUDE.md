@@ -330,7 +330,7 @@ To keep this file focused on day-to-day work, longer-lived material lives alongs
 - **`CLAUDE.history.md`** — current subsystem state (May 2026), recently-merged PR log, and FOSS attribution. Consult for "what's already shipped / what does subsystem X do today".
 - **`CLAUDE.roadmap.md`** — the slice queue (done + open), userspace/libc porting plan, hardware/platform notes, and the "serious dev work in-place" (compiler/networking) roadmap. Consult when planning new features or asked about direction.
 
-Published docs: `docs/userland-libc.md` (freestanding libc + TCC path), `SURVEY.md` (full inventory of shell commands / apps / VFS APIs / installer), `docs/internals.md` (deep-dive on kernel internals), `docs/kernel/` (per-subsystem pages).
+Published docs: `docs/userland-libc.md` (freestanding libc + TCC path), `docs/posix.md` (what's POSIX-shaped + the gaps an app porter needs to know about), `SURVEY.md` (full inventory of shell commands / apps / VFS APIs / installer), `docs/internals.md` (deep-dive on kernel internals), `docs/kernel/` (per-subsystem pages).
 
 ## For agents new to the codebase
 

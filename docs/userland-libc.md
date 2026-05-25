@@ -220,6 +220,10 @@ invokes the binary and branches on `$?`).  Each piece is small enough
 to read in one sitting and is replaceable behind the same headers when
 uClibc-ng ports cleanly.
 
+For a per-header breakdown of what's present vs. POSIX-required-and-
+missing (math, time, pthread, locale, wchar are all absent; the rest
+are partial), see [`docs/posix.md`](posix.md).
+
 ### 7. In-kernel compilation (long-term goal)
 
 Once musl or uClibc-ng is linked, the goal is to build simple C programs

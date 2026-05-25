@@ -437,6 +437,11 @@ statically linked freestanding ELFs.
 `int 0x80`, Linux i386 convention. EAX = syscall number; EBX/ECX/EDX/ESI/EDI
 = arg0..arg4. Return value comes back in EAX.
 
+For a full table of which POSIX syscalls Makar implements vs. omits
+(plus the Makar-200+ extensions that fill in for the absent `ioctl` /
+`termios` / `clock_gettime` plumbing), see
+[`docs/posix.md`](posix.md).
+
 ```
 ring 3                                          ring 0
   ─────                                          ─────
