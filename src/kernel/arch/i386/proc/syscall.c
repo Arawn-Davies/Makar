@@ -44,6 +44,7 @@
 #include <kernel/vt.h>
 #include <kernel/ide.h>
 #include <kernel/timer.h>
+#include <kernel/rtc.h>
 #include <string.h>
 #include <kernel/ktest.h>
 
@@ -497,6 +498,67 @@ void syscall_dispatch(registers_t *regs)
         const char *path = (const char *)(uintptr_t)regs->ebx;
         if (!path) { regs->eax = (uint32_t)-1; break; }
         regs->eax = (uint32_t)(vfs_cd(path) == 0 ? 0 : -1);
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_GETPID(20) / SYS_GETPPID(64): identity accessors.
+     * Both fields live on task_t (kernel/task.h:47-48); idle = pid 1,
+     * parent_pid 0 means "no parent / spawned by kernel".
+     * ------------------------------------------------------------------ */
+    case SYS_GETPID: {
+        task_t *t = task_current();
+        regs->eax = (uint32_t)(t ? t->pid : 0);
+        break;
+    }
+    case SYS_GETPPID: {
+        task_t *t = task_current();
+        regs->eax = (uint32_t)(t ? t->parent_pid : 0);
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_GETTIMEOFDAY(78): write current wall time into struct timeval.
+     * EBX = struct timeval *, ECX = struct timezone * (ignored).
+     * tv_sec is from the CMOS RTC; tv_usec is approximated from the
+     * PIT 100 Hz tick counter (resolution 10 ms, NOT real microseconds).
+     * Returns 0 on success, -1 on bad pointer.
+     * ------------------------------------------------------------------ */
+    case SYS_GETTIMEOFDAY: {
+        struct timeval *tv = (struct timeval *)(uintptr_t)regs->ebx;
+        if (!tv) { regs->eax = (uint32_t)-1; break; }
+        uint32_t secs = 0;
+        if (rtc_unix_time(&secs) != 0) { regs->eax = (uint32_t)-1; break; }
+        tv->tv_sec  = (int32_t)secs;
+        tv->tv_usec = (int32_t)((timer_get_ticks() % 100u) * 10000u);
+        regs->eax = 0;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_CLOCK_GETTIME(265): write current time into struct timespec.
+     * EBX = clockid_t (CLOCK_REALTIME or CLOCK_MONOTONIC), ECX = ts*.
+     * REALTIME mirrors SYS_GETTIMEOFDAY; MONOTONIC is timer ticks since
+     * boot.  Returns 0 / -1.
+     * ------------------------------------------------------------------ */
+    case SYS_CLOCK_GETTIME: {
+        int clk = (int)regs->ebx;
+        struct timespec *ts = (struct timespec *)(uintptr_t)regs->ecx;
+        if (!ts) { regs->eax = (uint32_t)-1; break; }
+        if (clk == CLOCK_REALTIME) {
+            uint32_t secs = 0;
+            if (rtc_unix_time(&secs) != 0) { regs->eax = (uint32_t)-1; break; }
+            ts->tv_sec  = (int32_t)secs;
+            ts->tv_nsec = (int32_t)((timer_get_ticks() % 100u) * 10000000u);
+        } else if (clk == CLOCK_MONOTONIC) {
+            uint32_t ticks = timer_get_ticks();
+            ts->tv_sec  = (int32_t)(ticks / 100u);
+            ts->tv_nsec = (int32_t)((ticks % 100u) * 10000000u);
+        } else {
+            regs->eax = (uint32_t)-1;
+            break;
+        }
+        regs->eax = 0;
         break;
     }
 
@@ -1141,11 +1203,12 @@ void syscall_dispatch(registers_t *regs)
     }
 
     /* ------------------------------------------------------------------
-     * SYS_DELETE_FILE(208): delete a VFS file.
-     * EBX = path.
+     * SYS_DELETE_FILE(208) / SYS_UNLINK(10): delete a VFS file.
+     * EBX = path.  POSIX unlink() is aliased onto the same handler.
      * Returns 0 on success, (uint32_t)-1 on error.
      * ------------------------------------------------------------------ */
-    case SYS_DELETE_FILE: {
+    case SYS_DELETE_FILE:
+    case SYS_UNLINK: {
         const char *path = (const char *)(uintptr_t)regs->ebx;
         if (!path) { regs->eax = (uint32_t)-1; break; }
         regs->eax = (vfs_delete_file(path) == 0) ? 0 : (uint32_t)-1;
@@ -1153,11 +1216,12 @@ void syscall_dispatch(registers_t *regs)
     }
 
     /* ------------------------------------------------------------------
-     * SYS_RENAME_FILE(209): rename/move a file or directory.
+     * SYS_RENAME_FILE(209) / SYS_RENAME(38): rename/move a file or directory.
      * EBX = old_path, ECX = new_path.
      * Returns 0 on success, (uint32_t)-1 on error.
      * ------------------------------------------------------------------ */
-    case SYS_RENAME_FILE: {
+    case SYS_RENAME_FILE:
+    case SYS_RENAME: {
         const char *old_path = (const char *)(uintptr_t)regs->ebx;
         const char *new_path = (const char *)(uintptr_t)regs->ecx;
         if (!old_path || !new_path) { regs->eax = (uint32_t)-1; break; }
@@ -1166,14 +1230,27 @@ void syscall_dispatch(registers_t *regs)
     }
 
     /* ------------------------------------------------------------------
-     * SYS_DELETE_DIR(210): delete an empty directory.
+     * SYS_DELETE_DIR(210) / SYS_RMDIR(40): delete an empty directory.
      * EBX = path.
      * Returns 0 on success, (uint32_t)-1 on error.
      * ------------------------------------------------------------------ */
-    case SYS_DELETE_DIR: {
+    case SYS_DELETE_DIR:
+    case SYS_RMDIR: {
         const char *path = (const char *)(uintptr_t)regs->ebx;
         if (!path) { regs->eax = (uint32_t)-1; break; }
         regs->eax = (vfs_delete_dir(path) == 0) ? 0 : (uint32_t)-1;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_MKDIR(39): create a directory.
+     * EBX = path, ECX = mode (ignored -- no permission model).
+     * Returns 0 on success, (uint32_t)-1 on error.
+     * ------------------------------------------------------------------ */
+    case SYS_MKDIR: {
+        const char *path = (const char *)(uintptr_t)regs->ebx;
+        if (!path) { regs->eax = (uint32_t)-1; break; }
+        regs->eax = (vfs_mkdir(path) == 0) ? 0 : (uint32_t)-1;
         break;
     }
 

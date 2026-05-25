@@ -14,9 +14,29 @@
 #define SYS_OPEN       5
 #define SYS_CLOSE      6
 #define SYS_LSEEK      19
+#define SYS_GETPID     20
 #define SYS_KILL       37
+#define SYS_RENAME     38
+#define SYS_MKDIR      39
+#define SYS_RMDIR      40
+#define SYS_UNLINK     10
 #define SYS_BRK        45
 #define SYS_SIGNAL     48
+#define SYS_GETPPID    64
+#define SYS_GETTIMEOFDAY 78
+#define SYS_CLOCK_GETTIME 265
+#define CLOCK_REALTIME    0
+#define CLOCK_MONOTONIC   1
+
+/* access(2) mode bits.  No permission model -- all four behave as F_OK. */
+#define F_OK 0
+#define X_OK 1
+#define W_OK 2
+#define R_OK 4
+
+/* Linux i386 layouts -- must match kernel/syscall.h. */
+struct timeval  { int tv_sec; int tv_usec; };
+struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_SIGRETURN  119
 #define SYS_DEBUG      100
 #define SYS_YIELD      158
@@ -326,6 +346,25 @@ static inline int sys_getcwd(char *buf, unsigned int size)
     return (int)syscall2(SYS_GETCWD, (long)buf, (long)size);
 }
 
+/* getpid(2) / getppid(2): identity accessors.  pid 1 = idle task.
+ * parent_pid 0 means the caller was created directly by the kernel
+ * (no userspace ancestor). */
+static inline int sys_getpid(void)  { return (int)syscall1(SYS_GETPID,  0); }
+static inline int sys_getppid(void) { return (int)syscall1(SYS_GETPPID, 0); }
+
+/* gettimeofday(2) / clock_gettime(2).  REALTIME is RTC-derived seconds
+ * since 1970-01-01 UTC; tv_usec/tv_nsec resolution is 10 ms (PIT 100 Hz
+ * tick modulo), NOT real microseconds.  MONOTONIC counts seconds since
+ * boot and never goes backwards. */
+static inline int sys_gettimeofday(struct timeval *tv)
+{
+    return (int)syscall2(SYS_GETTIMEOFDAY, (long)tv, 0);
+}
+static inline int sys_clock_gettime(int clk, struct timespec *ts)
+{
+    return (int)syscall2(SYS_CLOCK_GETTIME, (long)clk, (long)ts);
+}
+
 /* chdir(2): change the calling task's cwd to `path`.  Delegates to the
  * kernel's vfs_cd which normalises and validates against the live VFS.
  * Returns 0 on success, -1 if the path is missing or not a directory. */
@@ -485,6 +524,28 @@ static inline int sys_rename_file(const char *old_path, const char *new_path)
 static inline int sys_delete_dir(const char *path)
 {
     return (int)syscall1(SYS_DELETE_DIR, (long)path);
+}
+
+/* POSIX-numbered aliases for the four mutators above.  Same semantics;
+ * libc wrappers (unlink/rmdir/rename) route through these standard
+ * numbers so a future musl/uClibc port doesn't need a translation
+ * shim. */
+static inline int sys_unlink(const char *path)
+{
+    return (int)syscall1(SYS_UNLINK, (long)path);
+}
+static inline int sys_rmdir(const char *path)
+{
+    return (int)syscall1(SYS_RMDIR, (long)path);
+}
+static inline int sys_rename(const char *old_path, const char *new_path)
+{
+    return (int)syscall2(SYS_RENAME, (long)old_path, (long)new_path);
+}
+/* mode is accepted but ignored (no permission model). */
+static inline int sys_mkdir(const char *path, unsigned int mode)
+{
+    return (int)syscall2(SYS_MKDIR, (long)path, (long)mode);
 }
 
 /* Send signo to pid.  Returns 0 on success, -1 on error (no such pid

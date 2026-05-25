@@ -23,7 +23,7 @@ PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf kbtester.elf makbox.elf s
 # OS image so tcc(1) can link against it as -lc.  The objects are also
 # linked individually into a few legacy app recipes (alloctest, filetest)
 # below to give the archive passive ui-test coverage.
-LIBC_OBJS=malloc.o stdio.o setjmp.o string.o tcc_compat.o
+LIBC_OBJS=malloc.o stdio.o setjmp.o string.o tcc_compat.o dirent.o
 
 # tcc.elf is only built when the vendored snapshot at vendor/tinycc/ is
 # populated (see build-tcc.sh).  The artefact lands here at the top of
@@ -32,7 +32,7 @@ TCC_ELF=$(wildcard tcc.elf)
 
 # Headers shipped to /usr/include on the OS image so userland (and
 # tcc-compiled programs) can resolve `#include <name.h>` directly.
-SYSROOT_HEADERS=malloc.h stdio.h stdlib.h ctype.h setjmp.h string.h syscall.h
+SYSROOT_HEADERS=malloc.h stdio.h stdlib.h ctype.h setjmp.h string.h syscall.h dirent.h errno.h
 
 
 all: $(PROGS) libc.a

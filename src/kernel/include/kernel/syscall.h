@@ -18,11 +18,16 @@
 #define SYS_WRITE      4    /* ssize_t write(int fd, const void *buf, size_t)   */
 #define SYS_OPEN       5    /* int open(const char *path, int flags)            */
 #define SYS_CLOSE      6    /* int close(int fd)                                */
+#define SYS_UNLINK     10   /* int unlink(const char *path)  -- alias of 208    */
 #define SYS_EXECVE     11   /* int execve(const char *path, char *const argv[], char *const envp[]) */
 #define SYS_CHDIR      12   /* int chdir(const char *path) -- set calling task's cwd */
 #define SYS_LSEEK      19   /* off_t lseek(int fd, off_t offset, int whence)   */
+#define SYS_GETPID     20   /* pid_t getpid(void)                               */
 #define SYS_WAIT4      114  /* pid_t wait4(pid, int *status, int options, void *rusage) */
 #define SYS_KILL       37   /* int kill(int pid, int signo)                     */
+#define SYS_RENAME     38   /* int rename(const char *old, const char *new)     */
+#define SYS_MKDIR      39   /* int mkdir(const char *path, mode_t mode)         */
+#define SYS_RMDIR      40   /* int rmdir(const char *path)                      */
 #define SYS_BRK        45   /* void *brk(void *addr)                            */
 #define SYS_SIGNAL     48   /* sig_handler_t signal(int signo, sig_handler_t)   */
 #define SYS_STAT      106   /* int stat(const char *path, struct stat *st)      */
@@ -63,6 +68,17 @@
 
 /* Back to Linux i386 ABI numbers for the next set. */
 #define SYS_FCNTL      55   /* int fcntl(int fd, int cmd, int arg) - F_GETFL/F_SETFL */
+#define SYS_GETPPID    64   /* pid_t getppid(void)                              */
+#define SYS_GETTIMEOFDAY 78 /* int gettimeofday(struct timeval *, void *)       */
+#define SYS_CLOCK_GETTIME 265 /* int clock_gettime(clockid_t, struct timespec *)*/
+
+/* clockid_t values for SYS_CLOCK_GETTIME. */
+#define CLOCK_REALTIME  0   /* Wall clock from CMOS RTC, seconds since 1970     */
+#define CLOCK_MONOTONIC 1   /* PIT-derived uptime, never jumps backwards        */
+
+/* Timeval / timespec -- Linux i386 layouts. */
+struct timeval  { int32_t tv_sec; int32_t tv_usec; };
+struct timespec { int32_t tv_sec; int32_t tv_nsec; };
 
 /* fcntl cmd values (Linux i386 ABI subset). */
 #define F_GETFL         3

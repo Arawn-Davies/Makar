@@ -23,6 +23,7 @@
 #include <kernel/vesa_tty.h>
 #include <kernel/bochs_vbe.h>
 #include <kernel/timer.h>
+#include <kernel/rtc.h>
 #include <kernel/elf.h>
 #include <kernel/vfs.h>
 #include <kernel/devfs.h>
@@ -785,6 +786,154 @@ static void test_procfs_tasks(void)
 
     KTEST_ASSERT(strstr(buf, "PID NAME") != NULL);
     KTEST_ASSERT(strstr(buf, "DEAD") == NULL);
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
+ * Suite: getpid
+ *
+ * SYS_GETPID(20) / SYS_GETPPID(64) return task_current()->pid /
+ * parent_pid.  Drive both via syscall_dispatch with a stack frame, the
+ * same shape as test_syscall.
+ * ------------------------------------------------------------------------- */
+
+static void test_getpid(void)
+{
+    ktest_begin("getpid", "SYS_GETPID/GETPPID return task_current() pid/parent_pid");
+
+    task_t *me = task_current();
+    KTEST_ASSERT(me != NULL);
+
+    registers_t regs;
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_GETPID;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, me->pid);
+
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_GETPPID;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, me->parent_pid);
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
+ * Suite: rtc_unix_time
+ *
+ * Verifies the CMOS RTC reader and the SYS_GETTIMEOFDAY/CLOCK_GETTIME
+ * dispatch.  rtc_unix_time must return a seconds-since-1970 value in
+ * the plausible window (>= 2025-01-01, < 2100-01-01).  CLOCK_MONOTONIC
+ * must be non-decreasing across two reads.
+ * ------------------------------------------------------------------------- */
+
+static void test_rtc_unix_time(void)
+{
+    ktest_begin("rtc_unix_time", "RTC -> Unix epoch, SYS_GETTIMEOFDAY, CLOCK_MONOTONIC monotonic");
+
+    /* 2025-01-01 00:00:00 UTC = 1735689600
+     * 2100-01-01 00:00:00 UTC = 4102444800 */
+    uint32_t secs = 0;
+    KTEST_ASSERT(rtc_unix_time(&secs) == 0);
+    KTEST_ASSERT(secs >= 1735689600u);
+    KTEST_ASSERT(secs <  4102444800u);
+
+    registers_t regs;
+    struct timeval tv = { 0, 0 };
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_GETTIMEOFDAY;
+    regs.ebx = (uint32_t)(uintptr_t)&tv;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, 0);
+    KTEST_ASSERT((uint32_t)tv.tv_sec >= 1735689600u);
+
+    struct timespec ts1 = { 0, 0 }, ts2 = { 0, 0 };
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_CLOCK_GETTIME;
+    regs.ebx = CLOCK_MONOTONIC;
+    regs.ecx = (uint32_t)(uintptr_t)&ts1;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, 0);
+
+    /* Spin briefly so the tick advances. */
+    uint32_t t0 = timer_get_ticks();
+    while (timer_get_ticks() - t0 < 2) { /* ~20 ms */ }
+
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_CLOCK_GETTIME;
+    regs.ebx = CLOCK_MONOTONIC;
+    regs.ecx = (uint32_t)(uintptr_t)&ts2;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, 0);
+
+    int monotonic = (ts2.tv_sec > ts1.tv_sec) ||
+                    (ts2.tv_sec == ts1.tv_sec && ts2.tv_nsec >= ts1.tv_nsec);
+    KTEST_ASSERT(monotonic);
+
+    /* Unknown clockid rejected. */
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_CLOCK_GETTIME;
+    regs.ebx = 999;
+    regs.ecx = (uint32_t)(uintptr_t)&ts1;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, -1);
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
+ * Suite: posix_fs_syscalls
+ *
+ * Proves the new POSIX-numbered aliases (SYS_UNLINK 10, SYS_RENAME 38,
+ * SYS_MKDIR 39, SYS_RMDIR 40) route through syscall_dispatch correctly.
+ * unlink is exercised behaviourally against /tmp (tmpfs supports
+ * delete_file).  mkdir/rmdir/rename are validated on the NULL-arg
+ * rejection path; behavioural coverage on a writable backend happens
+ * via ui-test on the ext2/FAT32 rootfs.
+ * ------------------------------------------------------------------------- */
+
+static void test_posix_fs_syscalls(void)
+{
+    ktest_begin("posix_fs_syscalls", "SYS_UNLINK/RMDIR/RENAME/MKDIR dispatch routing");
+
+    /* Seed a tmpfs file so SYS_UNLINK has something to delete. */
+    const char *body = "posix-unlink-probe";
+    KTEST_ASSERT(vfs_write_file("/tmp/posix_unlink.bin", body,
+                                (uint32_t)strlen(body)) == 0);
+    KTEST_ASSERT(vfs_file_exists("/tmp/posix_unlink.bin") == 1);
+
+    registers_t regs;
+
+    /* SYS_UNLINK(10) on the seeded file -> 0; file gone. */
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_UNLINK;
+    regs.ebx = (uint32_t)(uintptr_t)"/tmp/posix_unlink.bin";
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, 0);
+    KTEST_ASSERT(vfs_file_exists("/tmp/posix_unlink.bin") == 0);
+
+    /* NULL-path rejections.  All four return -1 (the dispatch-level
+     * sanity check) without faulting. */
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_UNLINK; regs.ebx = 0;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, -1);
+
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_RMDIR; regs.ebx = 0;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, -1);
+
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_RENAME; regs.ebx = 0; regs.ecx = (uint32_t)(uintptr_t)"/x";
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, -1);
+
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_MKDIR; regs.ebx = 0;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, -1);
 
     ktest_summary();
 }
@@ -2280,6 +2429,18 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
+    test_getpid();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_posix_fs_syscalls();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_rtc_unix_time();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
     test_syscall();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
@@ -2388,6 +2549,9 @@ void ktest_bg_task(void)
     RUN(test_vmm);
     RUN(test_task);
     RUN(test_procfs_tasks);
+    RUN(test_getpid);
+    RUN(test_posix_fs_syscalls);
+    RUN(test_rtc_unix_time);
     RUN(test_syscall);
     RUN(test_fd_table);
     RUN(test_file_fd);

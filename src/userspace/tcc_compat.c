@@ -15,6 +15,17 @@
 #include "stdio.h"
 #include "stdlib.h"
 #include "string.h"
+#include "errno.h"
+
+/* Local helper: set errno from a Makar -1 return and translate the
+ * common cases.  Kernel-side dispatch returns plain -1 today (not a
+ * negative errno), so the best we can do is map by syscall context.
+ * Each wrapper passes the errno value to use when the call failed. */
+static int set_err_if_neg(long ret, int err)
+{
+    if (ret < 0) { errno = err; return -1; }
+    return (int)ret;
+}
 
 /* ---- POSIX file I/O wrappers ---------------------------------------- */
 
@@ -45,17 +56,43 @@ long lseek(int fd, long offset, int whence)
 
 int unlink(const char *path)
 {
-    return sys_delete_file(path);
+    return set_err_if_neg(sys_unlink(path), ENOENT);
+}
+
+int rmdir(const char *path)
+{
+    return set_err_if_neg(sys_rmdir(path), ENOENT);
+}
+
+int rename(const char *old_path, const char *new_path)
+{
+    return set_err_if_neg(sys_rename(old_path, new_path), ENOENT);
+}
+
+int mkdir(const char *path, unsigned int mode)
+{
+    return set_err_if_neg(sys_mkdir(path, mode), EEXIST);
 }
 
 int remove(const char *path)
 {
-    return sys_delete_file(path);
+    /* POSIX: try unlink first, fall back to rmdir for directories. */
+    if (sys_unlink(path) == 0) return 0;
+    return set_err_if_neg(sys_rmdir(path), ENOENT);
 }
 
 int chmod(const char *path, unsigned int mode)
 {
     (void)path; (void)mode; return 0;   /* Makar has no permission bits today */
+}
+
+/* access(2): F_OK/R_OK/W_OK/X_OK -- without a permission model, the only
+ * thing we can answer is "does the path exist?" via stat. */
+int access(const char *path, int mode)
+{
+    (void)mode;
+    struct stat st;
+    return set_err_if_neg(sys_stat(path, &st), ENOENT);
 }
 
 int stat(const char *path, struct stat *st)
@@ -185,7 +222,10 @@ int vfprintf(FILE *f, const char *fmt, __builtin_va_list ap)
 
 unsigned int time(unsigned int *t)
 {
-    unsigned int now = sys_uptime();   /* 100 Hz tick counter */
+    /* POSIX time(2): seconds since 1970-01-01 UTC, from the CMOS RTC. */
+    struct timeval tv;
+    unsigned int now = 0;
+    if (sys_gettimeofday(&tv) == 0) now = (unsigned int)tv.tv_sec;
     if (t) *t = now;
     return now;
 }
@@ -202,10 +242,13 @@ struct tm_stub *localtime(const unsigned int *t)
 int gettimeofday(void *tv, void *tz)
 {
     (void)tz;
-    /* TCC uses gettimeofday only for `-bench` reporting; zero is fine. */
-    if (tv) ((unsigned int *)tv)[0] = sys_uptime(),
-            ((unsigned int *)tv)[1] = 0;
-    return 0;
+    if (!tv) return 0;
+    return set_err_if_neg(sys_gettimeofday((struct timeval *)tv), EFAULT);
+}
+
+int clock_gettime(int clk, struct timespec *ts)
+{
+    return set_err_if_neg(sys_clock_gettime(clk, ts), EINVAL);
 }
 
 /* ---- errno ---------------------------------------------------------- */
