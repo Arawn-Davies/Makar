@@ -137,7 +137,7 @@ static void sb_num(sb_t *s, unsigned long v, unsigned int base,
     while (ti--) sb_put(s, tmp[ti]);
 }
 
-int vsnprintf(char *buf, unsigned int sz, const char *fmt, __builtin_va_list ap)
+int vsnprintf(char *buf, unsigned int sz, const char *fmt, va_list ap)
 {
     sb_t s = { buf, sz, 0 };
     for (const char *p = fmt; *p; p++) {
@@ -147,25 +147,25 @@ int vsnprintf(char *buf, unsigned int sz, const char *fmt, __builtin_va_list ap)
         if (*p == '0') { pad = '0'; p++; }
         while (*p >= '0' && *p <= '9') { width = width*10 + (*p - '0'); p++; }
         switch (*p) {
-        case 'c': sb_put(&s, (char)__builtin_va_arg(ap, int)); break;
+        case 'c': sb_put(&s, (char)va_arg(ap, int)); break;
         case 's': {
-            const char *str = __builtin_va_arg(ap, const char *);
+            const char *str = va_arg(ap, const char *);
             if (!str) str = "(null)";
             int len = 0; while (str[len]) len++;
             while (len < width) { sb_put(&s, pad); len++; }
             sb_str(&s, str); break;
         }
         case 'd': case 'i': {
-            int v = __builtin_va_arg(ap, int);
+            int v = va_arg(ap, int);
             unsigned long uv = (v < 0) ? (unsigned long)(-(long)v) : (unsigned long)v;
             sb_num(&s, uv, 10, 0, v < 0, width, pad);
             break;
         }
-        case 'u': sb_num(&s, __builtin_va_arg(ap, unsigned int), 10, 0, 0, width, pad); break;
-        case 'x': sb_num(&s, __builtin_va_arg(ap, unsigned int), 16, 0, 0, width, pad); break;
-        case 'X': sb_num(&s, __builtin_va_arg(ap, unsigned int), 16, 1, 0, width, pad); break;
+        case 'u': sb_num(&s, va_arg(ap, unsigned int), 10, 0, 0, width, pad); break;
+        case 'x': sb_num(&s, va_arg(ap, unsigned int), 16, 0, 0, width, pad); break;
+        case 'X': sb_num(&s, va_arg(ap, unsigned int), 16, 1, 0, width, pad); break;
         case 'p': sb_put(&s,'0'); sb_put(&s,'x');
-                  sb_num(&s, (unsigned long)(unsigned int)__builtin_va_arg(ap, void *), 16, 0, 0, 8, '0'); break;
+                  sb_num(&s, (unsigned long)(unsigned int)va_arg(ap, void *), 16, 0, 0, 8, '0'); break;
         case '%': sb_put(&s, '%'); break;
         default:  sb_put(&s, '%'); sb_put(&s, *p); break;
         }
@@ -176,18 +176,18 @@ int vsnprintf(char *buf, unsigned int sz, const char *fmt, __builtin_va_list ap)
 
 int snprintf(char *buf, unsigned int sz, const char *fmt, ...)
 {
-    __builtin_va_list ap; __builtin_va_start(ap, fmt);
+    va_list ap; va_start(ap, fmt);
     int n = vsnprintf(buf, sz, fmt, ap);
-    __builtin_va_end(ap);
+    va_end(ap);
     return n;
 }
 
 int fprintf(FILE *f, const char *fmt, ...)
 {
     static char scratch[2048];
-    __builtin_va_list ap; __builtin_va_start(ap, fmt);
+    va_list ap; va_start(ap, fmt);
     int n = vsnprintf(scratch, sizeof(scratch), fmt, ap);
-    __builtin_va_end(ap);
+    va_end(ap);
     fwrite(scratch, 1, (unsigned int)n, f);
     return n;
 }
@@ -195,9 +195,9 @@ int fprintf(FILE *f, const char *fmt, ...)
 int printf(const char *fmt, ...)
 {
     static char scratch[2048];
-    __builtin_va_list ap; __builtin_va_start(ap, fmt);
+    va_list ap; va_start(ap, fmt);
     int n = vsnprintf(scratch, sizeof(scratch), fmt, ap);
-    __builtin_va_end(ap);
+    va_end(ap);
     fwrite(scratch, 1, (unsigned int)n, stdout);
     return n;
 }

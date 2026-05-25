@@ -37,6 +37,19 @@ static char s_history[SHELL_HISTORY_SIZE][SHELL_MAX_INPUT];
 static int  s_hist_count = 0;  /* valid entries (capped at SHELL_HISTORY_SIZE) */
 static int  s_hist_head  = 0;  /* index of the next write slot                 */
 
+int shell_cancel_requested(void)
+{
+    if (!sig_check_and_clear(SIGINT))
+        return 0;
+
+    /* Ctrl-C is also routed as a byte for readline/raw-mode consumers.
+     * Built-ins do not read stdin while they run, so drain the matching
+     * byte now; otherwise the next prompt would immediately see ^C. */
+    while (keyboard_poll()) {}
+    t_writestring("^C\n");
+    return 1;
+}
+
 static void history_push(const char *line)
 {
     if (!line || !*line)

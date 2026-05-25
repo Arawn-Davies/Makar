@@ -87,7 +87,13 @@ static int cmd_cat(int argc, char **argv)
                 return 1;
             }
             if (n == 0) break;
-            sys_write(1, buf, (unsigned int)n);
+            for (long off = 0; off < n; ) {
+                long chunk = n - off;
+                if (chunk > 256) chunk = 256;
+                sys_write(1, (const char *)buf + off, (unsigned int)chunk);
+                off += chunk;
+                sys_yield();
+            }
         }
         sys_close(fd);
     }

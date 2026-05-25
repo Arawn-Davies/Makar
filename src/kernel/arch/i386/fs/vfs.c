@@ -890,6 +890,33 @@ const char *vfs_hd_fsname(const char *name)
     return (mi >= 0) ? backend_name(s_mounts[mi].backend) : "none";
 }
 
+void vfs_print_mounts(void)
+{
+    int any = 0;
+    for (int i = 0; i < s_nmounts; i++) {
+        vfs_mount_t *m = &s_mounts[i];
+        if (m->backend == VFS_BACKEND_NONE) continue;
+
+        any = 1;
+        t_writestring(m->mountpoint);
+        t_writestring(" type ");
+        t_writestring(backend_name(m->backend));
+        if (m->backend == VFS_BACKEND_EXT2 ||
+            m->backend == VFS_BACKEND_FAT32 ||
+            m->backend == VFS_BACKEND_ISO9660) {
+            t_writestring(" drive ");
+            t_dec(m->drive);
+            if (m->backend != VFS_BACKEND_ISO9660) {
+                t_writestring(" lba ");
+                t_dec(m->lba);
+            }
+        }
+        t_putchar('\n');
+    }
+    if (!any)
+        t_writestring("(no mounted filesystems)\n");
+}
+
 void vfs_prepare_shutdown(void)
 {
     /* Flush every HD-backed mount on the way down. */
