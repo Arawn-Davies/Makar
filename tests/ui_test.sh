@@ -678,6 +678,7 @@ $(keys "pwd")
 sendkey ret
 $(keys "exit")
 sendkey ret
+PAUSE 0.5
 $(keys "pwd")
 sendkey ret" \
         "[makbox:pwd]" 15
@@ -733,7 +734,7 @@ $(keys "d")
 sendkey ret
 $(keys "exit")
 sendkey ret" \
-        "/proc~>" 15
+        "[shell:ready vt=0]" 15
     # Three successful pwd invocations expected -- typed, recalled, and
     # the backspace-corrected variant.  All print "/\n".  We can't easily
     # count occurrences in assert_serial_contains, but seeing the prompt
@@ -765,14 +766,17 @@ $(keys "foo=tester")
 sendkey ret
 $(keys "echo hello \$foo")
 sendkey ret
+PAUSE 0.4
 $(keys "/apps/no-such-binary")
 sendkey ret
 $(keys "echo status=\$?")
 sendkey ret
+PAUSE 0.4
 $(keys "unset foo")
 sendkey ret
 $(keys "echo gone=\$foo=end")
 sendkey ret
+PAUSE 0.4
 $(keys "exit")
 sendkey ret" \
         "gone==end" 20
@@ -825,6 +829,7 @@ test_tcc_hello() {
     it_until "tcc-hello" \
 "$(keys "tcc /usr/share/examples/hello-tcc.c -o /tmp/hello.elf")
 sendkey ret
+PAUSE 0.5
 $(keys "exec /tmp/hello.elf")
 sendkey ret" \
         "Hello, TCC" 60
@@ -928,6 +933,7 @@ test_tcc_hello_relpath() {
 sendkey ret
 $(keys "tcc hello-tcc.c -o /tmp/relhello.elf")
 sendkey ret
+PAUSE 0.5
 $(keys "exec /tmp/relhello.elf")
 sendkey ret" \
         "Hello, TCC" 60

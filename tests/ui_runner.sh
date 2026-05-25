@@ -440,6 +440,18 @@ reset_shell() {
     fi
     send_script 'sendkey alt-f1'
     sleep 0.5
+    # Defensive escape from any nested shell a prior failing test left
+    # running (notably sh.elf).  Typing `exit<Enter>` exits sh.elf cleanly;
+    # in the kernel shell it surfaces as "Unknown command 'exit'" which is
+    # harmless noise.  The extra settle covers the [sys_exit] / [reaper]
+    # serial burst after sh.elf reaps -- without it the next typed
+    # keystroke gets eaten by the reaper-output race.
+    send_script 'sendkey e
+sendkey x
+sendkey i
+sendkey t
+sendkey ret'
+    sleep 0.8
     send_script 'sendkey c
 sendkey d
 sendkey spc
