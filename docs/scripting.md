@@ -16,6 +16,9 @@ NAME=value           # per-task, no spaces around =, RHS shell-expanded
 echo $NAME           # $VAR
 echo ${NAME}_suffix  # ${VAR} for boundary cases
 echo $?              # last command's exit status (0 on success, 127 unknown)
+                     # For `exec <elf>` lines, $? reflects the child's
+                     # SYS_EXIT value (low 8 bits) via shell_last_exec_status();
+                     # builtins yield $?=0 (no failure-status threading yet).
 env                  # dump the table
 unset NAME [...]     # remove vars
 ```

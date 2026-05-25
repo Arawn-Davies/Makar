@@ -373,7 +373,15 @@ static int backend_write_file(vfs_mount_t *m, const char *p,
     switch (m->backend) {
     case VFS_BACKEND_EXT2:  return ext2_write_file(p, buf, size);
     case VFS_BACKEND_FAT32: return fat32_write_file(p, buf, size);
-    case VFS_BACKEND_LOGFS: return (logfs_write(p, buf, size) < 0) ? -1 : 0;
+    case VFS_BACKEND_LOGFS:
+        /* /log is kernel-write only (Linux's /var/log model).  klog_write
+         * + friends in logfs.c reach the ring directly via ring_append;
+         * userspace and the shell route through vfs_write_file here, and
+         * land on this rejection -- matches the ISO9660 mkdir reject in
+         * vfs_mkdir.  Use /tmp for user-writable scratch files. */
+        (void)p; (void)buf; (void)size;
+        t_writestring("write: read-only filesystem (/log)\n");
+        return -1;
     case VFS_BACKEND_TMPFS: return (tmpfs_write(p, buf, size) < 0) ? -1 : 0;
     default: return -1;   /* read-only or non-writable backend */
     }

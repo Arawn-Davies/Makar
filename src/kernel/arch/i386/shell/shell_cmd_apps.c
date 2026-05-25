@@ -87,6 +87,18 @@ static void exec_task_entry(void)
     task_exit();
 }
 
+/* Last exec'd child's exit status, captured after the wait loop below.
+ * sh_script.c reads this via shell_last_exec_status() to populate $? so
+ * scripts can branch on the ELF's exit code (e.g. "exec foo; if [ $? -eq
+ * 0 ] ...").  Reset to 0 here on every exec attempt -- if exec couldn't
+ * launch (oom / pool full), $? stays at the prior value, which is fine
+ * for in-kernel test scripts that key on success-marker presence rather
+ * than failure-mode forensics. */
+static int s_last_exec_status = 0;
+
+int  shell_last_exec_status(void)         { return s_last_exec_status; }
+void shell_reset_last_exec_status(void)   { s_last_exec_status = 0; }
+
 void shell_exec_elf(const char *path, int argc, char **argv)
 {
     int nargs = argc;
@@ -181,6 +193,13 @@ void shell_exec_elf(const char *path, int argc, char **argv)
      * for unrelated reasons and we lose the cause attribution). */
     while (t->state != TASK_DEAD)
         task_yield();
+
+    /* Capture the reaped child's exit_status so sh_script.c can surface
+     * it as $?.  SIGSEGV-killed tasks get exit_status set to SIGSEGV &
+     * 0x7F by kill_userspace_fault (see CLAUDE.md ring-3 fault handling)
+     * so non-zero status correctly flags both clean SYS_EXIT(N) calls
+     * and ring-3 faults. */
+    s_last_exec_status = t->exit_status & 0xFF;
 
     keyboard_release_task(t);
     if (self) vtty_set_foreground(self->tty, NULL);

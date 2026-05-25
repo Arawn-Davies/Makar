@@ -605,29 +605,21 @@ sendkey ret" \
         "[filetest] PASS"
 }
 
-test_alloctest() {
-    # Phase-2-of-TCC-port slice: userspace heap (malloc.c) + ctype.h +
-    # stdlib.h (strtol/atoi).  alloctest.elf prints "[alloctest] PASS" on
-    # full success or "[alloctest] FAIL: <reason>" on the first failure.
-    # No leading reset_shell -- it_until already calls reset_shell.
-    it_until "alloctest" \
-"$(keys "exec $P_APPS/alloctest.elf")
+test_incore() {
+    # In-kernel test driver: types a single `sh /apps/incore.sh` and the
+    # script runs the non-interactive scenarios (hello, forktest,
+    # execvetest, alloctest) inside the kernel via exec + $? checks --
+    # no HMP per-scenario typing, no per-test reaper-output races.  See
+    # src/userspace/incore.sh for the test list.  Loud failure: the
+    # script exits non-zero and emits "INCORE: FAIL <name>" lines,
+    # which assert_serial_not_contains catches; on the happy path the
+    # final marker "INCORE: ALL PASS" satisfies it_until.
+    it_until "incore" \
+"$(keys "sh /apps/incore.sh")
 sendkey ret" \
-        "[alloctest] PASS" 20
-    assert_serial_contains \
-        "[alloctest] malloc/free 64B ok" \
-        "[alloctest] reuse ok" \
-        "[alloctest] realloc grow ok" \
-        "[alloctest] calloc zeroes ok" \
-        "[alloctest] ctype ok" \
-        "[alloctest] strtol ok" \
-        "[alloctest] atoi ok" \
-        "[alloctest] setjmp/longjmp ok" \
-        "[alloctest] snprintf ok" \
-        "[alloctest] FILE* roundtrip ok" \
-        "[alloctest] readdir ok" \
-        "[alloctest] strdup/qsort/sscanf/getenv ok" \
-        "[alloctest] PASS"
+        "INCORE: ALL PASS" 60
+    assert_serial_contains "INCORE: ALL PASS"
+    assert_serial_not_contains "INCORE: FAIL" "Kernel panic" "SIGSEGV"
 }
 
 test_tmp_roundtrip() {
@@ -1222,11 +1214,14 @@ SHELL_TESTS=(glob_proc tab_path tab_cycle typo_doesnt_clear shell_scripting_vars
 CD_PWD_TESTS=(cd_root per_tty_cwd)
 FS_TESTS=(ls_dev ls_mnt mnt_mountpoint filetest)
 POSIX_TESTS=(exec_hello fork_cow fork_execve user_sigusr1_handler ctrlc_kills_child usershell_smoke usershell_execve usershell_history usershell_vars)
-LIBC_TESTS=(alloctest tcc_hello tcc_hello_relpath tcc_rebuild_hello tcc_rebuild_calc tcc_rebuild_sh tcc_rebuild_makbox)
+LIBC_TESTS=(tcc_hello tcc_hello_relpath tcc_rebuild_hello tcc_rebuild_calc tcc_rebuild_sh tcc_rebuild_makbox)
+# alloctest dropped from LIBC_TESTS -- now covered by the in-kernel
+# incore.sh driver (see test_incore), which exercises it via exec + $?
+INCORE_TESTS=(incore)
 VT_TESTS=(vt_roundtrip_keeps_maktop_focused vt_all_roundtrips)
 BUGHUNT_TESTS=(bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch)
 
-ALL_TESTS=("${SHELL_TESTS[@]}" "${CD_PWD_TESTS[@]}" "${FS_TESTS[@]}" "${POSIX_TESTS[@]}" "${LIBC_TESTS[@]}" "${VT_TESTS[@]}" "${BUGHUNT_TESTS[@]}")
+ALL_TESTS=("${SHELL_TESTS[@]}" "${CD_PWD_TESTS[@]}" "${FS_TESTS[@]}" "${POSIX_TESTS[@]}" "${LIBC_TESTS[@]}" "${INCORE_TESTS[@]}" "${VT_TESTS[@]}" "${BUGHUNT_TESTS[@]}")
 
 # FAST_TESTS: skip anything that mkfs's a disk, compiles C, or runs a long
 # script -- excludes filetest, mnt_mountpoint, alloctest, tcc_hello,
@@ -1246,6 +1241,7 @@ expand_arg() {
         fs)       printf '%s\n' "${FS_TESTS[@]}" ;;
         posix)    printf '%s\n' "${POSIX_TESTS[@]}" ;;
         libc)     printf '%s\n' "${LIBC_TESTS[@]}" ;;
+        incore)   printf '%s\n' "${INCORE_TESTS[@]}" ;;
         vt)       printf '%s\n' "${VT_TESTS[@]}" ;;
         bughunt)  printf '%s\n' "${BUGHUNT_TESTS[@]}" ;;
         *)        printf '%s\n' "$a" ;;

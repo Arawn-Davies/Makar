@@ -609,11 +609,20 @@ static int run_block(char **lines, int from, int to)
         }
 
         /* Plain command line.  Track its exit status in $? so scripts
-         * can branch on it (bash-style). */
+         * can branch on it (bash-style).  An `exec <elf>` line surfaces
+         * the child's exit_status via shell_last_exec_status(); other
+         * recognised commands stay at 0 (their failure modes generally
+         * print a message but don't currently thread a status back).
+         * An unrecognised command yields 127, POSIX-style. */
         static char copy[512];
         strncpy(copy, lines[i], sizeof(copy) - 1);
         copy[sizeof(copy) - 1] = '\0';
-        publish_status(sh_exec_line(copy) ? 0 : 127);
+        shell_reset_last_exec_status();
+        if (sh_exec_line(copy)) {
+            publish_status(shell_last_exec_status());
+        } else {
+            publish_status(127);
+        }
         i++;
     }
     return sh_last_status;

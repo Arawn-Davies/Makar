@@ -101,11 +101,14 @@ docker run --rm -it -v "$PWD:/work" -w /work arawn780/gcc-cross-i686-elf:fast \
 **In-kernel test suite (interactive)**: shell command `ktest` runs all suites from the kernel shell.
 At boot (when `test_mode` is *not* in the cmdline), `ktest_bg_task` runs all suites silently in the background - only prints to VGA on failure; always writes `KTEST_BG: PASS/FAIL` to serial.
 
+**In-kernel UI tests (`src/userspace/incore.sh`)**: a shell-script test driver that runs the non-interactive UI scenarios (hello, forktest, execvetest, alloctest) directly from inside the kernel via the kernel sh interpreter.  Each test invokes its ELF and branches on `$?` (the ELF's own exit status) instead of HMP+serial-grep round-trips; the final marker `INCORE: ALL PASS` (or `INCORE: FAIL`) is what the runner asserts on.  Fronted by the single HMP scenario `test_incore` (`./run.sh ui incore`).  Faster than per-test HMP, no typing races, and the test logic lives in a `.sh` file you can edit without touching the runner.  Tradeoff: loses per-scenario screendump evidence on panic, so only use for tests that don't depend on framebuffer state.  Interactive features (TAB, Ctrl-C, VT switching, sh.elf readline, fullscreen apps) stay in HMP-driven scenarios where the keyboard event itself is under test.
+
 **Black-box UI tests** (`tests/ui_test.sh`, fronted by `./run.sh ui` / `ui-test-gui`): boots `makar.iso`, drives keyboard input through QEMU's **HMP** (Human Monitor Protocol — the text-based control channel exposed by `-monitor unix:...`) via the `sendkey` command, and asserts on substrings in the serial mirror. Covers user-visible flows that `iso-test` doesn't: ELF exec → syscalls → output, shell tab completion, glob expansion, `cd`/`pwd`. **Not wired into CI** (the per-merge job was dropped in `a9b7474` — the framework's reliance on HMP timing made it flaky under the **TCG** (Tiny Code Generator — QEMU's interpreted/JIT CPU emulator, used because KVM is off by default per the note above) emulation that runs in the CI containers). Run locally before opening any PR that touches syscalls, shell, ELF exec, VFS, keyboard, or display:
 ```sh
 ./run.sh ui                                # headless: all scenarios
 ./run.sh ui fast                           # headless: dev inner-loop subset
-./run.sh ui libc                           # headless: alloctest + TCC self-rebuild scenarios
+./run.sh ui libc                           # headless: TCC self-rebuild scenarios
+./run.sh ui incore                         # headless: in-kernel sh.script driver (hello/forktest/execvetest/alloctest)
 ./run.sh ui shell|cd|fs|posix|vt|bughunt   # other named scenario groups
 ./run.sh ui exec-hello                     # headless: one scenario
 ./run.sh gui                               # visible window + paced typing (watch it run)
@@ -146,7 +149,7 @@ The `setmode` shell command can switch freely between any supported resolution a
 ### Memory map
 - `0x00000000–0x0FFFFFFF` (256 MiB): kernel identity window (4 MiB large pages)
 - `0x40000000` (`USER_CODE_BASE`): ring-3 code page
-- `0xBFFF0000` (`USER_STACK_TOP`): ring-3 stack top (one 4 KiB page below)
+- `0xBFFF0000` (`USER_STACK_TOP`): ring-3 stack top.  `USER_STACK_PAGES = 8`, so the stack occupies `[USER_STACK_TOP - 32 KiB, USER_STACK_TOP)` mapped eagerly at exec.  Was a single 4 KiB page until TCC's recursive-descent parser blew past it compiling sh.c.
 
 ### Tasking
 Round-robin scheduler with timer-driven preemption (PIT 100 Hz; IRQ 0 yields every `SCHED_QUANTUM=4` ticks ≈ 40 ms). Cooperative `task_yield()` is also available for explicit yields. Context switch via `task_asm.S` (callee-saved + EFLAGS). `task_exit()` marks the task DEAD and yields; the scheduler reaps the dead task's user page directory after switching CR3 away from it (`schedule()` reaper, `task.c`). Pool is fixed-size (`MAX_TASKS=8`).
@@ -181,6 +184,8 @@ The VFS is a single static mount table (`s_mounts[]` in `src/kernel/arch/i386/fs
 **Public API**: `vfs_ls`/`cd`/`cat`/`mkdir`/`read_file`/`write_file`/`delete_file`/`delete_dir`/`rename`/`file_exists`/`stat`/`complete`/`blockdev_lookup`/`blockdev_pread`/`blockdev_pwrite`/`mount_root`/`mount_hd`/`umount_hd`/`make_mountpoint`/`remove_mountpoint`/`prepare_shutdown`/`notify_cdrom_ejected`/`ensure_root_home`/`hd_mounted`/`hd_fsname`/`getcwd`/`set_boot_drive`/`auto_mount`/`init`/`klog_*` (legacy logfs shims).
 
 **Path conventions**: rootfs at `/`; Unix paths `/usr` `/etc` `/home` `/apps` `/root` `/bin` `/src` `/docs` resolve via the rootfs's actual directory contents (no special-casing).  `/boot/...` routes to the FAT32 boot partition mirror.  `/mnt/<name>/...` routes to user-mounted volumes.  `/mnt/cdrom/...` always works (whether or not CD is also the rootfs).  `/proc`, `/dev`, `/tmp`, `/log` are first-class overlays.
+
+**`/log` is read-only from userspace** (Linux `/var/log` model): the VFS rejects writes routed through `backend_write_file` with `"write: read-only filesystem (/log)"`.  Kernel-side `klog_write` + friends still append into the ring directly via `ring_append` -- they bypass the VFS.  Use `/tmp` for user-writable scratch (wholesale overwrite, 16 files × 512 KiB).  `/log` files are append-only rings (dmesg-style); a `fopen("w")` re-write would otherwise double the content on every run, which bit `alloctest`'s FILE* roundtrip test.
 
 ### Syscall ABI (`int 0x80`, Linux i386 convention)
 Authoritative table in `src/kernel/include/kernel/syscall.h`. Selected entries:
@@ -245,7 +250,7 @@ The kernel shell exposes a per-shell-task scripting layer (`kernel/sh_script.h`,
 | Surface | Behaviour |
 |---|---|
 | `NAME=value` | Per-task assignment.  RHS shell-expanded.  Stored in `task_t.script_vars` (isolated per VT — VT0's vars don't leak into VT1, matching the per-VT palette model). |
-| `$VAR` / `${VAR}` / `$?` | Expansion at REPL or inside scripts.  `$?` is the last command's exit status (set after every dispatched line and every `[ TEST ]`). |
+| `$VAR` / `${VAR}` / `$?` | Expansion at REPL or inside scripts.  `$?` is the last command's exit status (set after every dispatched line and every `[ TEST ]`).  For `exec <elf>` lines `$?` reflects the child's `SYS_EXIT` value (low 8 bits) via `shell_last_exec_status()` -- so `exec /apps/alloctest.elf; if [ $? -eq 0 ] ...` works.  Built-in commands yield `$?=0` (no failure-status threading yet); an unrecognised command yields `127` POSIX-style. |
 | `env` / `unset NAME ...` | Dump table / remove vars. |
 | `read VAR` | Reads one line of input from the keyboard into VAR. |
 | `[ TEST ]` | String tests (`-z`/`-n`/`=`/`!=`) and integer tests (`-eq`/`-ne`/`-lt`/`-le`/`-gt`/`-ge`).  Non-numeric operand to integer ops fails with `[: integer expected`. |
@@ -257,7 +262,7 @@ The kernel shell exposes a per-shell-task scripting layer (`kernel/sh_script.h`,
 | `sleep N` | Busy-yield until N seconds elapse (PIT-driven). |
 | `true` / `false` | POSIX status helpers. |
 
-Limitations: no command substitution (`$(cmd)`), no pipes, no subshells (needs `fork()` — see slice 12).  See `src/userspace/demo.sh` for a worked example exercising every surface.
+Limitations: no command substitution (`$(cmd)`), no pipes, no subshells (needs `fork()` — see slice 12).  No double-quote stripping in the tokenizer (`echo "X"` prints literal `"X"`); use bareword args or single quotes.  See `src/userspace/demo.sh` for a worked example exercising every surface, and `src/userspace/incore.sh` for the in-kernel UI-test driver pattern.
 
 ### VMM (per-task page directories)
 - `vmm_create_pd()` - allocates a page directory and mirrors kernel PDEs (indices 0–63)

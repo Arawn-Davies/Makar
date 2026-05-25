@@ -165,6 +165,32 @@ the instant the kernel says it's ready and bounds via the timeout.
 one; `./run.sh ui graphical` runs with a visible QEMU window for
 debugging.
 
+### In-kernel test driver (`incore.sh`)
+
+For scenarios that just need to "run a binary, check it exited 0,"
+the per-test HMP round-trip is overhead.  `src/userspace/incore.sh`
+is a kernel-sh script that drives those tests directly inside the
+guest via `exec` + `$?`: each test invokes its ELF and the script
+branches on the child's `SYS_EXIT` value (low 8 bits) surfaced as
+`$?` by `shell_last_exec_status()` in `shell_cmd_apps.c`.  Final
+marker `INCORE: ALL PASS` (or `INCORE: FAIL`) is the one substring
+the runner asserts on.  Fronted by the single HMP scenario
+`test_incore` (`./run.sh ui incore`); see `src/userspace/incore.sh`
+for the current test list (hello, forktest, execvetest, alloctest).
+
+Trade-off vs HMP scenarios: faster (no per-test typing/settle, no
+reset_shell, no reaper-output races), and the test list is editable
+in a `.sh` file without touching the runner -- but no screendump
+evidence on panic, so this is only the right shape for tests that
+don't depend on framebuffer state.  Interactive features (TAB,
+Ctrl-C, VT switching, sh.elf readline, fullscreen apps) stay in
+HMP-driven scenarios where the keyboard event is itself under test.
+
+Each ELF in `incore.sh` is expected to print `[name] PASS` /
+`[name] FAIL: <reason>` on its own and exit `0` / non-zero; the
+script just aggregates.  See `alloctest.c` for the canonical shape
+(12 sub-tests, each emitting a status line, `return 0`/`return 1`).
+
 ---
 
 ## CI
