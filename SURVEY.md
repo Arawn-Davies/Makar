@@ -11,7 +11,7 @@ Three test paths fan out from `./run.sh iso test`:
 | Phase | Source | What it verifies |
 |---|---|---|
 | **ktest** | `src/kernel/arch/i386/proc/ktest.c` + `usertest.c` | In-kernel unit suites: PMM/paging invariants, ring-3 lifecycle, keyboard sentinel widths, VFS lookup, etc. Runs under `test_mode` cmdline; exits QEMU via isa-debug-exit. Output: `ktest.log` (with PASS/FAIL per assert). |
-| **GDB ISO** | `tests/gdb_boot_test.py` | Boot-checkpoint + hardware-state probe under the QEMU GDB stub. Verifies Multiboot 2 magic, every `kernel_main` checkpoint, CR0.PG / CR3, PIT ticking, background ktest result, CD-ROM and `/mnt/hd` content. Output: `gdb-test.log`, `gdb-serial.log`. |
+| **GDB ISO** | `tests/gdb_boot_test.py` | Boot-checkpoint + hardware-state probe under the QEMU GDB stub. Verifies Multiboot 2 magic, every `kernel_main` checkpoint, CR0.PG / CR3, PIT ticking, background ktest result, CD-ROM and HDD rootfs content. Output: `gdb-test.log`, `gdb-serial.log`. |
 | **GDB HDD** | `tests/gdb_hdd_test.py` | Same shape as GDB ISO but boots from `makar-hdd-test.img` (no CD-ROM) to prove FAT32-from-MBR boot + auto-mount. |
 | **UI** | `tests/ui_test.sh` | Black-box scenarios driven through QEMU's HMP `sendkey`, asserting on substrings in serial. Scenarios: `glob-proc`, `tab-complete-path`, `cd-root-listing`. CI uploads serial + screendump per scenario. Boot sync on the `kernel: boot complete` serial marker. |
 
@@ -20,9 +20,9 @@ All four phases run in parallel CI jobs (`.github/workflows/build-test.yml`).
 ## Shell Commands (Kernel Builtins)
 
 ### Filesystem Commands (`shell_cmd_fs.c`, `shell_cmd_fileops.c`)
-- **mount** - `mount /dev/hdaN /mnt/<name>` mounts a FAT32 partition at a chosen mountpoint under `/mnt` (default OS drive is `/mnt/hd`); legacy `mount <drive> <part#>` still works and lands at `/mnt/hd`
-- **umount** - `umount [/mnt/<name>]` flushes + unmounts the FAT32 volume; `umount /mnt/cdrom` unmounts and ejects the CD-ROM
-- **ls** - List directory contents (supports VFS paths: `/mnt/hd/`, `/mnt/cdrom/`, `/dev`, `/proc`)
+- **mount** - `mount /dev/hdaN /mnt/<name>` binds a FAT32 or ext2 partition to an empty mountpoint under `/mnt` (mkdir `/mnt/<name>` first); the legacy numeric form and the `/mnt/hd` default were retired
+- **umount** - `umount [/mnt/<name>]` unmounts the sole bound HD volume if unique; `umount /mnt/cdrom` unmounts and ejects the CD-ROM
+- **ls** - List directory contents (supports VFS paths: `/`, `/apps`, `/usr`, `/mnt/cdrom/`, `/dev`, `/proc`)
 - **cat** - Print file contents to terminal
 - **cd** - Change current working directory
 - **mkdir** - Create a directory (FAT32 only)
@@ -56,7 +56,7 @@ All four phases run in parallel CI jobs (`.github/workflows/build-test.yml`).
 ### Application Commands (`shell_cmd_apps.c`, lines 26–192)
 - **vix** - Launch VIX interactive text editor on a file
 - **install** - Run OS installer from CD-ROM to HDD
-- **exec** - Execute userspace ELF from a PATH directory (default `/mnt/cdrom/apps/` or `/mnt/hd/apps/`)
+- **exec** - Execute userspace ELF from a PATH directory (default `/apps/`; rootfs election routes to the live medium)
 - **eject** - Eject HDD or CD-ROM (`umount /mnt/cdrom` also ejects)
 - **ring3test** - Ring 3 test harness (defined in `proc/usertest.c`)
 
@@ -83,7 +83,7 @@ static const shell_cmd_entry_t * const cmd_modules[] = {
 ```
 
 When a command is not found in built-ins, it falls back to **PATH lookup**:
-- Iterates the colon-separated `PATH` shell variable (settable like any var; default `/mnt/cdrom/apps:/mnt/hd/apps`), trying `<dir>/<cmd>.elf`
+- Iterates the colon-separated `PATH` shell variable (settable like any var; default `/apps`), trying `<dir>/<cmd>.elf`
 - Calls `shell_exec_elf()` to spawn the app as a new kernel task
 
 ## Userspace Apps (ELF Executables)
@@ -174,21 +174,21 @@ All apps in `/Users/arawn/Makar/src/userspace/` compile to `.elf` files and are 
 ## VFS API (`src/kernel/include/kernel/vfs.h`)
 
 **Unified namespace:**
-- `/` - virtual root; lists `[mnt] [proc] [dev]`; `vfs_complete()` enumerates them so `cd /<TAB>`, `cat /*`, `ls /p*` all work
-- `/mnt` - disk-filesystem container; lists the live mounts (`[hd]` / `[cdrom]`)
-- `/mnt/hd/…` - FAT32 hard disk (default OS drive; mountpoint name configurable via `mount`)
-- `/mnt/cdrom/…` - ISO9660 CD-ROM (auto-detected at init)
+- `/` - virtual root; rootfs election elevates a disk volume here so `/usr`, `/etc`, `/home`, `/apps`, `/root` resolve via the rootfs.  `vfs_complete()` enumerates entries so `cd /<TAB>`, `cat /*`, `ls /p*` all work
+- `/mnt` - user-mountable container; lists empty mountpoints (`[boot]`, `[root]`) + any user mkdir'd ones; mounts elevated to `/` or `/boot` are hidden
+- `/mnt/cdrom/…` - ISO9660 CD-ROM (auto-detected at init, elevated to `/` on live boot)
 - `/proc/…` - synthetic, always-present read-only view of kernel state. Backed by `arch/i386/fs/procfs.c`; mount path is the `PROCFS_MOUNT` constant in `include/kernel/procfs.h`. Entries: `cpuinfo`, `meminfo`, `tasks`, `uname`, `rtc` (content generated on each read; no caching)
 - `/dev/…` - synthetic block-device tree (`arch/i386/fs/devfs.c`): `/dev/hda[N]` ATA disks/partitions, `/dev/cdrom` ATAPI. Byte-addressed read/write via `devfs_pread`/`devfs_pwrite` over native sector I/O; opened as `FD_KIND_BLOCKDEV`
 
 ### Lifecycle
-- `vfs_init()` - probe IDE for ISO9660; reset CWD to `/`; build the `/dev` node table (`devfs_init`)
+- `vfs_init()` - probe ATAPI for ISO9660 CD-ROM; register synthetic overlays (`/dev`, `/proc`, `/tmp`, `/log`) and `/mnt/cdrom` (when present) as first-class mount-table entries; pre-register empty `/mnt/boot` + `/mnt/root` placeholders; build the `/dev` node table
 - `vfs_set_boot_drive(biosdev)` - record BIOS boot device
-- `vfs_auto_mount()` - mount HDD (at `/mnt/hd`) or CD-ROM based on boot device
-- `vfs_set_hd_mount(name)` / `vfs_hd_mount()` - get/set the `/mnt` component for the FAT32 volume (default `hd`)
+- `vfs_mount_root(spec)` - elect and bind the rootfs at `/`.  Spec resolution: `/dev/hdaN` (explicit), `"none"` (skip), NULL/auto (walk every ATA partition probing for `/usr/lib/crt0.o`; CD-ROM fallback for live boots)
+- `vfs_auto_mount()` - probe ATA drives; single-partition disks bind at `/mnt/root`, dual-partition installer layouts bind partition 0 at `/mnt/boot` (also mirrored at `/boot`) + partition 1 at `/mnt/root`
+- `vfs_ensure_root_home()` - best-effort `mkdir /root` on writable rootfs (ext2/FAT32) boots; no-op on ISO9660 or no-rootfs
+- `vfs_mount_hd(drive, lba, name)` - bind a HD volume into an existing empty mountpoint (`mkdir /mnt/<name>` first); legacy `/mnt/hd` default removed
 - `vfs_prepare_shutdown()` - flush + unmount before power-off/reset (called from `shutdown`/`reboot`)
-- `vfs_notify_hd_mounted/unmounted()` - called by mount/umount commands
-- `vfs_notify_cdrom_ejected()` - called after ATAPI eject
+- `vfs_notify_cdrom_ejected()` - called after ATAPI eject; drops every mount-table entry pointing at the CD-ROM (typically `/mnt/cdrom`, plus `/` if it was elected as rootfs)
 
 ### Operations
 - `vfs_ls(path)` - list directory

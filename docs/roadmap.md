@@ -147,9 +147,9 @@ Open:
 Already shipped:
 - `/proc/` synthetic filesystem with `cpuinfo`/`meminfo`/`tasks`/`uname`/`rtc`
   (#129)
-- FAT32 R/W; disk filesystems under `/mnt` (`/mnt/hd`, `/mnt/cdrom`), with
-  `/hd` and `/cdrom` aliases; `mount /dev/hdaN /mnt/<name>`; flush + unmount
-  on shutdown/reboot
+- FAT32 R/W; disk filesystems under `/mnt` (`/mnt/root`, `/mnt/boot`,
+  `/mnt/cdrom`); `mount /dev/hdaN /mnt/<name>`; flush + unmount on
+  shutdown/reboot
 - **#150 — `/dev/` synthetic VFS**: raw block devices `/dev/hda[N]` +
   `/dev/cdrom` ([devfs](kernel/devfs.md)); byte-addressed sector I/O
 - **#149 — fdisk**: `fdisk.elf` MBR editor reads/writes the partition table

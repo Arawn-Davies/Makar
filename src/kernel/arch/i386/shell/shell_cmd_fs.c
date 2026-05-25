@@ -35,67 +35,40 @@ static const char *mountpoint_name(const char *mp)
     return name;
 }
 
-/* mount /dev/hdaN /mnt/<name>  -- device-path form (preferred).
- * mount <drive> <part#>        -- legacy numeric form (mounts at /mnt/hd). */
+/* mount /dev/hdaN /mnt/<name>  -- the only supported form.  Targets an
+ * empty mountpoint (mkdir /mnt/<name> first); the legacy numeric form
+ * was retired with the /mnt/hd slot. */
 static void cmd_mount(int argc, char **argv)
 {
-    if (argc < 3) {
-        t_writestring("Usage: mount /dev/hdaN /mnt/<name>\n"
-                      "       mount <drive> <part#>   (legacy, -> /mnt/hd)\n");
+    if (argc < 3 || strncmp(argv[1], "/dev/", 5) != 0) {
+        t_writestring("Usage: mount /dev/hdaN /mnt/<name>\n");
         return;
     }
 
     uint8_t     drive;
     uint32_t    lba;
-    const char *mount_name = "hd";   /* legacy form always lands at /mnt/hd */
+    const char *mount_name;
 
-    if (strncmp(argv[1], "/dev/", 5) == 0) {
-        /* Device-path form.  devfs_lookup wants the path relative to the
-         * /dev mount, i.e. starting at the node name's leading '/'. */
-        int node = devfs_lookup(argv[1] + 4);   /* "/dev/hda1" -> "/hda1" */
-        if (node < 0) {
-            t_writestring("mount: no such device: ");
-            t_writestring(argv[1]);
-            t_putchar('\n');
-            return;
-        }
-        mount_name = mountpoint_name(argv[2]);
-        if (!mount_name) {
-            t_writestring("mount: bad mountpoint '");
-            t_writestring(argv[2]);
-            t_writestring("' (expected /mnt/<name>, one level deep; "
-                          "cdrom is reserved)\n");
-            return;
-        }
-        if (devfs_node_location(node, &drive, &lba) != 0) {
-            t_writestring("mount: cannot resolve device geometry\n");
-            return;
-        }
-    } else {
-        /* Legacy numeric form: mount <drive> <part#>. */
-        drive        = (uint8_t)parse_uint(argv[1]);
-        int part_num = (int)parse_uint(argv[2]);
-
-        int err = part_probe(drive, &s_cmd_parts);
-        if (err) {
-            t_writestring("mount: drive not accessible\n");
-            return;
-        }
-
-        int part_idx = part_num - 1;
-        if (part_idx < 0 || part_idx >= s_cmd_parts.count) {
-            t_writestring("mount: invalid partition number");
-            if (s_cmd_parts.count > 0) {
-                t_writestring(" (valid: 1-");
-                t_dec((uint32_t)s_cmd_parts.count);
-                t_putchar(')');
-            }
-            t_writestring("\n       (use lspart ");
-            t_dec(drive);
-            t_writestring(" to list partitions)\n");
-            return;
-        }
-        lba = s_cmd_parts.parts[part_idx].lba_start;
+    /* devfs_lookup wants the path relative to the /dev mount, i.e.
+     * starting at the node name's leading '/'. */
+    int node = devfs_lookup(argv[1] + 4);   /* "/dev/hda1" -> "/hda1" */
+    if (node < 0) {
+        t_writestring("mount: no such device: ");
+        t_writestring(argv[1]);
+        t_putchar('\n');
+        return;
+    }
+    mount_name = mountpoint_name(argv[2]);
+    if (!mount_name) {
+        t_writestring("mount: bad mountpoint '");
+        t_writestring(argv[2]);
+        t_writestring("' (expected /mnt/<name>, one level deep; "
+                      "cdrom is reserved)\n");
+        return;
+    }
+    if (devfs_node_location(node, &drive, &lba) != 0) {
+        t_writestring("mount: cannot resolve device geometry\n");
+        return;
     }
 
     int fs = 0;

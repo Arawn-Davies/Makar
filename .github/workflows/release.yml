@@ -1,19 +1,35 @@
 name: Release
 
-# Triggered only by a semver tag push (e.g. v0.6.0). Per-PR sanity is covered
-# by build-test.yml; this workflow exists to publish curated milestones to the
-# GitHub Releases page. To cut a release: `git tag v0.X.Y && git push --tags`.
+# Fires automatically when MAKAR_VERSION bumps on main (path-filtered to
+# `src/kernel/include/kernel/version.h` so unrelated commits don't churn
+# CI), AND when a `v*` tag is pushed explicitly, AND on manual dispatch.
 #
-# Runs the full CI suite (build + ktest + gdb-iso + gdb-hdd) before building
-# artifacts.
+# Per-PR sanity is covered by build-test.yml; this workflow exists to
+# publish curated milestones to the GitHub Releases page.
+#
+# Auto path (version.h change on main):
+#   1. `decide` reads MAKAR_VERSION, derives `vX.Y.Z`, skips if that tag
+#      already exists (idempotent across rebuilds).
+#   2. Reusable build-test.yml runs the full CI suite.
+#   3. Release job builds the release artifacts and publishes them;
+#      softprops/action-gh-release creates the tag on the head SHA if it
+#      doesn't exist yet.
+#
+# Manual paths:
+#   - `git tag vX.Y.Z && git push --tags`  -> always proceeds (explicit
+#     operator intent; not gated on the idempotency check).
+#   - Actions tab > Run workflow                 -> same gate as auto.
 #
 # Release artifacts (interactive kernel, no TEST_MODE):
-#   makar.iso      – bootable CD-ROM image
-#   makar-hdd.img  – installed HDD image (MBR + FAT32 + GRUB 2)
+#   makar.iso      - bootable CD-ROM image
+#   makar-hdd.img  - installed HDD image (MBR + FAT32 + GRUB 2)
 
 on:
   workflow_dispatch:
   push:
+    branches: [main]
+    paths:
+      - 'src/kernel/include/kernel/version.h'
     tags:
       - 'v*'
 
@@ -21,24 +37,66 @@ permissions:
   contents: write
 
 jobs:
-  # ── Run the full build & test suite ─────────────────────────────────────────
+  # ── Decide whether to release + compute the tag ────────────────────────────
+  decide:
+    name: Decide release tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.compute.outputs.tag }}
+      go:  ${{ steps.compute.outputs.go }}
+
+    steps:
+      - name: Checkout (with tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need full tag list for the idempotency check
+
+      - name: Compute release tag
+        id: compute
+        run: |
+          set -eu
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            # Explicit tag push: always proceed -- operator intent.
+            tag="${GITHUB_REF#refs/tags/}"
+            echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+            echo "go=true"    >> "$GITHUB_OUTPUT"
+            echo "Tag push detected: ${tag} (always proceed)."
+            exit 0
+          fi
+
+          v=$(awk -F\" '/define[[:space:]]+MAKAR_VERSION/ { print $2; exit }' \
+                  src/kernel/include/kernel/version.h)
+          if [[ -z "${v}" ]]; then
+            echo "::error::could not extract MAKAR_VERSION from version.h"
+            exit 1
+          fi
+          tag="v${v}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            echo "Tag ${tag} already exists; skipping release (idempotent)."
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+            echo "New version ${tag}; proceeding with release."
+          fi
+
+  # ── Run the full build & test suite (gated on decide.go) ───────────────────
   build-test:
+    needs: decide
+    if: needs.decide.outputs.go == 'true'
     uses: ./.github/workflows/build-test.yml
 
   # ── Build and publish release artifacts ────────────────────────────────────
   release:
     name: Publish release
-    needs: [build-test]
+    needs: [decide, build-test]
+    if: needs.decide.outputs.go == 'true'
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Compute release tag
-        id: tag
-        run: |
-          echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
       - name: Build release ISO
         run: ./run.sh iso release
@@ -47,9 +105,13 @@ jobs:
         run: ./run.sh hdd release
 
       - name: Publish GitHub release
+        # action-gh-release creates the tag on the workflow head SHA when
+        # `tag_name` doesn't already exist, so auto path (version.h bump
+        # on main) gets a fresh tag without a separate git-tag step.
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.name }}
+          tag_name: ${{ needs.decide.outputs.tag }}
+          name: "Makar ${{ needs.decide.outputs.tag }}"
           files: |
             makar.iso
             makar-hdd.img

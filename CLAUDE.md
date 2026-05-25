@@ -101,11 +101,14 @@ docker run --rm -it -v "$PWD:/work" -w /work arawn780/gcc-cross-i686-elf:fast \
 **In-kernel test suite (interactive)**: shell command `ktest` runs all suites from the kernel shell.
 At boot (when `test_mode` is *not* in the cmdline), `ktest_bg_task` runs all suites silently in the background - only prints to VGA on failure; always writes `KTEST_BG: PASS/FAIL` to serial.
 
+**In-kernel UI tests (`src/userspace/incore.sh`)**: a shell-script test driver that runs the non-interactive UI scenarios (hello, forktest, execvetest, alloctest) directly from inside the kernel via the kernel sh interpreter.  Each test invokes its ELF and branches on `$?` (the ELF's own exit status) instead of HMP+serial-grep round-trips; the final marker `INCORE: ALL PASS` (or `INCORE: FAIL`) is what the runner asserts on.  Fronted by the single HMP scenario `test_incore` (`./run.sh ui incore`).  Faster than per-test HMP, no typing races, and the test logic lives in a `.sh` file you can edit without touching the runner.  Tradeoff: loses per-scenario screendump evidence on panic, so only use for tests that don't depend on framebuffer state.  Interactive features (TAB, Ctrl-C, VT switching, sh.elf readline, fullscreen apps) stay in HMP-driven scenarios where the keyboard event itself is under test.
+
 **Black-box UI tests** (`tests/ui_test.sh`, fronted by `./run.sh ui` / `ui-test-gui`): boots `makar.iso`, drives keyboard input through QEMU's **HMP** (Human Monitor Protocol — the text-based control channel exposed by `-monitor unix:...`) via the `sendkey` command, and asserts on substrings in the serial mirror. Covers user-visible flows that `iso-test` doesn't: ELF exec → syscalls → output, shell tab completion, glob expansion, `cd`/`pwd`. **Not wired into CI** (the per-merge job was dropped in `a9b7474` — the framework's reliance on HMP timing made it flaky under the **TCG** (Tiny Code Generator — QEMU's interpreted/JIT CPU emulator, used because KVM is off by default per the note above) emulation that runs in the CI containers). Run locally before opening any PR that touches syscalls, shell, ELF exec, VFS, keyboard, or display:
 ```sh
 ./run.sh ui                                # headless: all scenarios
 ./run.sh ui fast                           # headless: dev inner-loop subset
-./run.sh ui libc                           # headless: alloctest + TCC self-rebuild scenarios
+./run.sh ui libc                           # headless: TCC self-rebuild scenarios
+./run.sh ui incore                         # headless: in-kernel sh.script driver (hello/forktest/execvetest/alloctest)
 ./run.sh ui shell|cd|fs|posix|vt|bughunt   # other named scenario groups
 ./run.sh ui exec-hello                     # headless: one scenario
 ./run.sh gui                               # visible window + paced typing (watch it run)
@@ -131,10 +134,12 @@ Make sure it's a bit of a delay between each test so the startup screen is visib
 1. `terminal_initialize` → `init_serial(COM1)` → `init_descriptor_tables` (GDT+IDT)
 2. Exception handlers, PMM, paging (256 MiB identity map, 4 MiB pages), heap
 3. VESA init + display mode selection: 720p if Bochs VBE available, else 80×50 VGA text
-4. Timer (100 Hz PIT), keyboard (layered PS/2 driver), IDE/VFS
-5. `tasking_init` + `task_create("shell", shell_run)` + `task_create("ktest", ktest_bg_task)`
-6. `syscall_init` (registers `int 0x80` handler at IDT gate DPL=3)
-7. Idle loop: `task_yield` + `hlt`
+4. Timer (100 Hz PIT), keyboard (layered PS/2 driver), IDE
+5. Multiboot2 cmdline parse: extracts `test_mode`, `console=ttyS0`, and `root=<spec>` (spec = `/dev/hdaN` for explicit rootfs selection, `none` to skip election, anything else / NULL = auto-detect)
+6. `vfs_init` → `vfs_mount_root(root_spec)` → `vfs_auto_mount` → `vfs_ensure_root_home` (see § VFS below)
+7. `tasking_init` + `task_create("shell", shell_run)` + `task_create("ktest", ktest_bg_task)`
+8. `syscall_init` (registers `int 0x80` handler at IDT gate DPL=3)
+9. Idle loop: `task_yield` + `hlt`
 
 ### Display mode selection
 At boot, `kernel_main` calls `bochs_vbe_available()`. If the Bochs VBE I/O ports respond (QEMU `-vga std`), it sets 1280×720×32 and initialises the VESA TTY at `font_scale=2` (40-col equivalent at this res). If VBE is absent (hardware or minimal QEMU config), it falls back to VGA 80×50 text mode.
@@ -144,7 +149,7 @@ The `setmode` shell command can switch freely between any supported resolution a
 ### Memory map
 - `0x00000000–0x0FFFFFFF` (256 MiB): kernel identity window (4 MiB large pages)
 - `0x40000000` (`USER_CODE_BASE`): ring-3 code page
-- `0xBFFF0000` (`USER_STACK_TOP`): ring-3 stack top (one 4 KiB page below)
+- `0xBFFF0000` (`USER_STACK_TOP`): ring-3 stack top.  `USER_STACK_PAGES = 8`, so the stack occupies `[USER_STACK_TOP - 32 KiB, USER_STACK_TOP)` mapped eagerly at exec.  Was a single 4 KiB page until TCC's recursive-descent parser blew past it compiling sh.c.
 
 ### Tasking
 Round-robin scheduler with timer-driven preemption (PIT 100 Hz; IRQ 0 yields every `SCHED_QUANTUM=4` ticks ≈ 40 ms). Cooperative `task_yield()` is also available for explicit yields. Context switch via `task_asm.S` (callee-saved + EFLAGS). `task_exit()` marks the task DEAD and yields; the scheduler reaps the dead task's user page directory after switching CR3 away from it (`schedule()` reaper, `task.c`). Pool is fixed-size (`MAX_TASKS=8`).
@@ -153,12 +158,34 @@ Round-robin scheduler with timer-driven preemption (PIT 100 Hz; IRQ 0 yields eve
 
 Per-task state (`task_t` in `kernel/task.h`):
 - `pid` - monotonically assigned (idle = 1, others from 2)
-- `cwd[VFS_PATH_MAX]` - authoritative per-task working directory; inherited from creator on `task_create`; `vfs_getcwd()` / `vfs_cd()` route here through `task_current()`. Pre-tasking-init, `vfs.c` falls back to `s_boot_cwd`, which `tasking_init` then hands off to `idle->cwd`. VT0 at `/proc` and VT1 at `/mnt/cdrom/apps` are fully independent.
+- `cwd[VFS_PATH_MAX]` - authoritative per-task working directory; inherited from creator on `task_create`; `vfs_getcwd()` / `vfs_cd()` route here through `task_current()`. Pre-tasking-init, `vfs.c` falls back to `s_boot_cwd`, which `tasking_init` then hands off to `idle->cwd`. VT0 at `/proc` and VT1 at `/apps` are fully independent.
 - `tty` - TTY index (TASK_TTY_NONE for unbound); not yet authoritative (vtty.c still uses `vtty_tasks[]`)
 - `sig_pending` / `sig_mask`  Linux-style signal bitmasks (subsystem to follow)
 - `fd_table` - per-task fd table (`kernel/fd.h`); fds 0/1/2 pre-bound to stdin/stdout/stderr at `task_create`.  `FD_KIND_FILE` slots hold a growable kmalloc'd buffer plus `capacity`/`dirty`/`writable`/`append`/inline `path[VFS_PATH_MAX]`; `fd_close` flushes dirty buffers via `vfs_write_file(path,...)`.  `fd_table_clone` (fork) deep-copies each FILE buffer and **clears `dirty` on the child copy** so only the parent's eventual close re-writes the file — a deliberate non-POSIX shortcut, undone by the future `open_file_t` refactor (pipe(2)/dup(2) slice).
 - `exec_params` - kmalloc'd `exec_params_t` set by `shell_exec_elf` and consumed by `exec_task_entry`. Per-task so two shells on different TTYs can `exec` concurrently without trampling each other's argv/path (the prior static-globals approach caused a `CS=0x3F8` ring-3 panic under load); reaped on slot reuse.
 - `user_brk`, `page_dir`, `state`, `name`, `esp`, `stack`, `next`
+
+### VFS (mount table, rootfs election, overlays)
+
+The VFS is a single static mount table (`s_mounts[]` in `src/kernel/arch/i386/fs/vfs.c`, capacity `MAX_MOUNTS=16`).  Each entry is `vfs_mount_t { char mountpoint[VFS_PATH_MAX]; vfs_backend_t backend; uint8_t drive; uint32_t lba; char slot_name[]; }`.
+
+**Routing** (`vfs_route(abs, &drv_path)`): longest-prefix-match against every entry's `mountpoint`.  Returns the matched entry's index and writes the driver-relative path (e.g. `/dev/hda1` → `/dev` mount, drv = `/hda1`).  No path-rewriting, no recursion -- pure data lookup.  Backend dispatch is a `switch (m->backend)` in helpers `backend_ls` / `backend_cd` / `backend_read_file` / `backend_write_file` / `backend_mkdir` / `backend_delete_*` / `backend_file_exists` / `backend_complete` / `backend_unmount`.
+
+**Backends** (`vfs_backend_t` enum): `NONE` (empty mountpoint placeholder), `EXT2`, `FAT32`, `ISO9660`, `DEVFS`, `PROCFS`, `TMPFS`, `LOGFS`.  ext2 + FAT32 are single-volume drivers (one of each at a time -- enforced by `backend_in_use`).
+
+**Boot order** (`kernel_main`):
+1. **`vfs_init`** -- probe ATAPI for an ISO9660 CD-ROM; register synthetic overlays at fixed mountpoints: `/dev` (DEVFS), `/proc` (PROCFS), `/tmp` (TMPFS), `/log` (LOGFS); register CD-ROM at `/mnt/cdrom` if present; pre-register empty `/mnt/boot` + `/mnt/root` placeholders (NONE backend; the installer + auto-mount bind into these).  Build the `/dev` node table.
+2. **`vfs_mount_root(spec)`** -- elect and bind the rootfs at `/`.  Spec resolution: explicit `/dev/hdaN` → `devfs_lookup` → try ext2 then FAT32 → mount at `/`; spec = `"none"` → skip; spec NULL / unrecognised → auto-detect (walk every ATA partition, ext2 → FAT32 probe each, the first whose `/usr/lib/crt0.o` exists wins); CD-ROM fallback for live boots.
+3. **`vfs_auto_mount`** -- bind ATA volumes at `/mnt/root` (single-partition; or partition 1 of dual-partition installer) and `/mnt/boot` (partition 0 FAT32 of dual-partition installer; also mirrored at `/boot` for easy access).  Single-volume backends already in use (e.g. ext2 elevated to `/` by `vfs_mount_root`) cause the matching `/mnt/<name>` slot to stay empty -- the rootfs is reachable via `/` regardless.
+4. **`vfs_ensure_root_home`** -- best-effort `mkdir /root` on writable rootfs (ext2/FAT32) boots; no-op on ISO9660 or no-rootfs.
+
+**`/mnt` is virtual**: there's no entry literally at `/mnt`; `vfs_ls("/mnt")` enumerates every mount whose `mountpoint` starts with `/mnt/` (one component deep).  Same shape for `/` -- enumerates immediate-child mounts AND lists the rootfs's actual directory contents (the union, like Linux).
+
+**Public API**: `vfs_ls`/`cd`/`cat`/`mkdir`/`read_file`/`write_file`/`delete_file`/`delete_dir`/`rename`/`file_exists`/`stat`/`complete`/`blockdev_lookup`/`blockdev_pread`/`blockdev_pwrite`/`mount_root`/`mount_hd`/`umount_hd`/`make_mountpoint`/`remove_mountpoint`/`prepare_shutdown`/`notify_cdrom_ejected`/`ensure_root_home`/`hd_mounted`/`hd_fsname`/`getcwd`/`set_boot_drive`/`auto_mount`/`init`/`klog_*` (legacy logfs shims).
+
+**Path conventions**: rootfs at `/`; Unix paths `/usr` `/etc` `/home` `/apps` `/root` `/bin` `/src` `/docs` resolve via the rootfs's actual directory contents (no special-casing).  `/boot/...` routes to the FAT32 boot partition mirror.  `/mnt/<name>/...` routes to user-mounted volumes.  `/mnt/cdrom/...` always works (whether or not CD is also the rootfs).  `/proc`, `/dev`, `/tmp`, `/log` are first-class overlays.
+
+**`/log` is read-only from userspace** (Linux `/var/log` model): the VFS rejects writes routed through `backend_write_file` with `"write: read-only filesystem (/log)"`.  Kernel-side `klog_write` + friends still append into the ring directly via `ring_append` -- they bypass the VFS.  Use `/tmp` for user-writable scratch (wholesale overwrite, 16 files × 512 KiB).  `/log` files are append-only rings (dmesg-style); a `fopen("w")` re-write would otherwise double the content on every run, which bit `alloctest`'s FILE* roundtrip test.
 
 ### Syscall ABI (`int 0x80`, Linux i386 convention)
 Authoritative table in `src/kernel/include/kernel/syscall.h`. Selected entries:
@@ -223,7 +250,7 @@ The kernel shell exposes a per-shell-task scripting layer (`kernel/sh_script.h`,
 | Surface | Behaviour |
 |---|---|
 | `NAME=value` | Per-task assignment.  RHS shell-expanded.  Stored in `task_t.script_vars` (isolated per VT — VT0's vars don't leak into VT1, matching the per-VT palette model). |
-| `$VAR` / `${VAR}` / `$?` | Expansion at REPL or inside scripts.  `$?` is the last command's exit status (set after every dispatched line and every `[ TEST ]`). |
+| `$VAR` / `${VAR}` / `$?` | Expansion at REPL or inside scripts.  `$?` is the last command's exit status (set after every dispatched line and every `[ TEST ]`).  For `exec <elf>` lines `$?` reflects the child's `SYS_EXIT` value (low 8 bits) via `shell_last_exec_status()` -- so `exec /apps/alloctest.elf; if [ $? -eq 0 ] ...` works.  Built-in commands yield `$?=0` (no failure-status threading yet); an unrecognised command yields `127` POSIX-style. |
 | `env` / `unset NAME ...` | Dump table / remove vars. |
 | `read VAR` | Reads one line of input from the keyboard into VAR. |
 | `[ TEST ]` | String tests (`-z`/`-n`/`=`/`!=`) and integer tests (`-eq`/`-ne`/`-lt`/`-le`/`-gt`/`-ge`).  Non-numeric operand to integer ops fails with `[: integer expected`. |
@@ -235,7 +262,7 @@ The kernel shell exposes a per-shell-task scripting layer (`kernel/sh_script.h`,
 | `sleep N` | Busy-yield until N seconds elapse (PIT-driven). |
 | `true` / `false` | POSIX status helpers. |
 
-Limitations: no command substitution (`$(cmd)`), no pipes, no subshells (needs `fork()` — see slice 12).  See `src/userspace/demo.sh` for a worked example exercising every surface.
+Limitations: no command substitution (`$(cmd)`), no pipes, no subshells (needs `fork()` — see slice 12).  No double-quote stripping in the tokenizer (`echo "X"` prints literal `"X"`); use bareword args or single quotes.  See `src/userspace/demo.sh` for a worked example exercising every surface, and `src/userspace/incore.sh` for the in-kernel UI-test driver pattern.
 
 ### VMM (per-task page directories)
 - `vmm_create_pd()` - allocates a page directory and mirrors kernel PDEs (indices 0–63)
@@ -255,13 +282,13 @@ Freestanding ELF binaries built with the cross-compiler. Link against `crt0.S` +
 | `makbox.elf` | Makar busybox: multicall binary for `ls`, `cat`, `cp`, `mv`, `rm`, `rmdir`, `echo`, `pwd`. Shell dispatch falls back to `makbox <name>` **only for those specific applet names** — random typos no longer get routed into makbox just to surface its usage banner; they hit the shell's "Unknown command" path instead. Replaces the former standalone `ls.elf`/`echo.elf`/`rm.elf`/`mv.elf`/`cp.elf`. |
 | `clock.elf` | Fullscreen wall-clock display (CMOS RTC via `/proc/rtc`).  For scripted / one-line use see the `datetime`/`date`/`time` shell builtins instead. |
 | `diskinfo.elf` | partition table + FAT32 BPB dump via `SYS_DISK_INFO` |
-| `basic.elf` | C64-flavoured line-numbered **integer** BASIC.  `basic` (REPL) or `basic prog.bas` (load + RUN).  PRINT/LET/IF..THEN/GOTO/GOSUB/RETURN/FOR..NEXT/INPUT/REM/END/CLS/PAUSE + graphics PLOT/LINE/RECT/COLOR + `XMAX`/`YMAX` screen-size functions.  Ctrl-C is RUN/STOP (breaks a running program back to the `READY.` prompt; a second Ctrl-C at the prompt, or Ctrl-C in file mode, exits) (via `SYS_DRAW_LINE`, native VESA res; `YMAX` excludes the makmux status row so full-screen fills don't clip it; "?NO GRAPHICS" in VGA text mode).  Integer-only because the kernel doesn't init/save the x87 FPU — fractional work uses fixed-point.  Ships `mandelbrot.bas` + `lines.bas` type-in samples in `/mnt/cdrom/apps` |
+| `basic.elf` | C64-flavoured line-numbered **integer** BASIC.  `basic` (REPL) or `basic prog.bas` (load + RUN).  PRINT/LET/IF..THEN/GOTO/GOSUB/RETURN/FOR..NEXT/INPUT/REM/END/CLS/PAUSE + graphics PLOT/LINE/RECT/COLOR + `XMAX`/`YMAX` screen-size functions.  Ctrl-C is RUN/STOP (breaks a running program back to the `READY.` prompt; a second Ctrl-C at the prompt, or Ctrl-C in file mode, exits) (via `SYS_DRAW_LINE`, native VESA res; `YMAX` excludes the makmux status row so full-screen fills don't clip it; "?NO GRAPHICS" in VGA text mode).  Integer-only because the kernel doesn't init/save the x87 FPU — fractional work uses fixed-point.  Ships `mandelbrot.bas` + `lines.bas` type-in samples in `/apps` |
 | `fdisk.elf` | MBR partition editor (line-driven, scriptable) — opens a `/dev` block device, edits the four primary entries (`p`/`n`/`d`/`t`/`a`/`w`/`q`).  `fdisk /dev/hda` (defaults to `/dev/hda`).  Size tokens: `max`, `N%` (of the whole disk), `NM`/`NG`, bare sectors; clamped to disk end.  Writes the 512-byte MBR back through the block-device fd; devfs's read-modify-write preserves the bootstrap code |
 | `cfdisk.elf` | Full-screen cfdisk-style MBR editor (the `cfdisk` command) — partition/free-space table with arrow-key row selection and a bottom action bar (`Bootable`/`Delete`/`New`/`Type`/`Write`/`Quit`).  MBR primary-only.  Type picker accepts names (`fat32`/`ext2`/`swap`/`ntfs`) or hex.  Clean-room (no util-linux source); renders via the same full-screen syscalls as `vix` and respects the makmux status row |
 | `vix.elf` | vi-style text editor (the `vix` command — runs as its own ring-3 task, shows in maktop).  Vim-style line-number gutter, word wrap with `+` continuation markers, `~` past-EOF rows, flashing block caret (`SYS_CARET_STYLE`), resolution-agnostic via `SYS_TERM_SIZE`; uses `SYS_PUTCH_AT` / `SYS_SET_CURSOR`.  Ctrl+S save, Ctrl+Q quit (double-press when dirty).  Replaced the former in-kernel `vix` builtin (`proc/vix.c`, removed) |
 | `kbtester.elf` | keyboard diagnostic — logs every event (scancode/keycode/sentinel/modifier) to serial via `SYS_WRITE_SERIAL` |
 | `tcc.elf` | TinyCC v0.9.27 — in-OS C compiler.  `tcc hello.c -o hello.elf` compiles a C source to a Makar-loadable ELF; `exec hello.elf` runs it.  Sysroot: `/usr/include/` (libc headers), `/usr/lib/` (`crt1.o` + `libc.a`), `/usr/lib/tcc/` (`libtcc1.a` + TCC builtins).  No `-run` (no `mmap PROT_EXEC`); no floats (no x87 FPU init).  Cross-built by `build-tcc.sh`, called from `iso.sh`.  **Self-host milestones (v0.8): `tcc /src/userspace/calc.c -o /tmp/calc.elf` and `tcc /src/userspace/sh.c -o /tmp/sh.elf` both rebuild correct binaries in-OS — verified by `test_tcc_rebuild_calc` + `test_tcc_rebuild_sh`.** |
-| `sh.elf` | Ring-3 userspace shell, MVP (v0.8).  Freestanding (only `#include "syscall.h"`, no libc shim) so TCC can rebuild it in-OS.  Prompt + line input (`sys_read` from fd 0) + tokenize on whitespace + builtins (`cd` via SYS_CHDIR, `pwd` via SYS_GETCWD, `exit`) + external commands (`fork`+`execve`+`wait4`; argv[0] must be an absolute or relative path — no PATH search).  Coexists with the in-kernel shell: `exec /apps/sh.elf` from any kernel shell drops into a `$ ` prompt; `exit` or Ctrl-D returns.  First concrete step toward the long-term goal of lifting the shell out of the kernel into userspace. |
+| `sh.elf` | Ring-3 userspace shell (v0.8 + slices 20b/20c).  Freestanding (only `#include "syscall.h"`, no libc shim) so TCC can rebuild it in-OS.  Inline-edit readline driven byte-by-byte via `sys_getkey()` (KEY_ARROW_{UP,DOWN,LEFT,RIGHT} sentinels for cursor + history nav; backspace mid-line with tail-shift; Ctrl-C aborts line; Ctrl-D on empty line exits) + 16-entry ring-buffer history with dup-suppression.  Per-shell variable table (32 slots) with `NAME=value` assignment, `$VAR` / `${VAR}` / `$?` expansion across the whole line pre-tokenize, and `env` / `unset` / `read` builtins (mirrors kernel `sh_script.c`).  Tokenize on whitespace + builtins (`cd` via SYS_CHDIR, `pwd` via SYS_GETCWD, `exit`, `env`, `unset`, `read`) + external commands (`fork`+`execve`+`wait4`; argv[0] is either an absolute/relative path or a bareword applet name — bareword `ls`/`cat`/`cp`/`mv`/`rm`/`rmdir`/`echo`/`pwd` auto-routes to `/apps/makbox.elf <applet>` exactly like the kernel shell's restricted makbox fallback; `$?` reflects the child's `SYS_EXIT` low 7 bits).  Coexists with the in-kernel shell: `exec /apps/sh.elf` from any kernel shell drops into a `$ ` prompt; `exit` or Ctrl-D returns.  First concrete step toward the long-term goal of lifting the shell out of the kernel into userspace. |
 | `help.elf` | replaced by `lsman` / `man <cmd>` shell builtins; kept for compatibility |
 
 ### ktest harness
@@ -303,4 +330,17 @@ To keep this file focused on day-to-day work, longer-lived material lives alongs
 - **`CLAUDE.history.md`** — current subsystem state (May 2026), recently-merged PR log, and FOSS attribution. Consult for "what's already shipped / what does subsystem X do today".
 - **`CLAUDE.roadmap.md`** — the slice queue (done + open), userspace/libc porting plan, hardware/platform notes, and the "serious dev work in-place" (compiler/networking) roadmap. Consult when planning new features or asked about direction.
 
-Published docs: `docs/userland-libc.md` (freestanding libc + TCC path), `SURVEY.md` (full inventory of shell commands / apps / VFS APIs / installer).
+Published docs: `docs/userland-libc.md` (freestanding libc + TCC path), `SURVEY.md` (full inventory of shell commands / apps / VFS APIs / installer), `docs/internals.md` (deep-dive on kernel internals), `docs/kernel/` (per-subsystem pages).
+
+## For agents new to the codebase
+
+If you're an AI agent (Claude, Codex, etc.) picking this up cold:
+
+1. **Read this file first** -- it's the canonical entry point.
+2. **Then `CLAUDE.history.md` + `CLAUDE.roadmap.md`** -- shipped state + queued work.
+3. **For VFS work**: this file's § VFS section explains the mount-table model; `src/kernel/arch/i386/fs/vfs.c` is the source of truth.  Slice 27 (the rootfs+overlay refactor) shipped recently -- no `resolve_rootfs_prefix` or path-rewriting tricks remain.
+4. **For shell work**: there are TWO shells.  The in-kernel `shell.c` (~4.3 KLoc, default on every VT) and the ring-3 `src/userspace/sh.c` (freestanding, opt-in via `exec /apps/sh.elf`).  The userland shell is being lifted into parity over slices 20a–20f; both currently coexist.
+5. **Conventions**: paths follow Linux (`/usr`, `/apps`, `/root`, `/proc`, `/dev`, `/mnt/<name>`, `/mnt/cdrom`).  The legacy `/mnt/hd` and bare `/hd` aliases were retired.  Apps live at `/apps/*.elf`, sources at `/src/`, headers at `/usr/include`, libc at `/usr/lib/libc.a`.
+6. **Testing**: `./run.sh iso test` for kernel-side ktest + GDB checkpoints; `./run.sh ui [scenario]` for headless black-box scenarios; `./run.sh gui [scenario]` for visible-window debugging.  Add a scenario for any user-facing change you ship.
+7. **Commits**: one commit per discrete work item; no `Co-Authored-By` trailers; no `Generated with Claude Code` footers.  Push to the existing PR branch when iterating.
+8. **Build**: `./run.sh iso build` (Docker-wrapped cross-compile via `i686-elf-gcc`).  Clang diagnostics from your IDE will complain about missing kernel headers -- ignore them; the build uses the right include paths.

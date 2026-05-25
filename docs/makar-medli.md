@@ -94,7 +94,7 @@ just presents `/` to the user instead of `\`.
 ```
 
 Makar currently uses a flatter `apps/` directory at FAT32 root (see
-`isodir/apps/` and `/mnt/hd/apps/` PATH lookup); the layout above is the
+`isodir/apps/` and `/apps/` PATH lookup); the layout above is the
 target once the userspace catalogue grows past a handful of ELFs.
 
 ---

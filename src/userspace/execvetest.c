@@ -4,7 +4,7 @@
  * Flow:
  *   1. parent prints PRE-EXEC marker so we can see it before fork
  *   2. fork() -- child gets 0, parent gets child pid
- *   3. CHILD execve's /mnt/cdrom/apps/hello.elf with argv = {"hello", "execve-tester"}
+ *   3. CHILD execve's /apps/hello.elf with argv = {"hello", "execve-tester"}
  *      -- on success this never returns; control resumes in hello.elf's
  *      _start with argc/argv on the user stack
  *      -- hello.elf's argv[1]-path prints "Hello, execve-tester!\n" and
@@ -57,7 +57,7 @@ int main(int argc, char **argv, char **envp)
          * program name (hello reads only argv[1]); argv[1] is the
          * recognisable marker we expect hello to greet by name. */
         char *cargv[] = { "hello", "execve-tester", 0 };
-        int rc = sys_execve("/mnt/cdrom/apps/hello.elf", cargv, 0);
+        int rc = sys_execve("/apps/hello.elf", cargv, 0);
 
         /* Only reached if execve failed; print the negative errno. */
         write_str(2, "[execve-test] CHILD-EXECVE-FAILED rc=");

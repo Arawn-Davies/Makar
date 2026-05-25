@@ -29,6 +29,14 @@
 #define ELF_STACK_TOP   0xBFFF0000u
 #define PAGE_SIZE       PMM_FRAME_SIZE
 
+/* Number of 4 KiB pages mapped for the initial user stack.  TCC's
+ * recursive-descent parser plus its symbol/type/expression stacks blow
+ * past a single 4 KiB page when compiling non-trivial inputs (e.g.
+ * sh.c).  32 KiB is well clear of that and still cheap; auto-grow can
+ * come later if a workload outgrows this.  Stack lives at
+ * [ELF_STACK_TOP - USER_STACK_PAGES*PAGE_SIZE, ELF_STACK_TOP). */
+#define USER_STACK_PAGES  8u
+
 /* Maximum ELF file size that the staging buffer can hold. */
 #define ELF_BUF_MAX     (512u * 1024u)
 
@@ -178,17 +186,25 @@ int elf_exec(const char *path, int argc, const char *const *argv)
     }
     task_current()->user_brk = top_vaddr;
 
-    /* 6. Map user stack (one page, read-write) and write argc/argv. */
-    uint32_t stack_phys = pmm_alloc_frame();
-    if (stack_phys == PMM_ALLOC_ERROR) {
-        t_writestring("exec: out of physical memory (stack)\n");
-        vmm_free_pd(pd);
-        return -1;
+    /* 6. Map user stack (USER_STACK_PAGES pages, read-write).  Only the
+     * top page is used to write argc/argv; the rest grow downward as
+     * the program runs.  Map all pages eagerly so a deep call chain
+     * (e.g. TCC parsing sh.c) doesn't fault past the bottom. */
+    uint32_t stack_phys_top = 0;          /* physical of the highest page */
+    for (uint32_t i = 0; i < USER_STACK_PAGES; i++) {
+        uint32_t phys = pmm_alloc_frame();
+        if (phys == PMM_ALLOC_ERROR) {
+            t_writestring("exec: out of physical memory (stack)\n");
+            vmm_free_pd(pd);
+            return -1;
+        }
+        memset((void *)phys, 0, PAGE_SIZE);
+        uint32_t va = ELF_STACK_TOP - (i + 1) * PAGE_SIZE;
+        vmm_map_page(pd, va, phys, VMM_FLAG_USER | VMM_FLAG_WRITABLE);
+        if (i == 0) stack_phys_top = phys;
     }
-    memset((void *)stack_phys, 0, PAGE_SIZE);
-
-    uint32_t stack_virt = ELF_STACK_TOP - PAGE_SIZE;   /* = 0xBFFE0000 */
-    vmm_map_page(pd, stack_virt, stack_phys, VMM_FLAG_USER | VMM_FLAG_WRITABLE);
+    uint32_t stack_phys = stack_phys_top;
+    uint32_t stack_virt = ELF_STACK_TOP - PAGE_SIZE;   /* top page = 0xBFFEF000 */
 
     /*
      * Build the initial user stack following the Linux i386 / ELKS / Fuzix ABI

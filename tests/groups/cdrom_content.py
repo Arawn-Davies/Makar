@@ -1,8 +1,9 @@
 """CD-ROM content verification group.
 
-Checks that expected files exist on the ISO9660 filesystem at /mnt/cdrom.
-Must run after ktest_bg (which breaks at keyboard_getchar, guaranteeing
-vfs_auto_mount has completed).
+Checks that expected files exist on the ISO9660 boot medium.  Paths use
+the rootfs-elected form (/...) which routes to /mnt/cdrom when the CD
+is the active rootfs.  Must run after ktest_bg (which breaks at
+keyboard_getchar, guaranteeing vfs_auto_mount has completed).
 """
 
 import gdb
@@ -10,14 +11,14 @@ import gdb
 NAME = 'CD-ROM content'
 
 EXPECTED_FILES = [
-    '/mnt/cdrom/boot/makar.kernel',
-    '/mnt/cdrom/apps/hello.elf',
-    '/mnt/cdrom/apps/calc.elf',
-    '/mnt/cdrom/apps/tcc.elf',
-    '/mnt/cdrom/usr/lib/libc.a',
-    '/mnt/cdrom/usr/lib/crt1.o',
-    '/mnt/cdrom/usr/include/syscall.h',
-    '/mnt/cdrom/usr/lib/tcc/libtcc1.a',
+    '/boot/makar.kernel',
+    '/apps/hello.elf',
+    '/apps/calc.elf',
+    '/apps/tcc.elf',
+    '/usr/lib/libc.a',
+    '/usr/lib/crt1.o',
+    '/usr/include/syscall.h',
+    '/usr/lib/tcc/libtcc1.a',
 ]
 
 

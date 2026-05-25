@@ -43,7 +43,7 @@ volatile int ktest_bg_done = 0;
  * inside the RUN macro in ktest_bg_task; total is fixed at compile time so
  * the bar length is known the moment shell_run starts. */
 volatile int ktest_bg_completed = 0;
-const    int ktest_bg_total     = 18;   /* keep in sync with RUN() calls below */
+const    int ktest_bg_total     = 21;   /* keep in sync with RUN() calls below */
 
 /* When set, suppress VGA output for pass lines and suite headers. */
 int ktest_muted = 0;
@@ -298,7 +298,7 @@ static void test_tmpfs(void)
  * Suite: /usr resolver
  *
  * /usr is a synthetic redirect in vfs_route; the prefix is resolved
- * lazily to /mnt/cdrom/usr (CD boot) or /mnt/hd/usr (HDD boot) by
+ * lazily to /mnt/cdrom/usr (CD boot) or /mnt/root/usr (HDD boot) by
  * probing for the sentinel file /usr/lib/crt0.o.  This suite proves
  * the rewrite works against whichever boot medium is active.  Skipped
  * silently when no sysroot is installed (sentinel missing on both
@@ -332,6 +332,51 @@ static void test_usr(void)
     vfs_stat_info_t st;
     KTEST_ASSERT(vfs_stat("/usr/lib/libc.a", &st) == 0);
     KTEST_ASSERT(st.size > 0);
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
+ * Suite: rootfs mount layout
+ *
+ * Bulk VFS behavior that should not depend on typed shell commands.  The
+ * rootfs is elected at "/" before ktest runs; on HDD boots vfs_auto_mount()
+ * should also bind that same volume at /mnt/root so documented explicit
+ * paths keep working.  ISO boots keep /mnt/root as an empty placeholder, so
+ * the HDD-only assertions are gated on that slot being bound.
+ * ------------------------------------------------------------------------- */
+
+static void test_rootfs_mount_layout(void)
+{
+    ktest_begin("rootfs_mount_layout", "rootfs at / plus /mnt placeholders and HDD /mnt/root alias");
+
+    vfs_stat_info_t st;
+
+    KTEST_ASSERT(vfs_stat("/", &st) == 0);
+    KTEST_ASSERT(st.kind == VFS_STAT_DIR);
+
+    KTEST_ASSERT(vfs_stat("/mnt", &st) == 0);
+    KTEST_ASSERT(st.kind == VFS_STAT_DIR);
+
+    KTEST_ASSERT(vfs_stat("/mnt/root", &st) == 0);
+    KTEST_ASSERT(st.kind == VFS_STAT_DIR);
+
+    KTEST_ASSERT(vfs_stat("/mnt/boot", &st) == 0);
+    KTEST_ASSERT(st.kind == VFS_STAT_DIR);
+
+    /* The rootfs sentinel should be reachable through the elevated root. */
+    if (vfs_file_exists("/usr/lib/crt0.o")) {
+        KTEST_ASSERT(vfs_file_exists("/apps/hello.elf") == 1);
+        KTEST_ASSERT(vfs_file_exists("/boot/makar.kernel") == 1);
+    }
+
+    /* On HDD boots, /mnt/root is not just a placeholder: it must be a bind
+     * alias for the same elected rootfs volume. */
+    if (strcmp(vfs_hd_fsname("root"), "none") != 0) {
+        KTEST_ASSERT(vfs_file_exists("/mnt/root/usr/lib/crt0.o") == 1);
+        KTEST_ASSERT(vfs_file_exists("/mnt/root/apps/hello.elf") == 1);
+        KTEST_ASSERT(vfs_file_exists("/mnt/root/apps/calc.elf") == 1);
+    }
 
     ktest_summary();
 }
@@ -702,6 +747,44 @@ static void test_task(void)
         task_yield();
     KTEST_ASSERT(noop_ran);
     KTEST_ASSERT(t1->state == TASK_DEAD || t2->state == TASK_DEAD);
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
+ * Suite: procfs task listing
+ *
+ * /proc/tasks is bulk kernel behavior, not a keyboard/UI behavior.  Dead task
+ * slots can linger until task_create reclaims them, but procfs must hide those
+ * slots from user-facing listings so tools like maktop and `cat /proc/tasks`
+ * only show live work.
+ * ------------------------------------------------------------------------- */
+
+static void test_procfs_tasks(void)
+{
+    ktest_begin("procfs_tasks", "/proc/tasks hides lingering TASK_DEAD slots");
+
+    int saw_dead_slot = 0;
+    int n = task_count();
+    for (int i = 0; i < n; i++) {
+        task_t *t = task_get(i);
+        if (t && t->state == TASK_DEAD) {
+            saw_dead_slot = 1;
+            break;
+        }
+    }
+
+    KTEST_ASSERT(saw_dead_slot == 1);
+
+    char buf[1024];
+    uint32_t got = 0;
+    KTEST_ASSERT(vfs_read_file("/proc/tasks", buf, sizeof(buf) - 1, &got) == 0);
+    KTEST_ASSERT(got > 0);
+    if (got >= sizeof(buf)) got = sizeof(buf) - 1;
+    buf[got] = '\0';
+
+    KTEST_ASSERT(strstr(buf, "PID NAME") != NULL);
+    KTEST_ASSERT(strstr(buf, "DEAD") == NULL);
 
     ktest_summary();
 }
@@ -1089,9 +1172,9 @@ static void test_cwd(void)
         memcpy(peer_saved, peer->cwd, pn);
         peer_saved[pn] = '\0';
 
-        memcpy(peer->cwd, "/mnt/cdrom", 11);
+        memcpy(peer->cwd, "/apps", 6);
         KTEST_ASSERT(strcmp(vfs_getcwd(), "/") == 0);        /* unchanged */
-        KTEST_ASSERT(strcmp(peer->cwd, "/mnt/cdrom") == 0);  /* but peer did change */
+        KTEST_ASSERT(strcmp(peer->cwd, "/apps") == 0);       /* but peer did change */
 
         /* Restore peer cwd. */
         memcpy(peer->cwd, peer_saved, strlen(peer_saved) + 1);
@@ -1486,10 +1569,10 @@ static void test_ring3_execution(void)
 /* ---------------------------------------------------------------------------
  * Suite: elf_exec
  *
- * Spawns a child task that calls elf_exec() on /mnt/cdrom/apps/echo.elf (the
- * standard VFS path for apps on the CD-ROM image).  Waits for the task to
- * reach TASK_DEAD, which proves the ELF loader, argv setup, ring-3 entry,
- * and SYS_EXIT path all function end-to-end.
+ * Spawns a child task that calls elf_exec() on /apps/echo.elf (the
+ * standard VFS path for apps; rootfs election routes to the live medium).
+ * Waits for the task to reach TASK_DEAD, which proves the ELF loader,
+ * argv setup, ring-3 entry, and SYS_EXIT path all function end-to-end.
  * ------------------------------------------------------------------------- */
 
 static const char *s_echo_argv[] = { "echo", "ktest-elf-exec-ok", NULL };
@@ -1497,7 +1580,7 @@ static int s_echo_argc = 2;
 
 static void elf_exec_task_entry(void)
 {
-    elf_exec("/mnt/cdrom/apps/echo.elf", s_echo_argc, s_echo_argv);
+    elf_exec("/apps/echo.elf", s_echo_argc, s_echo_argv);
     task_exit();
 }
 
@@ -1505,10 +1588,10 @@ static void test_elf_exec(void)
 {
     ktest_begin("elf_exec", "ELF32 loader: header parse, segment mapping, entry-point dispatch");
 
+    /* Single rootfs-elected path -- /apps routes to whichever volume
+     * holds /usr/lib/crt0.o (CD on live boot, ext2/FAT32 on HDD boot). */
     static const char *candidates[] = {
-        "/mnt/cdrom/apps/echo.elf",
-        "/mnt/root/apps/echo.elf",
-        "/mnt/hd/apps/echo.elf",
+        "/apps/echo.elf",
         NULL
     };
 
@@ -1549,7 +1632,7 @@ static void test_elf_exec(void)
  *     │ task_create("hello_arg", entry)        ── child enters READY
  *     │
  *     │ ── yields ──>  child runs hello_arg_entry()
- *     │                  └─ elf_exec("/mnt/cdrom/apps/hello.elf",
+ *     │                  └─ elf_exec("/apps/hello.elf",
  *     │                              2, {"hello", "tester"})
  *     │                       ↓ ring transition (iret to ring 3)
  *     │                  hello main() prints "Hello, tester!\n"
@@ -1576,7 +1659,7 @@ static void hello_arg_entry(void)
     Serial_WriteString("[ktest]   >>> elf_exec(\"hello.elf\", argc=2, argv=[\"hello\",\"tester\"])\n");
     Serial_WriteString("[ktest]   ----- BEGIN RING 3 OUTPUT -----\n");
 
-    elf_exec("/mnt/cdrom/apps/hello.elf", s_hello_argc, s_hello_argv);
+    elf_exec("/apps/hello.elf", s_hello_argc, s_hello_argv);
 
     /* Only reached on elf_exec failure (e.g. file missing). On success the
      * ring-3 program returns via SYS_EXIT, which calls task_exit() directly
@@ -1595,9 +1678,7 @@ static void test_ring3_with_arg(void)
     Serial_WriteString("[ktest] ============================================================\n");
 
     static const char *candidates[] = {
-        "/mnt/cdrom/apps/hello.elf",
-        "/mnt/root/apps/hello.elf",
-        "/mnt/hd/apps/hello.elf",
+        "/apps/hello.elf",
         NULL
     };
 
@@ -2175,6 +2256,10 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
+    test_rootfs_mount_layout();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
     test_pmm();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
@@ -2188,6 +2273,10 @@ int ktest_run_all(void)
     total_fail += ktest_fail_count;
 
     test_task();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_procfs_tasks();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
@@ -2293,10 +2382,12 @@ void ktest_bg_task(void)
     RUN(test_devfs);
     RUN(test_tmpfs);
     RUN(test_usr);
+    RUN(test_rootfs_mount_layout);
     RUN(test_pmm);
     RUN(test_heap);
     RUN(test_vmm);
     RUN(test_task);
+    RUN(test_procfs_tasks);
     RUN(test_syscall);
     RUN(test_fd_table);
     RUN(test_file_fd);

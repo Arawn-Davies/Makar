@@ -69,6 +69,13 @@ static const shell_scheme_t SHELL_SCHEMES[4] = {
  * tty falls back to slot 0. */
 void shell_apply_scheme_for_tty(int tty);
 
+/* Last exec'd child's exit status (low 8 bits).  Set by shell_exec_elf
+ * after the child reaps; read by sh_script.c to populate $? so shell
+ * scripts can branch on an ELF's exit code.  Reset to 0 before each
+ * dispatch so built-in commands (no ELF child) yield $?=0 by default. */
+int  shell_last_exec_status(void);
+void shell_reset_last_exec_status(void);
+
 /*
  * Command entry: all handlers share the same (int argc, char **argv) signature
  * for uniform dispatch.  A NULL name field terminates each module's table.

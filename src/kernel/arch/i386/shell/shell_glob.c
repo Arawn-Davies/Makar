@@ -2,7 +2,7 @@
  * shell_glob.c -- wildcard (glob) expansion for the kernel shell.
  *
  * Expands `*` and `?` in argv tokens against the VFS via vfs_complete(),
- * so wildcards work uniformly across every mount: /mnt/hd (FAT32),
+ * so wildcards work uniformly across every mount: / (rootfs ext2/FAT32),
  * /mnt/cdrom (ISO9660), /proc (synthetic), and any future backend
  * (NFS/SMB/USB) that implements the same enumeration callback.
  *

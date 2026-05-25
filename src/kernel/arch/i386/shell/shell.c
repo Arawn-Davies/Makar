@@ -62,9 +62,9 @@ static void shell_print_prompt(void);
 
 /* Default executable search path, used when the PATH shell variable is
  * unset.  Colon-separated, Unix-style.  The PATH variable (set like any
- * other shell var, e.g. `PATH=/mnt/hd/bin:/mnt/cdrom/apps`) overrides it
- * and is consulted by both command dispatch and tab completion. */
-#define SHELL_DEFAULT_PATH "/mnt/cdrom/apps:/mnt/root/apps:/mnt/hd/apps"
+ * other shell var, e.g. `PATH=/usr/bin:/apps`) overrides it and is
+ * consulted by both command dispatch and tab completion. */
+#define SHELL_DEFAULT_PATH "/apps"
 
 /* Resolve the effective PATH string: the per-task PATH variable if set,
  * else the built-in default. */
@@ -715,7 +715,7 @@ static const shell_cmd_entry_t * const cmd_modules[] = {
 
 /* Try to exec at `path`; if that fails, try with ".elf" appended.  Returns
  * 1 if a binary was launched, 0 otherwise.  Used by both the path-prefix
- * branch (./foo, /mnt/cdrom/apps/foo) and the PATH lookup. */
+ * branch (./foo, /apps/foo) and the PATH lookup. */
 static int try_exec_path(const char *path, int argc, char **argv)
 {
     static char with_ext[VFS_PATH_MAX];
@@ -850,7 +850,7 @@ int shell_dispatch_argv(int argc, char **argv)
 /* ---------------------------------------------------------------------------
  * shell_print_prompt – print the interactive prompt showing the VFS CWD.
  *
- * Format:  root@makar /mnt/hd/boot~>
+ * Format:  root@makar /apps~>
  * --------------------------------------------------------------------------- */
 static void shell_print_prompt(void)
 {

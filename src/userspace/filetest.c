@@ -16,7 +16,7 @@
  * on the first failure (program exits non-zero).
  *
  * Argv[1] (optional) selects the writable directory to use.  Default is
- * /mnt/hd which is what the ui_test scenario mounts.  The big-file path
+ * /mnt/scratch which is what the ui_test scenario mounts.  The big-file path
  * is "<dir>/filetest.big"; the main scratch is "<dir>/filetest.tmp".
  */
 
@@ -64,7 +64,7 @@ int main(int argc, char **argv, char **envp)
 {
     (void)argc; (void)envp;
 
-    const char *dir = (argc > 1 && argv[1] && argv[1][0]) ? argv[1] : "/mnt/hd";
+    const char *dir = (argc > 1 && argv[1] && argv[1][0]) ? argv[1] : "/mnt/scratch";
     char tmp_path[160], big_path[160], ro_path[160];
     join_path(tmp_path, dir, "filetest.tmp");
     join_path(big_path, dir, "filetest.big");

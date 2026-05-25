@@ -149,7 +149,12 @@ int main(int argc, char **argv, char **envp)
 
     /* ---- 10. FILE* layer (fopen/fwrite/fclose -> fopen/fread/fclose) ---- */
     {
-        const char *path = "/log/alloctest.tmp";
+        /* /tmp -- tmpfs_write replaces the whole file each call, matching
+         * POSIX-style O_TRUNC semantics so re-runs see the freshly-written
+         * 16 bytes.  /log was wrong: logfs_write is a ring-append (dmesg
+         * pattern), so re-running this test appended 16+16=32 bytes and
+         * the fread cap of 32 returned 32 -> "fread short". */
+        const char *path = "/tmp/alloctest.tmp";
         FILE *f = fopen(path, "w");
         if (!f) return fail("fopen w");
         const char *msg = "alloc-file-line\n";
@@ -167,12 +172,12 @@ int main(int argc, char **argv, char **envp)
     }
     srl("[alloctest] FILE* roundtrip ok\n");
 
-    /* ---- 11. SYS_READDIR over /log (we just created alloctest.tmp) ---- */
+    /* ---- 11. SYS_READDIR over /tmp (we just created alloctest.tmp) ---- */
     {
         struct dirent de;
         int found = 0;
         for (unsigned int i = 0; i < 32; i++) {
-            int rc = sys_readdir("/log", i, &de);
+            int rc = sys_readdir("/tmp", i, &de);
             if (rc <= 0) break;
             /* /log entries are file names (no leading slash, no dir). */
             if (de.d_name[0] == 'a' && de.d_name[1] == 'l' &&

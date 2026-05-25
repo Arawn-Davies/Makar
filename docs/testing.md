@@ -29,7 +29,7 @@ Boots `makar-test.iso` (single grub menuentry with `timeout=0`, `multiboot2 /boo
 **Phase 2 - GDB boot-checkpoint tests**
 
 Builds a normal debug ISO. Creates a 32 MiB FAT32 test disk and attaches it
-on IDE:0 alongside the CD-ROM so the kernel can mount `/mnt/hd`. Launches QEMU
+on IDE:0 alongside the CD-ROM so the kernel can auto-mount it at `/mnt/root`. Launches QEMU
 with the GDB stub and runs `tests/gdb_boot_test.py`. Output: `gdb-test.log`.
 
 Exit code 0 = everything passed; 1 = any failure or timeout.
@@ -65,7 +65,8 @@ boot medium:
 | `boot_checkpoints` | Every major boot function reached in order: `kernel_main` → `terminal_initialize` → … → `shell_run` |
 | `hardware_state` | CR0.PG set (paging enabled), CR3 non-zero (page directory loaded), `timer_callback` fires (PIT ticking) |
 | `vesa` | VESA framebuffer active and TTY initialised (or absent without crashing - graceful headless) |
-| `hdd_mount` | `fat32_mounted()` non-zero - FAT32 partition auto-mounted at `/mnt/hd` after `shell_run` |
+| `hdd_mount` | `fat32_mounted()` non-zero - HDD rootfs auto-mounted (single-partition → `/mnt/root`; dual-partition → `/mnt/boot` + `/mnt/root`) after `shell_run` |
+| `root_home` | (HDD only) `vfs_file_exists("/root")` returns 1, confirming `vfs_ensure_root_home()` mkdir'd it on the writable rootfs |
 
 The `hdd_mount` check advances execution to `keyboard_getchar` (the shell's
 read-loop entry) before inspecting `fat32_mounted()`, ensuring
@@ -150,7 +151,7 @@ the instant the kernel says it's ready and bounds via the timeout.
 |---|---|
 | `glob-proc` | `cat /proc/*` glob-expands across the synthetic FS |
 | `tab-complete-path` | `cat<TAB> /proc/c<TAB><Enter>` resolves to `cat /proc/cpuinfo` |
-| `exec-hello` | `exec /mnt/cdrom/apps/hello.elf tester` reaches `sys_exit(0)` and prints the expected greeting |
+| `exec-hello` | `exec /apps/hello.elf tester` reaches `sys_exit(0)` and prints the expected greeting |
 | `cd-root-listing` | `cd /<TAB><TAB>` lists mounts; subsequent `pwd` confirms cwd |
 | `per-tty-cwd` | Per-task cwd isolation across `Alt+F1`/`Alt+F3` switches |
 | `calc-brackets` | `calc.elf` evaluates parenthesised arithmetic |
@@ -163,6 +164,32 @@ the instant the kernel says it's ready and bounds via the timeout.
 `./run.sh ui` runs all of them; `./run.sh ui <name>` runs
 one; `./run.sh ui graphical` runs with a visible QEMU window for
 debugging.
+
+### In-kernel test driver (`incore.sh`)
+
+For scenarios that just need to "run a binary, check it exited 0,"
+the per-test HMP round-trip is overhead.  `src/userspace/incore.sh`
+is a kernel-sh script that drives those tests directly inside the
+guest via `exec` + `$?`: each test invokes its ELF and the script
+branches on the child's `SYS_EXIT` value (low 8 bits) surfaced as
+`$?` by `shell_last_exec_status()` in `shell_cmd_apps.c`.  Final
+marker `INCORE: ALL PASS` (or `INCORE: FAIL`) is the one substring
+the runner asserts on.  Fronted by the single HMP scenario
+`test_incore` (`./run.sh ui incore`); see `src/userspace/incore.sh`
+for the current test list (hello, forktest, execvetest, alloctest).
+
+Trade-off vs HMP scenarios: faster (no per-test typing/settle, no
+reset_shell, no reaper-output races), and the test list is editable
+in a `.sh` file without touching the runner -- but no screendump
+evidence on panic, so this is only the right shape for tests that
+don't depend on framebuffer state.  Interactive features (TAB,
+Ctrl-C, VT switching, sh.elf readline, fullscreen apps) stay in
+HMP-driven scenarios where the keyboard event is itself under test.
+
+Each ELF in `incore.sh` is expected to print `[name] PASS` /
+`[name] FAIL: <reason>` on its own and exit `0` / non-zero; the
+script just aggregates.  See `alloctest.c` for the canonical shape
+(12 sub-tests, each emitting a status line, `return 0`/`return 1`).
 
 ---
 

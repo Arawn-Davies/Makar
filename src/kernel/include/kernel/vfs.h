@@ -6,12 +6,16 @@
  *
  * Provides a single, unified path namespace:
  *
- *   /              – virtual root; ls shows available mount-points
- *   /mnt/hd/…      – FAT32 hard-disk partition (mounted via cmd_mount)
- *   /mnt/cdrom/…   – ISO9660 CD-ROM (auto-detected on vfs_init)
+ *   /              – virtual root; rootfs election elevates a disk volume here
+ *                    (live CD → /, ext2/FAT32 HDD → /).  Unix-style paths
+ *                    (/usr, /etc, /home, /apps, /root) resolve transparently
+ *                    via the rootfs prefix.
+ *   /mnt/<name>    – user-mountable disk volumes (mkdir + mount).
+ *   /dev /proc     – synthetic block-device + process trees.
+ *   /tmp /log      – synthetic in-RAM writable overlays.
  *
  * All shell commands (ls, cd, cat, mkdir) use this layer so they work
- * transparently across both filesystems.
+ * transparently across every filesystem.
  */
 
 #include <kernel/types.h>
@@ -41,30 +45,44 @@ void vfs_init(void);
 void vfs_set_boot_drive(uint32_t biosdev);
 
 /*
- * vfs_auto_mount – automatically mount the appropriate filesystem.
+ * vfs_mount_root – elect and bind the rootfs at "/".
  *
- * Must be called after both vfs_init() and ide_init().
+ * Must be called after vfs_init() and ide_init(), before vfs_auto_mount().
  *
- * - BIOS HDD (0x80–0xDF): mounts the first FAT32 partition found on the
- *   corresponding ATA drive as /mnt/hd and navigates there.
- * - BIOS CD-ROM (0xE0–0xFF): the ISO9660 drive is already accessible at
- *   /mnt/cdrom (registered by vfs_init); navigates CWD there.
- * - Unknown (0xFF): tries HDD drives first, then falls back silently.
+ *   spec  -- value of the Multiboot2 `root=` cmdline arg (or NULL/"auto"
+ *            for auto-detect; "none" to skip election entirely).
+ *
+ * Election order: explicit /dev/hdaN spec → ext2/FAT32 auto-detect
+ * (first ATA partition whose /usr/lib/crt0.o exists) → ISO9660 CD-ROM
+ * fallback (live boot) → no rootfs (overlays-only / dev-friendly boot).
+ */
+void vfs_mount_root(const char *spec);
+
+/*
+ * vfs_auto_mount – bind ATA volumes at /mnt/boot + /mnt/root.
+ *
+ * Must be called after vfs_init() and ide_init().  Single-partition
+ * disks bind at /mnt/root; dual-partition installer layouts bind
+ * partition 0 at /mnt/boot (FAT32, also mirrored at /boot) and
+ * partition 1 at /mnt/root (ext2 or FAT32).  ISO9660 CD-ROMs are
+ * pre-registered at /mnt/cdrom by vfs_init.  Rootfs election
+ * (vfs_mount_root) runs first and may have already elevated one of
+ * these volumes to "/".
  */
 void vfs_auto_mount(void);
+
+/*
+ * vfs_ensure_root_home – best-effort mkdir /root on a writable rootfs.
+ *
+ * Called after vfs_auto_mount.  No-op when the rootfs is ISO9660 (RO),
+ * unbound, or /root already exists.  Failures are logged-only -- this
+ * is convenience, not gate-on.
+ */
+void vfs_ensure_root_home(void);
 
 /* -------------------------------------------------------------------------
  * State notifications (called by mount/umount commands)
  * ---------------------------------------------------------------------- */
-
-/*
- * vfs_notify_hd_mounted   – FAT32 volume has just been mounted.
- *                           Moves the CWD to "/mnt/hd" when currently at "/".
- * vfs_notify_hd_unmounted – FAT32 volume has just been unmounted.
- *                           Resets the CWD to "/" when it was under "/mnt/hd".
- */
-void vfs_notify_hd_mounted(void);
-void vfs_notify_hd_unmounted(void);
 
 /*
  * vfs_notify_cdrom_ejected – called after the ATAPI eject command succeeds.
@@ -77,7 +95,7 @@ void vfs_notify_cdrom_ejected(void);
  * Current working directory
  * ---------------------------------------------------------------------- */
 
-/* Return a pointer to the current VFS path (e.g. "/mnt/hd/boot/grub"). */
+/* Return a pointer to the current VFS path (e.g. "/usr/lib" or "/apps"). */
 const char *vfs_getcwd(void);
 
 /*

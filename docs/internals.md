@@ -204,7 +204,7 @@ gets its own page directory. Construction (`vmm_create_pd`):
 3. Leave indices 64–1023 zero. That's the user-space range, 3.75 GiB worth,
    though we only ever populate two slots:
    - `USER_CODE_BASE = 0x40000000` (PDE 256) — one 4 KiB page for code.
-   - `USER_STACK_TOP = 0xBFFF0000` (PDE 767) — one 4 KiB page for stack.
+   - `USER_STACK_TOP = 0xBFFF0000` (PDE 767) — `USER_STACK_PAGES = 8` pages (32 KiB) eagerly mapped at exec, occupying `[USER_STACK_TOP − 32 KiB, USER_STACK_TOP)`.  Was one 4 KiB page until TCC's recursive-descent parser overflowed it on sh.c.
 
 The mirror is a one-time snapshot, not a live shadow. If something maps a new
 kernel PDE *after* `vmm_create_pd` runs (e.g., the heap grows past 16 MiB), the
@@ -425,9 +425,10 @@ The caller's responsibility before `ring3_enter`:
 2. `vmm_switch(pd)` — load the user PD into CR3.
 
 ELF loading (`elf_exec`) maps `USER_CODE_BASE` to a freshly-allocated frame,
-copies the program text in, maps a user stack page below `USER_STACK_TOP`,
-constructs argc/argv on that stack, and jumps through `ring3_enter`. We have
-no dynamic loader; binaries are statically linked freestanding ELFs.
+copies the program text in, maps `USER_STACK_PAGES` (8 × 4 KiB = 32 KiB) of
+user stack below `USER_STACK_TOP`, constructs argc/argv on the top page, and
+jumps through `ring3_enter`. We have no dynamic loader; binaries are
+statically linked freestanding ELFs.
 
 ---
 

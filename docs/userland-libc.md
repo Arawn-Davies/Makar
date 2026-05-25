@@ -214,9 +214,11 @@ needed for the TCC bring-up landed first (see
 | `stdio.{h,c}` | `FILE*` over fd syscalls; `fopen`/`fread`/`fwrite`/`fclose`/`fputs`/`fputc`/`fgetc`/`fflush`; `snprintf`/`vsnprintf`/`fprintf`/`printf` |
 
 Coverage lives in `src/userspace/alloctest.c` (12 sub-tests, run via
-`./run.sh ui alloctest`).  Each piece is small enough to read in one
-sitting and is replaceable behind the same headers when uClibc-ng
-ports cleanly.
+`./run.sh ui incore` -- the standalone `alloctest` scenario was retired
+in favour of the in-kernel `src/userspace/incore.sh` driver, which
+invokes the binary and branches on `$?`).  Each piece is small enough
+to read in one sitting and is replaceable behind the same headers when
+uClibc-ng ports cleanly.
 
 ### 7. In-kernel compilation (long-term goal)
 

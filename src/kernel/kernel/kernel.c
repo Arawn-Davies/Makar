@@ -25,6 +25,7 @@
 #include <kernel/acpi.h>
 #include <kernel/ktest.h>
 #include <kernel/vtty.h>
+#include <kernel/sh_script.h>
 
 /*
  * Column at which "[ OK ]" starts, counting from 0.
@@ -140,6 +141,9 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	                             * on after boot so the shell mirrors to
 	                             * COM1.  Linux-style: dmesg + tty over
 	                             * serial.  Used by ui_test scenarios. */
+	const char *root_spec = NULL;   /* `root=...` cmdline arg, NULL = auto */
+	static char root_spec_buf[64];  /* copy out of cmdline tag (still alive
+	                                 * for the boot, but we own it) */
 	{
 		uint32_t biosdev = 0xFFu;
 
@@ -163,6 +167,17 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 						test_mode = 1;
 					if (strstr(cmd->string, "console=ttyS0"))
 						console_serial = 1;
+					const char *rp = strstr(cmd->string, "root=");
+					if (rp) {
+						rp += 5;
+						size_t j = 0;
+						while (*rp && *rp != ' ' && *rp != '\t' &&
+						       j + 1 < sizeof(root_spec_buf)) {
+							root_spec_buf[j++] = *rp++;
+						}
+						root_spec_buf[j] = '\0';
+						root_spec = root_spec_buf;
+					}
 				}
 				tag_ptr += (tag->size + 7u) & ~7u;
 			}
@@ -172,7 +187,9 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	}
 
 	vfs_init();
+	vfs_mount_root(root_spec);
 	vfs_auto_mount();
+	vfs_ensure_root_home();
 
 	t_writestring("\nAll subsystems ready.\n\n");
 
@@ -211,9 +228,22 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 
 	if (test_mode) {
 		int fails = ktest_run_all();
+		Serial_WriteString(fails ? "KTEST_RESULT: FAIL\n"
+		                         : "KTEST_RESULT: PASS\n");
+
+		/* Phase 2: run the in-kernel UI test driver inline.  incore.sh
+		 * exercises hello / forktest / execvetest / alloctest via exec
+		 * + $? checks; it writes "INCORE: ALL PASS" or "INCORE: FAIL"
+		 * to serial which run.sh's _check_ktest greps alongside
+		 * KTEST_RESULT.  Idempotent and quick (~10s under TCG); no
+		 * shell task needed -- sh_run_file dispatches inline and
+		 * shell_exec_elf's wait loop just yields back to the spawned
+		 * user task. */
+		Serial_WriteString("INCORE: starting\n");
+		sh_run_file("/apps/incore.sh");
+		Serial_WriteString("INCORE: finished\n");
+
 		uint8_t exit_val = (fails > 0) ? 1 : 0;
-		Serial_WriteString(exit_val ? "KTEST_RESULT: FAIL\n"
-		                            : "KTEST_RESULT: PASS\n");
 		asm volatile("outb %b0, %w1" :: "a"(exit_val), "Nd"((uint16_t)0xF4));
 		for (;;) asm volatile("cli; hlt");
 	}

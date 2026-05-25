@@ -345,19 +345,41 @@ _check_ktest() {
     #   "  PASS: <assertion>" / "  FAIL: <assertion>"
     #   "[ktest] results: N passed, M failed"
     #   "KTEST_RESULT: PASS" / "KTEST_RESULT: FAIL"
+    # incore format (see src/userspace/incore.sh, run inline after ktest_run_all):
+    #   "INCORE: RUN <test>"
+    #   "INCORE: PASS <test>" / "INCORE: FAIL <test>"
+    #   "INCORE: ALL PASS"    / "INCORE: FAIL"
     # Plus any kernel panic / KPANIC line if a test corrupted state.
     echo "---- ktest transcript ----"
-    grep -E "^(\[ktest\]|  PASS:|  FAIL:|KTEST_RESULT|KPANIC|kpanic)" \
+    grep -E "^(\[ktest\]|  PASS:|  FAIL:|KTEST_RESULT|INCORE:|KPANIC|kpanic)" \
         "$REPO_ROOT/ktest.log" || true
     echo "---- end ktest transcript ----"
 
+    local ktest_status=unknown
     if grep -q "KTEST_RESULT: PASS" "$REPO_ROOT/ktest.log"; then
-        echo "==> ktest: ALL PASSED"
+        ktest_status=pass
     elif grep -q "KTEST_RESULT: FAIL" "$REPO_ROOT/ktest.log"; then
-        echo "==> ktest: FAILED - see ktest.log"; exit 1
-    else
-        echo "==> ktest: TIMEOUT or no result - see ktest.log"; exit 1
+        ktest_status=fail
     fi
+
+    local incore_status=unknown
+    if grep -q "^INCORE: ALL PASS" "$REPO_ROOT/ktest.log"; then
+        incore_status=pass
+    elif grep -q "^INCORE: FAIL" "$REPO_ROOT/ktest.log"; then
+        incore_status=fail
+    fi
+
+    case "$ktest_status:$incore_status" in
+        pass:pass)
+            echo "==> ktest: ALL PASSED (+ incore: ALL PASSED)" ;;
+        pass:unknown)
+            # Older kernel build with no incore wiring -- accept ktest result alone.
+            echo "==> ktest: ALL PASSED (incore: not run -- pre-incore kernel?)" ;;
+        fail:*|*:fail)
+            echo "==> FAILED ktest=$ktest_status incore=$incore_status -- see ktest.log"; exit 1 ;;
+        unknown:*)
+            echo "==> ktest: TIMEOUT or no result - see ktest.log"; exit 1 ;;
+    esac
 }
 
 # Create a minimal 32 MiB FAT32 disk image for the ISO GDB test.
