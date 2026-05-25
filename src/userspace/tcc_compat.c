@@ -75,6 +75,15 @@ int chmod(const char *path, unsigned int mode)
     (void)path; (void)mode; return 0;   /* Makar has no permission bits today */
 }
 
+/* access(2): F_OK/R_OK/W_OK/X_OK -- without a permission model, the only
+ * thing we can answer is "does the path exist?" via stat. */
+int access(const char *path, int mode)
+{
+    (void)mode;
+    struct stat st;
+    return sys_stat(path, &st) == 0 ? 0 : -1;
+}
+
 int stat(const char *path, struct stat *st)
 {
     return sys_stat(path, st);

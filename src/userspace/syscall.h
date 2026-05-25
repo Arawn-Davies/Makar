@@ -28,6 +28,12 @@
 #define CLOCK_REALTIME    0
 #define CLOCK_MONOTONIC   1
 
+/* access(2) mode bits.  No permission model -- all four behave as F_OK. */
+#define F_OK 0
+#define X_OK 1
+#define W_OK 2
+#define R_OK 4
+
 /* Linux i386 layouts -- must match kernel/syscall.h. */
 struct timeval  { int tv_sec; int tv_usec; };
 struct timespec { int tv_sec; int tv_nsec; };
