@@ -5,6 +5,7 @@ CC=$(HOST)-gcc
 AS=$(HOST)-as
 LD=$(HOST)-ld
 AR=$(HOST)-ar
+OBJCOPY=$(HOST)-objcopy
 
 CFLAGS?=-O2 -g
 CFLAGS:=$(CFLAGS) -std=c11 -ffreestanding -fno-stack-protector \
@@ -97,9 +98,16 @@ alloctest.elf: crt0.o alloctest.o libc.a
 	$(LD) $(LDFLAGS) -o $@ crt0.o alloctest.o libc.a
 
 # Archive of the userspace libc shim.  Built with rcs (replace, create
-# index) so successive builds replace stale objects in place.
+# index) so successive builds replace stale objects in place.  Debug
+# sections are stripped from the archive because in-OS TCC trips over
+# the cross-compiler's '.rel.debug_macro' relocations when loading
+# libc.a -- TCC's reloc processor rejects entries whose debug-only
+# symbol references resolve to slot 0 ('Invalid relocation entry
+# [13]').  The standalone .o files in this directory keep their debug
+# info for normal LD-driven builds; we only strip the archived copies.
 libc.a: $(LIBC_OBJS)
 	$(AR) rcs $@ $^
+	$(OBJCOPY) --strip-debug $@
 
 
 %.o: %.c
