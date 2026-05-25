@@ -47,10 +47,12 @@
 #include <string.h>
 #include <kernel/ktest.h>
 
-/* USER_STACK_TOP - matches usertest.c / elf.c; defined locally to
- * avoid pulling those headers into syscall.c just for this one
- * constant.  Stack grows down from here in one mapped 4 KiB page. */
-#define USER_STACK_TOP  0xBFFF0000u
+/* USER_STACK_TOP / USER_STACK_PAGES - matches elf.c; defined locally to
+ * avoid pulling that header into syscall.c just for these constants.
+ * Stack grows down from USER_STACK_TOP in USER_STACK_PAGES mapped 4 KiB
+ * pages; keep these two in sync with the matching defines in elf.c. */
+#define USER_STACK_TOP    0xBFFF0000u
+#define USER_STACK_PAGES  8u
 
 /* Standard CGA/VGA 16-colour palette for SYS_PUTCH_AT VESA rendering. */
 static const uint32_t s_vga_palette[16] = {
@@ -1270,10 +1272,9 @@ void syscall_dispatch(registers_t *regs)
     case SYS_SIGRETURN: {
         task_t *t = task_current();
         uint32_t base = regs->useresp - 4u;
-        /* Range check: sigframe must lie inside the user stack page
-         * range we manage.  USER_STACK_TOP is the top of the one
-         * mapped 4 KiB stack page (stack grows down from there). */
-        if (base < (USER_STACK_TOP - 4096u) ||
+        /* Range check: sigframe must lie inside the user stack range
+         * we manage -- USER_STACK_PAGES pages below USER_STACK_TOP. */
+        if (base < (USER_STACK_TOP - USER_STACK_PAGES * 4096u) ||
             base + sizeof(sigframe_t) > USER_STACK_TOP) {
             Serial_WriteString("[signal] sigreturn: out-of-range frame; "
                                "killing pid=");
