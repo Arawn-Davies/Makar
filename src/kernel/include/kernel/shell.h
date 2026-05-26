@@ -33,4 +33,26 @@ void shell_readline(char *buf, size_t max);
  */
 void shell_clear_screen(void);
 
+/*
+ * shell_apply_scheme_for_tty – apply slot `tty`'s palette to the active
+ * renderer (VGA attribute byte + VESA fg/bg).  Exposed so the boot
+ * userspace-shell task can paint the right colours before exec'ing
+ * /apps/sh.elf; out-of-range tty falls back to slot 0.
+ */
+void shell_apply_scheme_for_tty(int tty);
+
+/*
+ * shell_enter_slot – the full per-VT shell prelude.  Sets SIGINT ignore,
+ * marks the task unkillable, registers the VT slot, runs the loading
+ * screen (slot 0 only) and waits for ktest_bg_done, waits for focus
+ * (non-primary slots), applies the per-VT palette, and clears the
+ * screen on first focus.
+ *
+ * Returns the assigned slot index (>= 0), or -1 if vtty_register failed
+ * (caller should bail).  Called once per shell task; both shell_run
+ * (in-kernel rescue path) and user_shell_slot_entry (userspace login
+ * path) go through this so the UX is identical.
+ */
+int shell_enter_slot(int with_loading_screen);
+
 #endif /* _KERNEL_SHELL_H */

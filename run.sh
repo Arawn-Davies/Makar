@@ -369,15 +369,26 @@ _check_ktest() {
         incore_status=fail
     fi
 
-    case "$ktest_status:$incore_status" in
-        pass:pass)
-            echo "==> ktest: ALL PASSED (+ incore: ALL PASSED)" ;;
-        pass:unknown)
-            # Older kernel build with no incore wiring -- accept ktest result alone.
+    # LIBC-TCC: in-OS sh-script tests for the libc / TCC self-rebuild
+    # matrix.  Runs inline during test_mode bootup (no HMP sendkey),
+    # marker emitted by /src/userspace/libc-tcc.sh.
+    local libc_status=unknown
+    if grep -q "^LIBC-TCC: ALL PASS" "$REPO_ROOT/ktest.log"; then
+        libc_status=pass
+    elif grep -q "^LIBC-TCC: FAIL" "$REPO_ROOT/ktest.log"; then
+        libc_status=fail
+    fi
+
+    case "$ktest_status:$incore_status:$libc_status" in
+        pass:pass:pass)
+            echo "==> ktest: ALL PASSED (+ incore + libc-tcc)" ;;
+        pass:pass:unknown)
+            echo "==> ktest: ALL PASSED (+ incore; libc-tcc: not run)" ;;
+        pass:unknown:unknown)
             echo "==> ktest: ALL PASSED (incore: not run -- pre-incore kernel?)" ;;
-        fail:*|*:fail)
-            echo "==> FAILED ktest=$ktest_status incore=$incore_status -- see ktest.log"; exit 1 ;;
-        unknown:*)
+        fail:*:*|*:fail:*|*:*:fail)
+            echo "==> FAILED ktest=$ktest_status incore=$incore_status libc=$libc_status -- see ktest.log"; exit 1 ;;
+        unknown:*:*)
             echo "==> ktest: TIMEOUT or no result - see ktest.log"; exit 1 ;;
     esac
 }

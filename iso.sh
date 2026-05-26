@@ -19,9 +19,14 @@ set -e
 # Runs after build.sh so crt0.o and libc.a are available.
 bash build-tcc.sh
 
-mkdir -p isodir/boot/grub/i386-pc isodir/apps isodir/src isodir/docs isodir/limine
+mkdir -p isodir/boot/grub/i386-pc isodir/apps isodir/src isodir/docs isodir/limine isodir/etc
 
 cp sysroot/boot/makar.kernel isodir/boot/makar.kernel
+
+# Default /etc/hostname.  sys_gethostname() reads this; if absent the kernel
+# falls back to "makar".  Operators can edit this file at any time (write
+# /etc/hostname mybox  from the rescue shell) to change the prompt.
+echo "makar" > isodir/etc/hostname
 
 # Copy source tree and docs onto the ISO so they're readable via VIX.
 cp -r src/. isodir/src/

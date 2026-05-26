@@ -66,6 +66,44 @@
                                 * returns the previous style.  No-op (returns 0)
                                 * in VGA-text mode.  Used by vix.elf. */
 
+/*
+ * Admin syscalls (219..229).
+ *
+ * Each gates on task_is_admin() (always true today; future login model
+ * tightens this).  Side-effect semantics + arg validation live in
+ * kernel/admin.h helpers; the dispatcher is a thin marshaller.
+ *
+ * String args are read directly from the calling task's address space
+ * (the caller's PD is loaded when int 0x80 runs, so a kernel-mode
+ * dereference reaches user memory).
+ *
+ * Return:
+ *   >= 0  success or current state (e.g. SYS_SCHED_QUANTUM returns ticks)
+ *   -1    permission denied OR generic failure
+ *   <-1   admin-helper-specific negative errno
+ */
+#define SYS_REBOOT         219  /* int reboot(void) - noreturn on success */
+#define SYS_SHUTDOWN       220  /* int shutdown(void) - noreturn on success */
+#define SYS_SETMODE        221  /* int setmode(const char *mode) */
+#define SYS_FGCOL          222  /* int fgcol(const char *colour) */
+#define SYS_BGCOL          223  /* int bgcol(const char *colour) */
+#define SYS_EJECT          224  /* int eject(void) */
+#define SYS_MOUNT          225  /* int mount(const char *dev, const char *mnt) */
+#define SYS_UMOUNT         226  /* int umount(const char *target) -- NULL ok */
+#define SYS_MKFS           227  /* int mkfs(const char *dev, const char *fstype) */
+#define SYS_SCHED_QUANTUM  228  /* int sched_quantum(int new_value) -- <0 = query */
+#define SYS_VERBOSE        229  /* int verbose(int onoff) -- 1/0/-1 */
+#define SYS_SHELL_READY    231  /* void shell_ready_marker(void) - emit the
+                                 * `[shell:ready vt=N]` sync marker on COM1
+                                 * if g_serial_verbose; no-op otherwise.
+                                 * Userspace shell calls this before each
+                                 * prompt so ui_test.sh's wait_for_serial
+                                 * keeps working unchanged. */
+#define SYS_GETHOSTNAME    230  /* int gethostname(char *buf, size_t size) - read
+                                 * /etc/hostname (or fallback "makar"), copy up
+                                 * to size-1 bytes, NUL-terminate.  Returns
+                                 * strlen on success, -1 if buf invalid. */
+
 /* Back to Linux i386 ABI numbers for the next set. */
 #define SYS_FCNTL      55   /* int fcntl(int fd, int cmd, int arg) - F_GETFL/F_SETFL */
 #define SYS_GETPPID    64   /* pid_t getppid(void)                              */

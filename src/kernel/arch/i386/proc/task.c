@@ -427,6 +427,20 @@ task_t *task_current(void)
     return current_task;
 }
 
+/*
+ * task_is_admin – the one privilege check for admin syscalls.
+ *
+ * No user model yet; every task runs as root.  When uid/cap support
+ * lands this becomes the single point where the actual check goes
+ * (e.g. `return t->uid == 0 || (t->caps & CAP_SYS_ADMIN);`).
+ */
+int task_is_admin(task_t *t)
+{
+    if (!t) t = current_task;
+    (void)t;
+    return 1;
+}
+
 task_t *task_get(int i)
 {
     if (i < 0 || i >= task_pool_count)

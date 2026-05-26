@@ -10,6 +10,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <kernel/version.h>   /* MAKAR_VERSION + SHELL_VERSION (single source) */
 
 #define SHELL_MAX_INPUT  256
 #define SHELL_MAX_ARGS   16   /* enough headroom for glob expansion */
@@ -17,11 +18,6 @@
 /* Medli-compatible identity: username and hostname shown in the prompt. */
 #define SHELL_USERNAME   "root"
 #define SHELL_HOSTNAME   "makar"
-
-/* Shell version - independent of the kernel version (<kernel/version.h>).
- * The shell is conceptually a separate component; bump this when shell
- * features change, MAKAR_VERSION when the kernel itself changes. */
-#define SHELL_VERSION    "0.5.0"
 
 #define BUILD_DATE __DATE__
 #define BUILD_TIME __TIME__

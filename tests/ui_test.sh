@@ -941,18 +941,16 @@ sendkey ret" \
     assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
 }
 
-test_libc_tcc_script() {
-    # Run the non-interactive TCC/libc rebuild matrix inside the kernel shell
-    # from /src/userspace/libc-tcc.sh.  The script compiles to canonical
-    # /tmp/<app>.elf filenames and checks child exit status via $? so the UI
-    # runner only has to type one command.
-    it_until "libc-tcc-script" \
-"$(keys "sh /src/userspace/libc-tcc.sh")
-sendkey ret" \
-        "LIBC-TCC: ALL PASS" 420
-    assert_serial_contains "LIBC-TCC: ALL PASS"
-    assert_serial_not_contains "LIBC-TCC: FAIL" "Kernel panic" "panic(cpu 0)" "SIGSEGV"
-}
+## test_libc_tcc_script -- retired.
+##
+## The libc / TCC rebuild matrix is no longer driven by HMP sendkey.  It
+## runs inline during test_mode bootup (kernel.c's `sh_run_file
+## /src/userspace/libc-tcc.sh` after incore.sh), and run.sh's
+## _check_ktest greps the LIBC-TCC: ALL PASS / LIBC-TCC: FAIL marker.
+##
+## Rationale: typing a single command through sendkey buys nothing for a
+## test that doesn't exercise the UI, and the timing-race surface of
+## HMP under TCG makes it the flakiest part of the suite.
 
 TCC_COMPILE_FAILED=0
 
@@ -1507,14 +1505,17 @@ SHELL_TESTS=(glob_proc tab_path tab_cycle typo_doesnt_clear shell_scripting_vars
 CD_PWD_TESTS=(cd_root per_tty_cwd)
 FS_TESTS=(ls_dev ls_mnt mount_noargs mnt_mountpoint filetest)
 POSIX_TESTS=(exec_hello fork_cow fork_execve user_sigusr1_handler ctrlc_kills_child ctrlc_cat usershell_smoke usershell_execve usershell_history usershell_vars)
-TCC_REBUILD_TESTS=(
-    tcc_rebuild_basic tcc_rebuild_fdisk tcc_rebuild_cfdisk
-    tcc_rebuild_maktop tcc_rebuild_clock tcc_rebuild_lines
-    tcc_rebuild_vix tcc_rebuild_kbtester
-)
-LIBC_TESTS=(tcc_hello tcc_hello_relpath libc_tcc_script "${TCC_REBUILD_TESTS[@]}")
-# alloctest still has the fast in-kernel incore.sh coverage; the TCC
-# rebuild group additionally proves it links against the shipped libc.a.
+## TCC_REBUILD_TESTS / LIBC_TESTS -- retired as HMP scenarios.
+##
+## The whole libc + TCC self-rebuild matrix now runs from
+## /src/userspace/libc-tcc.sh during test_mode bootup.  Marker
+## `LIBC-TCC: ALL PASS` / `LIBC-TCC: FAIL` on serial; checked by
+## run.sh _check_ktest.  See docs/plans/userspace-shell-migration-HANDOFF.md.
+##
+## Empty arrays kept so `./run.sh ui libc` is a no-op rather than an
+## error.  Use `./run.sh iso test` for the actual coverage.
+TCC_REBUILD_TESTS=()
+LIBC_TESTS=()
 INCORE_TESTS=(incore)
 VT_TESTS=(vt_roundtrip_keeps_maktop_focused vt_all_roundtrips)
 BUGHUNT_TESTS=(bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch)

@@ -18,7 +18,7 @@
  *                     kernel version and vice versa.  Bumped half a
  *                     step (0.6.0 → 0.6.5) for zsh-style tab cycling.
  */
-#define MAKAR_VERSION "0.8.0"
-#define SHELL_VERSION "0.6.5"
+#define MAKAR_VERSION "0.8.1"
+#define SHELL_VERSION "0.7.0"
 
 #endif /* _KERNEL_VERSION_H */

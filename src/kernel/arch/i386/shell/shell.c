@@ -893,11 +893,8 @@ static void shell_print_prompt(void)
 /* ---------------------------------------------------------------------------
  * shell_run – infinite REPL loop.  Never returns.
  * --------------------------------------------------------------------------- */
-void shell_run(void)
+int shell_enter_slot(int with_loading_screen)
 {
-    char  buf[SHELL_MAX_INPUT];   /* stack-allocated: each task gets its own */
-    char *argv[SHELL_MAX_ARGS];
-
     /* Shell tasks ignore SIGINT.  Ctrl+C at the prompt is meant to abort
      * the current input line, not terminate the shell -- the kernel
      * delivers SIGINT to the focused task on every Ctrl+C and the
@@ -914,6 +911,16 @@ void shell_run(void)
     task_current()->unkillable = 1;
 
     int slot = vtty_register();
+    if (slot < 0) return -1;
+
+    if (!with_loading_screen) {
+        /* Rescue path: no loading screen, no ktest_bg wait.  The
+         * operator booted into rescue *because* something's broken;
+         * the priority is a prompt now, not a polished splash. */
+        shell_apply_scheme_for_tty(slot);
+        shell_clear_screen();
+        return slot;
+    }
 
     if (slot == 0) {
         /* Boot scheme during the loading screen: keep the classic
@@ -1028,6 +1035,30 @@ void shell_run(void)
          * sentinel byte cleanly; any real chars that arrived alongside it
          * stay queued for the readline loop. */
     }
+
+    return slot;
+}
+
+/*
+ * shell_run -- in-kernel rescue shell REPL.  Called only when
+ * shell=rescue is on the kernel cmdline (or as the per-VT fallback
+ * when /apps/sh.elf fails to exec).  Skips the boot loading screen
+ * (rescue path = recovery, prompt-now-please semantics) and runs the
+ * legacy kernel-shell REPL.
+ */
+void shell_run(void)
+{
+    char  buf[SHELL_MAX_INPUT];
+    char *argv[SHELL_MAX_ARGS];
+
+    int slot = shell_enter_slot(0);   /* 0 = no loading screen */
+    if (slot < 0) {
+        Serial_WriteString("shell_run: vtty_register failed\n");
+        for (;;) task_yield();
+    }
+
+    t_writestring("Makar rescue shell (in-kernel).\n");
+    t_writestring("Type 'help' for commands; 'exec /apps/sh.elf' for the userspace shell.\n\n");
 
     while (1) {
         shell_print_prompt();
