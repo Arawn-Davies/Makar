@@ -128,7 +128,19 @@ case "${1:-}" in
         # mattered (`ui foo graphical` was silently parsed as headless,
         # with `graphical` treated as a scenario name).  With `gui`,
         # any remaining args are scenarios or group names.
-        MODE="ui graphical"; shift 1 ;;
+        #
+        # Special-case: `gui <suite>` for in-OS test suites that no
+        # longer use HMP (libc, incore, ktest, all).  Those route to
+        # the test-ISO-visible path so the operator can watch the
+        # script run inside the kernel rather than typing nothing
+        # through an empty ui-test scenario set.
+        case "${2:-}" in
+            libc|libc-tcc) MODE="test-gui"; TEST_SUITE="libc-tcc"; shift 2 ;;
+            incore)        MODE="test-gui"; TEST_SUITE="incore";   shift 2 ;;
+            ktest)         MODE="test-gui"; TEST_SUITE="ktest";    shift 2 ;;
+            all-tests)     MODE="test-gui"; TEST_SUITE="all";      shift 2 ;;
+            *)             MODE="ui graphical"; shift 1 ;;
+        esac ;;
     all)
         if [ "${2:-}" = "graphical" ]; then
             MODE="all graphical"; shift 2
@@ -902,6 +914,42 @@ ktest)
     ;;
 
 # ── ktest graphical ──────────────────────────────────────────────────────────
+# ── test-gui ─────────────────────────────────────────────────────────────────
+# Build the test ISO with a focused cmdline (`test_mode test=<suite>`)
+# and boot it in a visible QEMU window so the operator can watch the
+# in-OS test script run.  Used by `./run.sh gui libc`, `gui incore`, etc.
+#
+# Differs from `ktest graphical`: that hard-codes the default test_mode
+# cmdline (runs everything).  test-gui lets the caller pick one suite.
+"test-gui")
+    QEMU_BIN=$(_host_qemu)
+    if [ -z "$QEMU_BIN" ]; then
+        echo "ERROR: 'test-gui' requires host QEMU and a display server." >&2
+        echo "       Install qemu-system-i386 with X11/SDL/Cocoa support." >&2
+        exit 1
+    fi
+    # Pass TEST_CMDLINE as an inline shell assignment in the _flags
+    # string so it survives into the docker-wrapped iso.sh invocation
+    # (otherwise a plain env var would be lost crossing the container
+    # boundary -- _drun only propagates explicit --env).
+    _build_iso "TEST_CMDLINE='test_mode test=${TEST_SUITE}' CFLAGS='-O0 -g3' TEST_ISO=1"
+    echo "==> Booting test ISO (suite=${TEST_SUITE}) with a display window..."
+    rm -f "$REPO_ROOT/ktest.log"
+    "$QEMU_BIN" \
+        -cdrom "$REPO_ROOT/makar-test.iso" \
+        -serial "file:$REPO_ROOT/ktest.log" \
+        ${QEMU_DISPLAY:+-display "$QEMU_DISPLAY"} \
+        -no-reboot \
+        -device isa-debug-exit,iobase=0xf4,iosize=0x04 &
+    QPID=$!
+    ( sleep 600 && kill "$QPID" 2>/dev/null ) &
+    WPID=$!
+    wait "$QPID" 2>/dev/null || true
+    kill "$WPID" 2>/dev/null || true
+    wait "$WPID" 2>/dev/null || true
+    _check_ktest
+    ;;
+
 # Incremental build, then run ktest in a visible QEMU window.  Requires
 # host QEMU + display server.
 "ktest graphical")

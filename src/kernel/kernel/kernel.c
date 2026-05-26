@@ -195,6 +195,12 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	                             * shell on every VT instead of /apps/sh.elf.
 	                             * The recovery path when userspace shell
 	                             * or its rootfs is broken. */
+	static char test_spec_buf[64];  /* `test=<comma-list>` cmdline arg.
+	                                 * Empty = default (ktest + incore +
+	                                 * libc-tcc).  Recognised names:
+	                                 * "ktest", "incore", "libc-tcc",
+	                                 * "all" (= default), "none". */
+	const char *test_spec = NULL;
 	{
 		uint32_t biosdev = 0xFFu;
 
@@ -238,6 +244,18 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 						if (sp[0] == 'r' && sp[1] == 'e' && sp[2] == 's' &&
 						    sp[3] == 'c' && sp[4] == 'u' && sp[5] == 'e')
 							shell_rescue = 1;
+					}
+					/* test=<comma-list> -- which test-mode scripts to run. */
+					const char *tp = strstr(cmd->string, "test=");
+					if (tp) {
+						tp += 5;
+						size_t j = 0;
+						while (*tp && *tp != ' ' && *tp != '\t' &&
+						       j + 1 < sizeof(test_spec_buf)) {
+							test_spec_buf[j++] = *tp++;
+						}
+						test_spec_buf[j] = '\0';
+						test_spec = test_spec_buf;
 					}
 				}
 				tag_ptr += (tag->size + 7u) & ~7u;
@@ -298,29 +316,39 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	acpi_init();
 
 	if (test_mode) {
-		int fails = ktest_run_all();
-		Serial_WriteString(fails ? "KTEST_RESULT: FAIL\n"
-		                         : "KTEST_RESULT: PASS\n");
+		/* test=<comma-list> selects which suites run.  Default
+		 * (absent / "all") = every suite.  Helpers below treat the
+		 * empty-spec case as "all" so a bare `test_mode` cmdline keeps
+		 * working unchanged. */
+		#define TEST_WANT(name) \
+			(test_spec == NULL || test_spec[0] == '\0' || \
+			 strcmp(test_spec, "all") == 0 || strstr(test_spec, (name)) != NULL)
 
-		/* Phase 2: run the in-kernel UI test driver inline.  incore.sh
-		 * exercises hello / forktest / execvetest / alloctest via exec
-		 * + $? checks; it writes "INCORE: ALL PASS" or "INCORE: FAIL"
-		 * to serial which run.sh's _check_ktest greps alongside
-		 * KTEST_RESULT.  Idempotent and quick (~10s under TCG); no
-		 * shell task needed -- sh_run_file dispatches inline and
-		 * shell_exec_elf's wait loop just yields back to the spawned
-		 * user task. */
-		Serial_WriteString("INCORE: starting\n");
-		sh_run_file("/apps/incore.sh");
-		Serial_WriteString("INCORE: finished\n");
+		int fails = 0;
+		if (TEST_WANT("ktest")) {
+			fails = ktest_run_all();
+			Serial_WriteString(fails ? "KTEST_RESULT: FAIL\n"
+			                         : "KTEST_RESULT: PASS\n");
+		}
 
-		/* Non-UI test scripts: anything that doesn't strictly exercise
-		 * keyboard / VT rendering goes here so the runner doesn't have
-		 * to drive HMP sendkey for it.  The script writes its own
-		 * PASS/FAIL marker which run.sh's _check_ktest greps. */
-		Serial_WriteString("LIBC-TCC: starting\n");
-		sh_run_file("/src/userspace/libc-tcc.sh");
-		Serial_WriteString("LIBC-TCC: finished\n");
+		/* Phase 2: in-kernel UI test driver.  incore.sh exercises
+		 * hello / forktest / execvetest / alloctest via exec + $?
+		 * checks; marker INCORE: ALL PASS / INCORE: FAIL. */
+		if (TEST_WANT("incore")) {
+			Serial_WriteString("INCORE: starting\n");
+			sh_run_file("/apps/incore.sh");
+			Serial_WriteString("INCORE: finished\n");
+		}
+
+		/* Non-UI libc + TCC self-rebuild matrix.  Marker
+		 * LIBC-TCC: ALL PASS / LIBC-TCC: FAIL. */
+		if (TEST_WANT("libc-tcc")) {
+			Serial_WriteString("LIBC-TCC: starting\n");
+			sh_run_file("/src/userspace/libc-tcc.sh");
+			Serial_WriteString("LIBC-TCC: finished\n");
+		}
+
+		#undef TEST_WANT
 
 		uint8_t exit_val = (fails > 0) ? 1 : 0;
 		asm volatile("outb %b0, %w1" :: "a"(exit_val), "Nd"((uint16_t)0xF4));

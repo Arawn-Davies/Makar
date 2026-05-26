@@ -113,12 +113,16 @@ grub-mkrescue -o makar.iso isodir
 # ── Test ISO (CI) ────────────────────────────────────────────────────────────
 # Single entry, zero timeout: QEMU boots straight into ktest_run_all().
 if [ "${TEST_ISO:-0}" = "1" ]; then
-    cat > isodir/boot/grub/grub.cfg << 'EOF'
+    # TEST_CMDLINE overrides the default test-mode cmdline.  Used by
+    # `./run.sh test <name>` to boot only the named suite (e.g.
+    # `test_mode test=libc-tcc`).  Default exercises every script.
+    _test_cmdline="${TEST_CMDLINE:-test_mode}"
+    cat > isodir/boot/grub/grub.cfg << EOF
 set default=0
 set timeout=0
 
-menuentry "Makar OS (test_mode)" {
-	multiboot2 /boot/makar.kernel test_mode
+menuentry "Makar OS (${_test_cmdline})" {
+	multiboot2 /boot/makar.kernel ${_test_cmdline}
 }
 EOF
     grub-mkrescue -o makar-test.iso isodir
