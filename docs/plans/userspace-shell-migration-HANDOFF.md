@@ -155,6 +155,36 @@ exercised by incore.
 
 ## Known issues / risk areas
 
+### sh_script: nested `sh <file>` corrupts if-parser
+
+Reproduced in shell-smoke.sh during gui-smoke run.  After
+`sh /apps/demo.sh` returns, **every** subsequent
+`if [ ... ]; then ...; else ...; fi` block (multi-line or inline) fires
+**both** the then and the else branch.  Visible as PASS+FAIL pairs in
+the SHELL-SMOKE log.
+
+Pattern that breaks:
+```
+sh /apps/demo.sh
+if [ $? -eq 0 ]
+then echo PASS
+else echo FAIL
+fi
+```
+
+Result:
+```
+PASS
+FAIL
+```
+
+Demo.sh is intentionally NOT exercised from shell-smoke.sh until this
+is fixed; operators run it standalone (`sh /apps/demo.sh`).  Likely a
+parser-state leak (the loop-iter cap or the line counter) in
+`src/kernel/arch/i386/shell/sh_script.c` -- worth a focused slice.
+
+
+
 1. **Scripting nesting**: the script interpreter is single-level for
    `if`/`while`/`for`.  Nested `if`-inside-`while` may not parse.
    Real scripts in `src/userspace/*.sh` (notably `demo.sh` and

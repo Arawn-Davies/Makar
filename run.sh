@@ -135,11 +135,12 @@ case "${1:-}" in
         # script run inside the kernel rather than typing nothing
         # through an empty ui-test scenario set.
         case "${2:-}" in
-            libc|libc-tcc) MODE="test-gui"; TEST_SUITE="libc-tcc"; shift 2 ;;
-            incore)        MODE="test-gui"; TEST_SUITE="incore";   shift 2 ;;
-            ktest)         MODE="test-gui"; TEST_SUITE="ktest";    shift 2 ;;
-            all-tests)     MODE="test-gui"; TEST_SUITE="all";      shift 2 ;;
-            *)             MODE="ui graphical"; shift 1 ;;
+            libc|libc-tcc)        MODE="test-gui"; TEST_SUITE="libc-tcc";    shift 2 ;;
+            incore)               MODE="test-gui"; TEST_SUITE="incore";      shift 2 ;;
+            ktest)                MODE="test-gui"; TEST_SUITE="ktest";       shift 2 ;;
+            smoke|shell-smoke)    MODE="test-gui"; TEST_SUITE="shell-smoke"; shift 2 ;;
+            all-tests)            MODE="test-gui"; TEST_SUITE="all";         shift 2 ;;
+            *)                    MODE="ui graphical"; shift 1 ;;
         esac ;;
     all)
         if [ "${2:-}" = "graphical" ]; then
@@ -363,7 +364,7 @@ _check_ktest() {
     #   "INCORE: ALL PASS"    / "INCORE: FAIL"
     # Plus any kernel panic / KPANIC line if a test corrupted state.
     echo "---- ktest transcript ----"
-    grep -E "^(\[ktest\]|  PASS:|  FAIL:|KTEST_RESULT|INCORE:|LIBC-TCC:|KPANIC|kpanic)" \
+    grep -E "^(\[ktest\]|  PASS:|  FAIL:|KTEST_RESULT|INCORE:|LIBC-TCC:|SHELL-SMOKE:|KPANIC|kpanic)" \
         "$REPO_ROOT/ktest.log" || true
     echo "---- end ktest transcript ----"
 
@@ -382,8 +383,7 @@ _check_ktest() {
     fi
 
     # LIBC-TCC: in-OS sh-script tests for the libc / TCC self-rebuild
-    # matrix.  Runs inline during test_mode bootup (no HMP sendkey),
-    # marker emitted by /src/userspace/libc-tcc.sh.
+    # matrix.  Marker emitted by /src/userspace/libc-tcc.sh.
     local libc_status=unknown
     if grep -q "^LIBC-TCC: ALL PASS" "$REPO_ROOT/ktest.log"; then
         libc_status=pass
@@ -391,18 +391,27 @@ _check_ktest() {
         libc_status=fail
     fi
 
-    # Any explicit FAIL is fatal.  Otherwise we accept any combination
-    # where at least one suite passed -- so `gui libc` (which only runs
-    # the libc-tcc suite) doesn't trip the "ktest TIMEOUT" branch.  Only
+    # SHELL-SMOKE: in-OS replacement for the HMP smoke scenarios.
+    # Marker emitted by /src/userspace/shell-smoke.sh.
+    local smoke_status=unknown
+    if grep -q "^SHELL-SMOKE: ALL PASS" "$REPO_ROOT/ktest.log"; then
+        smoke_status=pass
+    elif grep -q "^SHELL-SMOKE: FAIL" "$REPO_ROOT/ktest.log"; then
+        smoke_status=fail
+    fi
+
+    # Any explicit FAIL is fatal.  Otherwise accept any combination
+    # where at least one suite passed -- so focused `gui libc` /
+    # `gui smoke` runs don't trip the "ktest TIMEOUT" branch.  Only
     # the all-unknown case is treated as a real failure (no marker on
     # serial usually means kernel hung or QEMU never booted).
-    case "$ktest_status:$incore_status:$libc_status" in
+    case "$ktest_status:$incore_status:$libc_status:$smoke_status" in
         *fail*)
-            echo "==> FAILED ktest=$ktest_status incore=$incore_status libc=$libc_status -- see ktest.log"; exit 1 ;;
-        unknown:unknown:unknown)
+            echo "==> FAILED ktest=$ktest_status incore=$incore_status libc=$libc_status smoke=$smoke_status -- see ktest.log"; exit 1 ;;
+        unknown:unknown:unknown:unknown)
             echo "==> ktest: TIMEOUT or no result on serial - see ktest.log"; exit 1 ;;
         *)
-            echo "==> PASSED ktest=$ktest_status incore=$incore_status libc=$libc_status" ;;
+            echo "==> PASSED ktest=$ktest_status incore=$incore_status libc=$libc_status smoke=$smoke_status" ;;
     esac
 }
 
@@ -936,18 +945,20 @@ ktest)
     _build_iso "TEST_CMDLINE='test_mode test=${TEST_SUITE}' CFLAGS='-O0 -g3' TEST_ISO=1"
     echo "==> Booting test ISO (suite=${TEST_SUITE}) with a display window..."
     rm -f "$REPO_ROOT/ktest.log"
-    "$QEMU_BIN" \
+    # Bounded foreground run via timeout/gtimeout when available.
+    # Previous &-watchdog leaked a sleep child after QEMU exited so
+    # the script kept hanging (this is the bug the user just hit).
+    _tmo=""
+    if   command -v timeout  >/dev/null 2>&1; then _tmo="timeout 600"
+    elif command -v gtimeout >/dev/null 2>&1; then _tmo="gtimeout 600"
+    fi
+    # shellcheck disable=SC2086
+    $_tmo "$QEMU_BIN" \
         -cdrom "$REPO_ROOT/makar-test.iso" \
         -serial "file:$REPO_ROOT/ktest.log" \
         ${QEMU_DISPLAY:+-display "$QEMU_DISPLAY"} \
         -no-reboot \
-        -device isa-debug-exit,iobase=0xf4,iosize=0x04 &
-    QPID=$!
-    ( sleep 600 && kill "$QPID" 2>/dev/null ) &
-    WPID=$!
-    wait "$QPID" 2>/dev/null || true
-    kill "$WPID" 2>/dev/null || true
-    wait "$WPID" 2>/dev/null || true
+        -device isa-debug-exit,iobase=0xf4,iosize=0x04 || true
     _check_ktest
     ;;
 

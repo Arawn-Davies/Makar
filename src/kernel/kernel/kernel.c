@@ -358,6 +358,15 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			Serial_WriteString("LIBC-TCC: finished\n");
 		}
 
+		/* Shell + VFS + apps smoke matrix.  Replaces the HMP
+		 * scenarios whose only job was to type a command and grep
+		 * serial.  Marker SHELL-SMOKE: ALL PASS / SHELL-SMOKE: FAIL. */
+		if (TEST_WANT("shell-smoke")) {
+			Serial_WriteString("SHELL-SMOKE: starting\n");
+			sh_run_file("/src/userspace/shell-smoke.sh");
+			Serial_WriteString("SHELL-SMOKE: finished\n");
+		}
+
 		#undef TEST_WANT
 
 		uint8_t exit_val = (fails > 0) ? 1 : 0;

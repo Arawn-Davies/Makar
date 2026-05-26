@@ -1501,10 +1501,15 @@ sendkey ret"
 # per_vt_palettes and bughunt_vix_palette_on_vt3 are palette-only visual
 # checks with no serial assertion; opt-in for manual inspection.
 
-SHELL_TESTS=(glob_proc tab_path tab_cycle typo_doesnt_clear shell_scripting_vars calc_brackets makbox_pwd demo_script)
-CD_PWD_TESTS=(cd_root per_tty_cwd)
-FS_TESTS=(ls_dev ls_mnt mount_noargs mnt_mountpoint filetest)
-POSIX_TESTS=(exec_hello fork_cow fork_execve user_sigusr1_handler ctrlc_kills_child ctrlc_cat usershell_smoke usershell_execve usershell_history usershell_vars)
+## Scenario groups -- only scenarios that genuinely need HMP sendkey
+## (keyboard editing, Alt+Fn focus switching, Ctrl-C delivery, etc.)
+## stay here.  Anything that just typed a command and grep'd serial
+## migrated to /src/userspace/shell-smoke.sh (run via `./run.sh gui
+## smoke` or as part of test_mode bootup).
+SHELL_TESTS=(tab_path tab_cycle typo_doesnt_clear calc_brackets)
+CD_PWD_TESTS=(per_tty_cwd)
+FS_TESTS=(mnt_mountpoint)                        # needs scratch disk; stays HMP
+POSIX_TESTS=(user_sigusr1_handler ctrlc_kills_child ctrlc_cat usershell_smoke usershell_execve usershell_history usershell_vars)
 ## TCC_REBUILD_TESTS / LIBC_TESTS -- retired as HMP scenarios.
 ##
 ## The whole libc + TCC self-rebuild matrix now runs from
@@ -1540,7 +1545,7 @@ ALL_TESTS=(
 # script -- excludes filetest, mnt_mountpoint, alloctest, tcc_hello,
 # demo_script.  Aimed at the dev inner loop where you want a sub-minute
 # regression sweep before pushing.
-FAST_TESTS=(glob_proc tab_path tab_cycle typo_doesnt_clear shell_scripting_vars calc_brackets makbox_pwd cd_root per_tty_cwd ls_dev ls_mnt exec_hello fork_cow fork_execve user_sigusr1_handler ctrlc_kills_child vt_roundtrip_keeps_maktop_focused vt_all_roundtrips)
+FAST_TESTS=(tab_path tab_cycle typo_doesnt_clear calc_brackets per_tty_cwd user_sigusr1_handler ctrlc_kills_child vt_roundtrip_keeps_maktop_focused vt_all_roundtrips)
 
 # Expand a single argument: if it names a known group, emit the group's
 # members; otherwise emit it unchanged (with dashes->underscores).
@@ -1578,6 +1583,11 @@ else
             TO_RUN+=("$t")
         done < <(expand_arg "$arg")
     done
+fi
+
+if [ ${#TO_RUN[@]} -eq 0 ]; then
+    echo "ui_test: no scenarios selected -- nothing to run." >&2
+    exit 0
 fi
 
 if ! start_qemu; then
