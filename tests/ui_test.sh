@@ -69,6 +69,34 @@ sendkey ret"
     assert_serial_contains "vendor_id" "GenuineIntel"
 }
 
+test_tab_root_path() {
+    # Absolute root completion: `/sr<Tab>` should complete to `/src/` and
+    # return to readline.  A prior userspace sh bug treated SYS_READDIR's
+    # end-of-directory return (0) as success and spun forever after Tab.
+    it "tab-root-path" \
+"$(keys "echo root-tab /sr")
+sendkey tab
+sendkey ret"
+    assert_serial_contains "root-tab" "/src/"
+}
+
+test_tab_vix_root_path() {
+    # The same absolute path completion must keep working after a command
+    # word.  This covers the operator workflow `vix /sr<Tab>`.
+    it_until "tab-vix-root-path" \
+"$(keys "vix /sr")
+sendkey tab
+sendkey ret
+PAUSE 1.0
+sendkey ctrl-q
+PAUSE 0.5
+$(keys "pwd")
+sendkey ret" \
+        '\[makbox:pwd\]' 20
+    assert_serial_contains "vix /src/" "[makbox:pwd] /"
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
+}
+
 test_exec_hello() {
     # `exec /apps/hello.elf tester` prints "Hello, tester!" via
     # sys_write on fd 2 (stderr = FD_KIND_VGA_SERIAL).  Absolute path so
@@ -193,7 +221,7 @@ test_no_dead_in_proctasks() {
     it "no-dead-in-proctasks" \
 "$(keys "cat $P_PROC/tasks")
 sendkey ret"
-    assert_serial_contains "shell0" "shell1"
+    assert_serial_contains "mak.sh0"
     assert_serial_not_contains "DEAD"
 }
 
@@ -1506,7 +1534,7 @@ sendkey ret"
 ## stay here.  Anything that just typed a command and grep'd serial
 ## migrated to /src/userspace/shell-smoke.sh (run via `./run.sh gui
 ## smoke` or as part of test_mode bootup).
-SHELL_TESTS=(tab_path tab_cycle typo_doesnt_clear calc_brackets)
+SHELL_TESTS=(tab_path tab_root_path tab_cycle typo_doesnt_clear calc_brackets)
 CD_PWD_TESTS=(per_tty_cwd)
 FS_TESTS=(mnt_mountpoint)                        # needs scratch disk; stays HMP
 POSIX_TESTS=(user_sigusr1_handler ctrlc_kills_child ctrlc_cat usershell_smoke usershell_execve usershell_history usershell_vars)

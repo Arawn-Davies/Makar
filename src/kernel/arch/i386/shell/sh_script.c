@@ -736,7 +736,8 @@ int sh_run_file(const char *path)
     char **flines = (char **)kmalloc((size_t)(oli * 4 + 16) * sizeof(char *));
     if (!flines) { kfree(olines); kfree(lines); kfree(data); return -1; }
     int fli = 0;
-    static char glue_buf[2048];
+    char *glue_buf = (char *)kmalloc(2048);
+    if (!glue_buf) { kfree(flines); kfree(olines); kfree(lines); kfree(data); return -1; }
     size_t glue_used = 0;
     for (int i = 0; i < oli; i++) {
         char *t = olines[i];
@@ -752,7 +753,7 @@ int sh_run_file(const char *path)
             if (fli > 0) {
                 char *prev = flines[fli - 1];
                 size_t pl = strlen(prev);
-                if (glue_used + pl + 3 + kwlen + 1 < sizeof(glue_buf)) {
+                if (glue_used + pl + 3 + kwlen + 1 < 2048) {
                     char *dst = glue_buf + glue_used;
                     memcpy(dst, prev, pl);
                     dst[pl] = ';'; dst[pl+1] = ' ';
@@ -776,14 +777,14 @@ int sh_run_file(const char *path)
     /* `else BODY` on one line: split into "else" + "BODY". */
     int  efli = 0;
     char **elines = (char **)kmalloc((size_t)(fli * 2 + 16) * sizeof(char *));
-    if (!elines) { kfree(flines); kfree(olines); kfree(lines); kfree(data); return -1; }
+    if (!elines) { kfree(glue_buf); kfree(flines); kfree(olines); kfree(lines); kfree(data); return -1; }
     for (int i = 0; i < fli; i++) {
         char *t = flines[i];
         char *p = t;
         while (*p == ' ' || *p == '\t') p++;
         if (strncmp(p, "else ", 5) == 0) {
             /* Emit `else`, then the body. */
-            if (glue_used + 5 < sizeof(glue_buf)) {
+            if (glue_used + 5 < 2048) {
                 memcpy(glue_buf + glue_used, "else", 5);
                 elines[efli++] = glue_buf + glue_used;
                 glue_used += 5;
@@ -803,6 +804,7 @@ int sh_run_file(const char *path)
     /* No further comment strip needed -- already done above. */
     int rc = run_block(lines, 0, li);
     kfree(lines);
+    kfree(glue_buf);
     kfree(data);
     return rc;
 }

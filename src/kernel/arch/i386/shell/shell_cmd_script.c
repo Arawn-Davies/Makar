@@ -99,18 +99,36 @@ static void cmd_lbracket(int argc, char **argv)
     sh_vars_set("?", rs);
 }
 
-/* sleep N -- busy-poll the PIT for N seconds.  Yields between checks so
- * other tasks (including bg-ktest, other shells) keep running. */
+static uint32_t parse_sleep_ticks(const char *s)
+{
+    uint32_t whole = 0;
+    uint32_t frac = 0;
+    uint32_t scale = 1;
+    while (*s >= '0' && *s <= '9') {
+        whole = whole * 10u + (uint32_t)(*s - '0');
+        s++;
+    }
+    if (*s == '.') {
+        s++;
+        while (*s >= '0' && *s <= '9' && scale < 100u) {
+            frac = frac * 10u + (uint32_t)(*s - '0');
+            scale *= 10u;
+            s++;
+        }
+    }
+    return whole * 100u + (frac * 100u + scale - 1u) / scale;
+}
+
+/* sleep N -- busy-poll the PIT for N seconds.  Fractional values like
+ * `sleep 0.5` are accepted and rounded up to the next 100 Hz PIT tick. */
 static void cmd_sleep(int argc, char **argv)
 {
     if (argc < 2) { t_writestring("usage: sleep <secs>\n"); return; }
-    int n = 0;
-    for (const char *p = argv[1]; *p >= '0' && *p <= '9'; p++)
-        n = n * 10 + (*p - '0');
-    if (n <= 0) return;
+    uint32_t ticks = parse_sleep_ticks(argv[1]);
+    if (ticks == 0) return;
     extern uint32_t timer_get_ticks(void);
     extern void task_yield(void);
-    uint32_t target = timer_get_ticks() + (uint32_t)n * 100u;   /* 100 Hz PIT */
+    uint32_t target = timer_get_ticks() + ticks;
     while (timer_get_ticks() < target) task_yield();
 }
 

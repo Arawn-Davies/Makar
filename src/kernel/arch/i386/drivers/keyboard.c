@@ -798,10 +798,10 @@ void keyboard_set_raw(int on)
  *
  * Handles three classes of input:
  *
- *   1. Recognised extended keys (arrows, keypad enter/slash) become their
+ *   1. Recognised extended keys (arrows, page keys, keypad enter/slash) become their
  *      KEY_* sentinel bytes or their plain ASCII equivalents.
- *   2. Other extended keys are dropped (we'll add Home/End/PgUp/PgDn/Del
- *      as the shell grows to use them).
+ *   2. Other extended keys are dropped (we'll add Home/End/Del as the shell
+ *      grows to use them).
  *   3. Single-byte make codes are looked up in the QWERTY ASCII table,
  *      with shift XOR caps governing letter case and shift alone governing
  *      symbol case. Ctrl + letter folds the result into the corresponding
@@ -815,6 +815,8 @@ static unsigned char translate_make(kc_t kc)
         case KC_ARROW_DOWN:  return (unsigned char)KEY_ARROW_DOWN;
         case KC_ARROW_LEFT:  return (unsigned char)KEY_ARROW_LEFT;
         case KC_ARROW_RIGHT: return (unsigned char)KEY_ARROW_RIGHT;
+        case KC_PGUP:        return (unsigned char)KEY_PAGE_UP;
+        case KC_PGDN:        return (unsigned char)KEY_PAGE_DOWN;
         case KC_KP_ENTER:    return '\n';
         case KC_KP_SLASH:    return '/';
         default: break;

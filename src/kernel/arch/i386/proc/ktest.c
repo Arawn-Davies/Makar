@@ -2118,16 +2118,17 @@ static void test_keyboard(void)
 
     keyboard_test_begin();
 
-    /* ---- sentinel coverage: e0-prefixed arrow keycodes ------------------ */
-    /* These are the four KEY_ARROW_* sentinels 0x80..0x83.  Each must arrive
-     * as a single unsigned byte equal to the sentinel.  The 0x83 case is
-     * the regression target for PR #124's EIP=0xFFFFFF83 panic. */
+    /* ---- sentinel coverage: e0-prefixed navigation keycodes ------------- */
+    /* These KEY_* sentinels must arrive as single unsigned bytes.  The 0x83
+     * arrow case is the regression target for PR #124's EIP=0xFFFFFF83 panic. */
     {
         struct { uint8_t e0_byte; unsigned char expect; } cases[] = {
-            { 0x48, 0x80 }, /* KEY_ARROW_UP    */
-            { 0x50, 0x81 }, /* KEY_ARROW_DOWN  */
-            { 0x4B, 0x82 }, /* KEY_ARROW_LEFT  */
-            { 0x4D, 0x83 }, /* KEY_ARROW_RIGHT */
+            { 0x48, KEY_ARROW_UP    },
+            { 0x50, KEY_ARROW_DOWN  },
+            { 0x4B, KEY_ARROW_LEFT  },
+            { 0x4D, KEY_ARROW_RIGHT },
+            { 0x49, KEY_PAGE_UP     },
+            { 0x51, KEY_PAGE_DOWN   },
         };
         for (uint32_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
             keyboard_test_reset();

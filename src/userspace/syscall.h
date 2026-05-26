@@ -75,6 +75,8 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_VERBOSE       229
 #define SYS_GETHOSTNAME   230
 #define SYS_SHELL_READY   231
+#define SYS_CURSOR_POS    232
+#define SYS_VT_ENTER      233
 #define SYS_FCNTL        55
 #define SYS_STAT        106
 #define SYS_FSTAT       108
@@ -223,11 +225,21 @@ typedef struct { unsigned char col, row, ch, clr; } tty_cell_t;
 #define KEY_CAPS_TOGGLE 0x94
 #define KEY_SUPER_DOWN  0x95
 #define KEY_MENU_DOWN   0x96
+#define KEY_PAGE_UP     0x97
+#define KEY_PAGE_DOWN   0x98
 #define KEY_CTRL_S      0x13
 #define KEY_CTRL_Q      0x11
 #define KEY_CTRL_C      0x03
 
 /* Raw syscall stubs. */
+static inline long syscall0(long nr)
+{
+    long ret;
+    __asm__ volatile ("int $0x80"
+        : "=a"(ret) : "0"(nr) : "memory");
+    return ret;
+}
+
 static inline long syscall1(long nr, long a1)
 {
     long ret;
@@ -655,6 +667,16 @@ static inline int sys_gethostname(char *buf, unsigned int size)
 static inline void sys_shell_ready(void)
 {
     syscall1(SYS_SHELL_READY, 0);
+}
+
+static inline unsigned int sys_cursor_pos(void)
+{
+    return (unsigned int)syscall0(SYS_CURSOR_POS);
+}
+
+static inline int sys_vt_enter(int loading)
+{
+    return (int)syscall1(SYS_VT_ENTER, (long)loading);
 }
 
 #endif

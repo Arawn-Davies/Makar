@@ -69,6 +69,11 @@ static int s_starts(const char *s, const char *prefix)
     while (*prefix) { if (*s++ != *prefix++) return 0; }
     return 1;
 }
+static int s_has_char(const char *s, char needle)
+{
+    while (*s) { if (*s++ == needle) return 1; }
+    return 0;
+}
 static void s_copy(char *dst, const char *src, unsigned int cap)
 {
     unsigned int i;
@@ -150,6 +155,26 @@ static void status_str(char *out, int v)
     if (sign) out[k++] = '-';
     while (i > 0) out[k++] = tmp[--i];
     out[k] = '\0';
+}
+
+static unsigned int sleep_ticks_from_arg(const char *s)
+{
+    unsigned int whole = 0;
+    unsigned int frac = 0;
+    unsigned int scale = 1;
+    while (*s >= '0' && *s <= '9') {
+        whole = whole * 10u + (unsigned int)(*s - '0');
+        s++;
+    }
+    if (*s == '.') {
+        s++;
+        while (*s >= '0' && *s <= '9' && scale < 100u) {
+            frac = frac * 10u + (unsigned int)(*s - '0');
+            scale *= 10u;
+            s++;
+        }
+    }
+    return whole * 100u + (frac * 100u + scale - 1u) / scale;
 }
 
 /* Expand $VAR / ${VAR} / $? in `in` -> `out`. */
@@ -285,6 +310,18 @@ typedef struct {
     int  is_dir;
 } tab_match_t;
 
+static int shell_path_dir(int p, char *out, unsigned int outsz);
+
+static int tab_match_add(tab_match_t *out, int n, const char *name, int is_dir)
+{
+    if (!name || !*name || n >= TAB_MAX) return n;
+    for (int i = 0; i < n; i++)
+        if (s_eq(out[i].name, name)) return n;
+    s_copy(out[n].name, name, sizeof(out[n].name));
+    out[n].is_dir = is_dir;
+    return n + 1;
+}
+
 /* Enumerate matches for `leaf` inside `abs_dir` via sys_readdir.  Returns
  * count (capped at TAB_MAX). */
 static int tab_collect(const char *abs_dir, const char *leaf,
@@ -295,7 +332,7 @@ static int tab_collect(const char *abs_dir, const char *leaf,
     struct dirent de;
     for (unsigned int idx = 0; n < TAB_MAX; idx++) {
         int rc = sys_readdir(abs_dir, idx, &de);
-        if (rc < 0) break;
+        if (rc <= 0) break;
         if (de.d_name[0] == '\0') continue;
         if (de.d_name[0] == '.' && leaf[0] != '.') continue;  /* hide dotfiles */
         if (leaf_len > 0) {
@@ -304,9 +341,52 @@ static int tab_collect(const char *abs_dir, const char *leaf,
                 if (de.d_name[j] != leaf[j]) { match = 0; break; }
             if (!match) continue;
         }
-        s_copy(out[n].name, de.d_name, sizeof(out[n].name));
-        out[n].is_dir = (de.d_type == DT_DIR);
-        n++;
+        n = tab_match_add(out, n, de.d_name, de.d_type == DT_DIR);
+    }
+    return n;
+}
+
+static int tab_collect_commands(const char *leaf, tab_match_t *out)
+{
+    int n = 0;
+    unsigned int leaf_len = s_len(leaf);
+    static const char *builtins[] = {
+        "exit", "cd", "pwd", "env", "unset", "read", "true", "false",
+        "sleep", "[", "history", "hostname", "clear", "exec", "sh", ".",
+        "shutdown", "reboot", "eject", "setmode", "fgcol", "bgcol",
+        "mount", "umount", "mkfs.ext2", "mkfs.fat32", "sched_quantum",
+        "verbose", "install", "chainload", "readsector", "mkpart",
+        "lspart", "ktest", (const char *)0
+    };
+    static const char *applets[] = {
+        "ls", "cat", "cp", "mv", "rm", "rmdir", "echo", "pwd", (const char *)0
+    };
+
+    for (int i = 0; builtins[i] && n < TAB_MAX; i++) {
+        if (leaf_len > 0 && !s_starts(builtins[i], leaf)) continue;
+        n = tab_match_add(out, n, builtins[i], 0);
+    }
+    for (int i = 0; applets[i] && n < TAB_MAX; i++) {
+        if (leaf_len > 0 && !s_starts(applets[i], leaf)) continue;
+        n = tab_match_add(out, n, applets[i], 0);
+    }
+
+    char dir[VFS_PATH_MAX];
+    for (int p = 0; shell_path_dir(p, dir, sizeof(dir)) && n < TAB_MAX; p++) {
+        struct dirent de;
+        for (unsigned int idx = 0; n < TAB_MAX; idx++) {
+            int rc = sys_readdir(dir, idx, &de);
+            if (rc <= 0) break;
+            if (de.d_name[0] == '\0' || de.d_type == DT_DIR) continue;
+            char name[64];
+            s_copy(name, de.d_name, sizeof(name));
+            unsigned int nl = s_len(name);
+            if (nl > 4 && name[nl - 4] == '.' && name[nl - 3] == 'e' &&
+                name[nl - 2] == 'l' && name[nl - 1] == 'f')
+                name[nl - 4] = '\0';
+            if (leaf_len > 0 && !s_starts(name, leaf)) continue;
+            n = tab_match_add(out, n, name, 0);
+        }
     }
     return n;
 }
@@ -442,7 +522,10 @@ static int readline(const char *prompt, char *buf)
             split_path_token(token, dir, sizeof(dir), cwd, leaf, sizeof(leaf));
             resolve_abs(dir, abs_dir, sizeof(abs_dir));
 
-            tc_n = tab_collect(abs_dir, leaf, tc_m);
+            if (ts == 0 && token[0] != '/' && !s_has_char(token, '/'))
+                tc_n = tab_collect_commands(leaf, tc_m);
+            else
+                tc_n = tab_collect(abs_dir, leaf, tc_m);
             if (tc_n == 0) continue;
 
             char lcp[VFS_PATH_MAX];
@@ -555,7 +638,7 @@ static int expand_globs(int argc, char **argv, int cap,
         int matched_any = 0;
         for (unsigned int idx = 0; out_argc < cap - 1; idx++) {
             int rc = sys_readdir(cwd, idx, &de);
-            if (rc < 0) break;
+            if (rc <= 0) break;
             if (de.d_name[0] == '\0') continue;
             if (de.d_name[0] == '.' && argv[i][0] != '.') continue;
             if (!glob_match(argv[i], de.d_name)) continue;
@@ -743,9 +826,9 @@ static int run_builtin(int argc, char **argv, int *should_exit, int *exit_status
     if (s_eq(argv[0], "false")) { g_last_status = 1; return 1; }
     if (s_eq(argv[0], "sleep")) {
         if (argc < 2) { put_s("Usage: sleep <seconds>\n"); g_last_status = 1; return 1; }
-        int secs = s_atoi(argv[1]);
+        unsigned int ticks = sleep_ticks_from_arg(argv[1]);
         unsigned int start = sys_uptime();
-        unsigned int target = start + (unsigned int)secs * 100u;  /* 100Hz */
+        unsigned int target = start + ticks;
         while (sys_uptime() < target) sys_yield();
         g_last_status = 0;
         return 1;
@@ -1233,6 +1316,10 @@ int main(int argc, char **argv, char **envp)
     char prompt[VFS_PATH_MAX + 64];
 
     for (;;) {
+        unsigned int pos = sys_cursor_pos();
+        if (((pos >> 16) & 0xFFFFu) != 0)
+            put_c('\n');
+
         /* Sync marker for ui_test.sh's wait_for_serial -- the kernel-shell
          * REPL emits an identical [shell:ready vt=N] line before each
          * prompt, so existing scenarios work unchanged.  No-op unless

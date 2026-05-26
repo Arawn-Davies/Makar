@@ -50,6 +50,8 @@
 #define KEY_CAPS_TOGGLE ((unsigned char)0x94)
 #define KEY_SUPER_DOWN  ((unsigned char)0x95)
 #define KEY_MENU_DOWN   ((unsigned char)0x96)
+#define KEY_PAGE_UP     ((unsigned char)0x97)
+#define KEY_PAGE_DOWN   ((unsigned char)0x98)
 
 /* Ctrl+C sentinel returned by keyboard_getchar() when a sigint fires. */
 #define KEY_CTRL_C      ((unsigned char)0x03)

@@ -863,7 +863,7 @@ int shell_dispatch_argv(int argc, char **argv)
 /* ---------------------------------------------------------------------------
  * shell_print_prompt – print the interactive prompt showing the VFS CWD.
  *
- * Format:  root@makar /apps~>
+ * Format:  root@makar:/apps# 
  * --------------------------------------------------------------------------- */
 static void shell_print_prompt(void)
 {
@@ -885,9 +885,9 @@ static void shell_print_prompt(void)
                                            : (uint32_t)t_column;
     if (cur_col != 0) t_putchar('\n');
 
-    t_writestring(SHELL_USERNAME "@" SHELL_HOSTNAME " ");
+    t_writestring(SHELL_USERNAME "@" SHELL_HOSTNAME ":");
     t_writestring(vfs_getcwd());
-    t_writestring("~> ");
+    t_writestring("# ");
 }
 
 /* ---------------------------------------------------------------------------
@@ -993,13 +993,10 @@ int shell_enter_slot(int with_loading_screen)
             task_yield();
         while (keyboard_poll()) {}
 
-        /* Loading is over -- bring the VT status bar back and repaint
-         * it with the live slot count.  vtty_register() has already
-         * incremented the count for shell0..shell3 by this point, so
-         * the bar lights up with all four indicators on the first
-         * draw. */
-        vesa_tty_set_status_visible(1);
-        vesa_tty_paint_status(vtty_active(), vtty_count());
+        /* Loading is over.  Keep the kernel VT status bar hidden on the
+         * default shell: the tabbed VT UI belongs to the userspace makmux
+         * app, not to normal boot. */
+        vesa_tty_set_status_visible(0);
 
         /* Switch into this VT's per-VT palette and clear so the banner
          * prints on the VT's bg colour (the loading screen left the FB

@@ -1476,6 +1476,42 @@ void syscall_dispatch(registers_t *regs)
         regs->eax = 0;
         break;
     }
+    case SYS_CURSOR_POS: {
+        uint32_t col = vesa_tty_is_ready() ? vesa_tty_get_col()
+                                           : (uint32_t)t_column;
+        uint32_t row = vesa_tty_is_ready() ? vesa_tty_get_row()
+                                           : (uint32_t)t_row;
+        regs->eax = ((col & 0xFFFFu) << 16) | (row & 0xFFFFu);
+        break;
+    }
+    case SYS_VT_ENTER: {
+        int slot = shell_enter_slot((int)regs->ebx != 0);
+        if (slot >= 0) {
+            task_t *cur = task_current();
+            if (cur) {
+                const char prefix[] = "mak.sh";
+                uint32_t o = 0;
+                while (prefix[o] && o + 1 < sizeof(cur->name_buf)) {
+                    cur->name_buf[o] = prefix[o];
+                    o++;
+                }
+                int n = slot;
+                char digits[12];
+                int dn = 0;
+                if (n == 0) digits[dn++] = '0';
+                while (n && dn < (int)sizeof(digits)) {
+                    digits[dn++] = (char)('0' + (n % 10));
+                    n /= 10;
+                }
+                while (dn > 0 && o + 1 < sizeof(cur->name_buf))
+                    cur->name_buf[o++] = digits[--dn];
+                cur->name_buf[o] = '\0';
+                cur->name = cur->name_buf;
+            }
+        }
+        regs->eax = (uint32_t)slot;
+        break;
+    }
     case SYS_GETHOSTNAME: {
         char *buf = (char *)regs->ebx;
         uint32_t size = regs->ecx;

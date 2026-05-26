@@ -136,14 +136,15 @@ else
     fail=1
 fi
 
-## demo-script intentionally NOT run from here.  The kernel sh_script
-## interpreter has a known bug: after a nested `sh <file>` call, every
-## subsequent if/then/else/fi fires BOTH branches, double-printing the
-## verdict and the suite trailer.  Tracked in
-## docs/plans/userspace-shell-migration-HANDOFF.md.  Until the
-## interpreter is fixed, demo.sh is exercised standalone (e.g. by an
-## operator typing `sh /apps/demo.sh` at the prompt) or as a separate
-## test_mode suite that doesn't dispatch any if's after it.
+echo SHELL-SMOKE: nested-sh-parser-state
+sh /src/userspace/nested-probe.sh
+if [ 1 -eq 1 ]
+then
+    echo SHELL-SMOKE: [PASS] nested-sh-parser-state
+else
+    echo SHELL-SMOKE: [FAIL] nested-sh-parser-state
+    fail=1
+fi
 
 if [ $fail -eq 0 ]
 then

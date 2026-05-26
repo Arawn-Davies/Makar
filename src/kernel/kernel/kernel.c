@@ -69,19 +69,19 @@ static void kprint_ok(void)
 }
 
 /*
- * user_shell_slot_entry – per-VT task entry that boots /apps/sh.elf
- * as a ring-3 login shell.
+ * user_shell_slot_entry – boot the default /apps/sh.elf userspace shell.
  *
- * Each VT slot's task runs this entry: register the VT, apply the
- * slot's colour scheme (so the framebuffer looks the same as if the
- * in-kernel shell had taken it), then drop into ring 3 by exec'ing
- * /apps/sh.elf with `--login`.  elf_exec only returns on failure
+ * Normal boot starts one detached userspace shell, mak.sh0.  Additional
+ * interactive VT shells belong to the explicit userspace makmux app, not
+ * to kernel boot.  This entry registers the initial VT, runs the boot
+ * loading/palette prelude, then drops into ring 3 by exec'ing /apps/sh.elf
+ * with `--login`.  elf_exec only returns on failure
  * (missing file, malformed ELF, OOM); in that case fall back to the
  * in-kernel rescue shell so the system stays usable.
  *
  * shell=rescue on the kernel cmdline skips this entirely and uses
- * shell_run on every VT — for the case where /apps/sh.elf itself
- * is broken or the rootfs hasn't mounted.
+ * rescu.sh for the case where /apps/sh.elf itself is broken or the rootfs
+ * hasn't mounted.
  */
 extern void user_shell_slot_entry(void);  /* fwd decl for task_create */
 void user_shell_slot_entry(void)
@@ -94,6 +94,20 @@ void user_shell_slot_entry(void)
 	if (slot < 0) {
 		Serial_WriteString("user-shell: shell_enter_slot failed\n");
 		for (;;) task_yield();
+	}
+	{
+		task_t *cur = task_current();
+		if (cur) {
+			cur->name_buf[0] = 'm';
+			cur->name_buf[1] = 'a';
+			cur->name_buf[2] = 'k';
+			cur->name_buf[3] = '.';
+			cur->name_buf[4] = 's';
+			cur->name_buf[5] = 'h';
+			cur->name_buf[6] = '0';
+			cur->name_buf[7] = '\0';
+			cur->name = cur->name_buf;
+		}
 	}
 
 	static const char *login_argv[] = { "sh.elf", "--login", NULL };
@@ -111,6 +125,11 @@ void user_shell_slot_entry(void)
 		while (n--) { char one[2] = { dec[n], 0 }; Serial_WriteString(one); }
 	}
 	Serial_WriteString("), falling back to kernel rescue shell\n");
+	{
+		task_t *cur = task_current();
+		if (cur)
+			cur->name = "rescu.sh";
+	}
 	shell_run();  /* never returns */
 }
 
@@ -293,16 +312,13 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 		/* shell=rescue boots a single in-kernel rescue shell on VT0
 		 * (Linux-style — no other VTs are spawned, so the operator's
 		 * keypresses can't be lost to a hung secondary slot).  The
-		 * normal path boots /apps/sh.elf as a ring-3 login shell on
-		 * each of the four VTs, with per-VT auto-fallback to the
-		 * rescue shell if /apps/sh.elf is missing or fails to load. */
+		 * normal path boots one detached /apps/sh.elf login shell as
+		 * mak.sh0.  The explicit userspace `makmux` application owns
+		 * the multi-VT shell experience. */
 		if (shell_rescue) {
-			task_create("rescue", shell_run);
+			task_create("rescu.sh", shell_run);
 		} else {
-			task_create("shell0", user_shell_slot_entry);
-			task_create("shell1", user_shell_slot_entry);
-			task_create("shell2", user_shell_slot_entry);
-			task_create("shell3", user_shell_slot_entry);
+			task_create("mak.sh0", user_shell_slot_entry);
 		}
 		task_create("ktest",  ktest_bg_task);
 	}

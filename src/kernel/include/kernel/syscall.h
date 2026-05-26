@@ -99,6 +99,9 @@
                                  * Userspace shell calls this before each
                                  * prompt so ui_test.sh's wait_for_serial
                                  * keeps working unchanged. */
+#define SYS_CURSOR_POS     232  /* uint32_t cursor_pos(void) -> (col<<16)|row */
+#define SYS_VT_ENTER       233  /* int vt_enter(int loading) - attach this task
+                                 * as a login shell on the next VT slot. */
 #define SYS_GETHOSTNAME    230  /* int gethostname(char *buf, size_t size) - read
                                  * /etc/hostname (or fallback "makar"), copy up
                                  * to size-1 bytes, NUL-terminate.  Returns
