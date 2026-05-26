@@ -324,6 +324,16 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			(test_spec == NULL || test_spec[0] == '\0' || \
 			 strcmp(test_spec, "all") == 0 || strstr(test_spec, (name)) != NULL)
 
+		/* Wipe the "Initializing X... [OK]" boot lines off the
+		 * framebuffer before the test-mode dispatch starts.  Without
+		 * this the test output scrolls on top of the driver init
+		 * banner and the visible-window watcher can't tell where the
+		 * boot ends and the suite begins.  vesa_tty_clear falls
+		 * through to the global pane when no task has a tty (pre-
+		 * tasking-init), so this is safe to call here. */
+		vesa_tty_clear();
+		terminal_initialize();
+
 		int fails = 0;
 		if (TEST_WANT("ktest")) {
 			fails = ktest_run_all();
