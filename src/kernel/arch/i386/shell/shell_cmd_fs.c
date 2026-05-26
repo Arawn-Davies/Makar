@@ -17,6 +17,7 @@
 #include <kernel/partition.h>
 #include <kernel/ide.h>
 #include <kernel/devfs.h>
+#include <kernel/admin.h>
 #include <string.h>
 
 static disk_parts_t s_cmd_parts;
@@ -35,47 +36,42 @@ static const char *mountpoint_name(const char *mp)
     return name;
 }
 
-/* mount /dev/hdaN /mnt/<name>  -- the only supported form.  Targets an
- * empty mountpoint (mkdir /mnt/<name> first); the legacy numeric form
- * was retired with the /mnt/hd slot. */
-static void cmd_mount(int argc, char **argv)
+/* admin_mount -- bind a /dev/hdaN block device at /mnt/<name>.
+ * Both args required (NULL/empty dev_path means "print mounts and
+ * return 0", matching `mount` with no args).  Prints the same
+ * diagnostics on failure as the previous cmd_mount did, so the
+ * userspace shell gets identical UX. */
+int admin_mount(const char *dev_path, const char *mnt_path)
 {
-    if (argc == 1) {
+    if (!dev_path || !*dev_path) {
         vfs_print_mounts();
-        return;
+        return 0;
     }
-
-    if (argc < 3 || strncmp(argv[1], "/dev/", 5) != 0) {
+    if (!mnt_path || strncmp(dev_path, "/dev/", 5) != 0) {
         t_writestring("Usage: mount [ /dev/hdaN /mnt/<name> ]\n");
-        return;
+        return -1;
     }
-
-    uint8_t     drive;
-    uint32_t    lba;
-    const char *mount_name;
-
-    /* devfs_lookup wants the path relative to the /dev mount, i.e.
-     * starting at the node name's leading '/'. */
-    int node = devfs_lookup(argv[1] + 4);   /* "/dev/hda1" -> "/hda1" */
+    int node = devfs_lookup(dev_path + 4);   /* "/dev/hda1" -> "/hda1" */
     if (node < 0) {
         t_writestring("mount: no such device: ");
-        t_writestring(argv[1]);
+        t_writestring(dev_path);
         t_putchar('\n');
-        return;
+        return -1;
     }
-    mount_name = mountpoint_name(argv[2]);
+    const char *mount_name = mountpoint_name(mnt_path);
     if (!mount_name) {
         t_writestring("mount: bad mountpoint '");
-        t_writestring(argv[2]);
+        t_writestring(mnt_path);
         t_writestring("' (expected /mnt/<name>, one level deep; "
                       "cdrom is reserved)\n");
-        return;
+        return -1;
     }
+    uint8_t  drive;
+    uint32_t lba;
     if (devfs_node_location(node, &drive, &lba) != 0) {
         t_writestring("mount: cannot resolve device geometry\n");
-        return;
+        return -1;
     }
-
     int fs = 0;
     int err = vfs_mount_hd(drive, lba, mount_name, &fs);
     if (err) {
@@ -93,20 +89,23 @@ static void cmd_mount(int argc, char **argv)
                                 "(error "); t_dec((uint32_t)(-err));
                   t_writestring(")\n"); break;
         }
-        return;
+        return err;
     }
-
     t_writestring("Mounted ");
     t_writestring(vfs_hd_fsname(mount_name));
-    t_writestring("  drive ");
-    t_dec(drive);
-    t_writestring("  LBA ");
-    t_dec(lba);
-    t_writestring("  at /mnt/");
-    t_writestring(mount_name);
-    t_writestring("\ncwd: ");
-    t_writestring(vfs_getcwd());
+    t_writestring("  drive ");   t_dec(drive);
+    t_writestring("  LBA ");     t_dec(lba);
+    t_writestring("  at /mnt/"); t_writestring(mount_name);
+    t_writestring("\ncwd: ");    t_writestring(vfs_getcwd());
     t_putchar('\n');
+    return 0;
+}
+
+/* mount /dev/hdaN /mnt/<name>  -- the only supported form. */
+static void cmd_mount(int argc, char **argv)
+{
+    admin_mount(argc >= 2 ? argv[1] : NULL,
+                argc >= 3 ? argv[2] : NULL);
 }
 
 /* True if `target` names the CD-ROM mount (/mnt/cdrom, or bare "cdrom"). */
@@ -115,51 +114,57 @@ static int umount_target_is_cdrom(const char *t)
     return strcmp(t, "/mnt/cdrom") == 0 || strcmp(t, "cdrom") == 0;
 }
 
+/* admin_eject -- unmount the optical drive (if any) and open the tray.
+ * Returns 0 on success, -1 if no ATAPI drive is present, or the negative
+ * ATAPI error code on hardware failure.  Shared between cmd_umount's
+ * "/mnt/cdrom" path and SYS_EJECT from the userspace shell. */
+int admin_eject(void)
+{
+    int cd_drive = -1;
+    for (int i = 0; i < IDE_MAX_DRIVES; i++) {
+        const ide_drive_t *d = ide_get_drive((uint8_t)i);
+        if (d && d->present && d->type == IDE_TYPE_ATAPI) { cd_drive = i; break; }
+    }
+    if (cd_drive < 0) {
+        t_writestring("eject: no CD-ROM drive detected\n");
+        return -1;
+    }
+    vfs_notify_cdrom_ejected();
+    int err = ide_eject_atapi((uint8_t)cd_drive);
+    if (err) {
+        t_writestring("eject: ATAPI eject failed (err ");
+        t_dec((uint32_t)err);
+        t_writestring(")\n");
+        return err;
+    }
+    t_writestring("CD-ROM unmounted and ejected.\n");
+    return 0;
+}
+
+/* admin_umount -- unmount /mnt/<name>; target NULL/empty means the sole
+ * HD mount (errors -20 if ambiguous).  Special-cases /mnt/cdrom by
+ * delegating to admin_eject.  Returns 0 on success, negative errno. */
+int admin_umount(const char *target)
+{
+    if (target && umount_target_is_cdrom(target))
+        return admin_eject();
+
+    const char *name = NULL;
+    if (target && *target)
+        name = (strncmp(target, "/mnt/", 5) == 0) ? target + 5 : target;
+    int err = vfs_umount_hd(name);
+    if (err == -20) { t_writestring("umount: multiple volumes mounted - specify /mnt/<name>\n"); return err; }
+    if (err == -15) { t_writestring("umount: nothing mounted at that mountpoint\n");            return err; }
+    if (err)        { t_writestring("umount: no such mount\n");                                 return err; }
+    t_writestring("Volume unmounted.\n");
+    return 0;
+}
+
 /* umount [/mnt/<name>]   default target is the FAT32 volume.
  * umount /mnt/cdrom      eject the optical drive. */
 static void cmd_umount(int argc, char **argv)
 {
-    if (argc >= 2 && umount_target_is_cdrom(argv[1])) {
-        int cd_drive = -1;
-        for (int i = 0; i < IDE_MAX_DRIVES; i++) {
-            const ide_drive_t *d = ide_get_drive((uint8_t)i);
-            if (d && d->present && d->type == IDE_TYPE_ATAPI) { cd_drive = i; break; }
-        }
-        if (cd_drive < 0) {
-            t_writestring("umount: no CD-ROM drive detected\n");
-            return;
-        }
-        vfs_notify_cdrom_ejected();
-        int err = ide_eject_atapi((uint8_t)cd_drive);
-        if (err) {
-            t_writestring("umount: ATAPI eject failed (err ");
-            t_dec((uint32_t)err);
-            t_writestring(")\n");
-            return;
-        }
-        t_writestring("CD-ROM unmounted and ejected.\n");
-        return;
-    }
-
-    /* umount [/mnt/<name>] - default to the sole HD mount when unambiguous. */
-    const char *name = NULL;
-    if (argc >= 2) {
-        name = (strncmp(argv[1], "/mnt/", 5) == 0) ? argv[1] + 5 : argv[1];
-    }
-    int err = vfs_umount_hd(name);
-    if (err == -20) {
-        t_writestring("umount: multiple volumes mounted - specify /mnt/<name>\n");
-        return;
-    }
-    if (err == -15) {
-        t_writestring("umount: nothing mounted at that mountpoint\n");
-        return;
-    }
-    if (err) {
-        t_writestring("umount: no such mount\n");
-        return;
-    }
-    t_writestring("Volume unmounted.\n");
+    admin_umount(argc >= 2 ? argv[1] : NULL);
 }
 
 static void cmd_cd(int argc, char **argv)
@@ -274,36 +279,50 @@ static int resolve_dev(const char *path, uint8_t *drive, uint32_t *lba,
     return 0;
 }
 
-/* mkfs.ext2 /dev/hdaN  /  mkfs.fat32 /dev/hdaN */
-static void cmd_mkfs_typed(int argc, char **argv, int ext2)
+/* admin_mkfs -- format /dev/hdaN with `fstype` ("ext2" or "fat32").
+ * Returns 0 on success, -1 on bad args, or negative mkfs error code. */
+int admin_mkfs(const char *dev_path, const char *fstype)
 {
-    if (argc < 2) {
-        t_writestring(ext2 ? "Usage: mkfs.ext2 /dev/hdaN\n"
-                           : "Usage: mkfs.fat32 /dev/hdaN\n");
-        return;
+    int ext2;
+    if (!dev_path || !fstype) { t_writestring("Usage: mkfs.ext2|mkfs.fat32 /dev/hdaN\n"); return -1; }
+    if (strcmp(fstype, "ext2") == 0)       ext2 = 1;
+    else if (strcmp(fstype, "fat32") == 0) ext2 = 0;
+    else {
+        t_writestring("mkfs: unknown filesystem type (expected ext2 or fat32)\n");
+        return -1;
     }
     uint8_t drive; uint32_t lba, sectors;
-    if (resolve_dev(argv[1], &drive, &lba, &sectors) != 0) {
+    if (resolve_dev(dev_path, &drive, &lba, &sectors) != 0) {
         t_writestring("mkfs: no such device (expected /dev/hdaN)\n");
-        return;
+        return -1;
     }
     t_writestring("Formatting ");
-    t_writestring(argv[1]);
+    t_writestring(dev_path);
     t_writestring(" (");
     t_dec(sectors / 2048u);
     t_writestring(ext2 ? " MiB) as ext2...\n" : " MiB) as FAT32...\n");
 
     int err = ext2 ? ext2_mkfs(drive, lba, sectors)
                    : fat32_mkfs(drive, lba, sectors);
-    if (err == -6) { t_writestring("mkfs: partition too small\n"); return; }
-    if (err)       { t_writestring("mkfs: I/O error\n"); return; }
+    if (err == -6) { t_writestring("mkfs: partition too small\n"); return err; }
+    if (err)       { t_writestring("mkfs: I/O error\n");           return err; }
     t_writestring("Done.  Mount with: mount ");
-    t_writestring(argv[1]);
+    t_writestring(dev_path);
     t_writestring(" /mnt/<name>\n");
+    return 0;
 }
 
-static void cmd_mkfs_ext2(int argc, char **argv)  { cmd_mkfs_typed(argc, argv, 1); }
-static void cmd_mkfs_fat32(int argc, char **argv) { cmd_mkfs_typed(argc, argv, 0); }
+static void cmd_mkfs_ext2(int argc, char **argv)
+{
+    if (argc < 2) { t_writestring("Usage: mkfs.ext2 /dev/hdaN\n"); return; }
+    admin_mkfs(argv[1], "ext2");
+}
+
+static void cmd_mkfs_fat32(int argc, char **argv)
+{
+    if (argc < 2) { t_writestring("Usage: mkfs.fat32 /dev/hdaN\n"); return; }
+    admin_mkfs(argv[1], "fat32");
+}
 
 static void cmd_isols(int argc, char **argv)
 {

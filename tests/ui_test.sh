@@ -809,12 +809,12 @@ test_tcc_rebuild_sh() {
     reset_shell
     CURRENT_NAME=tcc-rebuild-sh
     local sb1=$(wc -c < "$SERIAL_LOG")
-    send_script "$(keys "tcc /src/userspace/sh.c -o /tmp/sh-rebuilt.elf")
+    send_script "$(keys "tcc /src/userspace/sh.c -o /tmp/sh.elf")
 sendkey ret"
     wait_for_serial '\[shell:ready vt=0\]' "$sb1" 90 || \
         echo "  - stage1: tcc compile of sh.c never returned to prompt"
     it_until "tcc-rebuild-sh" \
-"$(keys "exec /tmp/sh-rebuilt.elf")
+"$(keys "exec /tmp/sh.elf")
 sendkey ret
 PAUSE 0.8
 $(keys "pwd")
@@ -874,17 +874,17 @@ test_tcc_rebuild_calc() {
     # keys), THEN type the exec + REPL inputs.  Without this sync the
     # second batch's first byte can race ahead and arrive while tcc is
     # still running -- the keys queue up in HMP and the keyboard ring
-    # drops chars on drain, producing flakes like "ex/calc-rebuilt.elf"
-    # instead of "exec /tmp/calc-rebuilt.elf".
+    # drops chars on drain, producing flakes like "ex/calc.elf"
+    # instead of "exec /tmp/calc.elf".
     reset_shell
     CURRENT_NAME=tcc-rebuild-calc
     local sb1=$(wc -c < "$SERIAL_LOG")
-    send_script "$(keys "tcc /src/userspace/calc.c -o /tmp/calc-rebuilt.elf")
+    send_script "$(keys "tcc /src/userspace/calc.c -o /tmp/calc.elf")
 sendkey ret"
     wait_for_serial '\[shell:ready vt=0\]' "$sb1" 90 || \
         echo "  - stage1: tcc compile never returned to prompt"
     it_until "tcc-rebuild-calc" \
-"$(keys "exec /tmp/calc-rebuilt.elf")
+"$(keys "exec /tmp/calc.elf")
 sendkey ret
 PAUSE 0.8
 $(keys "(2+3)*4")
@@ -906,12 +906,12 @@ test_tcc_rebuild_hello() {
     reset_shell
     CURRENT_NAME=tcc-rebuild-hello
     local sb1=$(wc -c < "$SERIAL_LOG")
-    send_script "$(keys "tcc /src/userspace/hello.c -o /tmp/hello-rebuilt.elf")
+    send_script "$(keys "tcc /src/userspace/hello.c -o /tmp/hello.elf")
 sendkey ret"
     wait_for_serial '\[shell:ready vt=0\]' "$sb1" 60 || \
         echo "  - stage1: tcc compile never returned to prompt"
     it_until "tcc-rebuild-hello" \
-"$(keys "exec /tmp/hello-rebuilt.elf rebuilt")
+"$(keys "exec /tmp/hello.elf rebuilt")
 sendkey ret" \
         "Hello," 15
     assert_serial_contains "Hello," "rebuilt"
@@ -927,31 +927,43 @@ test_tcc_rebuild_makbox() {
     reset_shell
     CURRENT_NAME=tcc-rebuild-makbox
     local sb1=$(wc -c < "$SERIAL_LOG")
-    send_script "$(keys "tcc /src/userspace/makbox.c -o /tmp/makbox-rebuilt.elf")
+    send_script "$(keys "tcc /src/userspace/makbox.c -o /tmp/makbox.elf")
 sendkey ret"
     wait_for_serial '\[shell:ready vt=0\]' "$sb1" 90 || \
         echo "  - stage1: tcc compile never returned to prompt"
     it_until "tcc-rebuild-makbox" \
 "$(keys "cd /")
 sendkey ret
-$(keys "exec /tmp/makbox-rebuilt.elf pwd")
+$(keys "exec /tmp/makbox.elf pwd")
 sendkey ret" \
         "[makbox:pwd]" 15
     assert_serial_contains "[makbox:pwd] /"
     assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
 }
 
+## test_libc_tcc_script -- retired.
+##
+## The libc / TCC rebuild matrix is no longer driven by HMP sendkey.  It
+## runs inline during test_mode bootup (kernel.c's `sh_run_file
+## /src/userspace/libc-tcc.sh` after incore.sh), and run.sh's
+## _check_ktest greps the LIBC-TCC: ALL PASS / LIBC-TCC: FAIL marker.
+##
+## Rationale: typing a single command through sendkey buys nothing for a
+## test that doesn't exercise the UI, and the timing-race surface of
+## HMP under TCG makes it the flakiest part of the suite.
+
 TCC_COMPILE_FAILED=0
 
 tcc_compile_user_app() {
     local app=$1
     local timeout=${2:-90}
+    local output=/tmp/$app.elf
 
     TCC_COMPILE_FAILED=0
     reset_shell
     CURRENT_NAME=tcc-rebuild-$app
     local sb1=$(wc -c < "$SERIAL_LOG")
-    send_script "$(keys "tcc /src/userspace/$app.c -o /tmp/tcc-rebuilt.elf")
+    send_script "$(keys "tcc /src/userspace/$app.c -o $output")
 sendkey ret"
     if ! wait_for_serial '\[shell:ready vt=0\]' "$sb1" "$timeout"; then
         echo "  - stage1: tcc compile of $app.c never returned to prompt"
@@ -980,7 +992,7 @@ tcc_assert_compile_ok() {
 test_tcc_rebuild_help() {
     tcc_compile_user_app help 60
     it_until "tcc-rebuild-help" \
-"$(keys "exec /tmp/tcc-rebuilt.elf")
+"$(keys "exec /tmp/help.elf")
 sendkey ret" \
         '\[shell:ready vt=0\]' 15
     assert_serial_contains "vix <file>"
@@ -991,7 +1003,7 @@ sendkey ret" \
 test_tcc_rebuild_diskinfo() {
     tcc_compile_user_app diskinfo 60
     it_until "tcc-rebuild-diskinfo" \
-"$(keys "exec /tmp/tcc-rebuilt.elf")
+"$(keys "exec /tmp/diskinfo.elf")
 sendkey ret" \
         '\[shell:ready vt=0\]' 15
     assert_serial_contains "drive 0: ATA"
@@ -1002,7 +1014,7 @@ sendkey ret" \
 test_tcc_rebuild_sigtest() {
     tcc_compile_user_app sigtest 60
     it_until "tcc-rebuild-sigtest" \
-"$(keys "exec /tmp/tcc-rebuilt.elf")
+"$(keys "exec /tmp/sigtest.elf")
 sendkey ret" \
         "sigtest: SIGUSR1 handler ran" 20
     assert_serial_contains "sigtest: SIGUSR1 handler ran"
@@ -1013,7 +1025,7 @@ sendkey ret" \
 test_tcc_rebuild_forktest() {
     tcc_compile_user_app forktest 60
     it_until "tcc-rebuild-forktest" \
-"$(keys "exec /tmp/tcc-rebuilt.elf")
+"$(keys "exec /tmp/forktest.elf")
 sendkey ret" \
         '\[forktest\] PARENT-POST' 20
     assert_serial_contains "[forktest] PARENT-POST"
@@ -1024,7 +1036,7 @@ sendkey ret" \
 test_tcc_rebuild_execvetest() {
     tcc_compile_user_app execvetest 60
     it_until "tcc-rebuild-execvetest" \
-"$(keys "exec /tmp/tcc-rebuilt.elf")
+"$(keys "exec /tmp/execvetest.elf")
 sendkey ret" \
         '\[execve-test\] POST-EXEC' 20
     assert_serial_contains "[execve-test] POST-EXEC"
@@ -1035,7 +1047,7 @@ sendkey ret" \
 test_tcc_rebuild_alloctest() {
     tcc_compile_user_app alloctest 90
     it_until "tcc-rebuild-alloctest" \
-"$(keys "exec /tmp/tcc-rebuilt.elf")
+"$(keys "exec /tmp/alloctest.elf")
 sendkey ret" \
         '\[alloctest\] PASS' 30
     assert_serial_contains "[alloctest] PASS"
@@ -1052,7 +1064,7 @@ $(keys "mkfs.ext2 /dev/hda")
 sendkey ret
 $(keys "mount /dev/hda /mnt/scratch")
 sendkey ret
-$(keys "exec /tmp/tcc-rebuilt.elf /mnt/scratch")
+$(keys "exec /tmp/filetest.elf /mnt/scratch")
 sendkey ret" \
         '\[filetest\] PASS' 60
     assert_serial_contains \
@@ -1071,7 +1083,7 @@ sendkey ret" \
 test_tcc_rebuild_basic() {
     tcc_compile_user_app basic 120
     it_until "tcc-rebuild-basic" \
-"$(keys "exec /tmp/tcc-rebuilt.elf")
+"$(keys "exec /tmp/basic.elf")
 sendkey ret
 PAUSE 0.8
 $(keys "10 PRINT 2+3")
@@ -1089,7 +1101,7 @@ sendkey ret" \
 test_tcc_rebuild_fdisk() {
     tcc_compile_user_app fdisk 90
     it_until "tcc-rebuild-fdisk" \
-"$(keys "exec /tmp/tcc-rebuilt.elf /dev/hda")
+"$(keys "exec /tmp/fdisk.elf /dev/hda")
 sendkey ret
 PAUSE 0.8
 $(keys "q")
@@ -1103,7 +1115,7 @@ sendkey ret" \
 test_tcc_rebuild_cfdisk() {
     tcc_compile_user_app cfdisk 120
     it_until "tcc-rebuild-cfdisk" \
-"$(keys "exec /tmp/tcc-rebuilt.elf /dev/hda")
+"$(keys "exec /tmp/cfdisk.elf /dev/hda")
 sendkey ret
 PAUSE 1.2
 sendkey q
@@ -1119,7 +1131,7 @@ sendkey ret" \
 test_tcc_rebuild_maktop() {
     tcc_compile_user_app maktop 120
     it_until "tcc-rebuild-maktop" \
-"$(keys "exec /tmp/tcc-rebuilt.elf")
+"$(keys "exec /tmp/maktop.elf")
 sendkey ret
 PAUSE 1.2
 sendkey q
@@ -1135,7 +1147,7 @@ sendkey ret" \
 test_tcc_rebuild_clock() {
     tcc_compile_user_app clock 90
     it_until "tcc-rebuild-clock" \
-"$(keys "exec /tmp/tcc-rebuilt.elf")
+"$(keys "exec /tmp/clock.elf")
 sendkey ret
 PAUSE 1.2
 sendkey q
@@ -1151,7 +1163,7 @@ sendkey ret" \
 test_tcc_rebuild_lines() {
     tcc_compile_user_app lines 90
     it_until "tcc-rebuild-lines" \
-"$(keys "exec /tmp/tcc-rebuilt.elf")
+"$(keys "exec /tmp/lines.elf")
 sendkey ret
 PAUSE 1.2
 sendkey q
@@ -1167,7 +1179,7 @@ sendkey ret" \
 test_tcc_rebuild_vix() {
     tcc_compile_user_app vix 120
     it_until "tcc-rebuild-vix" \
-"$(keys "exec /tmp/tcc-rebuilt.elf /tmp/tcc-vix.txt")
+"$(keys "exec /tmp/vix.elf /tmp/tcc-vix.txt")
 sendkey ret
 PAUSE 1.2
 sendkey ctrl-q
@@ -1183,7 +1195,7 @@ sendkey ret" \
 test_tcc_rebuild_kbtester() {
     tcc_compile_user_app kbtester 120
     it_until "tcc-rebuild-kbtester" \
-"$(keys "exec /tmp/tcc-rebuilt.elf")
+"$(keys "exec /tmp/kbtester.elf")
 sendkey ret
 PAUSE 1.2
 sendkey ctrl-c
@@ -1489,32 +1501,51 @@ sendkey ret"
 # per_vt_palettes and bughunt_vix_palette_on_vt3 are palette-only visual
 # checks with no serial assertion; opt-in for manual inspection.
 
-SHELL_TESTS=(glob_proc tab_path tab_cycle typo_doesnt_clear shell_scripting_vars calc_brackets makbox_pwd demo_script)
-CD_PWD_TESTS=(cd_root per_tty_cwd)
-FS_TESTS=(ls_dev ls_mnt mount_noargs mnt_mountpoint filetest)
-POSIX_TESTS=(exec_hello fork_cow fork_execve user_sigusr1_handler ctrlc_kills_child ctrlc_cat usershell_smoke usershell_execve usershell_history usershell_vars)
-TCC_REBUILD_TESTS=(
-    tcc_rebuild_hello tcc_rebuild_calc tcc_rebuild_sh tcc_rebuild_makbox
-    tcc_rebuild_help tcc_rebuild_diskinfo tcc_rebuild_sigtest
-    tcc_rebuild_forktest tcc_rebuild_execvetest tcc_rebuild_alloctest
-    tcc_rebuild_filetest tcc_rebuild_basic tcc_rebuild_fdisk
-    tcc_rebuild_cfdisk tcc_rebuild_maktop tcc_rebuild_clock
-    tcc_rebuild_lines tcc_rebuild_vix tcc_rebuild_kbtester
-)
-LIBC_TESTS=(tcc_hello tcc_hello_relpath "${TCC_REBUILD_TESTS[@]}")
-# alloctest still has the fast in-kernel incore.sh coverage; the TCC
-# rebuild group additionally proves it links against the shipped libc.a.
+## Scenario groups -- only scenarios that genuinely need HMP sendkey
+## (keyboard editing, Alt+Fn focus switching, Ctrl-C delivery, etc.)
+## stay here.  Anything that just typed a command and grep'd serial
+## migrated to /src/userspace/shell-smoke.sh (run via `./run.sh gui
+## smoke` or as part of test_mode bootup).
+SHELL_TESTS=(tab_path tab_cycle typo_doesnt_clear calc_brackets)
+CD_PWD_TESTS=(per_tty_cwd)
+FS_TESTS=(mnt_mountpoint)                        # needs scratch disk; stays HMP
+POSIX_TESTS=(user_sigusr1_handler ctrlc_kills_child ctrlc_cat usershell_smoke usershell_execve usershell_history usershell_vars)
+## TCC_REBUILD_TESTS / LIBC_TESTS -- retired as HMP scenarios.
+##
+## The whole libc + TCC self-rebuild matrix now runs from
+## /src/userspace/libc-tcc.sh during test_mode bootup.  Marker
+## `LIBC-TCC: ALL PASS` / `LIBC-TCC: FAIL` on serial; checked by
+## run.sh _check_ktest.  See docs/plans/userspace-shell-migration-HANDOFF.md.
+##
+## Empty arrays kept so `./run.sh ui libc` is a no-op rather than an
+## error.  Use `./run.sh iso test` for the actual coverage.
+TCC_REBUILD_TESTS=()
+LIBC_TESTS=()
 INCORE_TESTS=(incore)
 VT_TESTS=(vt_roundtrip_keeps_maktop_focused vt_all_roundtrips)
 BUGHUNT_TESTS=(bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch)
 
-ALL_TESTS=("${SHELL_TESTS[@]}" "${CD_PWD_TESTS[@]}" "${FS_TESTS[@]}" "${POSIX_TESTS[@]}" "${LIBC_TESTS[@]}" "${INCORE_TESTS[@]}" "${VT_TESTS[@]}" "${BUGHUNT_TESTS[@]}")
+## LIBC_TESTS is empty (libc/TCC matrix moved into test_mode bootup);
+## under `set -u` an empty-array splice errors out, so we use the
+## `${arr[@]+...}` guard that expands to nothing when the array is
+## empty.  Apply the same guard to every group for symmetry / future
+## migrations.
+ALL_TESTS=(
+    ${SHELL_TESTS[@]+"${SHELL_TESTS[@]}"}
+    ${CD_PWD_TESTS[@]+"${CD_PWD_TESTS[@]}"}
+    ${FS_TESTS[@]+"${FS_TESTS[@]}"}
+    ${POSIX_TESTS[@]+"${POSIX_TESTS[@]}"}
+    ${LIBC_TESTS[@]+"${LIBC_TESTS[@]}"}
+    ${INCORE_TESTS[@]+"${INCORE_TESTS[@]}"}
+    ${VT_TESTS[@]+"${VT_TESTS[@]}"}
+    ${BUGHUNT_TESTS[@]+"${BUGHUNT_TESTS[@]}"}
+)
 
 # FAST_TESTS: skip anything that mkfs's a disk, compiles C, or runs a long
 # script -- excludes filetest, mnt_mountpoint, alloctest, tcc_hello,
 # demo_script.  Aimed at the dev inner loop where you want a sub-minute
 # regression sweep before pushing.
-FAST_TESTS=(glob_proc tab_path tab_cycle typo_doesnt_clear shell_scripting_vars calc_brackets makbox_pwd cd_root per_tty_cwd ls_dev ls_mnt exec_hello fork_cow fork_execve user_sigusr1_handler ctrlc_kills_child vt_roundtrip_keeps_maktop_focused vt_all_roundtrips)
+FAST_TESTS=(tab_path tab_cycle typo_doesnt_clear calc_brackets per_tty_cwd user_sigusr1_handler ctrlc_kills_child vt_roundtrip_keeps_maktop_focused vt_all_roundtrips)
 
 # Expand a single argument: if it names a known group, emit the group's
 # members; otherwise emit it unchanged (with dashes->underscores).
@@ -1527,8 +1558,15 @@ expand_arg() {
         cd_pwd|cd) printf '%s\n' "${CD_PWD_TESTS[@]}" ;;
         fs)       printf '%s\n' "${FS_TESTS[@]}" ;;
         posix)    printf '%s\n' "${POSIX_TESTS[@]}" ;;
-        libc)     printf '%s\n' "${LIBC_TESTS[@]}" ;;
-        tcc_rebuild|tcc) printf '%s\n' "${TCC_REBUILD_TESTS[@]}" ;;
+        libc|tcc_rebuild|tcc)
+            ## Group retired -- the libc + TCC self-rebuild matrix runs
+            ## in /src/userspace/libc-tcc.sh during test_mode bootup.
+            ## Run `./run.sh iso test` to exercise it.
+            echo "ui_test: group '$1' is no longer driven by HMP sendkey." >&2
+            echo "         The libc/TCC self-rebuild matrix runs at" >&2
+            echo "         test_mode bootup via /src/userspace/libc-tcc.sh." >&2
+            echo "         Use './run.sh iso test' for that coverage." >&2
+            ;;
         incore)   printf '%s\n' "${INCORE_TESTS[@]}" ;;
         vt)       printf '%s\n' "${VT_TESTS[@]}" ;;
         bughunt)  printf '%s\n' "${BUGHUNT_TESTS[@]}" ;;
@@ -1545,6 +1583,11 @@ else
             TO_RUN+=("$t")
         done < <(expand_arg "$arg")
     done
+fi
+
+if [ ${#TO_RUN[@]} -eq 0 ]; then
+    echo "ui_test: no scenarios selected -- nothing to run." >&2
+    exit 0
 fi
 
 if ! start_qemu; then

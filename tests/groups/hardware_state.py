@@ -5,11 +5,13 @@ Verifies CPU register state and liveness after the boot sequence:
   2. CR3 must be non-zero         – page directory is loaded.
   3. timer_callback must fire     – PIT is ticking (kernel is alive).
 
-This group is entered with execution stopped at shell_run (the last
-boot checkpoint).  It reads CR0/CR3 while stopped there, then installs a
-one-shot breakpoint on timer_callback and continues.  The shell blocks in
-keyboard_getchar() waiting for PS/2 input; during that spin-wait the PIT
-fires and timer_callback is reached, confirming the PIT is alive.
+This group is entered with execution stopped at the last boot checkpoint
+(`user_shell_slot_entry` on normal boot; was `shell_run` pre-userspace-
+shell-migration).  It reads CR0/CR3 while stopped there, then installs a
+one-shot breakpoint on timer_callback and continues.  The shell task
+blocks waiting for ktest_bg_done / focus / keyboard input; during that
+spin-wait the PIT fires and timer_callback is reached, confirming the
+PIT is alive.
 """
 
 import gdb

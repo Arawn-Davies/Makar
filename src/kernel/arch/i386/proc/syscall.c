@@ -47,6 +47,7 @@
 #include <kernel/rtc.h>
 #include <string.h>
 #include <kernel/ktest.h>
+#include <kernel/admin.h>
 
 /* USER_STACK_TOP / USER_STACK_PAGES - matches elf.c; defined locally to
  * avoid pulling that header into syscall.c just for these constants.
@@ -1387,6 +1388,117 @@ void syscall_dispatch(registers_t *regs)
         regs->edi      = sf.saved_edi;
         regs->ebp      = sf.saved_ebp;
         regs->ds       = sf.saved_ds;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * Admin syscalls (219..230).  Each calls task_is_admin() first; on
+     * denial -1 is returned (currently unreachable — task_is_admin()
+     * always returns true until a real user model lands).
+     *
+     * String args read directly from userspace (the calling task's PD
+     * is live).  No copy_from_user yet — same convention as SYS_OPEN.
+     * ------------------------------------------------------------------ */
+    case SYS_REBOOT: {
+        if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
+        admin_reboot();          /* noreturn on success */
+        regs->eax = (uint32_t)-1;
+        break;
+    }
+    case SYS_SHUTDOWN: {
+        if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
+        admin_shutdown();        /* noreturn on success */
+        regs->eax = (uint32_t)-1;
+        break;
+    }
+    case SYS_SETMODE: {
+        if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
+        regs->eax = (uint32_t)admin_setmode((const char *)regs->ebx);
+        break;
+    }
+    case SYS_FGCOL: {
+        if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
+        regs->eax = (uint32_t)admin_fgcol((const char *)regs->ebx);
+        break;
+    }
+    case SYS_BGCOL: {
+        if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
+        regs->eax = (uint32_t)admin_bgcol((const char *)regs->ebx);
+        break;
+    }
+    case SYS_EJECT: {
+        if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
+        regs->eax = (uint32_t)admin_eject();
+        break;
+    }
+    case SYS_MOUNT: {
+        if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
+        regs->eax = (uint32_t)admin_mount((const char *)regs->ebx,
+                                          (const char *)regs->ecx);
+        break;
+    }
+    case SYS_UMOUNT: {
+        if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
+        regs->eax = (uint32_t)admin_umount((const char *)regs->ebx);
+        break;
+    }
+    case SYS_MKFS: {
+        if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
+        regs->eax = (uint32_t)admin_mkfs((const char *)regs->ebx,
+                                         (const char *)regs->ecx);
+        break;
+    }
+    case SYS_SCHED_QUANTUM: {
+        if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
+        regs->eax = (uint32_t)admin_sched_quantum((int)regs->ebx);
+        break;
+    }
+    case SYS_VERBOSE: {
+        if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
+        regs->eax = (uint32_t)admin_verbose((int)regs->ebx);
+        break;
+    }
+    case SYS_SHELL_READY: {
+        /* Emit the `[shell:ready vt=N]` sync marker on COM1.  Gated on
+         * g_serial_verbose so production boots don't pay the cost.
+         * Userspace shell calls this before each prompt so ui_test.sh's
+         * wait_for_serial behaviour is identical to the kernel shell. */
+        if (g_serial_verbose) {
+            task_t *t = task_current();
+            int vt = (t && t->tty >= 0) ? t->tty : 0;
+            Serial_WriteString("[shell:ready vt=");
+            char buf[12]; int n = 0; int v = vt;
+            if (v == 0) buf[n++] = '0';
+            while (v) { buf[n++] = (char)('0' + (v % 10)); v /= 10; }
+            while (n--) { Serial_WriteChar(buf[n]); }
+            Serial_WriteString("]\n");
+        }
+        regs->eax = 0;
+        break;
+    }
+    case SYS_GETHOSTNAME: {
+        char *buf = (char *)regs->ebx;
+        uint32_t size = regs->ecx;
+        if (!buf || size == 0) { regs->eax = (uint32_t)-1; break; }
+        /* Best-effort read of /etc/hostname; falls back to "makar".
+         * No newline trimming for the read — but we strip the trailing
+         * \n if the file ends with one (common case for hand-edited
+         * /etc/hostname). */
+        char hbuf[64];
+        uint32_t got = 0;
+        const char *src = "makar";
+        uint32_t slen = 5;
+        if (vfs_read_file("/etc/hostname", hbuf, sizeof(hbuf) - 1, &got) == 0 && got > 0) {
+            hbuf[got] = '\0';
+            while (got > 0 && (hbuf[got - 1] == '\n' || hbuf[got - 1] == '\r' ||
+                               hbuf[got - 1] == ' '  || hbuf[got - 1] == '\t'))
+                hbuf[--got] = '\0';
+            if (got > 0) { src = hbuf; slen = got; }
+        }
+        uint32_t copy = (slen + 1 > size) ? (size - 1) : slen;
+        for (uint32_t i = 0; i < copy; i++) buf[i] = src[i];
+        buf[copy] = '\0';
+        regs->eax = (uint32_t)copy;
         break;
     }
 

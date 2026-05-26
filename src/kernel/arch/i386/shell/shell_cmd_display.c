@@ -11,6 +11,7 @@
 #include <kernel/vesa_tty.h>
 #include <kernel/vtty.h>
 #include <kernel/bochs_vbe.h>
+#include <kernel/admin.h>
 
 /* ---------------------------------------------------------------------------
  * Colour palette – 16 standard CGA/VGA colours with matching VESA RGB values
@@ -104,46 +105,62 @@ static void cmd_clear(int argc, char **argv)
     shell_clear_screen();
 }
 
-static void cmd_fgcol(int argc, char **argv)
+/* Privileged colour-set helpers.  Called by both the in-kernel rescue
+ * shell's cmd_* wrappers and SYS_FGCOL/SYS_BGCOL from the userspace
+ * shell.  Empty/NULL string prints the palette and returns -1 so the
+ * caller can show usage; unknown colour returns -2 (also prints).  */
+int admin_fgcol(const char *colour)
 {
-    if (argc < 2) {
+    if (!colour || !*colour) {
         t_writestring("usage: fgcol <colour>\n");
         print_palette();
-        return;
+        return -1;
     }
-    const colour_entry_t *e = palette_lookup(argv[1]);
+    const colour_entry_t *e = palette_lookup(colour);
     if (!e) {
         t_writestring("unknown colour: ");
-        t_writestring(argv[1]);
+        t_writestring(colour);
         t_putchar('\n');
         print_palette();
-        return;
+        return -2;
     }
     s_vga_fg = e->vga;
     s_rgb_fg = e->rgb;
     apply_colours();
+    return 0;
 }
 
-static void cmd_bgcol(int argc, char **argv)
+int admin_bgcol(const char *colour)
 {
-    if (argc < 2) {
+    if (!colour || !*colour) {
         t_writestring("usage: bgcol <colour>\n");
         print_palette();
-        return;
+        return -1;
     }
-    const colour_entry_t *e = palette_lookup(argv[1]);
+    const colour_entry_t *e = palette_lookup(colour);
     if (!e) {
         t_writestring("unknown colour: ");
-        t_writestring(argv[1]);
+        t_writestring(colour);
         t_putchar('\n');
         print_palette();
-        return;
+        return -2;
     }
     s_vga_bg = e->vga;
     s_rgb_bg = e->rgb;
     apply_colours();
     if (vesa_tty_is_ready())
         vesa_tty_clear();
+    return 0;
+}
+
+static void cmd_fgcol(int argc, char **argv)
+{
+    admin_fgcol(argc >= 2 ? argv[1] : NULL);
+}
+
+static void cmd_bgcol(int argc, char **argv)
+{
+    admin_bgcol(argc >= 2 ? argv[1] : NULL);
 }
 
 /* ---------------------------------------------------------------------------
@@ -173,9 +190,12 @@ static const vesa_mode_t vesa_modes[] = {
 };
 #define VESA_MODE_COUNT ((uint32_t)(sizeof(vesa_modes) / sizeof(vesa_modes[0])))
 
-static void cmd_setmode(int argc, char **argv)
+/* Privileged setmode: NULL/empty `mode` reports the current mode and
+ * returns -1; unrecognised mode returns -2 (after printing usage).
+ * Returns 0 on a successful switch. */
+int admin_setmode(const char *mode)
 {
-    if (argc < 2) {
+    if (!mode || !*mode) {
         /* No arg: report the current mode. */
         t_writestring("Mode: ");
         if (vesa_tty_is_ready()) {
@@ -195,10 +215,8 @@ static void cmd_setmode(int argc, char **argv)
             t_writestring("\n");
         }
         t_writestring("Usage: setmode <80x25|80x50|320x240|640x480|480p|720p|1080p>\n");
-        return;
+        return -1;
     }
-
-    const char *mode = argv[1];
 
     /* --- VGA text modes -------------------------------------------------- */
     if (strcmp(mode, "80x25") == 0 || strcmp(mode, "text") == 0 ||
@@ -209,7 +227,7 @@ static void cmd_setmode(int argc, char **argv)
         terminal_set_rows(25);
         terminal_set_colorscheme((uint8_t)((s_vga_bg << 4) | (s_vga_fg & 0x0F)));
         t_writestring("Mode: VGA 80x25 text\n");
-        return;
+        return 0;
     }
 
     if (strcmp(mode, "80x50") == 0 || strcmp(mode, "50") == 0) {
@@ -217,19 +235,16 @@ static void cmd_setmode(int argc, char **argv)
         vesa_disable();
         vesa_tty_disable();
         terminal_set_rows(50);
-        /* 80x50 cells are 8 scanlines; the CRTC reads only the first 8
-         * bytes of each font slot.  Swap the freshly-uploaded 8×16 font
-         * for the native 8×8 set so letter bodies aren't clipped. */
         vga_load_text_font_8x8();
         terminal_set_colorscheme((uint8_t)((s_vga_bg << 4) | (s_vga_fg & 0x0F)));
         t_writestring("Mode: VGA 80x50 text\n");
-        return;
+        return 0;
     }
 
     /* --- VESA framebuffer modes ------------------------------------------ */
     if (!bochs_vbe_available()) {
         t_writestring("Error: Bochs VBE not available on this hardware.\n");
-        return;
+        return -2;
     }
 
     for (uint32_t i = 0; i < VESA_MODE_COUNT; i++) {
@@ -243,23 +258,24 @@ static void cmd_setmode(int argc, char **argv)
         bochs_vbe_set_mode(w, h, 32);
         vesa_update_geometry(w, h, 32);
         vesa_tty_init();
-        /* Resize per-TTY backing grids to match the new tty geometry.
-         * Without this the buffers stay at the boot-time size; after a
-         * shell launches a fullscreen command, paint_buf only repaints
-         * the original-sized region and leaves stale pixels visible
-         * outside it. */
         vtty_init();
         vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
         vesa_tty_clear();
 
         t_writestring("Mode: ");
         t_dec(w); t_writestring("x"); t_dec(h); t_writestring("x32\n");
-        return;
+        return 0;
     }
 
     t_writestring("Error: unknown mode '");
     t_writestring(mode);
     t_writestring("'\nUsage: setmode <80x25|80x50|320x240|640x480|480p|720p|1080p>\n");
+    return -2;
+}
+
+static void cmd_setmode(int argc, char **argv)
+{
+    admin_setmode(argc >= 2 ? argv[1] : NULL);
 }
 
 /* ---------------------------------------------------------------------------

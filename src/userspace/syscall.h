@@ -59,6 +59,22 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_FB_INFO      216
 #define SYS_DRAW_LINE    217
 #define SYS_CARET_STYLE  218
+/* Admin syscalls (privileged operations).  task_is_admin() gates each;
+ * currently always-true (no user model).  Negative return = denied or
+ * failed; helper-specific error code conventions in kernel/admin.h. */
+#define SYS_REBOOT        219
+#define SYS_SHUTDOWN      220
+#define SYS_SETMODE       221
+#define SYS_FGCOL         222
+#define SYS_BGCOL         223
+#define SYS_EJECT         224
+#define SYS_MOUNT         225
+#define SYS_UMOUNT        226
+#define SYS_MKFS          227
+#define SYS_SCHED_QUANTUM 228
+#define SYS_VERBOSE       229
+#define SYS_GETHOSTNAME   230
+#define SYS_SHELL_READY   231
 #define SYS_FCNTL        55
 #define SYS_STAT        106
 #define SYS_FSTAT       108
@@ -564,6 +580,81 @@ static inline sig_handler_t sys_signal(int signo, sig_handler_t h)
 {
     return (sig_handler_t)(unsigned long)
         syscall2(SYS_SIGNAL, (long)signo, (long)(unsigned long)h);
+}
+
+/* --- Admin syscalls.  Privileged operations the kernel arbitrates;
+ * see <kernel/admin.h> for return-code conventions.  Currently every
+ * task is admin (no user model). --- */
+
+/* Power; never return on success. */
+static inline int sys_reboot(void)
+{
+    return (int)syscall1(SYS_REBOOT, 0);
+}
+static inline int sys_shutdown(void)
+{
+    return (int)syscall1(SYS_SHUTDOWN, 0);
+}
+
+/* Display.  NULL/empty `arg` queries current state. */
+static inline int sys_setmode(const char *mode)
+{
+    return (int)syscall1(SYS_SETMODE, (long)mode);
+}
+static inline int sys_fgcol(const char *colour)
+{
+    return (int)syscall1(SYS_FGCOL, (long)colour);
+}
+static inline int sys_bgcol(const char *colour)
+{
+    return (int)syscall1(SYS_BGCOL, (long)colour);
+}
+
+/* Storage.  `target` for sys_umount may be NULL (= sole mount). */
+static inline int sys_eject(void)
+{
+    return (int)syscall1(SYS_EJECT, 0);
+}
+static inline int sys_mount(const char *dev, const char *mnt)
+{
+    return (int)syscall2(SYS_MOUNT, (long)dev, (long)mnt);
+}
+static inline int sys_umount(const char *target)
+{
+    return (int)syscall1(SYS_UMOUNT, (long)target);
+}
+static inline int sys_mkfs(const char *dev, const char *fstype)
+{
+    return (int)syscall2(SYS_MKFS, (long)dev, (long)fstype);
+}
+
+/* Scheduler / runtime tuning.  `new_value < 0` queries; returns the
+ * post-call value. */
+static inline int sys_sched_quantum(int new_value)
+{
+    return (int)syscall1(SYS_SCHED_QUANTUM, (long)new_value);
+}
+
+/* Serial-mirror toggle (Linux-style runtime console=ttyS0 opt-in).
+ * onoff: 1 = on, 0 = off, -1 = query. */
+static inline int sys_verbose(int onoff)
+{
+    return (int)syscall1(SYS_VERBOSE, (long)onoff);
+}
+
+/* Read /etc/hostname (falls back to "makar") into buf, capped at size-1
+ * bytes, NUL-terminated.  Returns strlen on success, -1 on bad args. */
+static inline int sys_gethostname(char *buf, unsigned int size)
+{
+    return (int)syscall2(SYS_GETHOSTNAME, (long)buf, (long)size);
+}
+
+/* Emit `[shell:ready vt=N]` on COM1 when g_serial_verbose is set.
+ * Called by /apps/sh.elf before each prompt so ui_test.sh's
+ * `wait_for_serial` syncpoint works identically for both shells. */
+static inline void sys_shell_ready(void)
+{
+    syscall1(SYS_SHELL_READY, 0);
 }
 
 #endif

@@ -7,7 +7,9 @@ This group is entered with execution stopped inside timer_callback (left
 there by the hardware_state group).  State variables are read directly from
 the stopped inferior; no further `continue` is issued because after boot the
 kernel blocks in shell_run() → keyboard_getchar() waiting for PS/2 input, so
-there is no autonomous terminal output to intercept.
+there is no autonomous terminal output to intercept.  Was shell_run pre-
+userspace-shell-migration; now user_shell_slot_entry holds the same
+spin-wait shape (vtty_register → wait for ktest_bg_done → elf_exec).
 
 If no framebuffer was provided by the bootloader (e.g. headless CI) the
 group still passes - what matters is that the driver handled the absence

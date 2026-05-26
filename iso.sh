@@ -19,9 +19,14 @@ set -e
 # Runs after build.sh so crt0.o and libc.a are available.
 bash build-tcc.sh
 
-mkdir -p isodir/boot/grub/i386-pc isodir/apps isodir/src isodir/docs isodir/limine
+mkdir -p isodir/boot/grub/i386-pc isodir/apps isodir/src isodir/docs isodir/limine isodir/etc
 
 cp sysroot/boot/makar.kernel isodir/boot/makar.kernel
+
+# Default /etc/hostname.  sys_gethostname() reads this; if absent the kernel
+# falls back to "makar".  Operators can edit this file at any time (write
+# /etc/hostname mybox  from the rescue shell) to change the prompt.
+echo "makar" > isodir/etc/hostname
 
 # Copy source tree and docs onto the ISO so they're readable via VIX.
 cp -r src/. isodir/src/
@@ -108,12 +113,16 @@ grub-mkrescue -o makar.iso isodir
 # ── Test ISO (CI) ────────────────────────────────────────────────────────────
 # Single entry, zero timeout: QEMU boots straight into ktest_run_all().
 if [ "${TEST_ISO:-0}" = "1" ]; then
-    cat > isodir/boot/grub/grub.cfg << 'EOF'
+    # TEST_CMDLINE overrides the default test-mode cmdline.  Used by
+    # `./run.sh test <name>` to boot only the named suite (e.g.
+    # `test_mode test=libc-tcc`).  Default exercises every script.
+    _test_cmdline="${TEST_CMDLINE:-test_mode}"
+    cat > isodir/boot/grub/grub.cfg << EOF
 set default=0
 set timeout=0
 
-menuentry "Makar OS (test_mode)" {
-	multiboot2 /boot/makar.kernel test_mode
+menuentry "Makar OS (${_test_cmdline})" {
+	multiboot2 /boot/makar.kernel ${_test_cmdline}
 }
 EOF
     grub-mkrescue -o makar-test.iso isodir

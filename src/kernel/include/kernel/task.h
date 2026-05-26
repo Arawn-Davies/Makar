@@ -170,6 +170,20 @@ int task_count(void);
 task_t *task_by_pid(int pid);
 
 /*
+ * task_is_admin – the single privilege check for admin syscalls.
+ *
+ * Makar has no user model yet, so this currently returns 1 for every
+ * task (boot tasks, shell-spawned children, ktest, idle).  When a real
+ * login/uid model lands, this is the one place that gains the actual
+ * uid/cap check — every admin syscall calls through here so the
+ * authorization surface stays auditable.
+ *
+ * Returns 1 if `t` (NULL = task_current()) may invoke privileged
+ * syscalls, 0 otherwise.
+ */
+int task_is_admin(task_t *t);
+
+/*
  * task_fork – COW-clone the calling task.
  *
  * Implements the kernel side of SYS_FORK.  The parent's user address

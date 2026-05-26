@@ -26,6 +26,7 @@
 #include <kernel/ktest.h>
 #include <kernel/vtty.h>
 #include <kernel/sh_script.h>
+#include <kernel/elf.h>
 
 /*
  * Column at which "[ OK ]" starts, counting from 0.
@@ -65,6 +66,52 @@ static void kprint_ok(void)
 
 	/* Advance the cursor so init output starts on the next line. */
 	t_putchar('\n');
+}
+
+/*
+ * user_shell_slot_entry – per-VT task entry that boots /apps/sh.elf
+ * as a ring-3 login shell.
+ *
+ * Each VT slot's task runs this entry: register the VT, apply the
+ * slot's colour scheme (so the framebuffer looks the same as if the
+ * in-kernel shell had taken it), then drop into ring 3 by exec'ing
+ * /apps/sh.elf with `--login`.  elf_exec only returns on failure
+ * (missing file, malformed ELF, OOM); in that case fall back to the
+ * in-kernel rescue shell so the system stays usable.
+ *
+ * shell=rescue on the kernel cmdline skips this entirely and uses
+ * shell_run on every VT — for the case where /apps/sh.elf itself
+ * is broken or the rootfs hasn't mounted.
+ */
+extern void user_shell_slot_entry(void);  /* fwd decl for task_create */
+void user_shell_slot_entry(void)
+{
+	/* Full shell prelude: SIGINT IGN, unkillable, vtty_register,
+	 * loading screen (slot 0 only), wait for ktest_bg, palette +
+	 * clear.  Mirrors what the in-kernel shell_run used to do
+	 * inline so the boot UX is identical. */
+	int slot = shell_enter_slot(1);   /* 1 = with loading screen */
+	if (slot < 0) {
+		Serial_WriteString("user-shell: shell_enter_slot failed\n");
+		for (;;) task_yield();
+	}
+
+	static const char *login_argv[] = { "sh.elf", "--login", NULL };
+	int rc = elf_exec("/apps/sh.elf", 2, (const char *const *)login_argv);
+
+	/* elf_exec returned -> /apps/sh.elf could not be loaded.  Print a
+	 * diagnostic and fall back to the in-kernel rescue shell on this
+	 * VT so the user still has a prompt. */
+	Serial_WriteString("user-shell: /apps/sh.elf failed to exec (rc=");
+	{
+		char dec[12]; int n = 0; int v = rc;
+		if (v < 0) { Serial_WriteString("-"); v = -v; }
+		if (v == 0) dec[n++] = '0';
+		while (v) { dec[n++] = (char)('0' + (v % 10)); v /= 10; }
+		while (n--) { char one[2] = { dec[n], 0 }; Serial_WriteString(one); }
+	}
+	Serial_WriteString("), falling back to kernel rescue shell\n");
+	shell_run();  /* never returns */
 }
 
 void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
@@ -144,6 +191,16 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	const char *root_spec = NULL;   /* `root=...` cmdline arg, NULL = auto */
 	static char root_spec_buf[64];  /* copy out of cmdline tag (still alive
 	                                 * for the boot, but we own it) */
+	int shell_rescue = 0;       /* `shell=rescue` -> use in-kernel rescue
+	                             * shell on every VT instead of /apps/sh.elf.
+	                             * The recovery path when userspace shell
+	                             * or its rootfs is broken. */
+	static char test_spec_buf[64];  /* `test=<comma-list>` cmdline arg.
+	                                 * Empty = default (ktest + incore +
+	                                 * libc-tcc).  Recognised names:
+	                                 * "ktest", "incore", "libc-tcc",
+	                                 * "all" (= default), "none". */
+	const char *test_spec = NULL;
 	{
 		uint32_t biosdev = 0xFFu;
 
@@ -178,6 +235,28 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 						root_spec_buf[j] = '\0';
 						root_spec = root_spec_buf;
 					}
+					/* shell=<mode> — currently only "rescue" is
+					 * recognised; anything else (or absent) means
+					 * normal userspace-shell boot. */
+					const char *sp = strstr(cmd->string, "shell=");
+					if (sp) {
+						sp += 6;
+						if (sp[0] == 'r' && sp[1] == 'e' && sp[2] == 's' &&
+						    sp[3] == 'c' && sp[4] == 'u' && sp[5] == 'e')
+							shell_rescue = 1;
+					}
+					/* test=<comma-list> -- which test-mode scripts to run. */
+					const char *tp = strstr(cmd->string, "test=");
+					if (tp) {
+						tp += 5;
+						size_t j = 0;
+						while (*tp && *tp != ' ' && *tp != '\t' &&
+						       j + 1 < sizeof(test_spec_buf)) {
+							test_spec_buf[j++] = *tp++;
+						}
+						test_spec_buf[j] = '\0';
+						test_spec = test_spec_buf;
+					}
 				}
 				tag_ptr += (tag->size + 7u) & ~7u;
 			}
@@ -211,10 +290,20 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 		Serial_WriteString("kernel: boot complete\n");
 		if (!console_serial)
 			g_serial_verbose = 0;
-		task_create("shell0", shell_run);
-		task_create("shell1", shell_run);
-		task_create("shell2", shell_run);
-		task_create("shell3", shell_run);
+		/* shell=rescue boots a single in-kernel rescue shell on VT0
+		 * (Linux-style — no other VTs are spawned, so the operator's
+		 * keypresses can't be lost to a hung secondary slot).  The
+		 * normal path boots /apps/sh.elf as a ring-3 login shell on
+		 * each of the four VTs, with per-VT auto-fallback to the
+		 * rescue shell if /apps/sh.elf is missing or fails to load. */
+		if (shell_rescue) {
+			task_create("rescue", shell_run);
+		} else {
+			task_create("shell0", user_shell_slot_entry);
+			task_create("shell1", user_shell_slot_entry);
+			task_create("shell2", user_shell_slot_entry);
+			task_create("shell3", user_shell_slot_entry);
+		}
 		task_create("ktest",  ktest_bg_task);
 	}
 
@@ -227,21 +316,58 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	acpi_init();
 
 	if (test_mode) {
-		int fails = ktest_run_all();
-		Serial_WriteString(fails ? "KTEST_RESULT: FAIL\n"
-		                         : "KTEST_RESULT: PASS\n");
+		/* test=<comma-list> selects which suites run.  Default
+		 * (absent / "all") = every suite.  Helpers below treat the
+		 * empty-spec case as "all" so a bare `test_mode` cmdline keeps
+		 * working unchanged. */
+		#define TEST_WANT(name) \
+			(test_spec == NULL || test_spec[0] == '\0' || \
+			 strcmp(test_spec, "all") == 0 || strstr(test_spec, (name)) != NULL)
 
-		/* Phase 2: run the in-kernel UI test driver inline.  incore.sh
-		 * exercises hello / forktest / execvetest / alloctest via exec
-		 * + $? checks; it writes "INCORE: ALL PASS" or "INCORE: FAIL"
-		 * to serial which run.sh's _check_ktest greps alongside
-		 * KTEST_RESULT.  Idempotent and quick (~10s under TCG); no
-		 * shell task needed -- sh_run_file dispatches inline and
-		 * shell_exec_elf's wait loop just yields back to the spawned
-		 * user task. */
-		Serial_WriteString("INCORE: starting\n");
-		sh_run_file("/apps/incore.sh");
-		Serial_WriteString("INCORE: finished\n");
+		/* Wipe the "Initializing X... [OK]" boot lines off the
+		 * framebuffer before the test-mode dispatch starts.  Without
+		 * this the test output scrolls on top of the driver init
+		 * banner and the visible-window watcher can't tell where the
+		 * boot ends and the suite begins.  vesa_tty_clear falls
+		 * through to the global pane when no task has a tty (pre-
+		 * tasking-init), so this is safe to call here. */
+		vesa_tty_clear();
+		terminal_initialize();
+
+		int fails = 0;
+		if (TEST_WANT("ktest")) {
+			fails = ktest_run_all();
+			Serial_WriteString(fails ? "KTEST_RESULT: FAIL\n"
+			                         : "KTEST_RESULT: PASS\n");
+		}
+
+		/* Phase 2: in-kernel UI test driver.  incore.sh exercises
+		 * hello / forktest / execvetest / alloctest via exec + $?
+		 * checks; marker INCORE: ALL PASS / INCORE: FAIL. */
+		if (TEST_WANT("incore")) {
+			Serial_WriteString("INCORE: starting\n");
+			sh_run_file("/apps/incore.sh");
+			Serial_WriteString("INCORE: finished\n");
+		}
+
+		/* Non-UI libc + TCC self-rebuild matrix.  Marker
+		 * LIBC-TCC: ALL PASS / LIBC-TCC: FAIL. */
+		if (TEST_WANT("libc-tcc")) {
+			Serial_WriteString("LIBC-TCC: starting\n");
+			sh_run_file("/src/userspace/libc-tcc.sh");
+			Serial_WriteString("LIBC-TCC: finished\n");
+		}
+
+		/* Shell + VFS + apps smoke matrix.  Replaces the HMP
+		 * scenarios whose only job was to type a command and grep
+		 * serial.  Marker SHELL-SMOKE: ALL PASS / SHELL-SMOKE: FAIL. */
+		if (TEST_WANT("shell-smoke")) {
+			Serial_WriteString("SHELL-SMOKE: starting\n");
+			sh_run_file("/src/userspace/shell-smoke.sh");
+			Serial_WriteString("SHELL-SMOKE: finished\n");
+		}
+
+		#undef TEST_WANT
 
 		uint8_t exit_val = (fails > 0) ? 1 : 0;
 		asm volatile("outb %b0, %w1" :: "a"(exit_val), "Nd"((uint16_t)0xF4));

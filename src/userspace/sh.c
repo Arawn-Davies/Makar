@@ -1,43 +1,57 @@
 /*
- * sh.c -- ring-3 userspace shell, MVP + readline/history (slice 20b).
+ * sh.c -- /apps/sh.elf, the ring-3 userspace shell.
  *
- * First concrete step toward lifting the shell out of the kernel: a
- * freestanding C program that reads commands one keystroke at a time
- * via sys_getkey() (which already delivers KEY_ARROW_* sentinels in
- * the default kernel translation -- "raw mode" is the kbtester surface
- * and intentionally not used here, since it'd leak modifier-event bytes
- * through to any forked child), dispatches builtins inline, and
- * forks+execve's external commands.  Coexists with the in-kernel
- * shell -- run it with `exec /apps/sh.elf` from any kernel shell prompt.
- * Exit (Ctrl-D on empty line, `exit`, or wait4 failure) returns to the
- * parent shell.
+ * Ports the in-kernel shell's interactive + scripting surface into
+ * userspace.  Run as the per-VT login shell from boot (the
+ * user_shell_slot_entry path in kernel/kernel.c), or as a nested shell
+ * via `exec /apps/sh.elf`.
  *
- * Deliberately Spartan to stay TCC-rebuildable in-OS (see
- * test_tcc_rebuild_sh): only depends on syscall.h, no libc shim, no
- * GCC-isms.  Mirrors the in-kernel shell's inline-edit + 16-entry
- * history surface; the kernel implementation lives in
- * src/kernel/arch/i386/shell/shell.c:shell_readline.
+ * Argv:
+ *   sh.elf            Nested mode -- exits cleanly on `exit` or Ctrl-D.
+ *   sh.elf --login    VT-owning login shell -- reprompts on `exit`/Ctrl-D.
+ *   sh.elf <script>   Run <script> and exit (positional, not yet wired
+ *                     into the userspace boot path but used by `./foo.sh`).
  *
- * Not yet implemented (followups, in order):
- *   - Control flow: if/while/for/[ TEST ]                      (slice 20d)
- *   - Tab + glob completion                                    (slice 20e)
- *   - PATH lookup (argv[0] must be a path)
- *   - Pipes (|), redirection (<, >, >>), job control (&)       (slice 28)
- *   - Quotes / escapes / inline NAME=VAL CMD assignments
- *   - Signal forwarding to children
- *   - Subshells, command substitution
+ * Features (parity with the in-kernel shell):
+ *   - Readline with cursor edit + 16-entry history.
+ *   - Zsh-style tab cycling on the current path component.
+ *   - Glob expansion of `*` and `?` against the cwd.
+ *   - $VAR / ${VAR} / $? expansion across the whole line.
+ *   - PATH lookup with default `/apps`, `.elf` auto-probe.
+ *   - Restricted makbox fallback for ls/cat/cp/mv/rm/rmdir/echo/pwd.
+ *   - Builtins: cd, pwd, exit, env, unset, read, sleep, true, false,
+ *               `[ ... ]`, history, hostname.
+ *   - Admin builtins via privileged syscalls: shutdown, reboot, eject,
+ *               setmode, fgcol, bgcol, mount, umount, mkfs.ext2,
+ *               mkfs.fat32, sched_quantum, verbose.
+ *   - Stub builtins (rejected with a stable message): install, chainload,
+ *               readsector, mkpart, lspart, ktest.
+ *   - Scripting: `;`-separated statements, `#` comments, if/elif/else/fi,
+ *               while, for ... in, sh <file>, ./script.sh
+ *
+ * Freestanding: only depends on <syscall.h>.  TCC must be able to rebuild
+ * this in-OS (no libc, no GCC builtins, no float).
  */
+
 #include "syscall.h"
 
-#define LINE_MAX      512
-#define MAX_ARGS      16
-#define HIST_MAX      16
-#define VAR_MAX       32
-#define VAR_NAME_MAX  32
-#define VAR_VAL_MAX   192
-#define VFS_PATH_MAX  256   /* mirrors kernel/vfs.h; sized to fit /apps/<bin>.elf */
+#define LINE_MAX        512
+#define SCRIPT_LINE_MAX 1024     /* loops/conditionals can accumulate */
+#define MAX_ARGS        64       /* generous: glob may explode tokens */
+#define HIST_MAX        16
+#define VAR_MAX         32
+#define VAR_NAME_MAX    32
+#define VAR_VAL_MAX     192
+#define VFS_PATH_MAX    256
+#define HOST_MAX        64
+#define USER_MAX        32
 
-/* ---------- string helpers (no libc) ---------- */
+/* ---------- mode flags ---------- */
+static int   g_login        = 0;  /* --login: don't exit on Ctrl-D / `exit` */
+static char  g_hostname[HOST_MAX] = "makar";
+static char  g_username[USER_MAX] = "root";
+
+/* ---------- string helpers ---------- */
 
 static unsigned int s_len(const char *s)
 {
@@ -45,58 +59,39 @@ static unsigned int s_len(const char *s)
     while (s[n]) n++;
     return n;
 }
-
 static int s_eq(const char *a, const char *b)
 {
     while (*a && *b && *a == *b) { a++; b++; }
     return *a == *b;
 }
-
-static void put_s(const char *s)
+static int s_starts(const char *s, const char *prefix)
 {
-    sys_write(1, s, s_len(s));
+    while (*prefix) { if (*s++ != *prefix++) return 0; }
+    return 1;
 }
-
-static void put_c(char c)
+static void s_copy(char *dst, const char *src, unsigned int cap)
 {
-    sys_write(1, &c, 1);
+    unsigned int i;
+    if (cap == 0) return;
+    for (i = 0; i + 1 < cap && src[i]; i++) dst[i] = src[i];
+    dst[i] = '\0';
 }
-
-/* atoi for the optional `exit N` arg.  Returns 0 on empty/garbage. */
-static int s_atoi(const char *s)
+static void put_s(const char *s) { sys_write(1, s, s_len(s)); }
+static void put_c(char c)        { sys_write(1, &c, 1); }
+static int  s_atoi(const char *s)
 {
     int sign = 1;
     int v = 0;
     if (*s == '-') { sign = -1; s++; }
-    while (*s >= '0' && *s <= '9') {
-        v = v * 10 + (*s - '0');
-        s++;
-    }
+    while (*s >= '0' && *s <= '9') { v = v * 10 + (*s - '0'); s++; }
     return v * sign;
 }
 
-/* ---------- variable table (slice 20c) ----------
- *
- * Fixed-size table of NAME=value pairs, local to this sh.elf instance.
- * Mirrors the per-VT isolation model of the kernel's task_t.script_vars:
- * each ring-3 shell has its own table, no cross-VT leakage.  No malloc
- * (TCC-rebuildable, freestanding).
- *
- * $?  -- exposed via expand() as a magic name, not stored in the table.
- *        Tracked in g_last_status, updated after every builtin and every
- *        external dispatch.
- *
- * Inline `NAME=VAL CMD` env-prefixes (bash-style transient assignments)
- * are NOT supported in this slice -- only standalone `NAME=VAL` lines.
- */
+/* ---------- variable table ---------- */
 
-typedef struct {
-    char name[VAR_NAME_MAX];
-    char val[VAR_VAL_MAX];
-} var_t;
-
+typedef struct { char name[VAR_NAME_MAX]; char val[VAR_VAL_MAX]; } var_t;
 static var_t        g_vars[VAR_MAX];
-static unsigned int g_var_count  = 0;
+static unsigned int g_var_count   = 0;
 static int          g_last_status = 0;
 
 static int var_name_ok(const char *n)
@@ -106,41 +101,31 @@ static int var_name_ok(const char *n)
     for (const char *p = n; *p; p++) {
         char c = *p;
         if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-              (c >= '0' && c <= '9') || c == '_'))
-            return 0;
+              (c >= '0' && c <= '9') || c == '_')) return 0;
     }
     return 1;
 }
-
 static const char *var_get(const char *name)
 {
     for (unsigned int i = 0; i < g_var_count; i++)
         if (s_eq(g_vars[i].name, name)) return g_vars[i].val;
     return (const char *)0;
 }
-
 static int var_set(const char *name, const char *val)
 {
     if (!var_name_ok(name)) return -1;
-    /* Existing slot? Overwrite. */
     for (unsigned int i = 0; i < g_var_count; i++) {
         if (s_eq(g_vars[i].name, name)) {
-            unsigned int j;
-            for (j = 0; val[j] && j < VAR_VAL_MAX - 1; j++) g_vars[i].val[j] = val[j];
-            g_vars[i].val[j] = '\0';
+            s_copy(g_vars[i].val, val, VAR_VAL_MAX);
             return 0;
         }
     }
     if (g_var_count >= VAR_MAX) return -1;
-    unsigned int j;
-    for (j = 0; name[j] && j < VAR_NAME_MAX - 1; j++) g_vars[g_var_count].name[j] = name[j];
-    g_vars[g_var_count].name[j] = '\0';
-    for (j = 0; val[j] && j < VAR_VAL_MAX - 1; j++) g_vars[g_var_count].val[j] = val[j];
-    g_vars[g_var_count].val[j] = '\0';
+    s_copy(g_vars[g_var_count].name, name, VAR_NAME_MAX);
+    s_copy(g_vars[g_var_count].val,  val,  VAR_VAL_MAX);
     g_var_count++;
     return 0;
 }
-
 static int var_unset(const char *name)
 {
     for (unsigned int i = 0; i < g_var_count; i++) {
@@ -153,7 +138,6 @@ static int var_unset(const char *name)
     return -1;
 }
 
-/* Print decimal int to `out` (caller guarantees >= 12 bytes). */
 static void status_str(char *out, int v)
 {
     char tmp[12];
@@ -168,90 +152,72 @@ static void status_str(char *out, int v)
     out[k] = '\0';
 }
 
-/* Expand $VAR / ${VAR} / $? in `in` -> `out` (NUL-terminated, capped at
- * outsz-1).  Unknown vars expand to empty (POSIX).  No quote handling
- * in this slice; that's a 20d/20e followup. */
+/* Expand $VAR / ${VAR} / $? in `in` -> `out`. */
 static void expand(const char *in, char *out, unsigned int outsz)
 {
     unsigned int o = 0;
     while (*in && o + 1 < outsz) {
-        if (*in != '$') {
-            out[o++] = *in++;
-            continue;
-        }
-        in++;  /* consume '$' */
+        if (*in != '$') { out[o++] = *in++; continue; }
+        in++;
         if (*in == '?') {
             char num[12];
             status_str(num, g_last_status);
             for (unsigned int j = 0; num[j] && o + 1 < outsz; j++) out[o++] = num[j];
-            in++;
-            continue;
+            in++; continue;
         }
-        char  name[VAR_NAME_MAX];
+        char name[VAR_NAME_MAX];
         unsigned int n = 0;
-        int   braced = 0;
+        int braced = 0;
         if (*in == '{') { braced = 1; in++; }
         while (*in && n + 1 < VAR_NAME_MAX) {
             char c = *in;
             int ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
                      (c >= '0' && c <= '9') || c == '_';
             if (!ok) break;
-            name[n++] = c;
-            in++;
+            name[n++] = c; in++;
         }
         name[n] = '\0';
         if (braced && *in == '}') in++;
-        if (n == 0) {
-            /* Lone `$` -- pass through. */
-            if (o + 1 < outsz) out[o++] = '$';
-            continue;
-        }
+        if (n == 0) { if (o + 1 < outsz) out[o++] = '$'; continue; }
         const char *v = var_get(name);
         if (v) for (unsigned int j = 0; v[j] && o + 1 < outsz; j++) out[o++] = v[j];
     }
     out[o] = '\0';
 }
 
-/* Detect a standalone assignment: `NAME=...` with NAME a valid identifier.
- * Returns pointer to the `=` sign, or NULL if not an assignment. */
+/* Detect a standalone `NAME=...` assignment.  Returns the '=' pointer. */
 static const char *assign_eq(const char *line)
 {
     if (!line || !*line) return (const char *)0;
     const char *p = line;
-    /* First char: letter or _ */
     if (!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || *p == '_'))
         return (const char *)0;
     p++;
     while (*p && *p != '=' && *p != ' ' && *p != '\t') {
         char c = *p;
         if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-              (c >= '0' && c <= '9') || c == '_'))
-            return (const char *)0;
+              (c >= '0' && c <= '9') || c == '_')) return (const char *)0;
         p++;
     }
-    if (*p != '=') return (const char *)0;
-    return p;
+    return *p == '=' ? p : (const char *)0;
 }
 
-/* ---------- history (ring buffer, newest-first navigation) ---------- */
+/* ---------- history ---------- */
 
 static char         g_hist[HIST_MAX][LINE_MAX];
-static unsigned int g_hist_count = 0;   /* 0..HIST_MAX             */
-static unsigned int g_hist_head  = 0;   /* index of next insertion */
+static unsigned int g_hist_count = 0;
+static unsigned int g_hist_head  = 0;
 
-/* hist_get(i): i=0 newest, i=g_hist_count-1 oldest, NULL out-of-range. */
 static const char *hist_get(unsigned int i)
 {
     if (i >= g_hist_count) return (const char *)0;
     unsigned int idx = (g_hist_head + HIST_MAX - 1 - i) % HIST_MAX;
     return g_hist[idx];
 }
-
 static void hist_push(const char *s)
 {
     unsigned int n = s_len(s);
     if (n == 0) return;
-    /* Skip immediate duplicate (so ↑ doesn't show the same line twice). */
     const char *latest = hist_get(0);
     if (latest && s_eq(latest, s)) return;
     if (n >= LINE_MAX) n = LINE_MAX - 1;
@@ -262,116 +228,272 @@ static void hist_push(const char *s)
     if (g_hist_count < HIST_MAX) g_hist_count++;
 }
 
-/* ---------- inline-edit readline ---------- */
+/* ---------- tab completion (zsh cycle) ---------- */
 
-/* readline: print prompt, edit a line in raw mode, return its length
- * (NUL-terminated in `buf`).  Returns -1 on Ctrl-D at empty line
- * (caller treats as EOF) or -2 on Ctrl-C (caller treats as aborted
- * line -- discard and reprompt). */
+/* Identify the start of the rightmost path component in `buf`. */
+static unsigned int rightmost_token_start(const char *buf, unsigned int len)
+{
+    unsigned int s = len;
+    while (s > 0) {
+        char c = buf[s - 1];
+        if (c == ' ' || c == '\t') break;
+        s--;
+    }
+    return s;
+}
+
+/* Split <prefix>/<name-prefix> from a path-like token.  Out: dir gets
+ * everything up to and including the last '/' (or empty for bare names),
+ * leaf gets what's after.  cwd is used when token has no '/'. */
+static void split_path_token(const char *token, char *dir, unsigned int dirsz,
+                             const char *cwd, char *leaf, unsigned int leafsz)
+{
+    const char *slash = (const char *)0;
+    for (const char *p = token; *p; p++) if (*p == '/') slash = p;
+    if (slash) {
+        unsigned int dl = (unsigned int)(slash - token) + 1;  /* include slash */
+        if (dl >= dirsz) dl = dirsz - 1;
+        unsigned int i;
+        for (i = 0; i < dl; i++) dir[i] = token[i];
+        dir[i] = '\0';
+        s_copy(leaf, slash + 1, leafsz);
+    } else {
+        s_copy(dir, cwd, dirsz);
+        s_copy(leaf, token, leafsz);
+    }
+}
+
+/* Resolve a relative `dir` against cwd.  Output absolute path. */
+static void resolve_abs(const char *dir, char *out, unsigned int outsz)
+{
+    if (!dir || !*dir) { s_copy(out, "/", outsz); return; }
+    if (dir[0] == '/') { s_copy(out, dir, outsz); return; }
+    char cwd[VFS_PATH_MAX];
+    if (sys_getcwd(cwd, sizeof(cwd)) < 0) cwd[0] = '/', cwd[1] = '\0';
+    unsigned int cl = s_len(cwd);
+    unsigned int o = 0;
+    for (unsigned int i = 0; i < cl && o + 1 < outsz; i++) out[o++] = cwd[i];
+    if (o > 0 && out[o - 1] != '/' && o + 1 < outsz) out[o++] = '/';
+    for (unsigned int i = 0; dir[i] && o + 1 < outsz; i++) out[o++] = dir[i];
+    out[o] = '\0';
+}
+
+#define TAB_MAX  32
+
+typedef struct {
+    char name[64];
+    int  is_dir;
+} tab_match_t;
+
+/* Enumerate matches for `leaf` inside `abs_dir` via sys_readdir.  Returns
+ * count (capped at TAB_MAX). */
+static int tab_collect(const char *abs_dir, const char *leaf,
+                       tab_match_t *out)
+{
+    int n = 0;
+    unsigned int leaf_len = s_len(leaf);
+    struct dirent de;
+    for (unsigned int idx = 0; n < TAB_MAX; idx++) {
+        int rc = sys_readdir(abs_dir, idx, &de);
+        if (rc < 0) break;
+        if (de.d_name[0] == '\0') continue;
+        if (de.d_name[0] == '.' && leaf[0] != '.') continue;  /* hide dotfiles */
+        if (leaf_len > 0) {
+            int match = 1;
+            for (unsigned int j = 0; j < leaf_len; j++)
+                if (de.d_name[j] != leaf[j]) { match = 0; break; }
+            if (!match) continue;
+        }
+        s_copy(out[n].name, de.d_name, sizeof(out[n].name));
+        out[n].is_dir = (de.d_type == DT_DIR);
+        n++;
+    }
+    return n;
+}
+
+/* Longest common prefix of n matches (writes NUL-terminated `out`). */
+static unsigned int tab_lcp(const tab_match_t *m, int n, char *out, unsigned int outsz)
+{
+    if (n <= 0) { if (outsz) out[0] = '\0'; return 0; }
+    unsigned int p = 0;
+    for (;; p++) {
+        char c = m[0].name[p];
+        if (c == '\0') break;
+        for (int i = 1; i < n; i++)
+            if (m[i].name[p] != c) goto done;
+    }
+done:
+    if (p >= outsz) p = outsz - 1;
+    for (unsigned int i = 0; i < p; i++) out[i] = m[0].name[i];
+    out[p] = '\0';
+    return p;
+}
+
+/* ---------- readline with tab cycle ---------- */
+
+/* readline result: 0+ = length, -1 = EOF/Ctrl-D, -2 = Ctrl-C aborted. */
 static int readline(const char *prompt, char *buf)
 {
     put_s(prompt);
 
     unsigned int len = 0;
     unsigned int cur = 0;
-    int          hist_idx = -1;      /* -1 = editing fresh buffer */
-    char         saved[LINE_MAX];    /* snapshot before history nav */
+    int          hist_idx = -1;
+    char         saved[LINE_MAX];
     saved[0] = '\0';
     unsigned int saved_len = 0;
+
+    /* Tab-cycle state: when active, repeated Tabs cycle tc_matches. */
+    int          tc_active = 0;
+    tab_match_t  tc_m[TAB_MAX];
+    int          tc_n = 0;
+    int          tc_idx = 0;
+    unsigned int tc_token_start = 0;   /* offset of completing component in buf */
+    unsigned int tc_committed_len = 0; /* length committed pre-cycle */
 
     for (;;) {
         int c = sys_getkey();
         if (c < 0) continue;
         unsigned char ch = (unsigned char)c;
 
-        if (ch == '\n' || ch == '\r') {
-            put_c('\n');
-            buf[len] = '\0';
-            return (int)len;
-        }
-        if (ch == 0x03) {                       /* Ctrl-C */
-            put_s("^C\n");
-            buf[0] = '\0';
-            return -2;
-        }
-        if (ch == 0x04) {                       /* Ctrl-D */
-            if (len == 0) return -1;
-            continue;
-        }
-        if (ch == 0x08 || ch == 0x7F) {         /* Backspace */
+        /* Any non-Tab key commits the in-progress cycle. */
+        if (tc_active && ch != '\t') tc_active = 0;
+
+        if (ch == '\n' || ch == '\r') { put_c('\n'); buf[len] = '\0'; return (int)len; }
+        if (ch == 0x03) { put_s("^C\n"); buf[0] = '\0'; return -2; }
+        if (ch == 0x04) { if (len == 0) return -1; continue; }
+        if (ch == 0x08 || ch == 0x7F) {
             if (cur == 0) continue;
-            /* Delete char before cursor; shift tail left. */
             for (unsigned int i = cur - 1; i + 1 < len; i++) buf[i] = buf[i + 1];
-            len--;
-            cur--;
-            /* Visual: back one, redraw tail + space, back (len-cur+1). */
+            len--; cur--;
             put_c('\b');
             if (len > cur) sys_write(1, &buf[cur], len - cur);
             put_c(' ');
             for (unsigned int i = 0; i <= len - cur; i++) put_c('\b');
             continue;
         }
-        if (ch == KEY_ARROW_LEFT) {
-            if (cur > 0) { put_c('\b'); cur--; }
-            continue;
-        }
-        if (ch == KEY_ARROW_RIGHT) {
-            if (cur < len) { put_c(buf[cur]); cur++; }
-            continue;
-        }
+        if (ch == KEY_ARROW_LEFT)  { if (cur > 0)   { put_c('\b'); cur--; } continue; }
+        if (ch == KEY_ARROW_RIGHT) { if (cur < len) { put_c(buf[cur]); cur++; } continue; }
         if (ch == KEY_ARROW_UP || ch == KEY_ARROW_DOWN) {
             int new_idx;
             if (ch == KEY_ARROW_UP) {
                 new_idx = (hist_idx < 0) ? 0 : hist_idx + 1;
                 if ((unsigned int)new_idx >= g_hist_count) continue;
                 if (hist_idx < 0) {
-                    /* Leaving fresh buffer: snapshot it. */
                     for (unsigned int i = 0; i < len; i++) saved[i] = buf[i];
                     saved[len] = '\0';
                     saved_len = len;
                 }
             } else {
-                if (hist_idx < 0) continue;     /* already at newest/fresh */
+                if (hist_idx < 0) continue;
                 new_idx = hist_idx - 1;
             }
-            /* Wipe current text: back to start, overwrite with spaces, back. */
             for (unsigned int i = 0; i < cur; i++) put_c('\b');
             for (unsigned int i = 0; i < len; i++) put_c(' ');
             for (unsigned int i = 0; i < len; i++) put_c('\b');
-            /* Load new contents from history or saved buffer. */
-            const char *src;
-            unsigned int n;
+            const char *src; unsigned int n;
             if (new_idx < 0) { src = saved; n = saved_len; }
-            else {
-                src = hist_get((unsigned int)new_idx);
-                n = src ? s_len(src) : 0;
-            }
+            else { src = hist_get((unsigned int)new_idx); n = src ? s_len(src) : 0; }
             if (n >= LINE_MAX) n = LINE_MAX - 1;
             for (unsigned int i = 0; i < n; i++) buf[i] = src[i];
             buf[n] = '\0';
-            len = n;
-            cur = n;
+            len = n; cur = n;
             if (len > 0) sys_write(1, buf, len);
             hist_idx = new_idx;
             continue;
         }
-        /* Printable ASCII only -- drop other control bytes + sentinels. */
+
+        /* ---- Tab completion ---- */
+        if (ch == '\t') {
+            /* Only complete at end-of-line (matches kernel shell). */
+            if (cur != len) continue;
+
+            if (tc_active && tc_n > 1) {
+                /* Cycle: erase current candidate, draw next. */
+                tc_idx = (tc_idx + 1) % tc_n;
+                while (len > tc_committed_len) { put_c('\b'); put_c(' '); put_c('\b'); len--; cur--; }
+                const char *m = tc_m[tc_idx].name;
+                unsigned int ml = s_len(m);
+                /* Skip the part already in buf (committed_len - token_start) */
+                unsigned int already = tc_committed_len - tc_token_start;
+                for (unsigned int i = already; i < ml && len < LINE_MAX - 1; i++) {
+                    buf[len++] = m[i]; put_c(m[i]); cur = len;
+                }
+                if (tc_m[tc_idx].is_dir && len < LINE_MAX - 1) {
+                    buf[len++] = '/'; put_c('/'); cur = len;
+                } else if (!tc_m[tc_idx].is_dir && len < LINE_MAX - 1) {
+                    /* No trailing space on cycle so user can keep tabbing */
+                }
+                continue;
+            }
+
+            /* First Tab: collect matches. */
+            unsigned int ts = rightmost_token_start(buf, len);
+            char token[VFS_PATH_MAX];
+            unsigned int tlen = len - ts;
+            if (tlen >= sizeof(token)) tlen = sizeof(token) - 1;
+            for (unsigned int i = 0; i < tlen; i++) token[i] = buf[ts + i];
+            token[tlen] = '\0';
+
+            char cwd[VFS_PATH_MAX];
+            if (sys_getcwd(cwd, sizeof(cwd)) < 0) { cwd[0] = '/'; cwd[1] = '\0'; }
+
+            char dir[VFS_PATH_MAX], leaf[VFS_PATH_MAX], abs_dir[VFS_PATH_MAX];
+            split_path_token(token, dir, sizeof(dir), cwd, leaf, sizeof(leaf));
+            resolve_abs(dir, abs_dir, sizeof(abs_dir));
+
+            tc_n = tab_collect(abs_dir, leaf, tc_m);
+            if (tc_n == 0) continue;
+
+            char lcp[VFS_PATH_MAX];
+            unsigned int lcp_len = tab_lcp(tc_m, tc_n, lcp, sizeof(lcp));
+
+            /* Extend buf to LCP. */
+            unsigned int leaf_len = s_len(leaf);
+            if (lcp_len > leaf_len) {
+                for (unsigned int i = leaf_len; i < lcp_len && len < LINE_MAX - 1; i++) {
+                    buf[len++] = lcp[i]; put_c(lcp[i]); cur = len;
+                }
+            }
+
+            if (tc_n == 1) {
+                if (tc_m[0].is_dir && len < LINE_MAX - 1) { buf[len++] = '/'; put_c('/'); cur = len; }
+                else if (len < LINE_MAX - 1)              { buf[len++] = ' '; put_c(' '); cur = len; }
+                tc_active = 0;
+            } else if (lcp_len == leaf_len) {
+                /* Already at LCP -- start cycling. */
+                tc_active = 1; tc_idx = 0;
+                tc_token_start = ts;
+                tc_committed_len = len;
+                /* Show the first candidate immediately. */
+                const char *m0 = tc_m[0].name;
+                unsigned int ml = s_len(m0);
+                unsigned int already = tc_committed_len - tc_token_start;
+                for (unsigned int i = already; i < ml && len < LINE_MAX - 1; i++) {
+                    buf[len++] = m0[i]; put_c(m0[i]); cur = len;
+                }
+                if (tc_m[0].is_dir && len < LINE_MAX - 1) {
+                    buf[len++] = '/'; put_c('/'); cur = len;
+                }
+            } else {
+                /* Extended to LCP; user may Tab again to enter cycle. */
+                tc_active = 0;
+            }
+            continue;
+        }
+
         if (ch < 0x20 || ch >= 0x80) continue;
         if (len >= LINE_MAX - 1) continue;
-        /* Insert at cursor: shift tail right, write, redraw tail. */
         for (unsigned int i = len; i > cur; i--) buf[i] = buf[i - 1];
-        buf[cur] = (char)ch;
-        len++;
-        cur++;
+        buf[cur] = (char)ch; len++; cur++;
         sys_write(1, &buf[cur - 1], len - (cur - 1));
         for (unsigned int i = 0; i < len - cur; i++) put_c('\b');
     }
 }
 
-/* ---------- tokenizer ---------- */
+/* ---------- tokenizer + glob ---------- */
 
-/* Split `line` in-place on ASCII whitespace.  Writes pointer-to-token
- * into argv[0..]; appends NULL.  Returns argc. */
+/* split `line` in-place on whitespace.  argv[0..argc-1] = tokens. */
 static int tokenize(char *line, char **argv)
 {
     int argc = 0;
@@ -387,131 +509,352 @@ static int tokenize(char *line, char **argv)
     return argc;
 }
 
+static int has_glob_char(const char *s)
+{
+    for (const char *p = s; *p; p++) if (*p == '*' || *p == '?') return 1;
+    return 0;
+}
+
+/* fnmatch-lite: ? matches one, * matches any.  No bracket sets. */
+static int glob_match(const char *pat, const char *s)
+{
+    while (*pat) {
+        if (*pat == '*') {
+            while (*pat == '*') pat++;
+            if (!*pat) return 1;
+            while (*s) { if (glob_match(pat, s)) return 1; s++; }
+            return 0;
+        }
+        if (!*s) return 0;
+        if (*pat != '?' && *pat != *s) return 0;
+        pat++; s++;
+    }
+    return !*s;
+}
+
+/* Expand any tokens containing globs against the cwd.  Returns new argc.
+ * Storage backs all expanded names; caller provides a scratch buffer. */
+static int expand_globs(int argc, char **argv, int cap,
+                        char *storage, unsigned int storage_size)
+{
+    char *sp = storage;
+    char *sp_end = storage + storage_size;
+    int out_argc = 0;
+    char *new_argv[MAX_ARGS];
+
+    char cwd[VFS_PATH_MAX];
+    if (sys_getcwd(cwd, sizeof(cwd)) < 0) { cwd[0] = '/'; cwd[1] = '\0'; }
+
+    for (int i = 0; i < argc; i++) {
+        if (!has_glob_char(argv[i])) {
+            if (out_argc < cap - 1) new_argv[out_argc++] = argv[i];
+            continue;
+        }
+        /* Pattern is glob against cwd (no slashes supported in this slice). */
+        struct dirent de;
+        int matched_any = 0;
+        for (unsigned int idx = 0; out_argc < cap - 1; idx++) {
+            int rc = sys_readdir(cwd, idx, &de);
+            if (rc < 0) break;
+            if (de.d_name[0] == '\0') continue;
+            if (de.d_name[0] == '.' && argv[i][0] != '.') continue;
+            if (!glob_match(argv[i], de.d_name)) continue;
+            unsigned int nl = s_len(de.d_name);
+            if (sp + nl + 1 >= sp_end) break;
+            for (unsigned int j = 0; j <= nl; j++) sp[j] = de.d_name[j];
+            new_argv[out_argc++] = sp;
+            sp += nl + 1;
+            matched_any = 1;
+        }
+        if (!matched_any && out_argc < cap - 1) {
+            /* No matches: keep literal (POSIX sh behaviour). */
+            new_argv[out_argc++] = argv[i];
+        }
+    }
+    new_argv[out_argc] = (char *)0;
+    for (int i = 0; i <= out_argc; i++) argv[i] = new_argv[i];
+    return out_argc;
+}
+
+/* ---------- `[` test evaluator ---------- */
+
+/* Strip trailing `]` from argv before evaluating.  Returns 0 = true,
+ * 1 = false, 2 = syntax error (matches POSIX `[`). */
+static int test_eval(int argc, char **argv)
+{
+    /* argv[0] = "[", last must be "]". */
+    if (argc < 2 || !s_eq(argv[argc - 1], "]")) {
+        put_s("[: missing closing ']'\n"); return 2;
+    }
+    int n = argc - 2;  /* drop "[" + "]" */
+    char **a = argv + 1;
+    if (n == 0) return 1;
+    if (n == 1) {
+        return (a[0][0] == '\0') ? 1 : 0;
+    }
+    if (n == 2 && s_eq(a[0], "-z")) return (a[1][0] == '\0') ? 0 : 1;
+    if (n == 2 && s_eq(a[0], "-n")) return (a[1][0] != '\0') ? 0 : 1;
+    if (n == 2 && s_eq(a[0], "!"))  return (a[1][0] == '\0') ? 0 : 1;
+    if (n == 3) {
+        const char *op = a[1];
+        if (s_eq(op, "=") || s_eq(op, "=="))  return s_eq(a[0], a[2]) ? 0 : 1;
+        if (s_eq(op, "!="))                   return s_eq(a[0], a[2]) ? 1 : 0;
+        /* Integer comparisons. */
+        int aok = 1, bok = 1;
+        for (const char *p = a[0]; *p; p++)
+            if (!((p == a[0] && *p == '-') || (*p >= '0' && *p <= '9'))) { aok = 0; break; }
+        for (const char *p = a[2]; *p; p++)
+            if (!((p == a[2] && *p == '-') || (*p >= '0' && *p <= '9'))) { bok = 0; break; }
+        if (!aok || !bok) { put_s("[: integer expected\n"); return 2; }
+        int la = s_atoi(a[0]), lb = s_atoi(a[2]);
+        if (s_eq(op, "-eq")) return (la == lb) ? 0 : 1;
+        if (s_eq(op, "-ne")) return (la != lb) ? 0 : 1;
+        if (s_eq(op, "-lt")) return (la <  lb) ? 0 : 1;
+        if (s_eq(op, "-le")) return (la <= lb) ? 0 : 1;
+        if (s_eq(op, "-gt")) return (la >  lb) ? 0 : 1;
+        if (s_eq(op, "-ge")) return (la >= lb) ? 0 : 1;
+    }
+    put_s("[: bad expression\n");
+    return 2;
+}
+
+/* ---------- forward decls ---------- */
+
+static int run_line(const char *raw, int *should_exit, int *exit_status);
+static int run_script_buf(const char *src);
+static int try_exec_path(const char *path, char **argv, int *out_status);
+
+/* ---------- admin command bareword routing ---------- */
+
+/* Returns 1 if argv[0] was an admin command (and was handled). */
+static int run_admin(int argc, char **argv)
+{
+    const char *cmd = argv[0];
+    if (s_eq(cmd, "shutdown"))     { sys_shutdown(); return 1; }
+    if (s_eq(cmd, "reboot"))       { sys_reboot();   return 1; }
+    if (s_eq(cmd, "eject"))        { g_last_status = sys_eject() ? 1 : 0; return 1; }
+    if (s_eq(cmd, "setmode")) {
+        int rc = sys_setmode(argc >= 2 ? argv[1] : (const char *)0);
+        g_last_status = rc < 0 ? 1 : 0; return 1;
+    }
+    if (s_eq(cmd, "fgcol")) {
+        int rc = sys_fgcol(argc >= 2 ? argv[1] : (const char *)0);
+        g_last_status = rc < 0 ? 1 : 0; return 1;
+    }
+    if (s_eq(cmd, "bgcol")) {
+        int rc = sys_bgcol(argc >= 2 ? argv[1] : (const char *)0);
+        g_last_status = rc < 0 ? 1 : 0; return 1;
+    }
+    if (s_eq(cmd, "mount")) {
+        int rc = sys_mount(argc >= 2 ? argv[1] : (const char *)0,
+                           argc >= 3 ? argv[2] : (const char *)0);
+        g_last_status = rc < 0 ? 1 : 0; return 1;
+    }
+    if (s_eq(cmd, "umount")) {
+        int rc = sys_umount(argc >= 2 ? argv[1] : (const char *)0);
+        g_last_status = rc < 0 ? 1 : 0; return 1;
+    }
+    if (s_eq(cmd, "mkfs.ext2")) {
+        if (argc < 2) { put_s("Usage: mkfs.ext2 /dev/hdaN\n"); g_last_status = 1; return 1; }
+        int rc = sys_mkfs(argv[1], "ext2"); g_last_status = rc < 0 ? 1 : 0; return 1;
+    }
+    if (s_eq(cmd, "mkfs.fat32")) {
+        if (argc < 2) { put_s("Usage: mkfs.fat32 /dev/hdaN\n"); g_last_status = 1; return 1; }
+        int rc = sys_mkfs(argv[1], "fat32"); g_last_status = rc < 0 ? 1 : 0; return 1;
+    }
+    if (s_eq(cmd, "sched_quantum")) {
+        int new_v = argc >= 2 ? s_atoi(argv[1]) : -1;
+        int rc = sys_sched_quantum(new_v);
+        g_last_status = rc < 0 ? 1 : 0; return 1;
+    }
+    if (s_eq(cmd, "verbose")) {
+        int new_v;
+        if (argc < 2) new_v = -1;
+        else if (s_eq(argv[1], "on"))  new_v = 1;
+        else if (s_eq(argv[1], "off")) new_v = 0;
+        else { put_s("Usage: verbose [on|off]\n"); g_last_status = 1; return 1; }
+        sys_verbose(new_v); g_last_status = 0; return 1;
+    }
+    /* Visible stubs -- not yet wrappable from userspace.  Stable text. */
+    if (s_eq(cmd, "install")    || s_eq(cmd, "chainload") ||
+        s_eq(cmd, "readsector") || s_eq(cmd, "mkpart")    ||
+        s_eq(cmd, "lspart")     || s_eq(cmd, "ktest")) {
+        put_s(cmd); put_s(": not available from userspace yet\n");
+        g_last_status = 1;
+        return 1;
+    }
+    return 0;
+}
+
 /* ---------- builtins ---------- */
 
-/* Returns 1 if `argv[0]` was a builtin (and was handled), 0 otherwise.
- * Sets *exit_status when the shell itself should terminate (exit builtin). */
+/* Returns 1 if handled.  Sets *should_exit when the shell terminates. */
 static int run_builtin(int argc, char **argv, int *should_exit, int *exit_status)
 {
-    if (argc == 0) return 1;  /* empty line: handled (no-op) */
+    if (argc == 0) return 1;
 
     if (s_eq(argv[0], "exit")) {
-        *should_exit = 1;
         *exit_status = (argc > 1) ? s_atoi(argv[1]) : 0;
+        if (g_login) {
+            put_s("sh: cannot exit a login shell -- use `shutdown` or `reboot`\n");
+            return 1;
+        }
+        *should_exit = 1;
         return 1;
     }
     if (s_eq(argv[0], "cd")) {
         const char *target = (argc > 1) ? argv[1] : "/";
         if (sys_chdir(target) != 0) {
-            put_s("cd: ");
-            put_s(target);
-            put_s(": no such directory\n");
-        }
+            put_s("cd: "); put_s(target); put_s(": no such directory\n");
+            g_last_status = 1;
+        } else g_last_status = 0;
         return 1;
     }
     if (s_eq(argv[0], "pwd")) {
-        char buf[256];
+        char buf[VFS_PATH_MAX];
         int n = sys_getcwd(buf, sizeof(buf));
-        if (n < 0) put_s("pwd: error\n");
-        else { put_s(buf); put_c('\n'); }
+        if (n < 0) { put_s("pwd: error\n"); g_last_status = 1; }
+        else       { put_s(buf); put_c('\n'); g_last_status = 0; }
         return 1;
     }
     if (s_eq(argv[0], "env")) {
-        /* Dump table -- one NAME=value per line.  Mirrors the kernel
-         * sh_script.c `env` builtin. */
         for (unsigned int i = 0; i < g_var_count; i++) {
-            put_s(g_vars[i].name);
-            put_c('=');
-            put_s(g_vars[i].val);
-            put_c('\n');
+            put_s(g_vars[i].name); put_c('='); put_s(g_vars[i].val); put_c('\n');
         }
+        g_last_status = 0;
         return 1;
     }
     if (s_eq(argv[0], "unset")) {
         for (int i = 1; i < argc; i++) var_unset(argv[i]);
+        g_last_status = 0;
         return 1;
     }
     if (s_eq(argv[0], "read")) {
-        if (argc < 2) { put_s("read: missing variable name\n"); return 1; }
-        if (!var_name_ok(argv[1])) { put_s("read: invalid name\n"); return 1; }
+        if (argc < 2) { put_s("read: missing variable name\n"); g_last_status = 1; return 1; }
+        if (!var_name_ok(argv[1])) { put_s("read: invalid name\n"); g_last_status = 1; return 1; }
         char buf[LINE_MAX];
-        int n = readline("", buf);   /* no prompt -- caller's responsibility */
-        if (n < 0) { var_set(argv[1], ""); return 1; }
+        int n = readline("", buf);
+        if (n < 0) { var_set(argv[1], ""); g_last_status = 1; return 1; }
         var_set(argv[1], buf);
+        g_last_status = 0;
+        return 1;
+    }
+    if (s_eq(argv[0], "true"))  { g_last_status = 0; return 1; }
+    if (s_eq(argv[0], "false")) { g_last_status = 1; return 1; }
+    if (s_eq(argv[0], "sleep")) {
+        if (argc < 2) { put_s("Usage: sleep <seconds>\n"); g_last_status = 1; return 1; }
+        int secs = s_atoi(argv[1]);
+        unsigned int start = sys_uptime();
+        unsigned int target = start + (unsigned int)secs * 100u;  /* 100Hz */
+        while (sys_uptime() < target) sys_yield();
+        g_last_status = 0;
+        return 1;
+    }
+    if (s_eq(argv[0], "[")) {
+        g_last_status = test_eval(argc, argv);
+        return 1;
+    }
+    if (s_eq(argv[0], "history")) {
+        for (unsigned int i = g_hist_count; i > 0; i--) {
+            const char *h = hist_get(i - 1);
+            char num[12]; status_str(num, (int)(g_hist_count - i + 1));
+            put_s(num); put_c(' '); put_s(h); put_c('\n');
+        }
+        g_last_status = 0;
+        return 1;
+    }
+    if (s_eq(argv[0], "hostname")) {
+        put_s(g_hostname); put_c('\n');
+        g_last_status = 0;
+        return 1;
+    }
+    if (s_eq(argv[0], "clear")) {
+        sys_shell_clear(); g_last_status = 0; return 1;
+    }
+    if (s_eq(argv[0], "exec")) {
+        /* exec PATH [args...] -- run ELF and wait, matching the
+         * kernel shell's `exec` semantics (NOT POSIX exec, which
+         * would replace the shell process).  Keeps existing UI test
+         * scenarios and operator muscle memory working.  See
+         * docs/plans/posix-shell.md for the POSIX-exec follow-up. */
+        if (argc < 2) { put_s("exec: missing path\n"); g_last_status = 1; return 1; }
+        char *child_argv[MAX_ARGS];
+        int   cac = 0;
+        for (int i = 1; i < argc && cac < MAX_ARGS - 1; i++) child_argv[cac++] = argv[i];
+        child_argv[cac] = (char *)0;
+        int status = 0;
+        if (try_exec_path(child_argv[0], child_argv, &status)) {
+            g_last_status = status;
+        } else {
+            put_s("exec: "); put_s(argv[1]); put_s(": not found\n");
+            g_last_status = 127;
+        }
+        return 1;
+    }
+    if (s_eq(argv[0], "sh") || s_eq(argv[0], ".")) {
+        if (argc < 2) { put_s("sh: missing script path\n"); g_last_status = 1; return 1; }
+        char *buf = (char *)0;
+        int fd = sys_open(argv[1], O_RDONLY);
+        if (fd < 0) { put_s("sh: cannot open "); put_s(argv[1]); put_c('\n'); g_last_status = 1; return 1; }
+        struct stat st;
+        if (sys_fstat(fd, &st) < 0 || st.st_size == 0) { sys_close(fd); g_last_status = 1; return 1; }
+        /* Stack-buffer for small scripts (most are <16k). */
+        static char script_buf[16384];
+        unsigned int cap = sizeof(script_buf) - 1;
+        unsigned int n = st.st_size > cap ? cap : st.st_size;
+        int rd = sys_read(fd, script_buf, n);
+        sys_close(fd);
+        if (rd <= 0) { g_last_status = 1; return 1; }
+        script_buf[rd] = '\0';
+        buf = script_buf;
+        g_last_status = run_script_buf(buf);
         return 1;
     }
     return 0;
 }
 
-/* ---------- external command dispatch ---------- */
+/* ---------- external command dispatch (PATH + makbox) ---------- */
 
-/* makbox multicall applets.  Bare command names matching this list are
- * routed via /apps/makbox.elf <applet> <args...> -- same restricted
- * fallback as the kernel shell (only real applet names get the auto-
- * route, typos hit "Unknown command").  Keep in sync with shell.c's
- * MAKBOX_APPLETS table. */
 static int is_makbox_applet(const char *name)
 {
     static const char *applets[] = {
         "ls", "cat", "cp", "mv", "rm", "rmdir", "echo", "pwd", (const char *)0
     };
-    for (int i = 0; applets[i]; i++)
-        if (s_eq(name, applets[i])) return 1;
+    for (int i = 0; applets[i]; i++) if (s_eq(name, applets[i])) return 1;
     return 0;
 }
-
-/* True if argv[0] looks like a path (absolute or relative): starts with
- * '/' or './'.  Kernel shell behaviour -- path-style argv[0]s skip both
- * the PATH walk and the makbox rewrite (the user explicitly named a
- * file; bareword fallbacks would be confusing). */
 static int looks_like_path(const char *s)
 {
-    if (s[0] == '/') return 1;
-    if (s[0] == '.' && s[1] == '/') return 1;
-    return 0;
+    return s[0] == '/' || (s[0] == '.' && s[1] == '/');
 }
-
-/* sys_stat probe: 1 if `path` resolves to a node, 0 otherwise. */
 static int path_exists(const char *path)
 {
-    struct stat st;
-    return sys_stat(path, &st) == 0;
+    struct stat st; return sys_stat(path, &st) == 0;
 }
-
-/* spawn(): fork + execve + wait4, returns child status (low 7 bits). */
 static int spawn(const char *path, char **argv)
 {
     int pid = sys_fork();
     if (pid < 0) { put_s("sh: fork failed\n"); return 1; }
     if (pid == 0) {
         sys_execve(path, argv, (char *const *)0);
-        sys_exit(127);   /* execve only returns on failure */
+        sys_exit(127);
     }
     int status = 0;
     sys_wait4(pid, &status, 0);
     return status & 0x7F;
 }
-
-/* Try to exec at `path`; if missing, retry with ".elf" appended.
- * Returns 1 (and writes status into *out_status) if a binary was
- * actually spawned; 0 if neither path existed. */
 static int try_exec_path(const char *path, char **argv, int *out_status)
 {
     if (path_exists(path)) { *out_status = spawn(path, argv); return 1; }
-    char with_ext[VFS_PATH_MAX];
+    char wext[VFS_PATH_MAX];
     unsigned int plen = s_len(path);
     if (plen + 5 >= VFS_PATH_MAX) return 0;
     unsigned int i;
-    for (i = 0; i < plen; i++) with_ext[i] = path[i];
-    with_ext[i++] = '.'; with_ext[i++] = 'e';
-    with_ext[i++] = 'l'; with_ext[i++] = 'f'; with_ext[i]   = '\0';
-    if (path_exists(with_ext)) { *out_status = spawn(with_ext, argv); return 1; }
+    for (i = 0; i < plen; i++) wext[i] = path[i];
+    wext[i++] = '.'; wext[i++] = 'e'; wext[i++] = 'l'; wext[i++] = 'f'; wext[i] = '\0';
+    if (path_exists(wext)) { *out_status = spawn(wext, argv); return 1; }
     return 0;
 }
-
-/* Yield the p-th colon-separated directory of $PATH into `out`
- * (NUL-terminated, always trailing /).  Returns 1 on success, 0 once
- * all directories have been visited. */
 static int shell_path_dir(int p, char *out, unsigned int outsz)
 {
     const char *path = var_get("PATH");
@@ -535,47 +878,32 @@ static int shell_path_dir(int p, char *out, unsigned int outsz)
     }
     return 0;
 }
-
-/* Returns the child's exit status (or 127 on "Unknown command", 1 on
- * fork failure) so the caller can stash it into $?.  Mirrors the
- * kernel shell's shell_dispatch_argv() ELF + makbox + PATH + nosuchcmd
- * cascade -- builtins are handled upstream in run_builtin(). */
 static int run_external(int argc, char **argv)
 {
     (void)argc;
     int status = 0;
-
-    /* 1. Path-style: try /abs[.elf] or ./rel[.elf].  Never falls back
-     *    to PATH or makbox -- user named a path explicitly. */
     if (looks_like_path(argv[0])) {
         if (try_exec_path(argv[0], argv, &status)) return status;
         put_s("Unknown command '"); put_s(argv[0]); put_s("' - try 'lsman'.\n");
         return 127;
     }
-
-    /* 2. Bareword: walk $PATH, trying <dir>/<cmd>[.elf]. */
-    char dir_buf[VFS_PATH_MAX];
-    char path_buf[VFS_PATH_MAX];
+    char dir_buf[VFS_PATH_MAX], path_buf[VFS_PATH_MAX];
     for (int p = 0; shell_path_dir(p, dir_buf, sizeof(dir_buf)); p++) {
         unsigned int dl = s_len(dir_buf);
         unsigned int nl = s_len(argv[0]);
         if (dl + nl + 1 >= VFS_PATH_MAX) continue;
         unsigned int i;
         for (i = 0; i < dl; i++) path_buf[i] = dir_buf[i];
-        unsigned int j;
-        for (j = 0; j < nl; j++) path_buf[dl + j] = argv[0][j];
+        for (unsigned int j = 0; j < nl; j++) path_buf[dl + j] = argv[0][j];
         path_buf[dl + nl] = '\0';
         if (try_exec_path(path_buf, argv, &status)) return status;
     }
-
-    /* 3. Restricted makbox fallback for known applet barewords. */
     if (is_makbox_applet(argv[0])) {
         static char makbox_argv0[] = "makbox";
         char *new_argv[MAX_ARGS + 1];
         int new_argc = 0;
         new_argv[new_argc++] = makbox_argv0;
-        for (int i = 0; i < argc && new_argc < MAX_ARGS; i++)
-            new_argv[new_argc++] = argv[i];
+        for (int i = 0; i < argc && new_argc < MAX_ARGS; i++) new_argv[new_argc++] = argv[i];
         new_argv[new_argc] = (char *)0;
         for (int p = 0; shell_path_dir(p, dir_buf, sizeof(dir_buf)); p++) {
             unsigned int dl = s_len(dir_buf);
@@ -587,82 +915,349 @@ static int run_external(int argc, char **argv)
             if (try_exec_path(path_buf, new_argv, &status)) return status;
         }
     }
-
-    /* 4. Nothing matched: same message shape as kernel shell. */
-    put_s("Unknown command '");
-    put_s(argv[0]);
-    put_s("' - try 'lsman'.\n");
+    put_s("Unknown command '"); put_s(argv[0]); put_s("' - try 'lsman'.\n");
     return 127;
+}
+
+/* ---------- single-line dispatch ---------- */
+
+static int run_line(const char *raw, int *should_exit, int *exit_status)
+{
+    /* Strip leading whitespace + skip comments / empty lines. */
+    while (*raw == ' ' || *raw == '\t') raw++;
+    if (*raw == '\0' || *raw == '#') return 0;
+
+    /* Standalone assignment: NAME=VAL */
+    const char *eq = assign_eq(raw);
+    if (eq) {
+        char name[VAR_NAME_MAX];
+        int nlen = (int)(eq - raw);
+        if (nlen >= VAR_NAME_MAX) nlen = VAR_NAME_MAX - 1;
+        for (int i = 0; i < nlen; i++) name[i] = raw[i];
+        name[nlen] = '\0';
+        char val_expanded[VAR_VAL_MAX];
+        expand(eq + 1, val_expanded, sizeof(val_expanded));
+        g_last_status = (var_set(name, val_expanded) == 0) ? 0 : 1;
+        return 0;
+    }
+
+    /* Expand $VAR/$? across the whole line, then tokenize. */
+    char expanded[LINE_MAX];
+    expand(raw, expanded, sizeof(expanded));
+    char dispatch[LINE_MAX];
+    s_copy(dispatch, expanded, sizeof(dispatch));
+
+    char *args[MAX_ARGS];
+    int ac = tokenize(dispatch, args);
+    if (ac == 0) return 0;
+
+    /* Glob expansion (storage in static scratch). */
+    static char glob_storage[2048];
+    ac = expand_globs(ac, args, MAX_ARGS, glob_storage, sizeof(glob_storage));
+
+    if (run_builtin(ac, args, should_exit, exit_status)) return 0;
+    if (run_admin(ac, args)) return 0;
+    g_last_status = run_external(ac, args);
+    return 0;
+}
+
+/* ---------- script (multi-line) interpreter ----------
+ *
+ * Splits source into statements on `;` or newlines.  Recognises
+ *   if COND; then BODY [; elif COND; then BODY] [; else BODY] ; fi
+ *   while COND; do BODY ; done
+ *   for VAR in WORDS; do BODY ; done
+ * Bodies may contain multiple `;`-separated statements.  No nested
+ * if-inside-if support yet (rare in shell scripts; user can structure
+ * around it).  Returns final $? value. */
+
+/* Statement boundary scan: walks until matching `;` or newline at depth 0
+ * (we don't have real expression nesting, so depth tracking is symbolic
+ * for if/done/fi -- this implementation is single-level).  Returns one
+ * past the terminator. */
+
+/* Read one logical line ending at ; or \n; copy into `out` minus the
+ * delimiter; returns pointer past the delim, or NULL at end-of-source. */
+static const char *next_statement(const char *src, char *out, unsigned int outsz)
+{
+    while (*src == ' ' || *src == '\t' || *src == '\n' || *src == ';') src++;
+    if (*src == '\0') return (const char *)0;
+    unsigned int o = 0;
+    while (*src && *src != '\n' && *src != ';' && o + 1 < outsz) {
+        if (*src == '#') { while (*src && *src != '\n') src++; break; }
+        out[o++] = *src++;
+    }
+    /* Trim trailing whitespace. */
+    while (o > 0 && (out[o - 1] == ' ' || out[o - 1] == '\t')) o--;
+    out[o] = '\0';
+    while (*src == ';' || *src == '\n' || *src == ' ' || *src == '\t') src++;
+    return src;
+}
+
+/* Parser context: we read statements one by one and dispatch.  for/if/
+ * while consume their body statements until they see fi/done. */
+
+typedef struct { const char *src; } parser_t;
+
+static int run_block_until(parser_t *p, const char *terminator1,
+                           const char *terminator2, const char *terminator3,
+                           int execute);
+
+/* Remembers which terminator (fi/done/elif/else) the most recent
+ * run_block_until() consumed, so the if/elif/else chain handler can
+ * branch on it without re-tokenizing. */
+static char g_last_terminator[32] = "";
+
+/* run_block_until: read statements until one of terminator{1,2,3} (any may
+ * be NULL).  If execute, dispatch each.  Returns 0 if hit terminator,
+ * -1 on unexpected EOF.  Updates p->src past the terminator. */
+static int run_block_until(parser_t *p, const char *t1, const char *t2, const char *t3,
+                           int execute)
+{
+    char stmt[SCRIPT_LINE_MAX];
+    int should_exit = 0, exit_status = 0;
+    for (;;) {
+        const char *next = next_statement(p->src, stmt, sizeof(stmt));
+        if (!next) return -1;
+        p->src = next;
+        if ((t1 && s_eq(stmt, t1)) || (t2 && s_eq(stmt, t2)) || (t3 && s_eq(stmt, t3))) {
+            /* Remember which terminator: caller may distinguish via lookahead.
+             * We stash it via a static (single-threaded interpreter). */
+            s_copy(g_last_terminator, stmt, 32);
+            return 0;
+        }
+        /* Sub-block keywords. */
+        if (s_starts(stmt, "if ")) {
+            int cond = 0;
+            (void)run_line(stmt + 3, &should_exit, &exit_status);
+            cond = (g_last_status == 0);
+            /* Expect `then` next, then body until elif/else/fi. */
+            const char *then_stmt = next_statement(p->src, stmt, sizeof(stmt));
+            if (!then_stmt || !s_eq(stmt, "then")) { put_s("sh: expected 'then'\n"); return -1; }
+            p->src = then_stmt;
+            int branch_taken = cond;
+            int rc = run_block_until(p, "elif", "else", "fi", execute && branch_taken);
+            if (rc < 0) return -1;
+            while (s_eq(g_last_terminator, "elif")) {
+                /* elif COND; then BODY ... */
+                const char *cond_stmt = next_statement(p->src, stmt, sizeof(stmt));
+                if (!cond_stmt) return -1;
+                p->src = cond_stmt;
+                int this_cond = 0;
+                (void)run_line(stmt, &should_exit, &exit_status);
+                this_cond = (g_last_status == 0);
+                const char *then2 = next_statement(p->src, stmt, sizeof(stmt));
+                if (!then2 || !s_eq(stmt, "then")) { put_s("sh: expected 'then'\n"); return -1; }
+                p->src = then2;
+                int take = (!branch_taken) && this_cond;
+                rc = run_block_until(p, "elif", "else", "fi", execute && take);
+                if (rc < 0) return -1;
+                if (take) branch_taken = 1;
+            }
+            if (s_eq(g_last_terminator, "else")) {
+                int take = !branch_taken;
+                rc = run_block_until(p, "fi", (const char *)0, (const char *)0, execute && take);
+                if (rc < 0) return -1;
+            }
+            continue;
+        }
+        if (s_starts(stmt, "while ")) {
+            const char *cond_text_start = p->src;  /* unused; we re-evaluate */
+            (void)cond_text_start;
+            /* We need to be able to re-run cond + body.  Snapshot cond text
+             * (we already have it in stmt), and find the body span. */
+            char cond_line[SCRIPT_LINE_MAX];
+            s_copy(cond_line, stmt + 6, sizeof(cond_line));
+            /* Expect `do`. */
+            const char *do_stmt = next_statement(p->src, stmt, sizeof(stmt));
+            if (!do_stmt || !s_eq(stmt, "do")) { put_s("sh: expected 'do'\n"); return -1; }
+            p->src = do_stmt;
+            const char *body_start = p->src;
+            int entered = 0;
+            for (int iter = 0; iter < 100000; iter++) {
+                (void)run_line(cond_line, &should_exit, &exit_status);
+                if (g_last_status != 0) break;
+                entered = 1;
+                p->src = body_start;
+                int rc = run_block_until(p, "done", (const char *)0, (const char *)0, execute);
+                if (rc < 0) return -1;
+            }
+            if (!entered) {
+                /* Cond was false from the start; still need to consume body. */
+                p->src = body_start;
+                int rc = run_block_until(p, "done", (const char *)0, (const char *)0, 0);
+                if (rc < 0) return -1;
+            }
+            continue;
+        }
+        if (s_starts(stmt, "for ")) {
+            /* for VAR in W1 W2 ... ; do BODY ; done */
+            char head[SCRIPT_LINE_MAX]; s_copy(head, stmt + 4, sizeof(head));
+            char *vname = head;
+            char *p_in = head;
+            while (*p_in && *p_in != ' ' && *p_in != '\t') p_in++;
+            if (*p_in) { *p_in = '\0'; p_in++; }
+            while (*p_in == ' ' || *p_in == '\t') p_in++;
+            if (!(p_in[0] == 'i' && p_in[1] == 'n' &&
+                 (p_in[2] == ' ' || p_in[2] == '\t' || p_in[2] == '\0'))) {
+                put_s("sh: for: expected 'in'\n"); return -1;
+            }
+            p_in += 2;
+            while (*p_in == ' ' || *p_in == '\t') p_in++;
+            /* Expand vars in word list. */
+            char wlist[SCRIPT_LINE_MAX];
+            expand(p_in, wlist, sizeof(wlist));
+            /* Expect `do`. */
+            const char *do_stmt = next_statement(p->src, stmt, sizeof(stmt));
+            if (!do_stmt || !s_eq(stmt, "do")) { put_s("sh: for: expected 'do'\n"); return -1; }
+            p->src = do_stmt;
+            const char *body_start = p->src;
+            /* Iterate words. */
+            char *wp = wlist;
+            for (;;) {
+                while (*wp == ' ' || *wp == '\t') wp++;
+                if (!*wp) break;
+                char *word = wp;
+                while (*wp && *wp != ' ' && *wp != '\t') wp++;
+                char sav = *wp;
+                if (*wp) *wp = '\0';
+                var_set(vname, word);
+                if (sav) *wp = sav;
+                p->src = body_start;
+                int rc = run_block_until(p, "done", (const char *)0, (const char *)0, execute);
+                if (rc < 0) return -1;
+                if (*wp) wp++;
+            }
+            /* If no words, still consume body. */
+            if (!*wlist) {
+                p->src = body_start;
+                int rc = run_block_until(p, "done", (const char *)0, (const char *)0, 0);
+                if (rc < 0) return -1;
+            }
+            continue;
+        }
+        /* Plain statement. */
+        if (execute) {
+            int se = 0, es = 0;
+            run_line(stmt, &se, &es);
+            if (se) { exit_status = es; should_exit = 1; }
+        }
+    }
+}
+
+static int run_script_buf(const char *src)
+{
+    parser_t p; p.src = src;
+    char stmt[SCRIPT_LINE_MAX];
+    int should_exit = 0, exit_status = 0;
+    for (;;) {
+        const char *next = next_statement(p.src, stmt, sizeof(stmt));
+        if (!next) break;
+        p.src = next;
+        if (s_starts(stmt, "if ") || s_starts(stmt, "while ") || s_starts(stmt, "for ")) {
+            /* Re-enter via run_block_until pretending we're inside a block
+             * terminated by EOF.  The block parser handles each form. */
+            /* Push the statement back and call run_block_until with NULL
+             * terminators so we run until EOF. */
+            /* Simpler: re-create a parser starting at this statement. */
+            unsigned int slen = s_len(stmt);
+            /* Pseudo-source: stmt + ";" + remaining src. */
+            static char rebuilt[8192];
+            unsigned int o = 0;
+            for (unsigned int i = 0; i < slen && o + 1 < sizeof(rebuilt); i++) rebuilt[o++] = stmt[i];
+            if (o + 1 < sizeof(rebuilt)) rebuilt[o++] = ';';
+            for (unsigned int i = 0; p.src[i] && o + 1 < sizeof(rebuilt); i++) rebuilt[o++] = p.src[i];
+            rebuilt[o] = '\0';
+            parser_t pp; pp.src = rebuilt;
+            (void)run_block_until(&pp, (const char *)0, (const char *)0, (const char *)0, 1);
+            break;
+        }
+        run_line(stmt, &should_exit, &exit_status);
+        if (should_exit) break;
+    }
+    return g_last_status;
+}
+
+/* ---------- prompt ---------- */
+
+static void build_prompt(char *out, unsigned int outsz)
+{
+    char cwd[VFS_PATH_MAX];
+    if (sys_getcwd(cwd, sizeof(cwd)) < 0) { cwd[0] = '/'; cwd[1] = '\0'; }
+    /* root@host:cwd# */
+    unsigned int o = 0;
+    for (unsigned int i = 0; g_username[i] && o + 1 < outsz; i++) out[o++] = g_username[i];
+    if (o + 1 < outsz) out[o++] = '@';
+    for (unsigned int i = 0; g_hostname[i] && o + 1 < outsz; i++) out[o++] = g_hostname[i];
+    if (o + 1 < outsz) out[o++] = ':';
+    for (unsigned int i = 0; cwd[i] && o + 1 < outsz; i++) out[o++] = cwd[i];
+    if (o + 1 < outsz) out[o++] = '#';
+    if (o + 1 < outsz) out[o++] = ' ';
+    out[o] = '\0';
 }
 
 /* ---------- main REPL ---------- */
 
 int main(int argc, char **argv, char **envp)
 {
-    (void)argc; (void)argv; (void)envp;
+    (void)envp;
 
-    put_s("sh.elf: ring-3 userspace shell (Ctrl-D or `exit` to quit)\n");
+    const char *script_path = (const char *)0;
+    for (int i = 1; i < argc; i++) {
+        if (s_eq(argv[i], "--login")) g_login = 1;
+        else if (argv[i][0] != '-')   script_path = argv[i];
+    }
+
+    /* Resolve hostname (best-effort). */
+    char hbuf[HOST_MAX];
+    int hn = sys_gethostname(hbuf, sizeof(hbuf));
+    if (hn > 0) s_copy(g_hostname, hbuf, sizeof(g_hostname));
+
+    /* Non-interactive: run script and exit. */
+    if (script_path) {
+        int fd = sys_open(script_path, O_RDONLY);
+        if (fd < 0) { put_s("sh: cannot open "); put_s(script_path); put_c('\n'); return 1; }
+        static char sbuf[16384];
+        int rd = sys_read(fd, sbuf, sizeof(sbuf) - 1);
+        sys_close(fd);
+        if (rd < 0) return 1;
+        sbuf[rd] = '\0';
+        return run_script_buf(sbuf);
+    }
+
+    if (!g_login) {
+        put_s("sh.elf: ring-3 shell (Ctrl-D or `exit` to quit)\n");
+    }
 
     char line[LINE_MAX];
-    char expanded[LINE_MAX];        /* line post-$VAR/$? substitution */
-    char dispatch[LINE_MAX];        /* tokenize() destroys its input,
-                                       so we keep `line` pristine for
-                                       history_push() + assignment slice. */
-    char *args[MAX_ARGS];
+    char prompt[VFS_PATH_MAX + 64];
 
     for (;;) {
-        int n = readline("$ ", line);
-        if (n == -1) {              /* EOF / Ctrl-D on empty line */
+        /* Sync marker for ui_test.sh's wait_for_serial -- the kernel-shell
+         * REPL emits an identical [shell:ready vt=N] line before each
+         * prompt, so existing scenarios work unchanged.  No-op unless
+         * g_serial_verbose is on (kernel-side gate). */
+        sys_shell_ready();
+        build_prompt(prompt, sizeof(prompt));
+        int n = readline(prompt, line);
+        if (n == -1) {
             put_c('\n');
+            if (g_login) { put_s("(use `shutdown` or `reboot` to power off)\n"); continue; }
             break;
         }
-        if (n == -2) continue;      /* Ctrl-C: abort line, reprompt */
-
+        if (n == -2) continue;
         if (n > 0) hist_push(line);
-
-        /* Slice 20c: standalone `NAME=VAL` assignment.  RHS is shell-
-         * expanded (mirrors kernel sh_script.c semantics).  We branch on
-         * the raw line BEFORE expansion so `FOO=$BAR` resolves $BAR via
-         * the current table, not against a half-expanded LHS. */
-        const char *eq = assign_eq(line);
-        if (eq) {
-            char name[VAR_NAME_MAX];
-            int  nlen = (int)(eq - line);
-            if (nlen >= VAR_NAME_MAX) nlen = VAR_NAME_MAX - 1;
-            int i;
-            for (i = 0; i < nlen; i++) name[i] = line[i];
-            name[i] = '\0';
-            char val_expanded[VAR_VAL_MAX];
-            expand(eq + 1, val_expanded, sizeof(val_expanded));
-            if (var_set(name, val_expanded) != 0) {
-                put_s("sh: ");
-                put_s(name);
-                put_s(": cannot set\n");
-                g_last_status = 1;
-            } else {
-                g_last_status = 0;
-            }
-            continue;
-        }
-
-        /* Otherwise: expand variables across the whole line, then tokenize. */
-        expand(line, expanded, sizeof(expanded));
-
-        int i;
-        for (i = 0; expanded[i] && i < LINE_MAX - 1; i++) dispatch[i] = expanded[i];
-        dispatch[i] = '\0';
-
-        int ac = tokenize(dispatch, args);
-        if (ac == 0) continue;
 
         int should_exit = 0;
         int exit_status = 0;
-        if (run_builtin(ac, args, &should_exit, &exit_status)) {
-            if (should_exit) return exit_status;
-            g_last_status = 0;
-            continue;
+        /* If the line starts a control construct, route through the script
+         * interpreter so multiline ;-split forms work at the REPL too. */
+        if (s_starts(line, "if ") || s_starts(line, "while ") || s_starts(line, "for ")) {
+            run_script_buf(line);
+        } else {
+            run_line(line, &should_exit, &exit_status);
         }
-        g_last_status = run_external(ac, args);
+        if (should_exit) return exit_status;
     }
 
     return 0;
