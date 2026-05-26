@@ -363,7 +363,7 @@ _check_ktest() {
     #   "INCORE: ALL PASS"    / "INCORE: FAIL"
     # Plus any kernel panic / KPANIC line if a test corrupted state.
     echo "---- ktest transcript ----"
-    grep -E "^(\[ktest\]|  PASS:|  FAIL:|KTEST_RESULT|INCORE:|KPANIC|kpanic)" \
+    grep -E "^(\[ktest\]|  PASS:|  FAIL:|KTEST_RESULT|INCORE:|LIBC-TCC:|KPANIC|kpanic)" \
         "$REPO_ROOT/ktest.log" || true
     echo "---- end ktest transcript ----"
 
