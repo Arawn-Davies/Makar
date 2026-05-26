@@ -1520,7 +1520,21 @@ INCORE_TESTS=(incore)
 VT_TESTS=(vt_roundtrip_keeps_maktop_focused vt_all_roundtrips)
 BUGHUNT_TESTS=(bughunt_clock_exit_palette bughunt_vix_exit_palette bughunt_status_bar_after_switch)
 
-ALL_TESTS=("${SHELL_TESTS[@]}" "${CD_PWD_TESTS[@]}" "${FS_TESTS[@]}" "${POSIX_TESTS[@]}" "${LIBC_TESTS[@]}" "${INCORE_TESTS[@]}" "${VT_TESTS[@]}" "${BUGHUNT_TESTS[@]}")
+## LIBC_TESTS is empty (libc/TCC matrix moved into test_mode bootup);
+## under `set -u` an empty-array splice errors out, so we use the
+## `${arr[@]+...}` guard that expands to nothing when the array is
+## empty.  Apply the same guard to every group for symmetry / future
+## migrations.
+ALL_TESTS=(
+    ${SHELL_TESTS[@]+"${SHELL_TESTS[@]}"}
+    ${CD_PWD_TESTS[@]+"${CD_PWD_TESTS[@]}"}
+    ${FS_TESTS[@]+"${FS_TESTS[@]}"}
+    ${POSIX_TESTS[@]+"${POSIX_TESTS[@]}"}
+    ${LIBC_TESTS[@]+"${LIBC_TESTS[@]}"}
+    ${INCORE_TESTS[@]+"${INCORE_TESTS[@]}"}
+    ${VT_TESTS[@]+"${VT_TESTS[@]}"}
+    ${BUGHUNT_TESTS[@]+"${BUGHUNT_TESTS[@]}"}
+)
 
 # FAST_TESTS: skip anything that mkfs's a disk, compiles C, or runs a long
 # script -- excludes filetest, mnt_mountpoint, alloctest, tcc_hello,
@@ -1539,8 +1553,15 @@ expand_arg() {
         cd_pwd|cd) printf '%s\n' "${CD_PWD_TESTS[@]}" ;;
         fs)       printf '%s\n' "${FS_TESTS[@]}" ;;
         posix)    printf '%s\n' "${POSIX_TESTS[@]}" ;;
-        libc)     printf '%s\n' "${LIBC_TESTS[@]}" ;;
-        tcc_rebuild|tcc) printf '%s\n' "${TCC_REBUILD_TESTS[@]}" ;;
+        libc|tcc_rebuild|tcc)
+            ## Group retired -- the libc + TCC self-rebuild matrix runs
+            ## in /src/userspace/libc-tcc.sh during test_mode bootup.
+            ## Run `./run.sh iso test` to exercise it.
+            echo "ui_test: group '$1' is no longer driven by HMP sendkey." >&2
+            echo "         The libc/TCC self-rebuild matrix runs at" >&2
+            echo "         test_mode bootup via /src/userspace/libc-tcc.sh." >&2
+            echo "         Use './run.sh iso test' for that coverage." >&2
+            ;;
         incore)   printf '%s\n' "${INCORE_TESTS[@]}" ;;
         vt)       printf '%s\n' "${VT_TESTS[@]}" ;;
         bughunt)  printf '%s\n' "${BUGHUNT_TESTS[@]}" ;;
