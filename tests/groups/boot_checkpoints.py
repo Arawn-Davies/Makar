@@ -32,7 +32,12 @@ CHECKPOINTS = [
     'tasking_init',
     'syscall_init',
     'acpi_init',
-    'shell_run',
+    # Normal boot drops into the ring-3 login shell via
+    # user_shell_slot_entry; shell_run only runs when shell=rescue is
+    # set on the cmdline (or as the per-VT fallback when /apps/sh.elf
+    # fails to exec).  The stop point used to be shell_run -- moved
+    # here when the userspace shell migration landed.
+    'user_shell_slot_entry',
 ]
 
 
