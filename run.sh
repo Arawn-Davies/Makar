@@ -391,17 +391,18 @@ _check_ktest() {
         libc_status=fail
     fi
 
+    # Any explicit FAIL is fatal.  Otherwise we accept any combination
+    # where at least one suite passed -- so `gui libc` (which only runs
+    # the libc-tcc suite) doesn't trip the "ktest TIMEOUT" branch.  Only
+    # the all-unknown case is treated as a real failure (no marker on
+    # serial usually means kernel hung or QEMU never booted).
     case "$ktest_status:$incore_status:$libc_status" in
-        pass:pass:pass)
-            echo "==> ktest: ALL PASSED (+ incore + libc-tcc)" ;;
-        pass:pass:unknown)
-            echo "==> ktest: ALL PASSED (+ incore; libc-tcc: not run)" ;;
-        pass:unknown:unknown)
-            echo "==> ktest: ALL PASSED (incore: not run -- pre-incore kernel?)" ;;
-        fail:*:*|*:fail:*|*:*:fail)
+        *fail*)
             echo "==> FAILED ktest=$ktest_status incore=$incore_status libc=$libc_status -- see ktest.log"; exit 1 ;;
-        unknown:*:*)
-            echo "==> ktest: TIMEOUT or no result - see ktest.log"; exit 1 ;;
+        unknown:unknown:unknown)
+            echo "==> ktest: TIMEOUT or no result on serial - see ktest.log"; exit 1 ;;
+        *)
+            echo "==> PASSED ktest=$ktest_status incore=$incore_status libc=$libc_status" ;;
     esac
 }
 

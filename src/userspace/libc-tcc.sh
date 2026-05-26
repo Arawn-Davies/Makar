@@ -115,7 +115,7 @@ cd /src/userspace
 echo LIBC-TCC: COMPILE hello-relpath
 tcc hello.c -o /tmp/hello-relpath.elf
 if [ $? -eq 0 ]; then echo LIBC-TCC: PASS compile-hello-relpath; else echo LIBC-TCC: FAIL compile-hello-relpath; fail=1; fi
-exec /tmp/hello-relpath.elf
+exec /tmp/hello-relpath.elf libc-relpath
 if [ $? -eq 0 ]; then echo LIBC-TCC: PASS run-hello-relpath; else echo LIBC-TCC: FAIL run-hello-relpath; fail=1; fi
 cd /
 
