@@ -161,6 +161,16 @@ tcc /src/userspace/kbtester.c -o /tmp/kbtester.elf
 if [ $? -eq 0 ]; then echo LIBC-TCC: [PASS] compile-kbtester; else echo LIBC-TCC: [FAIL] compile-kbtester; fail=1; fi
 sleep $pause
 
+# --- TCC self-rebuild: the v1.0 self-host flex.  vendor/tinycc/ ships on
+# the ISO at /src/tinycc/.  ONE_SOURCE=1 is the one essential define
+# (without it tcc.c is multi-TU and the in-OS compiler can't link the
+# pieces); other CONFIG_* are runtime path defaults baked into the host
+# tcc.elf -- the rebuilt binary just uses TCC defaults instead.
+echo LIBC-TCC: compile-tcc-self
+tcc -DONE_SOURCE=1 -I/src/tinycc -I/src/tinycc/build-stubs -I/src/userspace /src/tinycc/tcc.c -o /tmp/tcc-rebuilt.elf
+if [ $? -eq 0 ]; then echo LIBC-TCC: [PASS] compile-tcc-self; else echo LIBC-TCC: [FAIL] compile-tcc-self; fail=1; fi
+sleep $pause
+
 # --- Relative-path TCC: prove path resolution works when cwd != /
 cd /src/userspace
 echo LIBC-TCC: compile-hello-relpath

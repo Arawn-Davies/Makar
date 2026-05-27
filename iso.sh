@@ -32,6 +32,18 @@ echo "makar" > isodir/etc/hostname
 cp -r src/. isodir/src/
 cp -r docs/. isodir/docs/
 
+# Stage vendor/tinycc/ source onto the ISO at /src/tinycc/ so the in-OS TCC
+# can rebuild itself (the v1.0 self-host flex).  build-tcc.sh has already
+# applied the Makar-flavoured patches above, so the staged copy matches the
+# host-built tcc.elf exactly.  We skip the host build artefacts (*.o, *.log,
+# tcc.elf) -- they'd just be rebuilt anyway.
+if [ -d vendor/tinycc ]; then
+    mkdir -p isodir/src/tinycc
+    (cd vendor/tinycc && find . -type f \
+       \( -name '*.c' -o -name '*.h' -o -name '*.S' -o -name '*.def' \) \
+       -exec cp --parents {} ../../isodir/src/tinycc/ \;)
+fi
+
 # Vendored limine BIOS stage (v12.3.0).  The in-kernel installer reads this
 # off the CD and deploys it to the target HDD (boot sector -> MBR, stage2 ->
 # post-MBR gap, the file itself -> /limine on the rootfs).  The host build
