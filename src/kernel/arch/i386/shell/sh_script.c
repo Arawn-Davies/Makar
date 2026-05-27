@@ -440,7 +440,17 @@ static int run_block(char **lines, int from, int to)
                 /* skip past "if " */
                 char *cp = work + (work[2] == ' ' ? 3 : 2);
                 while (*cp == ' ') cp++;
-                char *then_kw = strstr(cp, "then");
+                /* Find a `then` keyword (whole-word: preceded by ; / WS or
+                 * BOL; followed by WS / `;`).  Avoids matching "then"
+                 * inside an arg like `ran-then`. */
+                char *then_kw = cp;
+                while ((then_kw = strstr(then_kw, "then"))) {
+                    int left_ok  = (then_kw == cp) || then_kw[-1] == ' ' || then_kw[-1] == '\t' || then_kw[-1] == ';';
+                    char nx = then_kw[4];
+                    int right_ok = (nx == ' ' || nx == '\t' || nx == ';');
+                    if (left_ok && right_ok) break;
+                    then_kw++;
+                }
                 if (then_kw) {
                     /* Cond ends just before `then` (and any `;` / spaces). */
                     char *cend = then_kw;
@@ -457,8 +467,28 @@ static int run_block(char **lines, int from, int to)
                         while (bl > 0 && (body[bl-1] == ' ' || body[bl-1] == ';')) bl--;
                         body[bl] = '\0';
                     }
+                    /* Split on `; else ` or ` else ` (outside-the-word delim
+                     * so an arg like `elsewhere` doesn't match).  At most
+                     * one else branch -- matches the single-body shape. */
+                    char *else_body = NULL;
+                    for (char *p = body; *p; p++) {
+                        if ((p == body || p[-1] == ';' || p[-1] == ' ' || p[-1] == '\t')
+                            && p[0] == 'e' && p[1] == 'l' && p[2] == 's' && p[3] == 'e'
+                            && (p[4] == ' ' || p[4] == '\t' || p[4] == ';' || p[4] == '\0')) {
+                            char *cut = p;
+                            while (cut > body && (cut[-1] == ' ' || cut[-1] == '\t' || cut[-1] == ';'))
+                                cut--;
+                            *cut = '\0';
+                            else_body = p + 4;
+                            while (*else_body == ' ' || *else_body == '\t' || *else_body == ';')
+                                else_body++;
+                            break;
+                        }
+                    }
                     if (eval_condition(cp)) {
                         sh_exec_line(body);
+                    } else if (else_body) {
+                        sh_exec_line(else_body);
                     }
                     i++;
                     continue;
@@ -495,7 +525,18 @@ static int run_block(char **lines, int from, int to)
                 static char cond[256];
                 strncpy(cond, ct, sizeof(cond) - 1);
                 cond[sizeof(cond) - 1] = '\0';
-                char *th = strstr(cond, "then");
+                /* Find a `then` keyword (whole-word: preceded by ; / WS or
+                 * BOL; followed by WS / `;` / EOL).  Without this guard
+                 * substring matches like `ran-then` inside the condition
+                 * would truncate it (e.g. `[ $x = ran-then ]` → `[ $x = ran-`). */
+                char *th = cond;
+                while ((th = strstr(th, "then"))) {
+                    int left_ok  = (th == cond) || th[-1] == ' ' || th[-1] == '\t' || th[-1] == ';';
+                    char nx = th[4];
+                    int right_ok = (nx == '\0' || nx == ' ' || nx == '\t' || nx == ';');
+                    if (left_ok && right_ok) break;
+                    th++;
+                }
                 if (th) {
                     while (th > cond && (th[-1] == ' ' || th[-1] == ';' || th[-1] == '\t'))
                         th--;
