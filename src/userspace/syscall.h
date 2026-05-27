@@ -15,6 +15,8 @@
 #define SYS_CLOSE      6
 #define SYS_LSEEK      19
 #define SYS_GETPID     20
+#define SYS_PIPE       42
+#define SYS_DUP2       63
 #define SYS_KILL       37
 #define SYS_RENAME     38
 #define SYS_MKDIR      39
@@ -445,6 +447,16 @@ static inline int sys_close(int fd)
 static inline long sys_lseek(int fd, int offset, int whence)
 {
     return syscall3(SYS_LSEEK, (long)fd, (long)offset, (long)whence);
+}
+
+static inline int sys_pipe(int pipefd[2])
+{
+    return (int)syscall1(SYS_PIPE, (long)pipefd);
+}
+
+static inline int sys_dup2(int oldfd, int newfd)
+{
+    return (int)syscall2(SYS_DUP2, (long)oldfd, (long)newfd);
 }
 
 static inline int sys_stat(const char *path, struct stat *st)

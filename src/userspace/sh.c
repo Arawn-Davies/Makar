@@ -707,6 +707,7 @@ static int test_eval(int argc, char **argv)
 static int run_line(const char *raw, int *should_exit, int *exit_status);
 static int run_script_buf(const char *src);
 static int try_exec_path(const char *path, char **argv, int *out_status);
+static int jobs_wait_all(void);
 
 /* ---------- admin command bareword routing ---------- */
 
@@ -825,6 +826,20 @@ static int run_builtin(int argc, char **argv, int *should_exit, int *exit_status
     }
     if (s_eq(argv[0], "true"))  { g_last_status = 0; return 1; }
     if (s_eq(argv[0], "false")) { g_last_status = 1; return 1; }
+    if (s_eq(argv[0], "wait")) {
+        /* `wait` with no args drains the background-jobs table.
+         * `wait <pid>` waits on a specific pid (not in our table; still
+         * passes through sys_wait4 in case the caller knows the pid). */
+        if (argc == 1) {
+            g_last_status = jobs_wait_all();
+        } else {
+            int pid = s_atoi(argv[1]);
+            int st  = 0;
+            int r   = sys_wait4(pid, &st, 0);
+            g_last_status = (r < 0) ? 127 : (st & 0x7F);
+        }
+        return 1;
+    }
     if (s_eq(argv[0], "sleep")) {
         if (argc < 2) { put_s("Usage: sleep <seconds>\n"); g_last_status = 1; return 1; }
         unsigned int ticks = sleep_ticks_from_arg(argv[1]);
@@ -915,11 +930,17 @@ static int path_exists(const char *path)
 {
     struct stat st; return sys_stat(path, &st) == 0;
 }
+/* Per-command redirect bookkeeping is defined further down (after the
+ * redirect_t typedef in the pipeline support block).  We forward-declare
+ * just the helper that spawn()'s child uses. */
+static void apply_pending_redirects_in_child(void);
+
 static int spawn(const char *path, char **argv)
 {
     int pid = sys_fork();
     if (pid < 0) { put_s("sh: fork failed\n"); return 1; }
     if (pid == 0) {
+        apply_pending_redirects_in_child();
         sys_execve(path, argv, (char *const *)0);
         sys_exit(127);
     }
@@ -1003,45 +1024,439 @@ static int run_external(int argc, char **argv)
     return 127;
 }
 
-/* ---------- single-line dispatch ---------- */
+/* ---------- redirection support ---------- */
 
-static int run_line(const char *raw, int *should_exit, int *exit_status)
+/* Parsed redirection: open `path` with `flags`, then dup2 onto `target_fd`. */
+typedef struct {
+    int   target_fd;
+    int   flags;
+    char *path;
+} redirect_t;
+
+#define MAX_REDIRECTS 4
+
+/* Scan argv for `<`, `>`, `>>`, `2>`, `2>>`.  Pairs of operator + filename
+ * are extracted into out_red[] and the argv is compacted in place to drop
+ * them.  Returns the new argc.  Sets *n_red.  Treats unrecognised forms
+ * (e.g. `>` with no following arg) as literals and leaves them alone. */
+static int extract_redirects(int argc, char **argv, redirect_t *out_red, int *n_red)
+{
+    int nr = 0;
+    int o = 0;
+    for (int i = 0; i < argc; i++) {
+        const char *a = argv[i];
+        int  tgt = -1;
+        int  flg = 0;
+        int  skip_next = 0;
+        if (s_eq(a, "<")) {
+            tgt = 0; flg = O_RDONLY; skip_next = 1;
+        } else if (s_eq(a, ">")) {
+            tgt = 1; flg = O_WRONLY | O_CREAT | O_TRUNC; skip_next = 1;
+        } else if (s_eq(a, ">>")) {
+            tgt = 1; flg = O_WRONLY | O_CREAT | O_APPEND; skip_next = 1;
+        } else if (s_eq(a, "2>")) {
+            tgt = 2; flg = O_WRONLY | O_CREAT | O_TRUNC; skip_next = 1;
+        } else if (s_eq(a, "2>>")) {
+            tgt = 2; flg = O_WRONLY | O_CREAT | O_APPEND; skip_next = 1;
+        }
+        if (skip_next) {
+            if (i + 1 >= argc) {
+                put_s("sh: syntax error: redirect missing filename\n");
+                /* leave the partially-built redirect list intact; bad
+                 * input simply collapses to the leftover argv we kept. */
+                *n_red = nr;
+                argv[o] = (char *)0;
+                return o;
+            }
+            if (nr >= MAX_REDIRECTS) {
+                put_s("sh: too many redirects\n");
+                *n_red = nr;
+                argv[o] = (char *)0;
+                return o;
+            }
+            out_red[nr].target_fd = tgt;
+            out_red[nr].flags     = flg;
+            out_red[nr].path      = argv[i + 1];
+            nr++;
+            i++;   /* consume the filename arg */
+            continue;
+        }
+        argv[o++] = argv[i];
+    }
+    argv[o] = (char *)0;
+    *n_red = nr;
+    return o;
+}
+
+/* Open each redirect's file and dup2 it onto its target fd.  Called from
+ * the forked child only -- the parent never wants its own stdin/stdout
+ * clobbered.  On open() failure, prints to stderr and sys_exit(1). */
+static void apply_redirects(int n_red, const redirect_t *red)
+{
+    for (int i = 0; i < n_red; i++) {
+        int fd = sys_open(red[i].path, red[i].flags);
+        if (fd < 0) {
+            put_s("sh: cannot open '");
+            put_s(red[i].path);
+            put_s("' for redirect\n");
+            sys_exit(1);
+        }
+        if (fd != red[i].target_fd) {
+            sys_dup2(fd, red[i].target_fd);
+            sys_close(fd);
+        }
+    }
+}
+
+/* Pending redirect state -- set by run_line for a single command, applied
+ * by spawn()'s forked child.  Pipelines stash their own per-stage redirects
+ * on the stack, so they don't touch this. */
+static redirect_t g_pending_red[MAX_REDIRECTS];
+static int        g_pending_red_n = 0;
+
+static void set_pending_redirects(int n, const redirect_t *r)
+{
+    g_pending_red_n = n;
+    for (int i = 0; i < n; i++) g_pending_red[i] = r[i];
+}
+
+static void apply_pending_redirects_in_child(void)
+{
+    apply_redirects(g_pending_red_n, g_pending_red);
+}
+
+/* ---------- pipeline support ---------- */
+
+/* Re-implement run_external without the fork wrapper -- the caller is
+ * already inside a forked child, so it should `execve` straight on top of
+ * itself.  sys_exit(127) on failure (POSIX "command not found"). */
+static void child_exec_external(int argc, char **argv)
+{
+    if (argc == 0) sys_exit(127);
+    if (looks_like_path(argv[0])) {
+        sys_execve(argv[0], argv, (char *const *)0);
+        char wext[VFS_PATH_MAX];
+        unsigned int plen = s_len(argv[0]);
+        if (plen + 5 < VFS_PATH_MAX) {
+            unsigned int i;
+            for (i = 0; i < plen; i++) wext[i] = argv[0][i];
+            wext[i++] = '.'; wext[i++] = 'e'; wext[i++] = 'l'; wext[i++] = 'f'; wext[i] = '\0';
+            sys_execve(wext, argv, (char *const *)0);
+        }
+        sys_exit(127);
+    }
+    char dir_buf[VFS_PATH_MAX], path_buf[VFS_PATH_MAX];
+    for (int p = 0; shell_path_dir(p, dir_buf, sizeof(dir_buf)); p++) {
+        unsigned int dl = s_len(dir_buf);
+        unsigned int nl = s_len(argv[0]);
+        if (dl + nl + 1 >= VFS_PATH_MAX) continue;
+        unsigned int i;
+        for (i = 0; i < dl; i++) path_buf[i] = dir_buf[i];
+        for (unsigned int j = 0; j < nl; j++) path_buf[dl + j] = argv[0][j];
+        path_buf[dl + nl] = '\0';
+        if (path_exists(path_buf)) {
+            sys_execve(path_buf, argv, (char *const *)0);
+        }
+    }
+    if (is_makbox_applet(argv[0])) {
+        static char makbox_argv0[] = "makbox";
+        char *new_argv[MAX_ARGS + 1];
+        int new_argc = 0;
+        new_argv[new_argc++] = makbox_argv0;
+        for (int i = 0; i < argc && new_argc < MAX_ARGS; i++) new_argv[new_argc++] = argv[i];
+        new_argv[new_argc] = (char *)0;
+        for (int p = 0; shell_path_dir(p, dir_buf, sizeof(dir_buf)); p++) {
+            unsigned int dl = s_len(dir_buf);
+            if (dl + sizeof(makbox_argv0) >= VFS_PATH_MAX) continue;
+            unsigned int i;
+            for (i = 0; i < dl; i++) path_buf[i] = dir_buf[i];
+            for (i = 0; makbox_argv0[i]; i++) path_buf[dl + i] = makbox_argv0[i];
+            path_buf[dl + i] = '\0';
+            if (path_exists(path_buf)) {
+                sys_execve(path_buf, new_argv, (char *const *)0);
+            }
+        }
+    }
+    sys_exit(127);
+}
+
+/* Split `s` in-place on top-level `|` characters (treating quoted regions
+ * as opaque).  Writes a NUL at each pipe and stores the resulting stage
+ * pointers into `out`.  Returns the number of stages. */
+static int split_pipes(char *s, char **out, int max_stages)
+{
+    int n = 0;
+    int in_single = 0, in_double = 0;
+    out[n++] = s;
+    for (char *p = s; *p; p++) {
+        if (*p == '\'' && !in_double) { in_single = !in_single; continue; }
+        if (*p == '"'  && !in_single) { in_double = !in_double; continue; }
+        if (*p == '|' && !in_single && !in_double) {
+            *p = '\0';
+            if (n >= max_stages) return n;
+            out[n++] = p + 1;
+        }
+    }
+    return n;
+}
+
+/* Run a multi-stage pipeline.  Each stage is a (mutable) string we
+ * tokenize per child.  Stage i's stdout is wired to stage i+1's stdin
+ * via a fresh pipe.  Returns the last stage's exit status.
+ *
+ * Cap stages at 8 -- enough for real shell use, keeps the bookkeeping
+ * arrays small. */
+#define PIPE_MAX_STAGES 8
+static int run_pipeline(int n_stages, char *stages[])
+{
+    if (n_stages > PIPE_MAX_STAGES) {
+        put_s("sh: pipeline too deep\n");
+        return 1;
+    }
+    int pids[PIPE_MAX_STAGES];
+    int prev_read = -1;       /* read end of the previous stage's pipe */
+    int next_pipe[2];
+
+    for (int s = 0; s < n_stages; s++) {
+        int has_next = (s + 1 < n_stages);
+        if (has_next) {
+            if (sys_pipe(next_pipe) != 0) {
+                put_s("sh: pipe failed\n");
+                if (prev_read >= 0) sys_close(prev_read);
+                /* Reap any already-forked stages so they don't dangle. */
+                for (int k = 0; k < s; k++) {
+                    int st = 0; sys_wait4(pids[k], &st, 0);
+                }
+                return 1;
+            }
+        }
+        int pid = sys_fork();
+        if (pid < 0) {
+            put_s("sh: fork failed\n");
+            if (prev_read >= 0) sys_close(prev_read);
+            if (has_next) { sys_close(next_pipe[0]); sys_close(next_pipe[1]); }
+            return 1;
+        }
+        if (pid == 0) {
+            /* Child: wire stdin from prev_read, stdout into next_pipe[1]. */
+            if (prev_read >= 0) {
+                sys_dup2(prev_read, 0);
+                sys_close(prev_read);
+            }
+            if (has_next) {
+                sys_dup2(next_pipe[1], 1);
+                sys_close(next_pipe[0]);
+                sys_close(next_pipe[1]);
+            }
+            /* Tokenize this stage's string and exec. */
+            char *args[MAX_ARGS];
+            int ac = tokenize(stages[s], args);
+            if (ac == 0) sys_exit(0);
+            static char glob_storage[2048];
+            ac = expand_globs(ac, args, MAX_ARGS, glob_storage, sizeof(glob_storage));
+            /* Per-stage redirects (e.g. `cmd1 > file | cmd2`).  Applied
+             * after the pipe-fd dup2s so an explicit `>` overrides the
+             * pipe wiring -- POSIX semantics. */
+            redirect_t red[MAX_REDIRECTS];
+            int n_red = 0;
+            ac = extract_redirects(ac, args, red, &n_red);
+            apply_redirects(n_red, red);
+            child_exec_external(ac, args);
+        }
+        /* Parent: advance pipe bookkeeping. */
+        pids[s] = pid;
+        if (prev_read >= 0) sys_close(prev_read);
+        if (has_next) {
+            sys_close(next_pipe[1]);
+            prev_read = next_pipe[0];
+        } else {
+            prev_read = -1;
+        }
+    }
+    int status = 0;
+    int last_status = 0;
+    for (int s = 0; s < n_stages; s++) {
+        int st = 0;
+        sys_wait4(pids[s], &st, 0);
+        if (s == n_stages - 1) last_status = st & 0x7F;
+        (void)status;
+    }
+    return last_status;
+}
+
+/* ---------- single-segment dispatch ----------
+ *
+ * Runs one segment of a `&&` / `||` / `&` list.  Handles assignment,
+ * pipelines (`|`), builtins / admin / external commands, and per-segment
+ * redirects.  Updates g_last_status.  `segment` is a mutable, already-
+ * variable-expanded string (the list walker handles expansion once at
+ * the top of run_line for the whole line). */
+static int run_one_segment(char *segment, int *should_exit, int *exit_status)
 {
     /* Strip leading whitespace + skip comments / empty lines. */
-    while (*raw == ' ' || *raw == '\t') raw++;
-    if (*raw == '\0' || *raw == '#') return 0;
+    while (*segment == ' ' || *segment == '\t') segment++;
+    if (*segment == '\0' || *segment == '#') return 0;
 
     /* Standalone assignment: NAME=VAL */
-    const char *eq = assign_eq(raw);
+    const char *eq = assign_eq(segment);
     if (eq) {
         char name[VAR_NAME_MAX];
-        int nlen = (int)(eq - raw);
+        int nlen = (int)(eq - segment);
         if (nlen >= VAR_NAME_MAX) nlen = VAR_NAME_MAX - 1;
-        for (int i = 0; i < nlen; i++) name[i] = raw[i];
+        for (int i = 0; i < nlen; i++) name[i] = segment[i];
         name[nlen] = '\0';
-        char val_expanded[VAR_VAL_MAX];
-        expand(eq + 1, val_expanded, sizeof(val_expanded));
-        g_last_status = (var_set(name, val_expanded) == 0) ? 0 : 1;
+        /* RHS already variable-expanded by run_line. */
+        g_last_status = (var_set(name, eq + 1) == 0) ? 0 : 1;
         return 0;
     }
 
-    /* Expand $VAR/$? across the whole line, then tokenize. */
-    char expanded[LINE_MAX];
-    expand(raw, expanded, sizeof(expanded));
-    char dispatch[LINE_MAX];
-    s_copy(dispatch, expanded, sizeof(dispatch));
+    /* Pipeline?  Split on top-level `|` and hand off to run_pipeline. */
+    {
+        char pipe_buf[LINE_MAX];
+        s_copy(pipe_buf, segment, sizeof(pipe_buf));
+        char *stages[PIPE_MAX_STAGES];
+        int n = split_pipes(pipe_buf, stages, PIPE_MAX_STAGES);
+        if (n > 1) {
+            g_last_status = run_pipeline(n, stages);
+            return 0;
+        }
+    }
 
     char *args[MAX_ARGS];
-    int ac = tokenize(dispatch, args);
+    int ac = tokenize(segment, args);
     if (ac == 0) return 0;
 
     /* Glob expansion (storage in static scratch). */
     static char glob_storage[2048];
     ac = expand_globs(ac, args, MAX_ARGS, glob_storage, sizeof(glob_storage));
 
-    if (run_builtin(ac, args, should_exit, exit_status)) return 0;
-    if (run_admin(ac, args)) return 0;
+    /* Strip redirects out of argv; spawn() will apply them post-fork. */
+    redirect_t red[MAX_REDIRECTS];
+    int n_red = 0;
+    ac = extract_redirects(ac, args, red, &n_red);
+    set_pending_redirects(n_red, red);
+
+    if (run_builtin(ac, args, should_exit, exit_status)) goto out;
+    if (run_admin(ac, args)) goto out;
     g_last_status = run_external(ac, args);
+out:
+    set_pending_redirects(0, (const redirect_t *)0);
+    return 0;
+}
+
+/* ---------- background-job table ----------
+ *
+ * `cmd &` forks and records the pid here; `wait` builtin drains the
+ * table by wait4()-ing each entry.  Cap kept small (POSIX users rarely
+ * need >8 concurrent background jobs in a shell session). */
+#define JOBS_MAX 16
+static int g_jobs[JOBS_MAX];
+static int g_jobs_n = 0;
+
+static void jobs_add(int pid)
+{
+    if (g_jobs_n < JOBS_MAX) g_jobs[g_jobs_n++] = pid;
+}
+
+/* `wait` builtin: drain all backgrounded jobs.  Returns the last
+ * reaped child's exit status (POSIX leaves this implementation-defined
+ * when `wait` has no args -- the last is the simplest sensible pick). */
+static int jobs_wait_all(void)
+{
+    int last = 0;
+    for (int i = 0; i < g_jobs_n; i++) {
+        int st = 0;
+        sys_wait4(g_jobs[i], &st, 0);
+        last = st & 0x7F;
+    }
+    g_jobs_n = 0;
+    return last;
+}
+
+/* ---------- list-level dispatch (run_line) ---------- */
+
+/* Operator between two segments. */
+enum { LIST_SEP_NONE = 0, LIST_SEP_AND, LIST_SEP_OR, LIST_SEP_BG };
+
+/* Walks `buf` (mutated in place), splitting at top-level `&&`, `||`, `&`
+ * (outside quotes).  Each segment's left separator is taken from the
+ * previous iteration's right separator.  Calls run_one_segment on each
+ * segment that the gate allows. */
+static int run_line(const char *raw, int *should_exit, int *exit_status)
+{
+    /* Skip leading whitespace + comment-only lines fast. */
+    while (*raw == ' ' || *raw == '\t') raw++;
+    if (*raw == '\0' || *raw == '#') return 0;
+
+    /* Expand $VAR/$? once across the whole line so segment-level work
+     * doesn't have to re-derive values. */
+    char expanded[LINE_MAX];
+    expand(raw, expanded, sizeof(expanded));
+
+    int prev_sep = LIST_SEP_NONE;
+    int prev_status = 0;
+    char *p = expanded;
+    while (*p) {
+        /* Find this segment's right boundary. */
+        char *seg = p;
+        int next_sep = LIST_SEP_NONE;
+        int sq = 0, dq = 0;
+        while (*p) {
+            if (*p == '\'' && !dq) { sq = !sq; p++; continue; }
+            if (*p == '"'  && !sq) { dq = !dq; p++; continue; }
+            if (!sq && !dq) {
+                if (p[0] == '&' && p[1] == '&') {
+                    next_sep = LIST_SEP_AND; *p = '\0'; p += 2; break;
+                }
+                if (p[0] == '|' && p[1] == '|') {
+                    next_sep = LIST_SEP_OR;  *p = '\0'; p += 2; break;
+                }
+                if (p[0] == '&' && p[1] != '&') {
+                    next_sep = LIST_SEP_BG;  *p = '\0'; p += 1; break;
+                }
+                /* A lone `|` is a pipe; not a list operator -- skip past
+                 * it (the segment includes the pipe, which run_one_segment
+                 * splits on internally). */
+            }
+            p++;
+        }
+
+        /* Trim leading whitespace on the segment. */
+        while (*seg == ' ' || *seg == '\t') seg++;
+
+        /* Decide whether to run this segment. */
+        int gate_open = 1;
+        if (prev_sep == LIST_SEP_AND && prev_status != 0) gate_open = 0;
+        else if (prev_sep == LIST_SEP_OR  && prev_status == 0) gate_open = 0;
+
+        if (gate_open && *seg) {
+            if (next_sep == LIST_SEP_BG) {
+                /* Background: fork; child runs the segment + exits.
+                 * Parent records the pid so `wait` can drain it. */
+                int pid = sys_fork();
+                if (pid < 0) {
+                    put_s("sh: fork failed (bg)\n");
+                    g_last_status = 1;
+                } else if (pid == 0) {
+                    int de = 0, dx = 0;
+                    char seg_copy[LINE_MAX];
+                    s_copy(seg_copy, seg, sizeof(seg_copy));
+                    run_one_segment(seg_copy, &de, &dx);
+                    sys_exit(g_last_status);
+                } else {
+                    jobs_add(pid);
+                    g_last_status = 0;     /* `cmd &` exits 0 immediately */
+                }
+            } else {
+                char seg_copy[LINE_MAX];
+                s_copy(seg_copy, seg, sizeof(seg_copy));
+                run_one_segment(seg_copy, should_exit, exit_status);
+            }
+            prev_status = g_last_status;
+        }
+
+        prev_sep = next_sep;
+    }
     return 0;
 }
 
