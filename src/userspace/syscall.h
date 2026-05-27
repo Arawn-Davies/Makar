@@ -77,6 +77,10 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_SHELL_READY   231
 #define SYS_CURSOR_POS    232
 #define SYS_VT_ENTER      233
+#define SYS_VT_CLOSE      234
+#define SYS_VT_OPEN_REQUEST 235
+#define SYS_VT_STATE      236
+#define SYS_VT_CLOCK_REQUEST 237
 #define SYS_FCNTL        55
 #define SYS_STAT        106
 #define SYS_FSTAT       108
@@ -677,6 +681,26 @@ static inline unsigned int sys_cursor_pos(void)
 static inline int sys_vt_enter(int loading)
 {
     return (int)syscall1(SYS_VT_ENTER, (long)loading);
+}
+
+static inline int sys_vt_close(int pid)
+{
+    return (int)syscall1(SYS_VT_CLOSE, (long)pid);
+}
+
+static inline int sys_vt_open_request(void)
+{
+    return (int)syscall0(SYS_VT_OPEN_REQUEST);
+}
+
+static inline unsigned int sys_vt_state(void)
+{
+    return (unsigned int)syscall0(SYS_VT_STATE);
+}
+
+static inline int sys_vt_clock_request(void)
+{
+    return (int)syscall0(SYS_VT_CLOCK_REQUEST);
 }
 
 #endif

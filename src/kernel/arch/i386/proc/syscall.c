@@ -219,6 +219,38 @@ void syscall_dispatch(registers_t *regs)
         }
         s_argv[kargc] = NULL;
 
+        /* A forked userspace shell child inherits the parent's task name
+         * until execve replaces the image.  Rename ordinary exec targets
+         * to their basename (without .elf) so /proc/tasks and maktop show
+         * makmux, tcc, etc.  Preserve mak.shN when makmux's VT children
+         * exec /apps/sh.elf; those task names are the terminal identity. */
+        {
+            task_t *me = task_current();
+            const char *base = s_path;
+            for (const char *q = s_path; *q; q++)
+                if (*q == '/') base = q + 1;
+            int is_sh = strcmp(base, "sh.elf") == 0 || strcmp(base, "sh") == 0;
+            int is_maksh = me && me->name &&
+                           me->name[0] == 'm' && me->name[1] == 'a' &&
+                           me->name[2] == 'k' && me->name[3] == '.' &&
+                           me->name[4] == 's' && me->name[5] == 'h';
+            if (me && !(is_sh && is_maksh)) {
+                size_t n = 0;
+                while (base[n] && n < sizeof(me->name_buf) - 1) {
+                    me->name_buf[n] = base[n];
+                    n++;
+                }
+                if (n >= 4 && me->name_buf[n-4] == '.' &&
+                              me->name_buf[n-3] == 'e' &&
+                              me->name_buf[n-2] == 'l' &&
+                              me->name_buf[n-1] == 'f') {
+                    n -= 4;
+                }
+                me->name_buf[n] = '\0';
+                me->name = me->name_buf;
+            }
+        }
+
         /* POSIX: execve resets all caught signal handlers to SIG_DFL.
          * SIG_IGN is also reset (Makar's sig_task_init clears everything,
          * matching the simple-is-better choice). */
@@ -1036,7 +1068,7 @@ void syscall_dispatch(registers_t *regs)
          * app (e.g. maktop on VT2 while VT1 is visible) would bleed its
          * cells onto whatever VT is currently shown. */
         vt_buf_t *vt      = vtty_buf_current();
-        int       focused = vtty_is_focused();
+        int       focused = vt ? vtty_is_focused() : 1;
 
         /* SYS_PUTCH_AT cells carry their own colour attribute, so writing
          * each cell mutates the default pane's fg/bg.  Save the pane
@@ -1084,7 +1116,7 @@ void syscall_dispatch(registers_t *regs)
          * repaint; only move the visible hardware cursor when focused. */
         vt_buf_t *vt = vtty_buf_current();
         if (vt) vt_set_cursor(vt, regs->ebx, regs->ecx);
-        if (vtty_is_focused())
+        if (!vt || vtty_is_focused())
             t_set_cursor((size_t)regs->ebx, (size_t)regs->ecx);
         break;
     }
@@ -1104,7 +1136,7 @@ void syscall_dispatch(registers_t *regs)
                              s_vga_palette[(clr >> 4) & 0x0F]);
             vt_clear(vt);
         }
-        if (vtty_is_focused())
+        if (!vt || vtty_is_focused())
             t_fill(clr);
         break;
     }
@@ -1485,31 +1517,26 @@ void syscall_dispatch(registers_t *regs)
         break;
     }
     case SYS_VT_ENTER: {
-        int slot = shell_enter_slot((int)regs->ebx != 0);
-        if (slot >= 0) {
-            task_t *cur = task_current();
-            if (cur) {
-                const char prefix[] = "mak.sh";
-                uint32_t o = 0;
-                while (prefix[o] && o + 1 < sizeof(cur->name_buf)) {
-                    cur->name_buf[o] = prefix[o];
-                    o++;
-                }
-                int n = slot;
-                char digits[12];
-                int dn = 0;
-                if (n == 0) digits[dn++] = '0';
-                while (n && dn < (int)sizeof(digits)) {
-                    digits[dn++] = (char)('0' + (n % 10));
-                    n /= 10;
-                }
-                while (dn > 0 && o + 1 < sizeof(cur->name_buf))
-                    cur->name_buf[o++] = digits[--dn];
-                cur->name_buf[o] = '\0';
-                cur->name = cur->name_buf;
-            }
-        }
+        int slot = shell_enter_makmux_slot((int)regs->ebx != 0);
         regs->eax = (uint32_t)slot;
+        break;
+    }
+    case SYS_VT_CLOSE: {
+        regs->eax = (uint32_t)(int32_t)vtty_close_pid((int)regs->ebx);
+        break;
+    }
+    case SYS_VT_OPEN_REQUEST: {
+        regs->eax = (uint32_t)vtty_take_open_request();
+        break;
+    }
+    case SYS_VT_STATE: {
+        uint32_t active = (uint32_t)(vtty_active() & 0xFFFF);
+        uint32_t mask = vtty_live_mask() & 0xFFFFu;
+        regs->eax = (active << 16) | mask;
+        break;
+    }
+    case SYS_VT_CLOCK_REQUEST: {
+        regs->eax = (uint32_t)vtty_take_clock_toggle_request();
         break;
     }
     case SYS_GETHOSTNAME: {

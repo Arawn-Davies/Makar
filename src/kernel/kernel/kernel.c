@@ -86,15 +86,9 @@ static void kprint_ok(void)
 extern void user_shell_slot_entry(void);  /* fwd decl for task_create */
 void user_shell_slot_entry(void)
 {
-	/* Full shell prelude: SIGINT IGN, unkillable, vtty_register,
-	 * loading screen (slot 0 only), wait for ktest_bg, palette +
-	 * clear.  Mirrors what the in-kernel shell_run used to do
-	 * inline so the boot UX is identical. */
-	int slot = shell_enter_slot(1);   /* 1 = with loading screen */
-	if (slot < 0) {
-		Serial_WriteString("user-shell: shell_enter_slot failed\n");
-		for (;;) task_yield();
-	}
+	/* mak.sh0 is the detached boot shell.  It gets the loading-screen
+	 * tty path, but it is not one of makmux's four switchable VT slots. */
+	shell_enter_root_tty();
 	{
 		task_t *cur = task_current();
 		if (cur) {
@@ -188,7 +182,6 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	/* Subscribe the display's periodic widgets to the timer rather than
 	 * having the timer IRQ reach into the display layer directly. */
 	timer_register_tick_hook(t_spinner_tick);
-	timer_register_tick_hook(vesa_tty_status_clock_tick);
 	KLOG("timer: 100 Hz PIT started\n");
 
 	t_writestring("Registering PS/2 keyboard");

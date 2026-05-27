@@ -28,6 +28,8 @@ static int      vtty_nslots  = 0;
 static int      vtty_current = 0;
 static vt_buf_t vtty_bufs[VTTY_MAX];
 static bool     vtty_bufs_ready = false;
+static volatile int vtty_open_requests = 0;
+static volatile int vtty_clock_toggle_requests = 0;
 
 /* Pending repaint target.  vtty_switch runs in the keyboard IRQ; doing a
  * full framebuffer repaint there would block subsequent keyboard IRQs
@@ -97,10 +99,7 @@ void vtty_init(void)
         }
     }
 
-    /* Initial status bar.  count=0 - no slots registered yet, but draw
-     * the row so the dark band is visible during boot. */
-    if (reserve_status)
-        vesa_tty_paint_status(0, 0);
+    (void)reserve_status;
 }
 
 /*
@@ -126,15 +125,92 @@ static task_t *vtty_owner(int n)
 
 int vtty_register(void)
 {
-    if (vtty_nslots >= VTTY_MAX) return -1;
-    int slot = vtty_nslots++;
+    int slot = -1;
+    for (int i = 0; i < VTTY_MAX; i++) {
+        if (!vtty_owner(i)) { slot = i; break; }
+    }
+    if (slot < 0) return -1;
+    if (slot >= vtty_nslots) vtty_nslots = slot + 1;
     task_t *me = task_current();
     if (me) me->tty = slot;
     if (slot == 0)
         keyboard_set_focus(me);
-    /* Refresh the status bar so the new slot lights up. */
-    vesa_tty_paint_status(vtty_current, vtty_nslots);
+    vt_buf_t *vt = vtty_buf(slot);
+    if (vt) vt_clear(vt);
     return slot;
+}
+
+int vtty_close_pid(int pid)
+{
+    int slot = -1;
+    for (int i = 0; i < task_count(); i++) {
+        task_t *t = task_get(i);
+        if (!t || t->pid != pid) continue;
+        slot = t->tty;
+        t->tty = TASK_TTY_NONE;
+        break;
+    }
+    if (slot < 0 || slot >= VTTY_MAX) return -1;
+
+    for (int i = 0; i < task_count(); i++) {
+        task_t *t = task_get(i);
+        if (t && t->tty == slot)
+            t->tty = TASK_TTY_NONE;
+    }
+    __atomic_store_n(&vtty_foreground[slot], (task_t *)0, __ATOMIC_RELEASE);
+
+    vt_buf_t *vt = vtty_buf(slot);
+    if (vt) vt_clear(vt);
+
+    while (vtty_nslots > 0 && !vtty_owner(vtty_nslots - 1))
+        vtty_nslots--;
+
+    if (vtty_nslots == 0) {
+        vtty_current = 0;
+        keyboard_set_focus(task_current());
+    } else if (vtty_current == slot || vtty_current >= vtty_nslots) {
+        int next = -1;
+        for (int i = slot; i < vtty_nslots; i++) {
+            if (vtty_owner(i)) { next = i; break; }
+        }
+        for (int i = slot - 1; next < 0 && i >= 0; i--) {
+            if (vtty_owner(i)) { next = i; break; }
+        }
+        if (next < 0) next = 0;
+        vtty_current = next;
+        task_t *owner = vtty_owner(next);
+        if (owner) {
+            keyboard_set_focus(owner);
+            keyboard_send_to(owner, KEY_FOCUS_GAIN);
+            __atomic_store_n(&vtty_pending, next, __ATOMIC_RELEASE);
+        } else {
+            keyboard_set_focus(task_current());
+        }
+    }
+
+    return slot;
+}
+
+void vtty_request_open(void)
+{
+    __atomic_fetch_add(&vtty_open_requests, 1, __ATOMIC_RELEASE);
+}
+
+int vtty_take_open_request(void)
+{
+    int n = __atomic_exchange_n(&vtty_open_requests, 0, __ATOMIC_ACQ_REL);
+    return n;
+}
+
+void vtty_request_clock_toggle(void)
+{
+    __atomic_fetch_add(&vtty_clock_toggle_requests, 1, __ATOMIC_RELEASE);
+}
+
+int vtty_take_clock_toggle_request(void)
+{
+    int n = __atomic_exchange_n(&vtty_clock_toggle_requests, 0, __ATOMIC_ACQ_REL);
+    return n;
 }
 
 int vtty_active(void)
@@ -151,6 +227,16 @@ int vtty_is_focused(void)
 int vtty_count(void)
 {
     return vtty_nslots;
+}
+
+unsigned int vtty_live_mask(void)
+{
+    unsigned int mask = 0;
+    for (int i = 0; i < VTTY_MAX; i++) {
+        if (vtty_owner(i))
+            mask |= (1u << i);
+    }
+    return mask;
 }
 
 vt_buf_t *vtty_buf(int n)
@@ -228,5 +314,4 @@ void vtty_drain_pending(void)
      * per switch -- not on every yield. */
     vt_buf_t *vt = vtty_buf(n);
     if (vt) vesa_tty_paint_buf(vt);
-    vesa_tty_paint_status(vtty_current, vtty_nslots);
 }

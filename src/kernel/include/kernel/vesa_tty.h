@@ -6,9 +6,9 @@
 
 struct vt_buf;
 
-/* Rows reserved at the bottom of the framebuffer for the tmux-style status
- * bar painted by vesa_tty_paint_status().  Default pane (and any pane-aware
- * renderer like VIX) sizes itself to leave these rows untouched. */
+/* Rows reserved at the bottom of the framebuffer for makmux's userspace tab
+ * bar.  Default pane (and any pane-aware renderer like VIX) sizes itself to
+ * leave these rows untouched. */
 #define VESA_TTY_STATUS_ROWS 1
 
 /*
@@ -134,30 +134,20 @@ void vesa_tty_paint_string_at(uint32_t col, uint32_t row,
                               const char *s,
                               uint32_t fg_rgb, uint32_t bg_rgb);
 
-/* Paint the tmux-style status bar at the bottom row of the screen.
- * Active TTY is highlighted with inverse video.  active=current VT,
- * count=number of registered slots.  No-op if vesa_tty isn't ready
- * OR if vesa_tty_set_status_visible(0) was called.
- *
- * TODO: long-term this whole renderer is a candidate for moving out
- * of the kernel into a userland `statusbar.elf` -- it'd be a small
- * tick-driven painter that uses the same SYS_PUTCH_AT primitives
- * maktop does.  Pre-req: a way for a userland task to draw on the
- * reserved status row without it being part of any TTY's pane. */
+/* Legacy no-op status entry points.  makmux owns the tab bar in userspace;
+ * these remain only while older kernel call sites are retired. */
 void vesa_tty_paint_status(int active, int count);
 
-/* Show/hide the bottom-row status bar.  When hidden, the row is
- * wiped to background and future vesa_tty_paint_status calls are
- * no-ops until visibility is turned back on.  Used by shell_run's
- * loading screen. */
+void vesa_tty_paint_status_mask(int active, unsigned int live_mask);
+
+/* Show/hide the bottom-row reservation.  When hidden, the row is wiped to
+ * background.  Used by shell_run's loading screen and mak.sh0. */
 void vesa_tty_set_status_visible(int v);
 
-/* Toggle the status bar's left label between "Makar" and a live clock
- * (HH:MM DD:MM:YY from the CMOS RTC).  Bound to Alt+F5. */
+/* Legacy no-op; Alt+F5 is queued for makmux via vtty. */
 void vesa_tty_toggle_clock(void);
 
-/* Per-PIT-tick clock refresh; repaints just the label once per second
- * while the clock is showing.  Called from the timer IRQ. */
+/* Legacy no-op. */
 void vesa_tty_status_clock_tick(uint32_t tick);
 
 /* ------------------------------------------------------------------ */

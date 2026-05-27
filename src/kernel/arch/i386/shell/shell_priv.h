@@ -48,12 +48,9 @@ typedef struct {
     uint32_t bg_rgb;  /* 24-bit VESA background                    */
 } shell_scheme_t;
 
-/* Indexed by VT slot 0..3.  Tracks the user's stated preferences:
- *   VT0  light green on black
- *   VT1  white on black
- *   VT2  white on blue (the classic Makar look, preserved as default
- *                       for the most-used secondary VT)
- *   VT3  black on white                                            */
+/* Indexed by makmux VT slot 0..3 (displayed as mak.sh1..mak.sh4).  Preserve
+ * the original VT palettes exactly; the detached mak.sh0 root tty has its
+ * own white-on-blue boot palette and does not use this table. */
 static const shell_scheme_t SHELL_SCHEMES[4] = {
     { 0x0A, 0x55FF55, 0x000000 },
     { 0x0F, 0xFFFFFF, 0x000000 },

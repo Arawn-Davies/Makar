@@ -768,7 +768,6 @@ static void shell_restore_screen(void)
     shell_apply_scheme_for_tty(tty);
     vt_buf_t *vt = vtty_buf_current();
     if (vt) vesa_tty_paint_buf(vt);
-    vesa_tty_paint_status(vtty_active(), vtty_count());
 }
 
 int shell_dispatch_argv(int argc, char **argv)
@@ -1034,6 +1033,117 @@ int shell_enter_slot(int with_loading_screen)
     }
 
     return slot;
+}
+
+static void shell_name_current_maksh(int n)
+{
+    task_t *cur = task_current();
+    if (!cur) return;
+    const char prefix[] = "mak.sh";
+    uint32_t o = 0;
+    while (prefix[o] && o + 1 < sizeof(cur->name_buf)) {
+        cur->name_buf[o] = prefix[o];
+        o++;
+    }
+    char digits[12];
+    int dn = 0;
+    if (n == 0) digits[dn++] = '0';
+    while (n && dn < (int)sizeof(digits)) {
+        digits[dn++] = (char)('0' + (n % 10));
+        n /= 10;
+    }
+    while (dn > 0 && o + 1 < sizeof(cur->name_buf))
+        cur->name_buf[o++] = digits[--dn];
+    cur->name_buf[o] = '\0';
+    cur->name = cur->name_buf;
+}
+
+int shell_enter_makmux_slot(int focus_new)
+{
+    sig_set_handler(task_current(), SIGINT, SIG_IGN);
+    task_current()->unkillable = 1;
+
+    int slot = vtty_register();
+    if (slot < 0) return -1;
+
+    shell_name_current_maksh(slot + 1);
+    vesa_tty_set_status_visible(1);
+
+    if (focus_new)
+        vtty_switch(slot);
+
+    while (!vtty_is_focused())
+        task_yield();
+
+    shell_clear_screen();
+    return slot;
+}
+
+void shell_enter_root_tty(void)
+{
+    sig_set_handler(task_current(), SIGINT, SIG_IGN);
+    task_current()->unkillable = 1;
+    task_current()->tty = TASK_TTY_NONE;
+    keyboard_set_focus(task_current());
+
+    terminal_set_colorscheme(SHELL_COLOR_VGA);
+    if (vesa_tty_is_ready()) {
+        vesa_tty_set_status_visible(0);
+        vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
+        vesa_tty_clear();
+        vesa_blit_logo(SHELL_FG_RGB, SHELL_BG_RGB);
+
+        const uint32_t bar_width = 30;
+        const uint32_t bar_row   = vesa_tty_get_rows() - 3;
+        uint32_t cols     = vesa_tty_get_cols();
+        uint32_t bar_col  = (cols > bar_width + 2) ?
+                             (cols - bar_width - 2) / 2 : 0;
+
+        vesa_tty_put_at('[', bar_col, bar_row);
+        for (uint32_t i = 0; i < bar_width; i++)
+            vesa_tty_put_at('.', bar_col + 1 + i, bar_row);
+        vesa_tty_put_at(']', bar_col + 1 + bar_width, bar_row);
+
+        uint32_t last_filled = 0;
+        uint32_t spinner_tick = 0;
+        while (!ktest_bg_done) {
+            int done  = ktest_bg_completed;
+            int total = ktest_bg_total > 0 ? ktest_bg_total : 1;
+            if (done > total) done = total;
+            uint32_t filled = (uint32_t)((done * (int)bar_width) / total);
+            while (last_filled < filled) {
+                vesa_tty_put_at('#', bar_col + 1 + last_filled, bar_row);
+                last_filled++;
+            }
+            static const char frames[] = { '|', '/', '-', '\\' };
+            vesa_tty_put_at(frames[(spinner_tick / 6) & 3],
+                            bar_col + 1 + bar_width + 2, bar_row);
+            spinner_tick++;
+            task_yield();
+        }
+        while (last_filled < bar_width) {
+            vesa_tty_put_at('#', bar_col + 1 + last_filled, bar_row);
+            last_filled++;
+        }
+        vesa_tty_put_at(' ', bar_col + 1 + bar_width + 2, bar_row);
+    }
+
+    while (!ktest_bg_done)
+        task_yield();
+    while (keyboard_poll()) {}
+
+    vesa_tty_set_status_visible(0);
+    terminal_set_colorscheme(SHELL_COLOR_VGA);
+    if (vesa_tty_is_ready()) {
+        vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
+        vesa_tty_clear();
+    } else {
+        t_fill(SHELL_COLOR_VGA);
+    }
+
+    t_writestring("Makar " MAKAR_VERSION "\n");
+    t_writestring("Type 'help' for commands, 'about' for credits.\n");
+    t_writestring("Welcome back, " SHELL_USERNAME "!\n\n");
 }
 
 /*

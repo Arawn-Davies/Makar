@@ -100,8 +100,12 @@
                                  * prompt so ui_test.sh's wait_for_serial
                                  * keeps working unchanged. */
 #define SYS_CURSOR_POS     232  /* uint32_t cursor_pos(void) -> (col<<16)|row */
-#define SYS_VT_ENTER       233  /* int vt_enter(int loading) - attach this task
-                                 * as a login shell on the next VT slot. */
+#define SYS_VT_ENTER       233  /* int vt_enter(int focus_new) - attach this task
+                                 * as a makmux shell on the next VT slot. */
+#define SYS_VT_CLOSE       234  /* int vt_close(pid_t pid) - close task's VT */
+#define SYS_VT_OPEN_REQUEST 235 /* int vt_open_request(void) - consume Alt+T */
+#define SYS_VT_STATE       236 /* uint32_t vt_state(void) -> active<<16 | mask */
+#define SYS_VT_CLOCK_REQUEST 237 /* int vt_clock_request(void) - consume Alt+F5 */
 #define SYS_GETHOSTNAME    230  /* int gethostname(char *buf, size_t size) - read
                                  * /etc/hostname (or fallback "makar"), copy up
                                  * to size-1 bytes, NUL-terminate.  Returns

@@ -48,6 +48,7 @@
 
 /* ---------- mode flags ---------- */
 static int   g_login        = 0;  /* --login: don't exit on Ctrl-D / `exit` */
+static int   g_quiet_start  = 0;
 static char  g_hostname[HOST_MAX] = "makar";
 static char  g_username[USER_MAX] = "root";
 
@@ -1288,6 +1289,7 @@ int main(int argc, char **argv, char **envp)
     const char *script_path = (const char *)0;
     for (int i = 1; i < argc; i++) {
         if (s_eq(argv[i], "--login")) g_login = 1;
+        else if (s_eq(argv[i], "--makmux")) g_quiet_start = 1;
         else if (argv[i][0] != '-')   script_path = argv[i];
     }
 
@@ -1308,7 +1310,7 @@ int main(int argc, char **argv, char **envp)
         return run_script_buf(sbuf);
     }
 
-    if (!g_login) {
+    if (!g_login && !g_quiet_start) {
         put_s("sh.elf: ring-3 shell (Ctrl-D or `exit` to quit)\n");
     }
 

@@ -48,6 +48,11 @@ exec /tmp/makbox.elf pwd
 if [ $? -eq 0 ]; then echo LIBC-TCC: [PASS] run-makbox; else echo LIBC-TCC: [FAIL] run-makbox; fail=1; fi
 sleep $pause
 
+echo LIBC-TCC: compile-makmux
+tcc /src/userspace/makmux.c -o /tmp/makmux.elf
+if [ $? -eq 0 ]; then echo LIBC-TCC: [PASS] compile-makmux; else echo LIBC-TCC: [FAIL] compile-makmux; fail=1; fi
+sleep $pause
+
 echo LIBC-TCC: compile-help
 tcc /src/userspace/help.c -o /tmp/help.elf
 if [ $? -eq 0 ]; then echo LIBC-TCC: [PASS] compile-help; else echo LIBC-TCC: [FAIL] compile-help; fail=1; fi

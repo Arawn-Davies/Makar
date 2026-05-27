@@ -225,6 +225,100 @@ sendkey ret"
     assert_serial_not_contains "DEAD"
 }
 
+test_makmux_tasks() {
+    # makmux is a userspace executable, not a second mak.sh0.  Launch it
+    # from the detached root shell, let it spawn mak.sh1..mak.sh4, then
+    # inspect /proc/tasks from the first mux VT.
+    it "makmux-tasks" \
+"$(keys "makmux")
+sendkey ret
+PAUSE 1.5
+$(keys "cat $P_PROC/tasks")
+sendkey ret
+PAUSE 0.8
+$(keys "exit")
+sendkey ret
+PAUSE 0.7
+$(keys "exit")
+sendkey ret
+PAUSE 0.7
+$(keys "exit")
+sendkey ret
+PAUSE 0.7
+$(keys "exit")
+sendkey ret" \
+        3.0
+    assert_serial_contains "makmux" "mak.sh0" "mak.sh1" "mak.sh2" "mak.sh3" "mak.sh4"
+    local n
+    n=$(grep -E '^[[:space:]]*[0-9]+[[:space:]]+mak\.sh0[[:space:]]' "$CURRENT_SEGMENT" | wc -l | tr -d ' ')
+    if [ "$n" != "1" ]; then
+        CURRENT_FAILED=1
+        echo "  - expected exactly one mak.sh0 task, saw $n"
+        echo "  - got: $(_assert_render_serial)"
+    fi
+}
+
+test_makmux_exit_alt_t() {
+    # tmux-style lifecycle: exit in a makmux VT closes that VT, not mak.sh0;
+    # Alt-T opens a replacement pane and focuses it.
+    it "makmux-exit-alt-t" \
+"$(keys "makmux")
+sendkey ret
+PAUSE 1.5
+$(keys "exit")
+sendkey ret
+PAUSE 1.2
+$(keys "cat $P_PROC/tasks")
+sendkey ret
+PAUSE 0.8
+sendkey alt-t
+PAUSE 1.2
+$(keys "cat $P_PROC/tasks")
+sendkey ret" \
+        5.0
+    assert_serial_contains "makmux" "mak.sh0" "mak.sh1" "mak.sh2" "mak.sh3" "mak.sh4"
+    local n
+    n=$(grep -E '^[[:space:]]*[0-9]+[[:space:]]+mak\.sh0[[:space:]]' "$CURRENT_SEGMENT" | wc -l | tr -d ' ')
+    if [ "$n" != "2" ]; then
+        CURRENT_FAILED=1
+        echo "  - expected mak.sh0 once in each /proc/tasks dump, saw $n"
+        echo "  - got: $(_assert_render_serial)"
+    fi
+}
+
+test_makmux_reopen_vt2() {
+    # Closing a middle VT must leave a reusable hole.  Alt-T should open a
+    # replacement in that hole, and Alt-F2 must switch to it afterward.
+    it "makmux-reopen-vt2" \
+"$(keys "makmux")
+sendkey ret
+PAUSE 1.5
+sendkey alt-f2
+PAUSE 0.8
+$(keys "exit")
+sendkey ret
+PAUSE 1.2
+sendkey alt-f3
+PAUSE 0.6
+sendkey alt-f4
+PAUSE 0.6
+sendkey alt-t
+PAUSE 1.2
+sendkey alt-f3
+PAUSE 0.6
+sendkey alt-f4
+PAUSE 0.6
+sendkey alt-f2
+PAUSE 0.8
+$(keys "echo vt2-reopened")
+sendkey ret
+PAUSE 0.8
+$(keys "cat $P_PROC/tasks")
+sendkey ret" \
+        5.0
+    assert_serial_contains "vt2-reopened" "makmux" "mak.sh2"
+}
+
 test_typo_doesnt_clear() {
     # Slice 8 polish: a wrong command falls back to makbox, which
     # prints an error to stderr and exits.  With shell_exec_elf's

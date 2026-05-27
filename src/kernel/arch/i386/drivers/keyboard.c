@@ -285,6 +285,7 @@ typedef uint8_t kc_t;
 #define KC_F10          0x44
 #define KC_F11          0x57
 #define KC_F12          0x58
+#define KC_T            0x14
 
 #define KC_EXT(b)       ((kc_t)((b) | 0x80))
 #define KC_RCTRL        KC_EXT(0x1D)   /* e0 1d */
@@ -932,7 +933,8 @@ static void on_make(kc_t kc)
                 case KC_F2: vtty_switch(1); return;
                 case KC_F3: vtty_switch(2); return;
                 case KC_F4: vtty_switch(3); return;
-                case KC_F5: vesa_tty_toggle_clock(); return;  /* Makar <-> clock */
+                case KC_F5: vtty_request_clock_toggle(); return;  /* Makar <-> clock */
+                case KC_T:  vtty_request_open(); return;
                 default: break;
             }
         }
