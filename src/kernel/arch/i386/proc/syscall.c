@@ -356,6 +356,35 @@ void syscall_dispatch(registers_t *regs)
             long r = vfs_blockdev_pread(e->dev_node, buf, len, e->pos);
             if (r < 0) { regs->eax = (uint32_t)-1; }
             else { e->pos += (uint32_t)r; regs->eax = (uint32_t)r; }
+        } else if (e->kind == FD_KIND_PIPE) {
+            /* Reader on a pipe: spin-yield until data appears, the writers
+             * all close (EOF -> return 0), or the fd is non-blocking. */
+            if (e->pipe_is_writer || !e->pipe) {
+                regs->eax = (uint32_t)-1;
+                break;
+            }
+            pipe_ring_t *r = e->pipe;
+            for (;;) {
+                uint32_t avail = r->head - r->tail;
+                if (avail > 0) {
+                    if (avail > len) avail = len;
+                    for (uint32_t i = 0; i < avail; i++) {
+                        buf[i] = (char)r->buf[(r->tail + i) % PIPE_RING_CAP];
+                    }
+                    r->tail += avail;
+                    regs->eax = avail;
+                    break;
+                }
+                if (r->refcount_w == 0) {
+                    regs->eax = 0;          /* EOF: all writers closed */
+                    break;
+                }
+                if (e->flags & FD_FLAG_NONBLOCK) {
+                    regs->eax = (uint32_t)-11;  /* -EAGAIN */
+                    break;
+                }
+                task_yield();
+            }
         } else {
             regs->eax = (uint32_t)-1;   /* not a readable kind */
         }
@@ -445,6 +474,40 @@ void syscall_dispatch(registers_t *regs)
             if (e->pos > e->size) e->size = e->pos;
             e->dirty = 1;
             regs->eax = len;
+        } else if (e->kind == FD_KIND_PIPE) {
+            /* Writer on a pipe: spin-yield while ring is full.  If every
+             * reader closes (refcount_r == 0), writing returns -EPIPE. */
+            if (!e->pipe_is_writer || !e->pipe) {
+                regs->eax = (uint32_t)-1;
+                break;
+            }
+            pipe_ring_t *r = e->pipe;
+            uint32_t written = 0;
+            while (written < len) {
+                if (r->refcount_r == 0) {
+                    /* SIGPIPE not yet implemented; surface as -EPIPE. */
+                    regs->eax = written ? written : (uint32_t)-32;
+                    break;
+                }
+                uint32_t inflight = r->head - r->tail;
+                uint32_t space    = PIPE_RING_CAP - inflight;
+                if (space == 0) {
+                    if (e->flags & FD_FLAG_NONBLOCK) {
+                        regs->eax = written ? written : (uint32_t)-11;  /* EAGAIN */
+                        break;
+                    }
+                    task_yield();
+                    continue;
+                }
+                uint32_t chunk = len - written;
+                if (chunk > space) chunk = space;
+                for (uint32_t i = 0; i < chunk; i++) {
+                    r->buf[(r->head + i) % PIPE_RING_CAP] = (uint8_t)buf[written + i];
+                }
+                r->head += chunk;
+                written += chunk;
+            }
+            if (written == len) regs->eax = written;
         } else {
             /* KEYBOARD: not writable. */
             regs->eax = (uint32_t)-1;
@@ -825,6 +888,90 @@ void syscall_dispatch(registers_t *regs)
         task_t *cur = task_current();
         regs->eax = (fd_close(cur ? cur->fd_table : NULL, fd) == 0)
                         ? 0 : (uint32_t)-1;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_PIPE(42): create a unidirectional pipe.
+     * EBX = int pipefd[2] (out)  -- pipefd[0]=read end, pipefd[1]=write end
+     * Returns: 0 on success, -1 on error.
+     *
+     * Both ends point at the same 4 KiB pipe_ring_t; refcounted so
+     * fork+dup2 can share the buffer until the last fd closes.
+     * ------------------------------------------------------------------ */
+    case SYS_PIPE: {
+        int *pipefd = (int *)(uintptr_t)regs->ebx;
+        task_t *cur = task_current();
+        fd_table_t *tbl = cur ? cur->fd_table : NULL;
+        if (!pipefd || !tbl) { regs->eax = (uint32_t)-1; break; }
+        int rfd = fd_alloc(tbl);
+        if (rfd < 0) { regs->eax = (uint32_t)-1; break; }
+        /* Mark the reader slot allocated (so fd_alloc finds a different
+         * slot for the writer).  Set kind to NONE briefly is wrong;
+         * instead temporarily install the kind, then fix up after alloc. */
+        fd_entry_t *re = &tbl->slots[rfd];
+        re->kind = FD_KIND_PIPE;            /* reserve slot */
+        int wfd = fd_alloc(tbl);
+        if (wfd < 0) {
+            memset(re, 0, sizeof(*re));
+            regs->eax = (uint32_t)-1;
+            break;
+        }
+        fd_entry_t *we = &tbl->slots[wfd];
+        we->kind = FD_KIND_PIPE;
+        pipe_ring_t *ring = (pipe_ring_t *)kmalloc(sizeof(*ring));
+        if (!ring) {
+            memset(re, 0, sizeof(*re));
+            memset(we, 0, sizeof(*we));
+            regs->eax = (uint32_t)-1;
+            break;
+        }
+        ring->head = ring->tail = 0;
+        ring->refcount_r = 1;
+        ring->refcount_w = 1;
+        re->pipe = ring;
+        re->pipe_is_writer = 0;
+        we->pipe = ring;
+        we->pipe_is_writer = 1;
+        pipefd[0] = rfd;
+        pipefd[1] = wfd;
+        regs->eax = 0;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_DUP2(63): duplicate oldfd onto newfd, closing newfd first.
+     * EBX = oldfd, ECX = newfd
+     * Returns: newfd on success, -1 on error.
+     *
+     * For FD_KIND_PIPE the underlying ring is shared (refcount bump);
+     * other kinds shallow-copy the slot, with FILE slots intentionally
+     * NOT deep-copying their buffer -- dup2 of a FILE-kind fd today
+     * aliases the buffer pointer, which is undefined behaviour for
+     * concurrent writes but matches the "no real open_file_t" stance.
+     * ------------------------------------------------------------------ */
+    case SYS_DUP2: {
+        int oldfd = (int)regs->ebx;
+        int newfd = (int)regs->ecx;
+        task_t *cur = task_current();
+        fd_table_t *tbl = cur ? cur->fd_table : NULL;
+        if (!tbl || newfd < 0 || newfd >= TASK_MAX_FDS) {
+            regs->eax = (uint32_t)-1; break;
+        }
+        fd_entry_t *oe = fd_get(tbl, oldfd);
+        if (!oe) { regs->eax = (uint32_t)-1; break; }
+        if (oldfd == newfd) { regs->eax = (uint32_t)newfd; break; }
+        /* Close target if currently open (ignore close errors -- POSIX). */
+        if (tbl->slots[newfd].kind != FD_KIND_NONE) {
+            (void)fd_close(tbl, newfd);
+        }
+        fd_entry_t *ne = &tbl->slots[newfd];
+        memcpy(ne, oe, sizeof(*ne));
+        if (oe->kind == FD_KIND_PIPE && ne->pipe) {
+            if (ne->pipe_is_writer) ne->pipe->refcount_w++;
+            else                    ne->pipe->refcount_r++;
+        }
+        regs->eax = (uint32_t)newfd;
         break;
     }
 

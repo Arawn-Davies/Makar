@@ -32,7 +32,21 @@ typedef enum {
     FD_KIND_SERIAL     = 4,   /* COM1 only (write-only)                    */
     FD_KIND_FILE       = 5,   /* opened VFS file (eagerly buffered)        */
     FD_KIND_BLOCKDEV   = 6,   /* /dev block device (no buffer; sector I/O) */
+    FD_KIND_PIPE       = 7,   /* SYS_PIPE end -- shared ring (refcounted)  */
 } fd_kind_t;
+
+/* Pipe ring shared by a reader fd + writer fd.  Allocated by SYS_PIPE;
+ * refcount tracks how many reader + writer fds point at it (dup2 / fork
+ * bump these; close decrements; the ring is freed only when both sides
+ * hit zero).  4 KiB capacity matches Linux's historical PIPE_BUF. */
+#define PIPE_RING_CAP  4096u
+typedef struct pipe_ring {
+    uint8_t  buf[PIPE_RING_CAP];
+    uint32_t head;       /* write cursor (producer)                   */
+    uint32_t tail;       /* read cursor (consumer)                    */
+    int      refcount_r; /* live reader fds pointing at this ring     */
+    int      refcount_w; /* live writer fds pointing at this ring     */
+} pipe_ring_t;
 
 /* Per-fd flag bits, mirrored from Linux fcntl O_NONBLOCK.  Stored in
  * fd_entry_t.flags and consulted by SYS_READ on FD_KIND_KEYBOARD to
@@ -53,6 +67,11 @@ typedef struct {
     uint8_t   writable; /* FILE: opened with O_WRONLY or O_RDWR        */
     uint8_t   append;   /* FILE: O_APPEND -- force pos = size before write */
     char      path[VFS_PATH_MAX];  /* FILE: absolute path for close-flush */
+    /* PIPE-kind state.  pipe is shared across all fds (reader + writer
+     * across fork / dup2) that name the same end; pipe_is_writer selects
+     * which side this fd is on (drives refcount bumps + EOF semantics). */
+    pipe_ring_t *pipe;
+    uint8_t      pipe_is_writer;
 } fd_entry_t;
 
 typedef struct fd_table {

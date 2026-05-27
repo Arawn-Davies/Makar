@@ -23,6 +23,8 @@
 #define SYS_CHDIR      12   /* int chdir(const char *path) -- set calling task's cwd */
 #define SYS_LSEEK      19   /* off_t lseek(int fd, off_t offset, int whence)   */
 #define SYS_GETPID     20   /* pid_t getpid(void)                               */
+#define SYS_PIPE       42   /* int pipe(int pipefd[2]) -- alloc reader+writer  */
+#define SYS_DUP2       63   /* int dup2(int oldfd, int newfd) -- Linux i386 ABI*/
 #define SYS_WAIT4      114  /* pid_t wait4(pid, int *status, int options, void *rusage) */
 #define SYS_KILL       37   /* int kill(int pid, int signo)                     */
 #define SYS_RENAME     38   /* int rename(const char *old, const char *new)     */
