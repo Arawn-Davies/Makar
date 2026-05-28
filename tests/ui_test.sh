@@ -114,8 +114,9 @@ test_per_tty_cwd() {
     # Per-task cwd isolation across TTYs (slice 15).  Each shell task
     # owns task_t.cwd; vfs_getcwd/vfs_cd route through task_current.  We
     # cd VT0 to /proc, switch to VT3 and cd it to /apps, then
-    # switch back to VT0.  Asserting on the "~>" prompt suffix is
-    # unambiguous since only prompts end that way.
+    # switch back to VT0.  /apps/sh.elf's prompt is `root@HOST:CWD#`,
+    # so a sub-prompt with each cwd as a substring is enough to
+    # confirm the per-task cwd was honoured on each VT.
     #
     # Uses VT3 (not VT1/2) so reset_shell's `alt-f1` between tests
     # doesn't collide with this test's VT excursion.  Extra wait because
@@ -128,7 +129,7 @@ $(keys "cd $P_APPS")
 sendkey ret
 sendkey alt-f1" \
         2.0
-    assert_serial_contains "/proc~>" "/apps~>"
+    assert_serial_contains ":/proc#" ":/apps#"
 }
 
 test_cd_root() {
@@ -614,7 +615,7 @@ test_ctrlc_kills_child() {
     # returns to the prompt -> type `pwd` -> makbox emits its `[makbox:pwd]`
     # serial provenance tag.  Presence of that tag is unambiguous evidence
     # the shell prompt is responsive again after the child was killed.
-    it "ctrlc-kills-child" \
+    it_until "ctrlc-kills-child" \
 "$(keys "exec $P_APPS/calc.elf")
 sendkey ret
 PAUSE 0.8
@@ -622,7 +623,7 @@ sendkey ctrl-c
 PAUSE 0.4
 $(keys "pwd")
 sendkey ret" \
-        2.0
+        "[makbox:pwd]" 8
     assert_serial_contains "[makbox:pwd]"
 }
 
@@ -630,15 +631,17 @@ test_ctrlc_cat() {
     # makbox cat installs a SIGINT handler and writes in small yielded
     # chunks, so Ctrl+C should stop a large stream promptly and return the
     # shell to an interactive prompt.
-    it "ctrlc-cat" \
+    it_until "ctrlc-cat" \
 "$(keys "cat /log/kernel.log")
 sendkey ret
 PAUSE 0.2
 sendkey ctrl-c
 PAUSE 0.4
+$(keys "echo status=\$?")
+sendkey ret
 $(keys "echo after-cat")
 sendkey ret" \
-        4.0
+        "after-cat" 8
     assert_serial_contains "status=130" "after-cat"
 }
 
@@ -819,7 +822,7 @@ sendkey ret
 $(keys "pwd")
 sendkey ret" \
         "[makbox:pwd]" 15
-    assert_serial_contains "sh.elf: ring-3 userspace shell" "/proc" "[makbox:pwd]"
+    assert_serial_contains "sh.elf: ring-3 shell" "/proc" "[makbox:pwd]"
     assert_serial_not_contains "Kernel panic" "SIGSEGV"
 }
 
@@ -844,7 +847,7 @@ sendkey ret
 $(keys "exit")
 sendkey ret" \
         "20" 15
-    assert_serial_contains "sh.elf: ring-3 userspace shell" "20"
+    assert_serial_contains "sh.elf: ring-3 shell" "20"
     assert_serial_not_contains "Kernel panic" "SIGSEGV"
 }
 
@@ -876,7 +879,7 @@ sendkey ret" \
     # the backspace-corrected variant.  All print "/\n".  We can't easily
     # count occurrences in assert_serial_contains, but seeing the prompt
     # come back after `exit` proves the loop didn't wedge.
-    assert_serial_contains "sh.elf: ring-3 userspace shell"
+    assert_serial_contains "sh.elf: ring-3 shell"
     assert_serial_not_contains "Kernel panic" "SIGSEGV" "command not found"
 }
 
@@ -914,7 +917,7 @@ sendkey ret
 $(keys "exit")
 sendkey ret" \
         "gone==end" 20
-    assert_serial_contains "sh.elf: ring-3 userspace shell" \
+    assert_serial_contains "sh.elf: ring-3 shell" \
                            "hello tester" \
                            "status=127" \
                            "gone==end"
@@ -943,8 +946,8 @@ $(keys "pwd")
 sendkey ret
 $(keys "exit")
 sendkey ret" \
-        "sh.elf: ring-3 userspace shell" 15
-    assert_serial_contains "sh.elf: ring-3 userspace shell"
+        "sh.elf: ring-3 shell" 15
+    assert_serial_contains "sh.elf: ring-3 shell"
     assert_serial_not_contains "Kernel panic" "SIGSEGV"
 }
 

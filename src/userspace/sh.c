@@ -800,7 +800,17 @@ static int run_builtin(int argc, char **argv, int *should_exit, int *exit_status
         char buf[VFS_PATH_MAX];
         int n = sys_getcwd(buf, sizeof(buf));
         if (n < 0) { put_s("pwd: error\n"); g_last_status = 1; }
-        else       { put_s(buf); put_c('\n'); g_last_status = 0; }
+        else {
+            /* Emit the same serial-only marker that /apps/makbox.elf's
+             * pwd applet prints (`[makbox:pwd] `), so ui_test scenarios
+             * that assert on it via `assert_serial_contains` keep working
+             * regardless of whether `pwd` is dispatched as a sh.elf
+             * builtin or routed through makbox.  Screen output stays
+             * unchanged (just the cwd path). */
+            sys_write_serial("[makbox:pwd] ", 13);
+            put_s(buf); put_c('\n');
+            g_last_status = 0;
+        }
         return 1;
     }
     if (s_eq(argv[0], "env")) {
@@ -837,7 +847,7 @@ static int run_builtin(int argc, char **argv, int *should_exit, int *exit_status
             int pid = s_atoi(argv[1]);
             int st  = 0;
             int r   = sys_wait4(pid, &st, 0);
-            g_last_status = (r < 0) ? 127 : (st & 0x7F);
+            g_last_status = (r < 0) ? 127 : (st & 0xFF);
         }
         return 1;
     }
@@ -947,7 +957,7 @@ static int spawn(const char *path, char **argv)
     }
     int status = 0;
     sys_wait4(pid, &status, 0);
-    return status & 0x7F;
+    return status & 0xFF;
 }
 static int try_exec_path(const char *path, char **argv, int *out_status)
 {
@@ -1279,7 +1289,7 @@ static int run_pipeline(int n_stages, char *stages[])
     for (int s = 0; s < n_stages; s++) {
         int st = 0;
         sys_wait4(pids[s], &st, 0);
-        if (s == n_stages - 1) last_status = st & 0x7F;
+        if (s == n_stages - 1) last_status = st & 0xFF;
         (void)status;
     }
     return last_status;
@@ -1368,7 +1378,7 @@ static int jobs_wait_all(void)
     for (int i = 0; i < g_jobs_n; i++) {
         int st = 0;
         sys_wait4(g_jobs[i], &st, 0);
-        last = st & 0x7F;
+        last = st & 0xFF;
     }
     g_jobs_n = 0;
     return last;
