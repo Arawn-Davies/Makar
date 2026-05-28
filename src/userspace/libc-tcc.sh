@@ -182,6 +182,19 @@ exec /apps/ar.elf rcs /tmp/test.a /tmp/hello.o /tmp/calc.o
 if [ $? -eq 0 ]; then echo LIBC-TCC: [PASS] ar-rcs; else echo LIBC-TCC: [FAIL] ar-rcs; fail=1; fi
 sleep $pause
 
+# --- tcc as the linker (slice 5c rung -- can we link in-OS-built .o
+# files into a runnable ELF?).  TCC accepts mixed .c and .o inputs --
+# this one's all-objects so it's pure link.  Pulls crt1/crti/crtn from
+# /usr/lib so the result is a complete ring-3 executable.
+echo LIBC-TCC: link-hello-from-o
+tcc /tmp/hello.o -o /tmp/hello-from-o.elf
+if [ $? -eq 0 ]; then echo LIBC-TCC: [PASS] link-hello-from-o; else echo LIBC-TCC: [FAIL] link-hello-from-o; fail=1; fi
+sleep $pause
+echo LIBC-TCC: run-hello-from-o
+exec /tmp/hello-from-o.elf link-from-o
+if [ $? -eq 0 ]; then echo LIBC-TCC: [PASS] run-hello-from-o; else echo LIBC-TCC: [FAIL] run-hello-from-o; fail=1; fi
+sleep $pause
+
 # --- Relative-path TCC: prove path resolution works when cwd != /
 cd /src/userspace
 echo LIBC-TCC: compile-hello-relpath
