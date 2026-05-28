@@ -18,7 +18,7 @@
  *   - Glob expansion of `*` and `?` against the cwd.
  *   - $VAR / ${VAR} / $? expansion across the whole line.
  *   - PATH lookup with default `/apps`, `.elf` auto-probe.
- *   - Restricted makbox fallback for ls/cat/cp/mv/rm/rmdir/echo/pwd.
+ *   - Restricted makbox fallback for ls/cat/cp/mv/rm/mkdir/rmdir/echo/pwd.
  *   - Builtins: cd, pwd, exit, env, unset, read, sleep, true, false,
  *               `[ ... ]`, history, hostname.
  *   - Admin builtins via privileged syscalls: shutdown, reboot, eject,
@@ -360,7 +360,7 @@ static int tab_collect_commands(const char *leaf, tab_match_t *out)
         "lspart", "ktest", (const char *)0
     };
     static const char *applets[] = {
-        "ls", "cat", "cp", "mv", "rm", "rmdir", "echo", "pwd", (const char *)0
+        "ls", "cat", "cp", "mv", "rm", "mkdir", "rmdir", "echo", "pwd", (const char *)0
     };
 
     for (int i = 0; builtins[i] && n < TAB_MAX; i++) {
@@ -928,7 +928,7 @@ static int run_builtin(int argc, char **argv, int *should_exit, int *exit_status
 static int is_makbox_applet(const char *name)
 {
     static const char *applets[] = {
-        "ls", "cat", "cp", "mv", "rm", "rmdir", "echo", "pwd", (const char *)0
+        "ls", "cat", "cp", "mv", "rm", "mkdir", "rmdir", "echo", "pwd", (const char *)0
     };
     for (int i = 0; applets[i]; i++) if (s_eq(name, applets[i])) return 1;
     return 0;

@@ -111,7 +111,7 @@ static int shell_path_dir(int idx, char *out, size_t outsz)
 /* makbox applets - tab completion advertises these as first-token
  * candidates even though no standalone <name>.elf exists on PATH. */
 static const char *const s_makbox_applets[] = {
-    "ls", "cat", "cp", "mv", "rm", "rmdir", "echo", "pwd", NULL,
+    "ls", "cat", "cp", "mv", "rm", "mkdir", "rmdir", "echo", "pwd", NULL,
 };
 
 /* ---------------------------------------------------------------------------
@@ -826,7 +826,7 @@ int shell_dispatch_argv(int argc, char **argv)
      * the shell's "unknown command" path -- we don't want random typos
      * routed into makbox just to have it print its usage banner. */
     static const char *MAKBOX_APPLETS[] = {
-        "ls", "cat", "cp", "mv", "rm", "rmdir", "echo", "pwd", NULL
+        "ls", "cat", "cp", "mv", "rm", "mkdir", "rmdir", "echo", "pwd", NULL
     };
     int is_makbox_applet = 0;
     for (int a = 0; MAKBOX_APPLETS[a]; a++) {

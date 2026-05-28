@@ -2,8 +2,9 @@
  * makbox.c -- Makar busybox: multicall userspace utility.
  *
  * The shell exec's this with argv[0]="makbox" argv[1]=<applet> argv[2..]=args.
- * Applets: ls, cat, cp, mv, rm, echo.  pwd / cd remain shell builtins
- * (parent-state mutation belongs in the shell, like bash).
+ * Applets: ls, cat, cp, mv, rm, mkdir, rmdir, echo, pwd.
+ * cd remains a shell builtin because parent-state mutation belongs in the
+ * shell, like bash.
  */
 
 #include "syscall.h"
@@ -229,6 +230,25 @@ static int cmd_rm(int argc, char **argv)
     return rc;
 }
 
+static int cmd_mkdir(int argc, char **argv)
+{
+    if (argc < 2) {
+        write_fd(1, "Usage: mkdir <path>...\n");
+        return 1;
+    }
+
+    int rc = 0;
+    for (int i = 1; i < argc; i++) {
+        if (sys_mkdir(argv[i], 0777u) != 0) {
+            write_fd(1, "mkdir: cannot create '");
+            write_fd(1, argv[i]);
+            write_fd(1, "'\n");
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
 /* SIGINT handler: any in-flight applet (cat reading a large log, cp
  * copying a multi-MiB tree, ...) terminates cleanly when the operator
  * presses Ctrl-C, rather than running to completion ignoring the
@@ -240,7 +260,7 @@ int main(int argc, char **argv)
     sys_signal(SIGINT, on_sigint);
 
     if (argc < 2) {
-        write_fd(1, "Usage: makbox <ls|cat|cp|mv|rm|rmdir|echo|pwd> [args...]\n");
+        write_fd(1, "Usage: makbox <ls|cat|cp|mv|rm|mkdir|rmdir|echo|pwd> [args...]\n");
         sys_exit(1);
     }
 
@@ -254,6 +274,7 @@ int main(int argc, char **argv)
     else if (streq(cmd, "cp"))   rc = cmd_cp(sub_argc, sub_argv);
     else if (streq(cmd, "mv"))   rc = cmd_mv(sub_argc, sub_argv);
     else if (streq(cmd, "rm"))   rc = cmd_rm(sub_argc, sub_argv);
+    else if (streq(cmd, "mkdir")) rc = cmd_mkdir(sub_argc, sub_argv);
     else if (streq(cmd, "rmdir")) {
         /* GNU rmdir: each arg is treated as a directory; equivalent to
          * `rm -d` here.  Synthesise the -d flag and reuse cmd_rm. */
@@ -275,7 +296,7 @@ int main(int argc, char **argv)
         write_fd(1, "makbox: unknown applet '");
         write_fd(1, cmd);
         write_fd(1, "'\n");
-        write_fd(1, "Usage: makbox <ls|cat|cp|mv|rm|rmdir|echo|pwd> [args...]\n");
+        write_fd(1, "Usage: makbox <ls|cat|cp|mv|rm|mkdir|rmdir|echo|pwd> [args...]\n");
     }
 
     sys_exit(rc);

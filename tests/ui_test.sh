@@ -1045,7 +1045,7 @@ sendkey ret" \
 
 test_tcc_rebuild_makbox() {
     # In-OS rebuild of makbox.elf (the freestanding multicall busybox: ls /
-    # cat / cp / mv / rm / rmdir / echo / pwd).  Proves TCC handles the
+    # cat / cp / mv / rm / mkdir / rmdir / echo / pwd).  Proves TCC handles the
     # larger multicall dispatcher + every applet's syscall surface against
     # the same shim-free build the shipped binary uses.  Asserts on the
     # `pwd` applet's output (deterministic across boots once we cd /).
