@@ -169,26 +169,6 @@ tcc -c /src/userspace/hello.c -o /tmp/hello.o
 if [ $? -eq 0 ]; then echo LIBC-TCC: [PASS] compile-hello-c; else echo LIBC-TCC: [FAIL] compile-hello-c; fail=1; fi
 sleep $pause
 
-# --- TCC self-rebuild: the v1.0 self-host flex.  SKIPPED in the default
-# iso-test run because compiling tcc.c on TCG-emulated i386 exceeds the
-# QEMU watchdog (~3 min).  Enable manually with TCC_SELF=1:
-#
-#   tcc -DONE_SOURCE=1 -DCONFIG_TCC_STATIC \
-#       -DCONFIG_TCCDIR="/usr/lib/tcc" \
-#       -DCONFIG_TCC_SYSINCLUDEPATHS="/usr/include:/usr/lib/tcc/include" \
-#       -I/src/tinycc -I/src/tinycc/build-stubs -I/src/userspace \
-#       /src/tinycc/tcc.c -o /tmp/tcc-rebuilt.elf
-#
-# Known issues in current state (see docs/plans/v1.md for the full thread):
-#   - vsnprintf %l/%ll/%z/%h modifiers (FIXED in this session).
-#   - vsnprintf %s now guards against unmapped pointers via brk-aware
-#     range check (FIXED in this session).
-#   - TCC's source-location pointer is uninitialised on entry, so
-#     diagnostics print "(badptr):543517801" instead of file:line.
-#     Cosmetic; doesn't block compilation.
-#   - Watchdog timeout: the actual compile would likely succeed if the
-#     iso-test runner gave it more wall-clock budget.
-
 # --- Relative-path TCC: prove path resolution works when cwd != /
 cd /src/userspace
 echo LIBC-TCC: compile-hello-relpath
@@ -203,3 +183,24 @@ cd /
 
 if [ $fail -eq 0 ]; then echo LIBC-TCC: ALL PASS; else echo LIBC-TCC: FAIL; fi
 sleep 2
+
+# --- TCC self-rebuild (v1.0 leg-1): currently skipped in CI for TWO
+# reasons documented in docs/plans/v1.md:
+#   1. The compile exceeds the iso-test watchdog (mitigated by the
+#      KTEST_TIMEOUT=360 default that run.sh now sets -- override
+#      KTEST_TIMEOUT to extend further).
+#   2. After TCC exits in this run, the kernel sh interpreter enters
+#      a state where subsequent script lines silently no-op
+#      (subsequent SHELL-SMOKE / sh_run_file calls return without
+#      processing).  This blocks running tcc-self in the same boot
+#      as shell-smoke.sh.  Suspect: TCC's stdout fd or the
+#      kernel-shell wait4 path leaves stale state behind.
+#
+# Manual invocation (boot interactively into a shell, then):
+#   tcc -DONE_SOURCE=1 -DCONFIG_TCC_STATIC \
+#       -DCONFIG_TCCDIR="/usr/lib/tcc" \
+#       -DCONFIG_TCC_SYSINCLUDEPATHS="/usr/include:/usr/lib/tcc/include" \
+#       -I/src/tinycc -I/src/tinycc/build-stubs -I/src/userspace \
+#       /src/tinycc/tcc.c -o /tmp/tcc-rebuilt.elf
+#
+# v1.0 leg 1 ships once issue #2 is rooted out and this can re-enable.
