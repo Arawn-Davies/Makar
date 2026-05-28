@@ -1,5 +1,13 @@
 # Plan: POSIX shell + TCC self-host roadmap
 
+> **Status (PR #181, 2026-05-27):** the blocker, **B1**, **A1**,
+> **A2**, and **A3** all shipped on the `feat/tcc-progress` branch.
+> **B2** is partially landed -- the test infrastructure exists but the
+> self-rebuild compile exceeds the iso-test watchdog timeout; the
+> command itself is commented out in `libc-tcc.sh` pending a budget
+> bump.  **B3** (mmap + `tcc -run`) and the v1.0 cut are still open.
+> Detailed handoff lives in `docs/plans/v1.md`.
+
 ## Context
 
 The userspace-shell migration (PR #180) shipped: `/apps/sh.elf` is the

@@ -688,10 +688,16 @@ build of `dash`:
 - **`SYS_READDIR`** (streaming `getdents`).  Today's `SYS_LS_DIR` returns a
   pre-rendered text blob — fine for the in-kernel shell's `ls`, useless for
   `opendir`/`readdir` (and for any userland shell's tab complete).
-- **`SYS_PIPE` + `dup2`**.  Both depend on a refcounted `open_file_t` layer
-  underneath `fd_table_t` so a forked child shares the parent's seek
-  position (POSIX requirement).  Today `fd_table_clone` deep-copies FILE
-  buffers per-fd, which is non-POSIX and rules out shared seeks.
+- **`SYS_PIPE` + `SYS_DUP2`**.  Shipped in PR #181 (numbers 42 / 63,
+  Linux i386 ABI).  `FD_KIND_PIPE` slots point at a shared
+  `pipe_ring_t` (4 KiB ring + reader/writer refcounts); fork bumps
+  the refcount instead of deep-copying, freeing the ring when both
+  ends hit zero.  Read blocks via `task_yield()` on empty (EOF when
+  all writers close); write blocks on full (`-EPIPE` when all readers
+  close).  The FILE-kind path still deep-copies on fork — the
+  `open_file_t` refcount refactor that would unify both kinds is
+  still pending.  Single-arg `dup(fd)` still missing (workaround:
+  `dup2(fd, lowest_free)`).
 - **`SYS_MMAP(MAP_ANONYMOUS)`**.  musl's allocator falls back to mmap for
   large allocations.  Implementing it as a `vmm_map_page` over an arbitrary
   range is straightforward; the tricky bit is per-task virtual-address
