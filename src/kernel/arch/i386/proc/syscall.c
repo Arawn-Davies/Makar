@@ -1610,6 +1610,11 @@ void syscall_dispatch(registers_t *regs)
         regs->eax = (uint32_t)admin_eject();
         break;
     }
+    case SYS_INSTALL: {
+        if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
+        regs->eax = (uint32_t)admin_install();
+        break;
+    }
     case SYS_MOUNT: {
         if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
         regs->eax = (uint32_t)admin_mount((const char *)regs->ebx,

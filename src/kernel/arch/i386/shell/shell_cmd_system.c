@@ -15,6 +15,7 @@
 #include <kernel/ktest.h>
 #include <kernel/serial.h>
 #include <kernel/vfs.h>
+#include <kernel/installer.h>
 #include <kernel/admin.h>
 
 static void cmd_echo(int argc, char **argv)
@@ -103,6 +104,17 @@ int admin_reboot(void)
 {
     vfs_prepare_shutdown();
     acpi_reboot();
+    return 0;
+}
+
+/* admin_install -- launch the Limine installer TUI from the calling task.
+ * Mirrors `cmd_install` (shell_cmd_apps.c) so the in-kernel rescue shell
+ * and the userspace shell reach the same code via SYS_INSTALL.  The
+ * installer paints the framebuffer; on a serial-only boot the user can
+ * still type its keys via the focused TTY's keyboard ring. */
+int admin_install(void)
+{
+    installer_run();
     return 0;
 }
 

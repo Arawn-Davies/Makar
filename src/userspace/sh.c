@@ -718,6 +718,7 @@ static int run_admin(int argc, char **argv)
     if (s_eq(cmd, "shutdown"))     { sys_shutdown(); return 1; }
     if (s_eq(cmd, "reboot"))       { sys_reboot();   return 1; }
     if (s_eq(cmd, "eject"))        { g_last_status = sys_eject() ? 1 : 0; return 1; }
+    if (s_eq(cmd, "install"))      { g_last_status = sys_install() ? 1 : 0; return 1; }
     if (s_eq(cmd, "setmode")) {
         int rc = sys_setmode(argc >= 2 ? argv[1] : (const char *)0);
         g_last_status = rc < 0 ? 1 : 0; return 1;
@@ -761,7 +762,7 @@ static int run_admin(int argc, char **argv)
         sys_verbose(new_v); g_last_status = 0; return 1;
     }
     /* Visible stubs -- not yet wrappable from userspace.  Stable text. */
-    if (s_eq(cmd, "install")    || s_eq(cmd, "chainload") ||
+    if (s_eq(cmd, "chainload")  ||
         s_eq(cmd, "readsector") || s_eq(cmd, "mkpart")    ||
         s_eq(cmd, "lspart")     || s_eq(cmd, "ktest")) {
         put_s(cmd); put_s(": not available from userspace yet\n");

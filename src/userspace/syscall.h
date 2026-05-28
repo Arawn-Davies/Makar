@@ -70,6 +70,7 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_FGCOL         222
 #define SYS_BGCOL         223
 #define SYS_EJECT         224
+#define SYS_INSTALL       238
 #define SYS_MOUNT         225
 #define SYS_UMOUNT        226
 #define SYS_MKFS          227
@@ -642,6 +643,10 @@ static inline int sys_bgcol(const char *colour)
 static inline int sys_eject(void)
 {
     return (int)syscall1(SYS_EJECT, 0);
+}
+static inline int sys_install(void)
+{
+    return (int)syscall1(SYS_INSTALL, 0);
 }
 static inline int sys_mount(const char *dev, const char *mnt)
 {
