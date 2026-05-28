@@ -169,6 +169,19 @@ tcc -c /src/userspace/hello.c -o /tmp/hello.o
 if [ $? -eq 0 ]; then echo LIBC-TCC: [PASS] compile-hello-c; else echo LIBC-TCC: [FAIL] compile-hello-c; fail=1; fi
 sleep $pause
 
+# --- ar applet smoke (slice 5b: kernel-self-rebuild rung #2 -- can
+# in-OS `ar` stitch object files into a static archive?).  Uses the
+# /tmp/hello.o from compile-hello-c above plus a fresh one to give it
+# something to archive.
+echo LIBC-TCC: compile-hello-c-2
+tcc -c /src/userspace/calc.c -o /tmp/calc.o
+if [ $? -eq 0 ]; then echo LIBC-TCC: [PASS] compile-hello-c-2; else echo LIBC-TCC: [FAIL] compile-hello-c-2; fail=1; fi
+sleep $pause
+echo LIBC-TCC: ar-rcs
+exec /apps/ar.elf rcs /tmp/test.a /tmp/hello.o /tmp/calc.o
+if [ $? -eq 0 ]; then echo LIBC-TCC: [PASS] ar-rcs; else echo LIBC-TCC: [FAIL] ar-rcs; fail=1; fi
+sleep $pause
+
 # --- Relative-path TCC: prove path resolution works when cwd != /
 cd /src/userspace
 echo LIBC-TCC: compile-hello-relpath

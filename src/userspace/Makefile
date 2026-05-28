@@ -16,7 +16,7 @@ LDFLAGS=-T link.ld -nostdlib
 DESTDIR?=
 ISODIR?=$(CURDIR)/../../isodir
 
-PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf kbtester.elf makbox.elf makmux.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf fdisk.elf cfdisk.elf basic.elf filetest.elf alloctest.elf sh.elf
+PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf kbtester.elf makbox.elf makmux.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf fdisk.elf cfdisk.elf basic.elf filetest.elf alloctest.elf sh.elf ar.elf
 
 # libc.a -- single archive of the userspace shim (malloc + FILE* stdio +
 # setjmp/longjmp + string/memory helpers).  Shipped under /usr/lib on the
@@ -99,6 +99,9 @@ filetest.elf: crt0.o filetest.o libc.a
 
 alloctest.elf: crt0.o alloctest.o libc.a
 	$(LD) $(LDFLAGS) -o $@ crt0.o alloctest.o libc.a
+
+ar.elf: crt0.o ar.o libc.a
+	$(LD) $(LDFLAGS) -o $@ crt0.o ar.o libc.a
 
 # Archive of the userspace libc shim.  Built with rcs (replace, create
 # index) so successive builds replace stale objects in place.  Debug
