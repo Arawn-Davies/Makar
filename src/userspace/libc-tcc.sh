@@ -195,6 +195,29 @@ exec /tmp/hello-from-o.elf link-from-o
 if [ $? -eq 0 ]; then echo LIBC-TCC: [PASS] run-hello-from-o; else echo LIBC-TCC: [FAIL] run-hello-from-o; fail=1; fi
 sleep $pause
 
+# --- Freestanding link (slice 5c rung-2: tcc -nostdlib produces a kernel-
+# shaped ELF).  Validates that the in-OS TCC's linker driver works without
+# crt0/libc -- the prerequisite for actually linking a Makar kernel binary.
+echo LIBC-TCC: compile-freestanding
+tcc -c -ffreestanding -nostdlib /src/userspace/freestanding.c -o /tmp/free.o
+if [ $? -eq 0 ]; then echo LIBC-TCC: [PASS] compile-freestanding; else echo LIBC-TCC: [FAIL] compile-freestanding; fail=1; fi
+sleep $pause
+
+echo LIBC-TCC: link-freestanding
+tcc -nostdlib -static /tmp/free.o -o /tmp/free.bin
+if [ $? -eq 0 ]; then echo LIBC-TCC: [PASS] link-freestanding; else echo LIBC-TCC: [FAIL] link-freestanding; fail=1; fi
+sleep $pause
+
+# --- TCC's -T flag isn't supported in v0.9.27 (tcc: error: invalid option).
+# Try driving the same layout via -Wl, flags as a workaround.  Just
+# setting the text load address gets us most of the way to a kernel-
+# shaped binary -- a real Multiboot 2 header still needs to be emitted
+# by the C source (or a tiny .S file) but that's a separate piece.
+echo LIBC-TCC: link-freestanding-wl-ttext
+tcc -nostdlib -static -Wl,-Ttext,0x100000 /tmp/free.o -o /tmp/free-1m.bin
+if [ $? -eq 0 ]; then echo LIBC-TCC: [PASS] link-freestanding-wl-ttext; else echo LIBC-TCC: [FAIL] link-freestanding-wl-ttext; fail=1; fi
+sleep $pause
+
 # --- Relative-path TCC: prove path resolution works when cwd != /
 cd /src/userspace
 echo LIBC-TCC: compile-hello-relpath
