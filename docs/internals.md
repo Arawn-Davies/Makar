@@ -728,15 +728,20 @@ It compiles C to a static `ET_EXEC` ELF on disk — no fork, no JIT, no
 `mmap(PROT_EXEC)`. The workflow is CP/M-style: boot → write source in VIX →
 `tcc hello.c -o hello.elf` → `exec hello.elf`.
 
-**Current state (May 2026):** Phases 1 & 2 of the
-[TCC feasibility plan](tcc-feasibility.md) are shipped. The kernel-side file
-I/O surface (writable fds, `O_CREAT`/`O_TRUNC`/`O_APPEND`, `SYS_STAT`/
-`FSTAT`, `READDIR`, 8 MiB file cap) and the freestanding libc shim
-(`malloc`/`stdio`/`setjmp`/`ctype`/`stdlib`/POSIX wrappers) are both in tree
-with ktest + ui-test coverage. `build-tcc.sh` probes the cross-compile and
-logs the remaining porting gaps (primarily `tccrun.c`'s JIT/signal paths);
-Phase 3 (patch those out, produce `tcc.elf`, ship on the OS image) is the
-next milestone. See [TCC feasibility](tcc-feasibility.md) for the full plan.
+**Current state (May 2026, v0.9):** all original phases shipped, and
+self-hosting now covers the kernel itself.  `tcc.elf` ships on every ISO,
+userspace apps (`hello`, `calc`, `sh`, `makbox`) self-rebuild in-OS, and
+the bootable Multiboot 2 kernel ELF rebuilds end-to-end with our shipped
+TCC via `./build-kernel-tcc.sh` (host-side) or `/apps/rebuild-kernel.sh`
+(inside Makar).  Earlier groundwork shipped the kernel-side file I/O
+surface (writable fds, `O_CREAT`/`O_TRUNC`/`O_APPEND`, `SYS_STAT`/`FSTAT`,
+`SYS_READDIR`, 16 MiB file cap) and the freestanding libc shim
+(`malloc`/`stdio`/`setjmp`/`ctype`/`stdlib`/POSIX wrappers), both with
+ktest + ui-test coverage.  The boot banner reports `gcc-host` /
+`tcc-host` / `tcc-in-os` based on the build path.  See
+[TCC feasibility](tcc-feasibility.md) for the original spike and
+[handoff-self-hosting](handoff-self-hosting.md) for the kernel rebuild
+write-up.
 
 ---
 

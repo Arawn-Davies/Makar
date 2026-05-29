@@ -12,6 +12,96 @@ Sections under each release: **Added / Changed / Fixed / Removed**.
 For what's queued up next, see the [roadmap](roadmap.md);
 this file is the trail of how the current state got there.
 
+## 0.9.0 — Kernel self-host with TCC (May 2026)
+
+Version bump: 0.8.1 → 0.9.0.  The bootable Multiboot 2 kernel ELF is
+now built end-to-end with our shipped TCC — host-side via
+`./build-kernel-tcc.sh`, in-OS via the generated
+`/apps/rebuild-kernel.sh` (kernel-sh script driving `/apps/tcc.elf`
+once per source).  Boot banner reports build origin
+(`gcc-host` / `tcc-host` / `tcc-in-os`).  Full write-up in
+[handoff-self-hosting](handoff-self-hosting.md).
+
+### Added
+- `build-kernel-tcc.sh` host driver + generator for the in-OS rebuild
+  script.  Single source of truth (one file list).
+- `src/userspace/{rebuild-kernel.sh,kend.S}` staged at
+  `/apps/{rebuild-kernel.sh,kend.S}` on every ISO.
+- `kernel/atomic.h` — TCC-only shims for `__atomic_*` builtins and
+  `__builtin_unreachable`, using `lock`-prefixed asm.
+- `mb2_header_check.c` — static layout assertion guarding boot.S's
+  hardcoded `MB2_HEADER_LEN = 48`.
+- `arch/i386/boot/build_origin.c` — three-way build-origin marker.
+- ISO staging: `/usr/include/kernel-build/` (re-exposed kernel
+  headers), `/usr/lib/tcc/include/{stdint,limits}.h` (Makar TCC stubs).
+- Opt-in test-mode phase `REBUILD-KERNEL` via
+  `TEST_CMDLINE='test_mode test=rebuild-kernel'`.
+
+### Changed
+- `kmalloc` rounds `size` up to 4-byte alignment — root cause of a
+  long-tail heap corruption under heavy fork/exec churn (every odd-
+  sized allocation misaligned the next remainder block; the cascade
+  eventually poisoned the freelist).
+- `kfree` range-checks `ptr` and validates `blk->next` lies in-heap
+  inside the coalesce loop.  `fd_close` skips kfree on out-of-range
+  or unaligned `e->data`.  Both emit a one-line diagnostic naming
+  the caller via `__builtin_return_address` if anything else ever
+  produces a bogus pointer.
+- `boot.S` / `chainload.S` / `isr_asm.S`: `#ifdef __TINYC__` paths
+  hardcode forward symbol offsets and rewrite GAS `.macro` as cpp
+  `#define`.  GCC build untouched.
+- `vendor/tinycc/tccasm.c`: NULL-guard `asm_expr_sum` so forward
+  symbol references error cleanly instead of segfaulting TCC.
+- `syscall.c`: hoisted `SYS_READDIR`'s nested callback to file scope
+  (TCC rejects gcc nested functions).
+- `libc/stdlib/abort.c`: drop `__builtin_unreachable()` under TCC.
+- Boot banner now distinguishes which compiler/where built the kernel:
+  `Host-built kernel! (GCC)`, `Self-hosted kernel! (TCC, host build)`,
+  or `Self-hosted and built inside Makar! (TCC)`.
+- task.c reaper: fixed misplaced `t->script_vars = NULL` that was
+  inside the `if (t->exec_params)` block (latent leak / UAF cousin
+  of the kmalloc-alignment bug).
+- Shell path-style dispatch (`/abs/foo` or `./foo`) now peeks the
+  file's first 4 bytes for the ELF magic instead of relying on a
+  `.sh` suffix — bash-flavoured auto-detect: ELF → exec, anything
+  else → script interpreter.
+
+### Open (handed off)
+- In-OS rebuild script runs end-to-end with correct PASS/FAIL marker
+  discipline, but ~19/75 per-file compiles still fail with
+  `(null):3811692: invalid number syntax` — TCC's own BufferedFile
+  state corruption inside `tcc.elf`, not a kernel exec/argv bug.
+  Tracked separately; host-side TCC build is unaffected.
+
+## 0.8.x — In-OS TCC milestone (May 2026)
+
+Version bump: 0.7.x → 0.8.x.  `tcc.elf` (TinyCC v0.9.27 cross-built
+against the Makar libc shim) ships on every ISO at `/apps/tcc.elf`.
+The sysroot (`/usr/{include,lib}` plus `/usr/lib/tcc/`) is auto-staged
+by `build-tcc.sh`.
+
+### Added
+- `/apps/tcc.elf` self-rebuilds `calc.elf`, `sh.elf`, `makbox.elf`,
+  `hello.elf` in-OS (verified by `test_tcc_rebuild_*`).
+- `SYSCALL_FILE_MAX` lifted to 16 MiB; kernel heap to 32 MiB to absorb
+  TCC's working set.
+- Ring-3 page faults + GPFs now deliver SIGSEGV via `task_exit` rather
+  than panicking the kernel; panic screen names the running task on
+  ring-0 faults.
+- Real VFS mount table (`s_mounts[]` in `vfs.c`); `root=/dev/hdaN`
+  Multiboot 2 cmdline; auto-detect ext2 → FAT32 → CD-ROM emergency.
+  `/dev`, `/proc`, `/tmp`, `/log`, `/mnt/cdrom`, `/mnt/<name>` all
+  first-class table entries.  Legacy `/hd` / `/mnt/hd` aliases retired.
+- `/apps/sh.elf` ring-3 shell MVP with inline editing, history,
+  variables, `$?` expansion, fork+execve+wait4 dispatch.  Coexists
+  with the in-kernel shell.
+
+### Fixed
+- Upstream TCC NULL-deref in `vendor/tinycc/tccelf.c:fill_local_got_entries`
+  triggered by every Makar app today (no GOT relocations).
+- USER_STACK_PAGES = 8 (from 1) — sh.c's recursive-descent parser was
+  overflowing the single 4 KiB user stack page.
+
 ## 0.7.0 — POSIX process model (PR #166)
 
 Version bump: 0.6.0 → 0.7.0.  fork+execve+wait4 is a significant

@@ -67,17 +67,22 @@ then port `dash` (or extend the in-kernel shell), then bring up TCC
 for in-place compile-run.  Detailed plan in
 [Userland libc](userland-libc.md).
 
-**TCC port progress (May 2026):** Phases 1 & 2 of the
-[TCC feasibility plan](tcc-feasibility.md) are shipped.  Phase 1
-delivered the kernel-side writable `FD_KIND_FILE`, `O_CREAT`/`O_TRUNC`/
-`O_APPEND`, `SYS_STAT/FSTAT`, `SYS_READDIR`, growable buffers
-(`SYSCALL_FILE_MAX` lifted to 8 MiB).  Phase 2 delivered the userspace
-libc shim: `malloc`/`free`/`realloc`/`calloc` over `SYS_BRK`,
-`<ctype.h>`, `strtol`/`atoi`/`strdup`/`qsort`/`sscanf`/`getenv`,
-`setjmp`/`longjmp`, and a `FILE*` layer with `snprintf` family.
-Coverage: `filetest.elf` + `alloctest.elf` (12 sub-tests each ish) +
-`test_file_fd` ktest suite.  Phase 3 (cross-build `tcc.elf`) is the
-next milestone.
+**TCC port progress (May 2026, v0.9):** all original phases shipped, and
+self-hosting now extends to the kernel itself.  `tcc.elf` cross-builds
+against the libc shim and lives at `/apps/tcc.elf` on every ISO; userspace
+apps (`hello`, `calc`, `sh`, `makbox`) self-rebuild in-OS; the kernel
+rebuilds end-to-end with `./build-kernel-tcc.sh` (host) or
+`/apps/rebuild-kernel.sh` (in-OS) — see
+[handoff-self-hosting](handoff-self-hosting.md).  Earlier groundwork:
+Phase 1 brought writable `FD_KIND_FILE`, `O_CREAT`/`O_TRUNC`/`O_APPEND`,
+`SYS_STAT/FSTAT`, `SYS_READDIR`, growable buffers (`SYSCALL_FILE_MAX` lifted
+to 16 MiB).  Phase 2 brought the userspace libc shim: `malloc`/`free`/
+`realloc`/`calloc` over `SYS_BRK`, `<ctype.h>`, `strtol`/`atoi`/`strdup`/
+`qsort`/`sscanf`/`getenv`, `setjmp`/`longjmp`, a `FILE*` layer with
+`snprintf` family.  Coverage: `filetest.elf` + `alloctest.elf` plus
+`test_file_fd` ktest suite.  Phases 3+ shipped TCC itself + the
+self-rebuild milestones; v1.0 stays gated on the polish phase (full-green
+tests, hardened harness, "10× dev experience" tooling).
 
 Slices 15+16 closed the `fork`/`execve`/`wait4` half of [#121](https://github.com/Arawn-Davies/Makar/issues/121);
 the remaining libc/musl/dash half is still open under the same issue.
