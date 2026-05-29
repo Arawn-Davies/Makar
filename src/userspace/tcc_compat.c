@@ -174,13 +174,18 @@ long long strtoll(const char *s, char **endp, int base)
     while (*p == ' ' || *p == '\t') p++;
     int neg = 0;
     if (*p == '+' || *p == '-') { neg = (*p == '-'); p++; }
-    if ((base == 0 || base == 16) && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
-        p += 2; base = 16;
-    } else if (base == 0 && *p == '0') { p++; base = 8; }
-    else if (base == 0) base = 10;
-
     long long acc = 0;
     int any = 0;
+    if ((base == 0 || base == 16) && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        p += 2; base = 16;
+    } else if (base == 0 && *p == '0') {
+        /* Octal prefix: consume the '0' AND count it as a digit, so a bare
+         * "0" parses as the value 0 with endp past it (matches glibc).
+         * Without `any = 1` here, the digit loop below sees nothing more
+         * and the function returns endp=s, which breaks TCC's asm parser
+         * for any literal `0` (e.g. `.byte 0`). */
+        p++; base = 8; any = 1;
+    } else if (base == 0) base = 10;
     while (*p) {
         int d;
         if (*p >= '0' && *p <= '9') d = *p - '0';

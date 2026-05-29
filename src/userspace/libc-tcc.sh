@@ -20,6 +20,16 @@ echo LIBC-TCC: BEGIN
 fail=0
 pause=0.5
 
+# Regression: the asm parser fails with "invalid number syntax" if strtoull
+# mishandles a bare "0" (see strtoll fix in tcc_compat.c).  Compile the
+# kernel rebuild's kend.S sentinel here so libc-tcc CI catches a future
+# regression without having to run the whole rebuild-kernel suite.
+echo LIBC-TCC: compile-kend-S
+mkdir /tmp/ktcc-probe
+exec /apps/tcc.elf -c /apps/kend.S -o /tmp/ktcc-probe/kend.o
+if [ $? -eq 0 ]; then echo LIBC-TCC: [PASS] compile-kend-S; else echo LIBC-TCC: [FAIL] compile-kend-S; fail=1; fi
+sleep $pause
+
 echo LIBC-TCC: compile-hello
 tcc /src/userspace/hello.c -o /tmp/hello.elf
 if [ $? -eq 0 ]; then echo LIBC-TCC: [PASS] compile-hello; else echo LIBC-TCC: [FAIL] compile-hello; fail=1; fi
