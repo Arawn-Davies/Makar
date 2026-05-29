@@ -178,7 +178,10 @@ void sig_deliver(struct task *t)
                 Serial_WriteString("\n");
                 continue;
             }
-            t->state = TASK_DEAD;
+            /* Mirror task_exit's zombie decision so a wait4-ing ring-3
+             * parent can reap us (and reclaim keyboard focus); status is
+             * the POSIX 128+signo shell convention. */
+            task_terminate(t, 128 + SIGKILL);
             Serial_WriteString("[signal] pid=");
             Serial_WriteDec((uint32_t)t->pid);
             Serial_WriteString(" terminated by SIGKILL\n");
@@ -203,7 +206,10 @@ void sig_deliver(struct task *t)
                     Serial_WriteString("\n");
                     continue;
                 }
-                t->state = TASK_DEAD;
+                /* Mirror task_exit's zombie decision so a wait4-ing ring-3
+                 * parent reaps us and reclaims keyboard focus; status is
+                 * the POSIX 128+signo shell convention (e.g. SIGINT -> 130). */
+                task_terminate(t, 128 + sig);
                 Serial_WriteString("[signal] pid=");
                 Serial_WriteDec((uint32_t)t->pid);
                 Serial_WriteString(" terminated by signal ");

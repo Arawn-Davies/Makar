@@ -157,6 +157,17 @@ void task_yield(void);
  */
 void __attribute__((noreturn)) task_exit(void);
 
+/*
+ * task_terminate – record exit_status on task `t` and transition it to
+ * TASK_ZOMBIE (if it has a live ring-3 parent that may wait4 it) or
+ * TASK_DEAD otherwise.  Shared by task_exit (self-exit) and sig_deliver
+ * (one task killing another via a default-terminate signal) so a
+ * signal-killed ring-3 child is reapable by its wait4-ing parent exactly
+ * like a self-exited one -- which is what lets the parent shell reclaim
+ * keyboard focus after Ctrl+C kills its foreground child.
+ */
+void task_terminate(task_t *t, int status);
+
 /* Returns a pointer to the currently running task, or NULL before tasking_init. */
 task_t *task_current(void);
 

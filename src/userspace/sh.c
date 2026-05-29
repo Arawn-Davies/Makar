@@ -1507,11 +1507,47 @@ static const char *next_statement(const char *src, char *out, unsigned int outsz
 /* Parser context: we read statements one by one and dispatch.  for/if/
  * while consume their body statements until they see fi/done. */
 
-typedef struct { const char *src; } parser_t;
+typedef struct { const char *src; char pending[SCRIPT_LINE_MAX]; int has_pending; } parser_t;
 
 static int run_block_until(parser_t *p, const char *terminator1,
                            const char *terminator2, const char *terminator3,
                            int execute);
+
+/* Pending-aware statement reader.  When a control keyword is glued to an
+ * inline body (`then echo x`, `else echo y`, `elif COND`), the trailing
+ * body is stashed in p->pending by match_kw and handed back here on the
+ * next read before we advance p->src again.  This is what lets the block
+ * parser accept single-line `if COND; then BODY; else BODY; fi` in
+ * addition to the multi-line standalone-keyword form.  Returns NULL only
+ * at real end-of-source. */
+static const char *rb_next(parser_t *p, char *out, unsigned int sz)
+{
+    if (p->has_pending) {
+        s_copy(out, p->pending, sz);
+        p->has_pending = 0;
+        return p->src;   /* non-NULL sentinel; p->src already positioned */
+    }
+    const char *n = next_statement(p->src, out, sz);
+    if (n) p->src = n;
+    return n;
+}
+
+/* Match a control keyword that may carry an inline body.  Returns 1 when
+ * `stmt` is exactly `kw` (standalone form) or begins with `kw ` (inline
+ * form -- the trailing body is stashed in p->pending for the next
+ * rb_next).  Returns 0 otherwise. */
+static int match_kw(parser_t *p, const char *stmt, const char *kw)
+{
+    if (s_eq(stmt, kw)) return 1;
+    unsigned int kl = s_len(kw);
+    if (s_starts(stmt, kw) && stmt[kl] == ' ') {
+        const char *body = stmt + kl + 1;
+        while (*body == ' ' || *body == '\t') body++;
+        if (*body) { s_copy(p->pending, body, sizeof(p->pending)); p->has_pending = 1; }
+        return 1;
+    }
+    return 0;
+}
 
 /* Remembers which terminator (fi/done/elif/else) the most recent
  * run_block_until() consumed, so the if/elif/else chain handler can
@@ -1527,13 +1563,16 @@ static int run_block_until(parser_t *p, const char *t1, const char *t2, const ch
     char stmt[SCRIPT_LINE_MAX];
     int should_exit = 0, exit_status = 0;
     for (;;) {
-        const char *next = next_statement(p->src, stmt, sizeof(stmt));
+        const char *next = rb_next(p, stmt, sizeof(stmt));
         if (!next) return -1;
-        p->src = next;
-        if ((t1 && s_eq(stmt, t1)) || (t2 && s_eq(stmt, t2)) || (t3 && s_eq(stmt, t3))) {
+        const char *term = (const char *)0;
+        if      (t1 && match_kw(p, stmt, t1)) term = t1;
+        else if (t2 && match_kw(p, stmt, t2)) term = t2;
+        else if (t3 && match_kw(p, stmt, t3)) term = t3;
+        if (term) {
             /* Remember which terminator: caller may distinguish via lookahead.
              * We stash it via a static (single-threaded interpreter). */
-            s_copy(g_last_terminator, stmt, 32);
+            s_copy(g_last_terminator, term, 32);
             return 0;
         }
         /* Sub-block keywords. */
@@ -1541,24 +1580,25 @@ static int run_block_until(parser_t *p, const char *t1, const char *t2, const ch
             int cond = 0;
             (void)run_line(stmt + 3, &should_exit, &exit_status);
             cond = (g_last_status == 0);
-            /* Expect `then` next, then body until elif/else/fi. */
-            const char *then_stmt = next_statement(p->src, stmt, sizeof(stmt));
-            if (!then_stmt || !s_eq(stmt, "then")) { put_s("sh: expected 'then'\n"); return -1; }
-            p->src = then_stmt;
+            /* Expect `then` next, then body until elif/else/fi.  Accept
+             * both standalone `then` and inline `then BODY` (match_kw
+             * stashes the body for the body block to pick up). */
+            const char *then_stmt = rb_next(p, stmt, sizeof(stmt));
+            if (!then_stmt || !match_kw(p, stmt, "then")) { put_s("sh: expected 'then'\n"); return -1; }
             int branch_taken = cond;
             int rc = run_block_until(p, "elif", "else", "fi", execute && branch_taken);
             if (rc < 0) return -1;
             while (s_eq(g_last_terminator, "elif")) {
-                /* elif COND; then BODY ... */
-                const char *cond_stmt = next_statement(p->src, stmt, sizeof(stmt));
+                /* elif COND; then BODY ...  match_kw on the terminator
+                 * already stashed COND as pending when the elif was glued
+                 * inline, so rb_next yields it here. */
+                const char *cond_stmt = rb_next(p, stmt, sizeof(stmt));
                 if (!cond_stmt) return -1;
-                p->src = cond_stmt;
                 int this_cond = 0;
                 (void)run_line(stmt, &should_exit, &exit_status);
                 this_cond = (g_last_status == 0);
-                const char *then2 = next_statement(p->src, stmt, sizeof(stmt));
-                if (!then2 || !s_eq(stmt, "then")) { put_s("sh: expected 'then'\n"); return -1; }
-                p->src = then2;
+                const char *then2 = rb_next(p, stmt, sizeof(stmt));
+                if (!then2 || !match_kw(p, stmt, "then")) { put_s("sh: expected 'then'\n"); return -1; }
                 int take = (!branch_taken) && this_cond;
                 rc = run_block_until(p, "elif", "else", "fi", execute && take);
                 if (rc < 0) return -1;
@@ -1579,9 +1619,8 @@ static int run_block_until(parser_t *p, const char *t1, const char *t2, const ch
             char cond_line[SCRIPT_LINE_MAX];
             s_copy(cond_line, stmt + 6, sizeof(cond_line));
             /* Expect `do`. */
-            const char *do_stmt = next_statement(p->src, stmt, sizeof(stmt));
-            if (!do_stmt || !s_eq(stmt, "do")) { put_s("sh: expected 'do'\n"); return -1; }
-            p->src = do_stmt;
+            const char *do_stmt = rb_next(p, stmt, sizeof(stmt));
+            if (!do_stmt || !match_kw(p, stmt, "do")) { put_s("sh: expected 'do'\n"); return -1; }
             const char *body_start = p->src;
             int entered = 0;
             for (int iter = 0; iter < 100000; iter++) {
@@ -1618,9 +1657,8 @@ static int run_block_until(parser_t *p, const char *t1, const char *t2, const ch
             char wlist[SCRIPT_LINE_MAX];
             expand(p_in, wlist, sizeof(wlist));
             /* Expect `do`. */
-            const char *do_stmt = next_statement(p->src, stmt, sizeof(stmt));
-            if (!do_stmt || !s_eq(stmt, "do")) { put_s("sh: for: expected 'do'\n"); return -1; }
-            p->src = do_stmt;
+            const char *do_stmt = rb_next(p, stmt, sizeof(stmt));
+            if (!do_stmt || !match_kw(p, stmt, "do")) { put_s("sh: for: expected 'do'\n"); return -1; }
             const char *body_start = p->src;
             /* Iterate words. */
             char *wp = wlist;
@@ -1657,7 +1695,7 @@ static int run_block_until(parser_t *p, const char *t1, const char *t2, const ch
 
 static int run_script_buf(const char *src)
 {
-    parser_t p; p.src = src;
+    parser_t p = {0}; p.src = src;
     char stmt[SCRIPT_LINE_MAX];
     int should_exit = 0, exit_status = 0;
     for (;;) {
@@ -1678,7 +1716,7 @@ static int run_script_buf(const char *src)
             if (o + 1 < sizeof(rebuilt)) rebuilt[o++] = ';';
             for (unsigned int i = 0; p.src[i] && o + 1 < sizeof(rebuilt); i++) rebuilt[o++] = p.src[i];
             rebuilt[o] = '\0';
-            parser_t pp; pp.src = rebuilt;
+            parser_t pp = {0}; pp.src = rebuilt;
             (void)run_block_until(&pp, (const char *)0, (const char *)0, (const char *)0, 1);
             break;
         }

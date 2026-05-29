@@ -456,19 +456,76 @@ sendkey ret'
 # typing for no semantic effect.  Subsequent calls do the full anchor
 # so prior-test state never leaks into the next one.
 RESET_SHELL_CALLED=0
-reset_shell() {
-    if [ "$RESET_SHELL_CALLED" = "0" ]; then
-        RESET_SHELL_CALLED=1
-        return 0
-    fi
+
+# _serial_size -- current byte length of the serial mirror (0 if absent).
+_serial_size() {
+    [ -f "$SERIAL_LOG" ] && wc -c < "$SERIAL_LOG" || echo 0
+}
+
+# _reset_shell_inplace -- recover the focused shell WITHOUT rebooting:
+#   alt-f1 returns to VT0; Ctrl+C aborts any running command and (with the
+#   kernel's SIGINT->wait4 focus hand-back) kills + reaps a left-over
+#   foreground child so the keyboard returns to the shell; `cd /` then
+#   anchors cwd and makes the shell re-emit its `[shell:ready vt=0]` prompt
+#   marker.  All of this lands BEFORE the per-scenario start_bytes mark, so
+#   the stray `^C` never pollutes a scenario's serial slice.
+_reset_shell_inplace() {
     send_script 'sendkey alt-f1'
-    sleep 0.5
+    sleep 0.4
+    send_script 'sendkey ctrl-c'
+    sleep 0.3
     send_script 'sendkey c
 sendkey d
 sendkey spc
 sendkey slash
 sendkey ret'
-    sleep 0.6
+}
+
+# reset_shell -- return the focused shell to a known anchor (VT0, cwd=/)
+# between scenarios.  Recovers IN-PLACE first (no reboot) and verifies the
+# shell is actually alive by waiting for a freshly-emitted ready marker.
+# Only if two in-place recovery passes both fail to revive VT0 do we fall
+# back to relaunching a clean guest -- this is what stops one wedged
+# scenario from cascading into every later one, while keeping reboots rare
+# (the common path never reboots, satisfying "minimal reboots").
+reset_shell() {
+    if [ "$RESET_SHELL_CALLED" = "0" ]; then
+        RESET_SHELL_CALLED=1
+        return 0
+    fi
+
+    local probe=${RESET_PROBE_TIMEOUT:-6} off
+    off=$(_serial_size)
+    _reset_shell_inplace
+    if wait_for_serial '\[shell:ready vt=0\]' "$off" "$probe"; then
+        sleep 0.3
+        return 0
+    fi
+
+    # First in-place pass didn't revive VT0.  Try once more, more forcefully
+    # (extra Ctrl+C in case a child was mid-syscall on the first one).
+    off=$(_serial_size)
+    send_script 'sendkey ctrl-c'
+    sleep 0.3
+    _reset_shell_inplace
+    if wait_for_serial '\[shell:ready vt=0\]' "$off" "$probe"; then
+        sleep 0.3
+        return 0
+    fi
+
+    # Genuinely wedged: relaunch a clean guest so the blast radius is the
+    # single scenario that caused it, not the rest of the suite.
+    if [ "${UI_REUSE_QEMU:-0}" = "1" ]; then
+        echo "  - [harness] VT0 shell unresponsive; cannot relaunch (reuse mode)"
+        return 0
+    fi
+    echo "  - [harness] VT0 shell unresponsive after in-place recovery; relaunching QEMU (last resort)"
+    stop_qemu
+    if start_qemu; then
+        RESET_SHELL_CALLED=1   # fresh boot is already anchored at VT0/prompt
+    else
+        echo "  - [harness] QEMU relaunch FAILED; remaining scenarios may error"
+    fi
 }
 
 # --- Test primitives --------------------------------------------------------
