@@ -282,7 +282,14 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	vfs_auto_mount();
 	vfs_ensure_root_home();
 
-	t_writestring("\nAll subsystems ready.\n\n");
+	t_writestring("\nAll subsystems ready.\n");
+#ifdef __TINYC__
+	t_writestring("Self-hosted kernel! (TCC build)\n\n");
+	Serial_WriteString("kernel: build=tcc (self-hosted)\n");
+#else
+	t_writestring("Host-built kernel (GCC build)\n\n");
+	Serial_WriteString("kernel: build=gcc (host-built)\n");
+#endif
 
 	t_writestring("Initializing multitasking");
 	kprint_ok();

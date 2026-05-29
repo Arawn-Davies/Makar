@@ -23,6 +23,7 @@
 #include <kernel/keyboard.h>
 #include <kernel/vesa_tty.h>
 #include <kernel/heap.h>
+#include <kernel/atomic.h>
 
 static int      vtty_nslots  = 0;
 static int      vtty_current = 0;

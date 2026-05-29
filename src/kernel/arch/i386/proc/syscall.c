@@ -78,6 +78,25 @@ static void ls_cb(const char *name, int is_dir, void *ctx)
     c->buf[c->off] = '\0';
 }
 
+/* Callback + context for SYS_READDIR.  Static name buffer is OK: the
+ * complete() backends can be re-entered but the kernel context is not. */
+struct rd_ctx { uint32_t target; uint32_t cur; int found; };
+static char s_name[DIRENT_NAME_MAX];
+static int  s_is_dir;
+static void readdir_collect_cb(const char *n, int is_dir, void *vctx)
+{
+    struct rd_ctx *c = (struct rd_ctx *)vctx;
+    if (c->found) return;
+    if (c->cur == c->target) {
+        uint32_t i = 0;
+        while (n[i] && i < DIRENT_NAME_MAX - 1) { s_name[i] = n[i]; i++; }
+        s_name[i] = '\0';
+        s_is_dir = is_dir;
+        c->found = 1;
+    }
+    c->cur++;
+}
+
 /* -------------------------------------------------------------------------
  * Checkpoint tracking
  * ------------------------------------------------------------------------- */
@@ -1117,29 +1136,8 @@ void syscall_dispatch(registers_t *regs)
         uint32_t       idx  = regs->ecx;
         struct dirent *ude  = (struct dirent *)(uintptr_t)regs->edx;
         if (!path || !ude) { regs->eax = (uint32_t)-1; break; }
-        struct rd_ctx { uint32_t target; uint32_t cur; int found;
-                        const char *name; int is_dir; };
-        struct rd_ctx ctx = { idx, 0, 0, 0, 0 };
-        /* Callback captures the Nth entry into a static buffer.  The
-         * complete() backends can be re-entered (slow), but a static
-         * buffer is fine in non-reentrant kernel context. */
-        static char  s_name[DIRENT_NAME_MAX];
-        static int   s_is_dir;
-        static struct rd_ctx *s_ctx;
-        s_ctx = &ctx;
-        void cb(const char *n, int is_dir, void *vctx) {
-            struct rd_ctx *c = (struct rd_ctx *)vctx;
-            if (c->found) return;
-            if (c->cur == c->target) {
-                uint32_t i = 0;
-                while (n[i] && i < DIRENT_NAME_MAX - 1) { s_name[i] = n[i]; i++; }
-                s_name[i] = '\0';
-                s_is_dir = is_dir;
-                c->found = 1;
-            }
-            c->cur++;
-        }
-        if (vfs_complete(path, "", cb, &ctx) != 0) {
+        struct rd_ctx ctx = { idx, 0, 0 };
+        if (vfs_complete(path, "", readdir_collect_cb, &ctx) != 0) {
             regs->eax = (uint32_t)-1; break;
         }
         if (!ctx.found) { regs->eax = 0; break; }

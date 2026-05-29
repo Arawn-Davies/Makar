@@ -106,6 +106,7 @@
 #include <kernel/vtty.h>
 #include <kernel/isr.h>
 #include <kernel/asm.h>
+#include <kernel/atomic.h>
 #include <kernel/task.h>
 #include <kernel/signal.h>
 #include <kernel/timer.h>

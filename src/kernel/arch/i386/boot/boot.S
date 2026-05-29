@@ -1,14 +1,25 @@
 #include <kernel/vesa_config.h>
 
 # Multiboot 2 header constants.
+# MB2_HEADER_LEN is hardcoded (48) because TCC's assembler cannot resolve
+# forward symbol references; computing (mb2_header_end - mb2_header_start)
+# segfaults TCC.  boot/mb2_header_check.c carries a struct + _Static_assert
+# that fails the build if the byte layout below ever drifts from 48.
 .set MB2_MAGIC,        0xE85250D6  # Multiboot 2 magic
 .set MB2_ARCH,         0           # i386 protected mode
-.set MB2_HEADER_LEN,   (mb2_header_end - mb2_header_start)
+.set MB2_HEADER_LEN,   48
 .set MB2_CHECKSUM,     -(MB2_MAGIC + MB2_ARCH + MB2_HEADER_LEN)
 
 # Declare a Multiboot 2 header.  Must be 8-byte aligned and within the
 # first 32768 bytes of the binary image.
+# Under gcc, the linker script places *(.multiboot2) at the front of .text.
+# TCC's linker has no script support, so under TCC we drop the header into
+# .text directly and rely on boot.o being linked first.
+#ifdef __TINYC__
+.section .text
+#else
 .section .multiboot2
+#endif
 .align 8
 mb2_header_start:
 .long  MB2_MAGIC

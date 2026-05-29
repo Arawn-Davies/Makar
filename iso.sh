@@ -32,6 +32,13 @@ echo "makar" > isodir/etc/hostname
 cp -r src/. isodir/src/
 cp -r docs/. isodir/docs/
 
+# Kernel headers re-exposed at /usr/include/kernel-build/ so the in-OS
+# rebuild script (rebuild-kernel.sh, run from kernel-sh) can pass
+# `-I/usr/include/kernel-build` and have `#include <kernel/foo.h>` resolve.
+# Keeps it separate from /usr/include/ (which carries the userspace libc).
+mkdir -p isodir/usr/include/kernel-build
+cp -r src/kernel/include/. isodir/usr/include/kernel-build/
+
 # Stage vendor/tinycc/ source onto the ISO at /src/tinycc/ so the in-OS TCC
 # can rebuild itself (the v1.0 self-host flex).  build-tcc.sh has already
 # applied the Makar-flavoured patches above, so the staged copy matches the

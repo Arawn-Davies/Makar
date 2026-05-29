@@ -285,6 +285,12 @@ cp "$USER_DIR/tcc.elf" "$ISO_DIR/apps/"
 # TCC's own built-in headers (stdarg.h, stddef.h, stdbool.h, float.h, varargs.h)
 cp "$TCC_DIR/include/"*.h "$ISO_DIR/usr/lib/tcc/include/"
 
+# Makar-flavoured stubs that TCC didn't ship (stdint.h, limits.h) but the
+# kernel sources need.  Goes in the same dir so tcc.elf finds them via
+# its default include path (CONFIG_TCC_SYSINCLUDEPATHS=/usr/include:{B}/include).
+cp "$TCC_DIR/build-stubs/stdint.h" "$ISO_DIR/usr/lib/tcc/include/"
+cp "$TCC_DIR/build-stubs/limits.h" "$ISO_DIR/usr/lib/tcc/include/"
+
 # libtcc1.a goes under the TCC lib path
 cp "$TCC_DIR/lib/libtcc1.a" "$ISO_DIR/usr/lib/tcc/"
 
