@@ -2,244 +2,241 @@
 # Rebuilds the kernel inside Makar via /apps/tcc.elf, then writes
 # /tmp/makar.kernel.tcc.  Copy to /boot/makar.kernel and reboot to test.
 
-echo "rebuild-kernel: BEGIN"
+echo rebuild-kernel: BEGIN
 mkdir /tmp/ktcc
+FAILED=0
 
-# _kernel_end sentinel
-echo ".section .bss"        > /tmp/ktcc/kend.S
-echo ".global _kernel_end" >> /tmp/ktcc/kend.S
-echo "_kernel_end:"        >> /tmp/ktcc/kend.S
-echo ".byte 0"             >> /tmp/ktcc/kend.S
-exec /apps/tcc.elf -c /tmp/ktcc/kend.S -o /tmp/ktcc/kend.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL kend"; exit 1; fi
+# _kernel_end sentinel is shipped at /apps/kend.S (kernel sh has no > redir).
+exec /apps/tcc.elf -c /apps/kend.S -o /tmp/ktcc/kend.o
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL kend; FAILED=1; fi
 
-echo "rebuild-kernel: cc src/kernel/arch/i386/boot/boot.S"
+echo rebuild-kernel: cc src/kernel/arch/i386/boot/boot.S
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/boot/boot.S -o /tmp/ktcc/001.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/boot/boot.S"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/boot/mb2_header_check.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/boot/boot.S; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/boot/mb2_header_check.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/boot/mb2_header_check.c -o /tmp/ktcc/002.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/boot/mb2_header_check.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/boot/crti.S"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/boot/mb2_header_check.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/boot/crti.S
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/boot/crti.S -o /tmp/ktcc/003.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/boot/crti.S"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/boot/crtn.S"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/boot/crti.S; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/boot/crtn.S
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/boot/crtn.S -o /tmp/ktcc/004.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/boot/crtn.S"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/core/dt_asm.S"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/boot/crtn.S; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/core/dt_asm.S
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/core/dt_asm.S -o /tmp/ktcc/005.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/core/dt_asm.S"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/core/descr_tbl.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/core/dt_asm.S; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/core/descr_tbl.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/core/descr_tbl.c -o /tmp/ktcc/006.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/core/descr_tbl.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/core/isr_asm.S"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/core/descr_tbl.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/core/isr_asm.S
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/core/isr_asm.S -o /tmp/ktcc/007.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/core/isr_asm.S"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/core/isr.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/core/isr_asm.S; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/core/isr.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/core/isr.c -o /tmp/ktcc/008.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/core/isr.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/drivers/serial.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/core/isr.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/drivers/serial.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/drivers/serial.c -o /tmp/ktcc/009.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/drivers/serial.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/drivers/timer.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/drivers/serial.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/drivers/timer.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/drivers/timer.c -o /tmp/ktcc/010.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/drivers/timer.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/drivers/keyboard.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/drivers/timer.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/drivers/keyboard.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/drivers/keyboard.c -o /tmp/ktcc/011.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/drivers/keyboard.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/drivers/ide.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/drivers/keyboard.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/drivers/ide.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/drivers/ide.c -o /tmp/ktcc/012.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/drivers/ide.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/drivers/partition.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/drivers/ide.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/drivers/partition.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/drivers/partition.c -o /tmp/ktcc/013.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/drivers/partition.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/drivers/acpi.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/drivers/partition.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/drivers/acpi.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/drivers/acpi.c -o /tmp/ktcc/014.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/drivers/acpi.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/drivers/rtc.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/drivers/acpi.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/drivers/rtc.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/drivers/rtc.c -o /tmp/ktcc/015.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/drivers/rtc.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/fs/fat32.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/drivers/rtc.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/fs/fat32.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/fs/fat32.c -o /tmp/ktcc/016.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/fs/fat32.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/fs/ext2.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/fs/fat32.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/fs/ext2.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/fs/ext2.c -o /tmp/ktcc/017.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/fs/ext2.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/fs/iso9660.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/fs/ext2.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/fs/iso9660.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/fs/iso9660.c -o /tmp/ktcc/018.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/fs/iso9660.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/fs/procfs.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/fs/iso9660.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/fs/procfs.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/fs/procfs.c -o /tmp/ktcc/019.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/fs/procfs.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/fs/devfs.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/fs/procfs.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/fs/devfs.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/fs/devfs.c -o /tmp/ktcc/020.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/fs/devfs.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/fs/logfs.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/fs/devfs.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/fs/logfs.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/fs/logfs.c -o /tmp/ktcc/021.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/fs/logfs.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/fs/tmpfs.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/fs/logfs.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/fs/tmpfs.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/fs/tmpfs.c -o /tmp/ktcc/022.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/fs/tmpfs.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/fs/vfs.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/fs/tmpfs.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/fs/vfs.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/fs/vfs.c -o /tmp/ktcc/023.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/fs/vfs.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/mm/pmm.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/fs/vfs.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/mm/pmm.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/mm/pmm.c -o /tmp/ktcc/024.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/mm/pmm.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/mm/paging.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/mm/pmm.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/mm/paging.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/mm/paging.c -o /tmp/ktcc/025.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/mm/paging.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/mm/heap.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/mm/paging.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/mm/heap.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/mm/heap.c -o /tmp/ktcc/026.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/mm/heap.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/mm/vmm.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/mm/heap.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/mm/vmm.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/mm/vmm.c -o /tmp/ktcc/027.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/mm/vmm.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/display/tty.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/mm/vmm.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/display/tty.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/display/tty.c -o /tmp/ktcc/028.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/display/tty.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/display/vesa.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/display/tty.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/display/vesa.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/display/vesa.c -o /tmp/ktcc/029.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/display/vesa.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/display/vesa_tty.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/display/vesa.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/display/vesa_tty.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/display/vesa_tty.c -o /tmp/ktcc/030.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/display/vesa_tty.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/display/vt.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/display/vesa_tty.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/display/vt.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/display/vt.c -o /tmp/ktcc/031.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/display/vt.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/display/bochs_vbe.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/display/vt.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/display/bochs_vbe.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/display/bochs_vbe.c -o /tmp/ktcc/032.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/display/bochs_vbe.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/proc/system.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/display/bochs_vbe.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/proc/system.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/proc/system.c -o /tmp/ktcc/033.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/proc/system.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/proc/task_asm.S"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/proc/system.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/proc/task_asm.S
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/proc/task_asm.S -o /tmp/ktcc/034.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/proc/task_asm.S"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/proc/task.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/proc/task_asm.S; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/proc/task.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/proc/task.c -o /tmp/ktcc/035.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/proc/task.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/proc/syscall.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/proc/task.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/proc/syscall.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/proc/syscall.c -o /tmp/ktcc/036.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/proc/syscall.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/proc/signal.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/proc/syscall.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/proc/signal.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/proc/signal.c -o /tmp/ktcc/037.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/proc/signal.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/proc/fd.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/proc/signal.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/proc/fd.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/proc/fd.c -o /tmp/ktcc/038.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/proc/fd.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/proc/ring3.S"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/proc/fd.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/proc/ring3.S
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/proc/ring3.S -o /tmp/ktcc/039.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/proc/ring3.S"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/proc/chainload.S"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/proc/ring3.S; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/proc/chainload.S
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/proc/chainload.S -o /tmp/ktcc/040.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/proc/chainload.S"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/proc/elf.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/proc/chainload.S; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/proc/elf.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/proc/elf.c -o /tmp/ktcc/041.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/proc/elf.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/proc/usertest.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/proc/elf.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/proc/usertest.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/proc/usertest.c -o /tmp/ktcc/042.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/proc/usertest.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/proc/ktest.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/proc/usertest.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/proc/ktest.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/proc/ktest.c -o /tmp/ktcc/043.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/proc/ktest.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/proc/installer.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/proc/ktest.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/proc/installer.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/proc/installer.c -o /tmp/ktcc/044.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/proc/installer.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/proc/vtty.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/proc/installer.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/proc/vtty.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/proc/vtty.c -o /tmp/ktcc/045.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/proc/vtty.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/shell/shell.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/proc/vtty.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/shell/shell.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/shell/shell.c -o /tmp/ktcc/046.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/shell/shell.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/shell/shell_glob.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/shell/shell.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/shell/shell_glob.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/shell/shell_glob.c -o /tmp/ktcc/047.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/shell/shell_glob.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/shell/shell_help.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/shell/shell_glob.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/shell/shell_help.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/shell/shell_help.c -o /tmp/ktcc/048.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/shell/shell_help.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/shell/shell_cmd_display.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/shell/shell_help.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/shell/shell_cmd_display.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/shell/shell_cmd_display.c -o /tmp/ktcc/049.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/shell/shell_cmd_display.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/shell/shell_cmd_system.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/shell/shell_cmd_display.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/shell/shell_cmd_system.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/shell/shell_cmd_system.c -o /tmp/ktcc/050.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/shell/shell_cmd_system.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/shell/shell_cmd_disk.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/shell/shell_cmd_system.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/shell/shell_cmd_disk.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/shell/shell_cmd_disk.c -o /tmp/ktcc/051.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/shell/shell_cmd_disk.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/shell/shell_cmd_fs.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/shell/shell_cmd_disk.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/shell/shell_cmd_fs.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/shell/shell_cmd_fs.c -o /tmp/ktcc/052.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/shell/shell_cmd_fs.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/shell/shell_cmd_apps.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/shell/shell_cmd_fs.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/shell/shell_cmd_apps.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/shell/shell_cmd_apps.c -o /tmp/ktcc/053.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/shell/shell_cmd_apps.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/shell/shell_cmd_man.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/shell/shell_cmd_apps.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/shell/shell_cmd_man.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/shell/shell_cmd_man.c -o /tmp/ktcc/054.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/shell/shell_cmd_man.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/shell/shell_cmd_script.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/shell/shell_cmd_man.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/shell/shell_cmd_script.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/shell/shell_cmd_script.c -o /tmp/ktcc/055.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/shell/shell_cmd_script.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/shell/sh_script.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/shell/shell_cmd_script.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/shell/sh_script.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/shell/sh_script.c -o /tmp/ktcc/056.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/shell/sh_script.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/arch/i386/debug/debug.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/shell/sh_script.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/arch/i386/debug/debug.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/arch/i386/debug/debug.c -o /tmp/ktcc/057.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/arch/i386/debug/debug.c"; exit 1; fi
-echo "rebuild-kernel: cc src/kernel/kernel/kernel.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/arch/i386/debug/debug.c; FAILED=1; fi
+echo rebuild-kernel: cc src/kernel/kernel/kernel.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/kernel/kernel/kernel.c -o /tmp/ktcc/058.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/kernel/kernel/kernel.c"; exit 1; fi
-echo "rebuild-kernel: cc src/libc/string/memcmp.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/kernel/kernel/kernel.c; FAILED=1; fi
+echo rebuild-kernel: cc src/libc/string/memcmp.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/libc/string/memcmp.c -o /tmp/ktcc/059.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/libc/string/memcmp.c"; exit 1; fi
-echo "rebuild-kernel: cc src/libc/string/memcpy.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/libc/string/memcmp.c; FAILED=1; fi
+echo rebuild-kernel: cc src/libc/string/memcpy.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/libc/string/memcpy.c -o /tmp/ktcc/060.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/libc/string/memcpy.c"; exit 1; fi
-echo "rebuild-kernel: cc src/libc/string/memmove.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/libc/string/memcpy.c; FAILED=1; fi
+echo rebuild-kernel: cc src/libc/string/memmove.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/libc/string/memmove.c -o /tmp/ktcc/061.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/libc/string/memmove.c"; exit 1; fi
-echo "rebuild-kernel: cc src/libc/string/memset.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/libc/string/memmove.c; FAILED=1; fi
+echo rebuild-kernel: cc src/libc/string/memset.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/libc/string/memset.c -o /tmp/ktcc/062.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/libc/string/memset.c"; exit 1; fi
-echo "rebuild-kernel: cc src/libc/string/strcat.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/libc/string/memset.c; FAILED=1; fi
+echo rebuild-kernel: cc src/libc/string/strcat.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/libc/string/strcat.c -o /tmp/ktcc/063.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/libc/string/strcat.c"; exit 1; fi
-echo "rebuild-kernel: cc src/libc/string/strchr.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/libc/string/strcat.c; FAILED=1; fi
+echo rebuild-kernel: cc src/libc/string/strchr.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/libc/string/strchr.c -o /tmp/ktcc/064.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/libc/string/strchr.c"; exit 1; fi
-echo "rebuild-kernel: cc src/libc/string/strcmp.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/libc/string/strchr.c; FAILED=1; fi
+echo rebuild-kernel: cc src/libc/string/strcmp.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/libc/string/strcmp.c -o /tmp/ktcc/065.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/libc/string/strcmp.c"; exit 1; fi
-echo "rebuild-kernel: cc src/libc/string/strcpy.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/libc/string/strcmp.c; FAILED=1; fi
+echo rebuild-kernel: cc src/libc/string/strcpy.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/libc/string/strcpy.c -o /tmp/ktcc/066.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/libc/string/strcpy.c"; exit 1; fi
-echo "rebuild-kernel: cc src/libc/string/strlen.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/libc/string/strcpy.c; FAILED=1; fi
+echo rebuild-kernel: cc src/libc/string/strlen.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/libc/string/strlen.c -o /tmp/ktcc/067.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/libc/string/strlen.c"; exit 1; fi
-echo "rebuild-kernel: cc src/libc/string/strncmp.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/libc/string/strlen.c; FAILED=1; fi
+echo rebuild-kernel: cc src/libc/string/strncmp.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/libc/string/strncmp.c -o /tmp/ktcc/068.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/libc/string/strncmp.c"; exit 1; fi
-echo "rebuild-kernel: cc src/libc/string/strncpy.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/libc/string/strncmp.c; FAILED=1; fi
+echo rebuild-kernel: cc src/libc/string/strncpy.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/libc/string/strncpy.c -o /tmp/ktcc/069.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/libc/string/strncpy.c"; exit 1; fi
-echo "rebuild-kernel: cc src/libc/string/strrchr.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/libc/string/strncpy.c; FAILED=1; fi
+echo rebuild-kernel: cc src/libc/string/strrchr.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/libc/string/strrchr.c -o /tmp/ktcc/070.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/libc/string/strrchr.c"; exit 1; fi
-echo "rebuild-kernel: cc src/libc/string/strstr.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/libc/string/strrchr.c; FAILED=1; fi
+echo rebuild-kernel: cc src/libc/string/strstr.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/libc/string/strstr.c -o /tmp/ktcc/071.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/libc/string/strstr.c"; exit 1; fi
-echo "rebuild-kernel: cc src/libc/stdio/printf.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/libc/string/strstr.c; FAILED=1; fi
+echo rebuild-kernel: cc src/libc/stdio/printf.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/libc/stdio/printf.c -o /tmp/ktcc/072.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/libc/stdio/printf.c"; exit 1; fi
-echo "rebuild-kernel: cc src/libc/stdio/putchar.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/libc/stdio/printf.c; FAILED=1; fi
+echo rebuild-kernel: cc src/libc/stdio/putchar.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/libc/stdio/putchar.c -o /tmp/ktcc/073.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/libc/stdio/putchar.c"; exit 1; fi
-echo "rebuild-kernel: cc src/libc/stdio/puts.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/libc/stdio/putchar.c; FAILED=1; fi
+echo rebuild-kernel: cc src/libc/stdio/puts.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/libc/stdio/puts.c -o /tmp/ktcc/074.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/libc/stdio/puts.c"; exit 1; fi
-echo "rebuild-kernel: cc src/libc/stdlib/abort.c"
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/libc/stdio/puts.c; FAILED=1; fi
+echo rebuild-kernel: cc src/libc/stdlib/abort.c
 exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c /src/libc/stdlib/abort.c -o /tmp/ktcc/075.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL src/libc/stdlib/abort.c"; exit 1; fi
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL src/libc/stdlib/abort.c; FAILED=1; fi
 
-echo "rebuild-kernel: archive"
+echo rebuild-kernel: archive
 rm /tmp/ktcc/libk.a
 exec /apps/tcc.elf -ar rcs /tmp/ktcc/libk.a /tmp/ktcc/002.o
 exec /apps/tcc.elf -ar rcs /tmp/ktcc/libk.a /tmp/ktcc/003.o
@@ -316,9 +313,13 @@ exec /apps/tcc.elf -ar rcs /tmp/ktcc/libk.a /tmp/ktcc/073.o
 exec /apps/tcc.elf -ar rcs /tmp/ktcc/libk.a /tmp/ktcc/074.o
 exec /apps/tcc.elf -ar rcs /tmp/ktcc/libk.a /tmp/ktcc/075.o
 
-echo "rebuild-kernel: link"
+echo rebuild-kernel: link
 exec /apps/tcc.elf -nostdlib -nostdinc -static -Wl,-Ttext=0x100000 -Wl,-section-alignment=0x1000 -o /tmp/makar.kernel.tcc /tmp/ktcc/001.o -Wl,--whole-archive /tmp/ktcc/libk.a -Wl,--no-whole-archive /usr/lib/tcc/libtcc1.a /tmp/ktcc/kend.o
-if [ $? -ne 0 ]; then echo "rebuild-kernel: FAIL link"; exit 1; fi
+if [ $? -ne 0 ]; then echo rebuild-kernel: FAIL link; FAILED=1; fi
 
-echo "REBUILD-KERNEL: ALL PASS"
-echo "==> /tmp/makar.kernel.tcc ready.  cp /tmp/makar.kernel.tcc /boot/makar.kernel; then reboot"
+if [ $FAILED -eq 0 ]; then
+  echo REBUILD-KERNEL: ALL PASS
+  echo rebuild-kernel: cp /tmp/makar.kernel.tcc /boot/makar.kernel and reboot
+else
+  echo REBUILD-KERNEL: FAIL
+fi
