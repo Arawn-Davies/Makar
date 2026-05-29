@@ -47,6 +47,7 @@ EOF
 # the first 32 KiB of .text.  Order otherwise mirrors arch/i386/make.config.
 KFILES="
 src/kernel/arch/i386/boot/boot.S
+src/kernel/arch/i386/boot/build_origin.c
 src/kernel/arch/i386/boot/mb2_header_check.c
 src/kernel/arch/i386/boot/crti.S
 src/kernel/arch/i386/boot/crtn.S
@@ -178,7 +179,7 @@ for f in $KFILES; do
     in_os="/$f"
     cat >> "$OUT" << EOF
 echo rebuild-kernel: cc $f
-exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -I/usr/include/kernel-build -c $in_os -o /tmp/ktcc/$nn.o
+exec /apps/tcc.elf -ffreestanding -D__is_kernel -DDEV_BUILD -DMAKAR_IN_OS_BUILD=1 -I/usr/include/kernel-build -c $in_os -o /tmp/ktcc/$nn.o
 if [ \$? -ne 0 ]; then echo rebuild-kernel: FAIL $f; FAILED=1; fi
 EOF
 done

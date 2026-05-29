@@ -283,13 +283,21 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	vfs_ensure_root_home();
 
 	t_writestring("\nAll subsystems ready.\n");
-#ifdef __TINYC__
-	t_writestring("Self-hosted kernel! (TCC build)\n\n");
-	Serial_WriteString("kernel: build=tcc (self-hosted)\n");
-#else
-	t_writestring("Host-built kernel (GCC build)\n\n");
-	Serial_WriteString("kernel: build=gcc (host-built)\n");
-#endif
+	/* MAKAR_BUILD_ORIGIN is set by arch/i386/boot/build_origin.c at
+	 * compile time -- "gcc-host" / "tcc-host" / "tcc-in-os". */
+	{
+		extern const char *MAKAR_BUILD_ORIGIN;
+		if (strcmp(MAKAR_BUILD_ORIGIN, "tcc-in-os") == 0) {
+			t_writestring("Self-hosted and built inside Makar! (TCC)\n\n");
+			Serial_WriteString("kernel: build=tcc-in-os (self-hosted, built inside Makar)\n");
+		} else if (strcmp(MAKAR_BUILD_ORIGIN, "tcc-host") == 0) {
+			t_writestring("Self-hosted kernel! (TCC, host build)\n\n");
+			Serial_WriteString("kernel: build=tcc-host (self-hosted, built on dev host)\n");
+		} else {
+			t_writestring("Host-built kernel! (GCC)\n\n");
+			Serial_WriteString("kernel: build=gcc-host\n");
+		}
+	}
 
 	t_writestring("Initializing multitasking");
 	kprint_ok();
