@@ -16,6 +16,7 @@
 
 #include <kernel/fd.h>
 #include <kernel/heap.h>
+#include <kernel/serial.h>
 #include <kernel/vfs.h>
 #include <string.h>
 
@@ -158,8 +159,23 @@ int fd_close(fd_table_t *tbl, int fd)
     int rc = 0;
     if (e->kind == FD_KIND_FILE) {
         rc = fd_flush_one(e);   /* propagates flush errors to the caller */
-        if (e->data)
+        /* Sanity-check the data pointer before freeing: under heavy
+         * fork/exec churn we have seen `e->data` come through with a
+         * bogus value (interior pointer into another allocation, ASCII
+         * bytes where a block header should be) -- likely a stale value
+         * surviving a kind transition.  Skip kfree on out-of-range or
+         * unaligned pointers; the guard in kfree would catch it too, but
+         * this keeps the cause local for diagnosis. */
+        uintptr_t dp = (uintptr_t)e->data;
+        if (dp >= HEAP_START && dp < HEAP_MAX && (dp & 3) == 0) {
             kfree(e->data);
+        } else if (dp) {
+            Serial_WriteString("fd_close: skip bogus data=");
+            Serial_WriteHex(dp);
+            Serial_WriteString(" cap=");
+            Serial_WriteHex(e->capacity);
+            Serial_WriteString("\n");
+        }
     } else if (e->kind == FD_KIND_PIPE) {
         pipe_release(e);
     }
