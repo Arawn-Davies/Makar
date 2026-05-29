@@ -785,14 +785,34 @@ int shell_dispatch_argv(int argc, char **argv)
 
     /* Path-style invocation: `/abs/path[.elf]` or `./relative[.elf]`.
      * Resolved by the VFS so `./foo` is interpreted relative to the CWD.
-     * Bash-style: if the path ends in `.sh` (or any non-ELF text file),
-     * run it through the shell-script interpreter instead of exec()ing. */
+     * Bash-style auto-detect: peek the file's first 4 bytes for the ELF
+     * magic (0x7F 'E' 'L' 'F').  Match → exec; mismatch → script
+     * interpreter regardless of extension.  Falls back to the older
+     * `.sh`-suffix check if we can't open / read enough bytes (e.g. when
+     * the path-as-typed doesn't exist but `.elf`-appended does). */
     const char *cmd = argv[0];
     if (cmd[0] == '/' || (cmd[0] == '.' && cmd[1] == '/')) {
-        size_t cl = strlen(cmd);
-        if (cl > 3 && cmd[cl-3] == '.' && cmd[cl-2] == 's' && cmd[cl-1] == 'h') {
+        unsigned char magic[4] = {0};
+        uint32_t got = 0;
+        int looks_elf = 0;
+        int peeked = 0;
+        if (vfs_file_exists(cmd) &&
+            vfs_read_file(cmd, magic, sizeof magic, &got) == 0 && got >= 4) {
+            peeked = 1;
+            looks_elf = (magic[0] == 0x7F && magic[1] == 'E' &&
+                         magic[2] == 'L' && magic[3] == 'F');
+        }
+        if (peeked && !looks_elf) {
             sh_run_file(cmd);
             return 1;
+        }
+        if (!peeked) {
+            /* Legacy fallback for the path-as-typed-missing case. */
+            size_t cl = strlen(cmd);
+            if (cl > 3 && cmd[cl-3] == '.' && cmd[cl-2] == 's' && cmd[cl-1] == 'h') {
+                sh_run_file(cmd);
+                return 1;
+            }
         }
         if (try_exec_path(cmd, argc, argv)) {
             /* Any ELF could have painted to the FB; restore unconditionally. */

@@ -192,15 +192,16 @@ task_t *task_create(const char *name, void (*entry)(void))
             if (t->exec_params) {
                 kfree(t->exec_params);
                 t->exec_params = NULL;
-    t->script_vars = NULL;
             }
 
             /* Reap the per-shell-task scripting variable table.  Same
              * deferred-free pattern as fd_table: don't touch from
-             * task_exit (which may run in arbitrary scheduler context). */
+             * task_exit (which may run in arbitrary scheduler context).
+             * sh_vars_free_for nulls t->script_vars after freeing. */
             if (t->script_vars) {
                 extern void sh_vars_free_for(void *task);
                 sh_vars_free_for(t);
+                t->script_vars = NULL;
             }
 
             /* Reuse the existing kernel stack. */
