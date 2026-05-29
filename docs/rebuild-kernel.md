@@ -54,7 +54,11 @@ What it does, step by step (the script itself is regenerated, so don't
 hand-edit `src/userspace/rebuild-kernel.sh` — edit `build-kernel-tcc.sh`
 and re-run it):
 
-1. `mkdir /tmp/ktcc` — scratch dir for the `.o` files.
+1. `mkdir /bin/ktcc` — scratch dir for the `.o` files.  `/bin` lives on
+   the rootfs (the installer creates it; tmpfs is flat so `/tmp` can't
+   hold the per-source tree).  On a CD-ROM-only live boot the rootfs is
+   read-only ISO9660 and this step will fail — run from an installed
+   HDD boot instead.
 2. `tcc -c /apps/kend.S -o /tmp/ktcc/kend.o` — the `_kernel_end`
    sentinel.
 3. For each source file (boot.S, build_origin.c, the i386 core/mm/
@@ -71,7 +75,7 @@ and re-run it):
    "Host-built kernel".  All three origins boot identically; only the
    banner string differs.
 4. Link with `tcc -static -nostdlib -Wl,-Ttext=0x100000 ...` into
-   `/tmp/makar.kernel.tcc` — a valid Multiboot 2 ELF that GRUB will
+   `/bin/makar.kernel.tcc` — a valid Multiboot 2 ELF that GRUB will
    load like the original.
 5. Print the final marker:
    - `REBUILD-KERNEL: ALL PASS` on success, or
@@ -96,7 +100,7 @@ If you booted from a writable HDD partition (`/boot` mirrors the FAT32
 boot partition), copy and reboot:
 
 ```
-cp /tmp/makar.kernel.tcc /boot/makar.kernel
+cp /bin/makar.kernel.tcc /boot/makar.kernel
 reboot
 ```
 
@@ -110,11 +114,11 @@ overwrite `/boot/makar.kernel` with the original.
 The CD-ROM is read-only, so you can't write `/boot/makar.kernel` back.
 What you *can* do:
 
-- `cp /tmp/makar.kernel.tcc /mnt/<some-writable>/makar.kernel` —
-  stash it somewhere you can pull it later.
-- Verify by extracting via the host (mount `/tmp` is tmpfs which
-  vanishes on shutdown; use a `/mnt/<volume>` directory backed by a
-  real disk if you want the artifact to survive).
+- The rebuild itself won't work — `/bin` lives on the rootfs, and the
+  CD-ROM rootfs (ISO9660) is read-only.  You'll get `mkdir: cannot
+  create /bin/ktcc` and every per-source `tcc -c` will silently
+  produce no `.o`.  Install Makar to disk first (`installer` from
+  the shell), reboot off the HDD, then run `rebuild-kernel.sh`.
 
 For a turn-key "boot the freshly-built kernel without leaving QEMU,"
 either work off an HDD image (`./run.sh hdd boot`) so `/boot` is

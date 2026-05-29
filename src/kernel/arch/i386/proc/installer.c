@@ -774,6 +774,15 @@ static int do_install(uint8_t drive, uint32_t disk_sectors, int fs)
     copy_tree("/src");
     copy_tree("/usr");
 
+    /* /bin is the scratch + output directory the in-OS kernel rebuild
+     * (rebuild-kernel.sh) writes to.  tmpfs has no subdirectories, so
+     * the rebuild can't use /tmp; it needs a real writable dir on the
+     * rootfs.  Create it empty here so the first `mkdir /bin/ktcc` from
+     * the script doesn't try to create a directory inside a missing
+     * parent.  No source tree to copy -- /bin lives only on the target. */
+    if (rfs_mkdir("/bin") != 0)
+        tui_log("  WARNING: mkdir /bin on rootfs failed (rebuild-kernel will need it).");
+
     /* Flush data partition before touching the bootloader. */
     if (fs == ROOTFS_EXT2) ext2_unmount(); else fat32_unmount();
 
