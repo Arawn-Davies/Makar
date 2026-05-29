@@ -4,7 +4,28 @@ Companion to `CLAUDE.md`. Snapshot of subsystem state, recently-merged PRs, and 
 attribution. Consult for "what's already shipped" / "what does subsystem X do today"
 context; not needed for routine edits.
 
-## Current state (as of May 2026, v0.8.0)
+## Current state (as of May 2026, v0.9.0)
+
+**Kernel self-host milestone (v0.9)**: `./build-kernel-tcc.sh` (host) rebuilds
+the bootable Multiboot 2 kernel ELF end-to-end against the vendored source
+tree, using only our shipped TCC (no gcc).  The generated `/apps/rebuild-kernel.sh`
+runs the same recipe inside Makar (test-mode phase `REBUILD-KERNEL` opt-in via
+`TEST_CMDLINE='test_mode test=rebuild-kernel'`).  Required: a 4-byte size
+alignment in `kmalloc` (root cause of a long-tail heap corruption under heavy
+fork/exec), a NULL-guard in TCC's `asm_expr_sum`, four `__TINYC__`-gated
+source tweaks (`boot.S` header-in-`.text`, `chainload.S` far-jmp offset,
+`isr_asm.S` cpp-macro rewrite, `vtty.c`/`keyboard.c` `kernel/atomic.h` shim),
+a hoist of one nested function in `syscall.c`, drop of `__builtin_unreachable`
+in `libc/stdlib/abort.c`, and ISO-stage `/usr/include/kernel-build/` + TCC
+`stdint.h`/`limits.h` stubs.  Both host-side and in-OS paths preserved the
+existing v0.8 milestones (calc.elf + sh.elf still self-rebuild) and full
+`./run.sh iso test` (`KTEST_RESULT: PASS`, `INCORE/LIBC-TCC/SHELL-SMOKE: ALL PASS`,
+`ui_test: 20/20`).  In-OS rebuild completes the script end-to-end but ~19/75
+per-file compiles still fail with a `(null):3811692: invalid number syntax`
+diagnostic that points at a kernel-sh `exec` argv-passing bug, not the TCC
+recipe itself.  See `docs/handoff-self-hosting.md`.
+
+## Earlier state snapshot (v0.8.0)
 
 Makar boots to an interactive VESA shell with 4 independent TTYs.
 Alt+F1–F4 switches between them; each is a separate **preemptive** kernel

@@ -70,6 +70,18 @@ Allocate at least `size` bytes using a first-fit scan.  Splits the found
 block if the remainder would be large enough.  Returns `NULL` if the heap is
 exhausted or `size` is 0.
 
+**Alignment**: `size` is rounded up to 4 bytes at entry, so every remainder
+block produced by a split also lands on a 4-byte boundary.  Without this,
+any odd-sized allocation (e.g. `kmalloc(strlen(path)+1)`) would misalign
+every subsequent block in the freelist; under heavy fork/exec churn the
+cascade eventually corrupted the linked-list `next` pointers and panicked
+the kernel (v0.9 root-cause fix).  `kfree` additionally range-checks `ptr`
+against `[HEAP_START + BLOCK_HDR_SIZE, HEAP_MAX)` and validates
+`blk->next` lies in-heap inside the coalesce loop — both as cheap insurance
+against any future corruption (a bogus value gets a one-line diagnostic on
+serial naming the caller, and the freelist is truncated rather than
+followed).
+
 ### `kfree`
 
 ```c

@@ -7,18 +7,23 @@
  * banner, the `version` builtin, /proc/uname, and anywhere else that
  * wants to report a version.
  *
- *   MAKAR_VERSION  -- the kernel itself.  v1.0 is reserved for full
- *                     self-hosting (in-OS compiler + installable +
- *                     buildable).  0.8 marks the in-OS TCC milestone:
- *                     tcc.elf runs on bare metal, calc.elf + sh.elf
- *                     rebuild themselves, ring-3 page faults SIGSEGV
- *                     cleanly, HDD root layout, ring-3 sh.elf MVP.
+ *   MAKAR_VERSION  -- the kernel itself.  0.9 marks the kernel self-host
+ *                     milestone: the bootable Multiboot 2 kernel ELF is
+ *                     built end-to-end with our shipped TCC against the
+ *                     vendored source tree (host-side proven, full in-OS
+ *                     path runs and produces REBUILD-KERNEL: ALL PASS
+ *                     when all per-file compiles succeed).  v1.0 stays
+ *                     reserved for self-hosting PLUS the polish
+ *                     phase -- full-green tests, hardened test harness,
+ *                     docs at 100%, and the "10× dev experience" pass.
+ *                     Stays at 0.9.x with patch bumps through that
+ *                     polish work.  0.8 was the in-OS TCC milestone
+ *                     (calc.elf + sh.elf rebuild themselves under TCC).
  *   SHELL_VERSION  -- the in-kernel shell (scripting + REPL).  Tracked
  *                     separately so shell-only changes don't move the
- *                     kernel version and vice versa.  Bumped half a
- *                     step (0.6.0 → 0.6.5) for zsh-style tab cycling.
+ *                     kernel version and vice versa.
  */
-#define MAKAR_VERSION "0.8.1"
+#define MAKAR_VERSION "0.9.0"
 #define SHELL_VERSION "0.7.0"
 
 #endif /* _KERNEL_VERSION_H */

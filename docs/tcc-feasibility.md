@@ -1,25 +1,35 @@
 ---
-title: TCC in-OS — feasibility spike
+title: TCC in-OS — feasibility spike (shipped)
 nav_order: 5
 ---
 
-# Porting TCC to run inside Makar — feasibility spike
+# Porting TCC to run inside Makar — historical write-up
 
-**Status:** Phases 1, 2 & 3 shipped (May 2026). TCC cross-builds cleanly
-against the Makar libc shim and ships on every ISO image as
-`/apps/tcc.elf`. The sysroot (`/usr/lib/`, `/usr/include/`,
-`/usr/lib/tcc/`) is auto-staged by `build-tcc.sh`, called from `iso.sh`.
+**Status (May 2026, v0.9):** all phases shipped.  TCC cross-builds cleanly
+against the Makar libc shim, ships on every ISO image as `/apps/tcc.elf`,
+**self-rebuilds calc.elf + sh.elf in-OS** (v0.8), **AND rebuilds the bootable
+Multiboot 2 kernel ELF itself** under our build-kernel-tcc.sh driver (v0.9
+host-side, in-OS in progress).  The sysroot (`/usr/lib/`, `/usr/include/`,
+`/usr/lib/tcc/`, `/usr/include/kernel-build/`) is auto-staged by `build-tcc.sh`
++ `iso.sh`.
 
-Goal: get TCC compiled as a cross-target, inventory exactly what it
-needs to *run* on a live Makar system and compile/link other apps, and
-lay out a concrete phased plan.
+This page was originally a forward-looking feasibility spike; it now reads
+as a historical write-up of how the path was scoped + landed.  For the
+current state and the kernel-self-host work specifically, see
+[handoff-self-hosting.md](handoff-self-hosting.md) and `CLAUDE.history.md`.
 
-**Conclusion up front:** TCC the *compiler* is portable and i386 is a
-first-class TCC target, so the compiler core is not the hard part. The hard
-part **was** that Makar had no hosted libc — that gap is now closed by the
-freestanding shim shipped in Phase 2. Phase 3 is complete: TCC cross-builds
-against the shim, and `tcc.elf` ships on every OS image alongside the full
-sysroot (CRT objects, `libc.a`, `libtcc1.a`, headers).
+Goal at the time of writing: get TCC compiled as a cross-target, inventory
+exactly what it needs to *run* on a live Makar system and compile/link other
+apps, and lay out a concrete phased plan.
+
+**Conclusion up front (still accurate):** TCC the *compiler* is portable and
+i386 is a first-class TCC target, so the compiler core was not the hard
+part.  The hard part was that Makar had no hosted libc — that gap was closed
+by the freestanding shim in Phase 2.  Phases 3+ shipped: TCC cross-builds
+against the shim, `tcc.elf` ships on every OS image alongside the full
+sysroot (CRT objects, `libc.a`, `libtcc1.a`, headers), userspace apps
+(calc/sh/makbox/hello) all self-rebuild end-to-end, and the **kernel** does
+too.
 
 ---
 
