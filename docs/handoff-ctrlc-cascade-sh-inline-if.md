@@ -59,6 +59,12 @@ isn't in the default suite, so it was never caught).
 Verified: `incore` and `demo-script` both pass in isolation (1/1) and in the full 20/20 run.
 incore.sh was **left inline** on purpose so the parser fix is exercised end-to-end.
 
+**Self-hosting preserved:** `./run.sh iso test` is fully green after the sh.c edit —
+`LIBC-TCC: ALL PASS` (incl. `compile-sh [PASS]`, i.e. TCC still compiles `src/userspace/sh.c`
+to an ELF **in-OS**), plus `KTEST_RESULT: PASS`, `INCORE: ALL PASS`, `SHELL-SMOKE: ALL PASS`,
+`ui_test: 20/20`, `==> All ISO tests PASSED.` The new `parser_t = {0}` init, `rb_next`,
+`match_kw` and `pending[]` field are all freestanding / TCC-compatible.
+
 ## maktop cannot close mak.sh0
 
 Confirmed already protected (no code change needed): `user_shell_slot_entry` →
