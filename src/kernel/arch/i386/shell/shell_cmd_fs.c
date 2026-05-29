@@ -190,10 +190,10 @@ static void cmd_mkdir(int argc, char **argv)
         int err = vfs_mkdir(argv[i]);
         switch (err) {
         case  0: break;
-        case -1: t_writestring("mkdir: path error: ");    t_writestring(argv[i]); t_putchar('\n'); break;
-        case -2: t_writestring("mkdir: I/O error: ");     t_writestring(argv[i]); t_putchar('\n'); break;
-        case -4: t_writestring("mkdir: disk full: ");     t_writestring(argv[i]); t_putchar('\n'); break;
-        case -6: t_writestring("mkdir: already exists: ");t_writestring(argv[i]); t_putchar('\n'); break;
+        case -1: t_writestring("mkdir: cannot create '");  t_writestring(argv[i]); t_writestring("'\n"); break;
+        case -2: t_writestring("mkdir: I/O error: '");     t_writestring(argv[i]); t_writestring("'\n"); break;
+        case -4: t_writestring("mkdir: disk full: '");     t_writestring(argv[i]); t_writestring("'\n"); break;
+        case -6: t_writestring("mkdir: already exists: '");t_writestring(argv[i]); t_writestring("'\n"); break;
         default:
             if (err < 0) {
                 t_writestring("mkdir: error ");

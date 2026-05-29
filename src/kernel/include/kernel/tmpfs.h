@@ -15,8 +15,13 @@
  * tacking on the end of the previous run.
  *
  * Paths passed in are tmpfs-relative and always start with '/':
- * "/" is the directory itself, "/<name>" a specific file.  /tmp is
- * flat (no sub-directories).
+ * "/" is the directory itself, "/<name>" a specific file.  Sub-paths
+ * like "/foo/bar.o" are accepted: tmpfs stores the entire path past
+ * the leading '/' as a single flat name, so `/tmp/foo/bar.o` and
+ * `/tmp/foo_bar.o` are two distinct files but `/tmp/foo` does not
+ * exist as a true directory.  `tmpfs_mkdir` is a no-op success that
+ * exists so scripts which `mkdir /tmp/sub` before writing files into
+ * it don't see a spurious failure.
  */
 
 #include <kernel/types.h>
@@ -50,5 +55,11 @@ long tmpfs_size(const char *path);
 
 /* Remove "/<name>".  Returns 0 on success, -1 if absent. */
 int  tmpfs_delete(const char *path);
+
+/* No-op success: tmpfs has a flat namespace, so "creating" a directory
+ * is implicit -- the namespace it spans appears the moment a file
+ * underneath it is written.  Returns 0 for any non-empty path so
+ * scripts that mkdir before writing don't see a spurious error. */
+int  tmpfs_mkdir(const char *path);
 
 #endif /* _KERNEL_TMPFS_H */
