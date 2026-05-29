@@ -28,6 +28,7 @@ and [self-hosting handoff](handoff-self-hosting.md)).
 - **[BASIC](basic.md)** — the C64-style integer BASIC interpreter (`basic.elf`)
 - **[Userland libc](userland-libc.md)** — porting roadmap toward musl/dash
 - **[TCC in-OS compiler](tcc-feasibility.md)** — porting TCC to compile C on a running Makar system
+- **[Rebuilding the kernel inside Makar](rebuild-kernel.md)** — `/apps/rebuild-kernel.sh`, build-origin banners, installing the freshly built kernel
 - **[Makar × Medli](makar-medli.md)** — sibling-project co-operation roadmap and VIX→VICS history
 - **[Repo on GitHub](https://github.com/Arawn-Davies/Makar)**
 
