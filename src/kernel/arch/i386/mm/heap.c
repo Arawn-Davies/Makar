@@ -59,6 +59,12 @@ void *kmalloc(size_t size)
     if (size == 0 || heap_head == NULL)
         return NULL;
 
+    /* Round up to 4-byte alignment so the remainder block produced by a
+     * split always starts at an aligned address.  Without this, any odd-
+     * sized allocation (e.g. kmalloc(strlen(path)+1)) misaligns every
+     * subsequent block in the freelist, eventually corrupting it. */
+    size = (size + 3u) & ~3u;
+
     block_hdr_t *blk = heap_head;
 
     while (blk) {
