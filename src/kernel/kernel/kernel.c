@@ -339,6 +339,12 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 		#define TEST_WANT(name) \
 			(test_spec == NULL || test_spec[0] == '\0' || \
 			 strcmp(test_spec, "all") == 0 || strstr(test_spec, (name)) != NULL)
+		/* Opt-in variant: must be named explicitly.  For long-running suites
+		 * we don't want firing on a bare `test_mode` (e.g. the in-OS kernel
+		 * rebuild takes minutes in TCG). */
+		#define TEST_WANT_EXPLICIT(name) \
+			(test_spec != NULL && test_spec[0] != '\0' && \
+			 strstr(test_spec, (name)) != NULL)
 
 		/* Wipe the "Initializing X... [OK]" boot lines off the
 		 * framebuffer before the test-mode dispatch starts.  Without
@@ -383,7 +389,20 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			Serial_WriteString("SHELL-SMOKE: finished\n");
 		}
 
+		/* In-OS kernel rebuild (opt-in only).  Runs /apps/rebuild-kernel.sh
+		 * which calls /apps/tcc.elf once per source file then links the
+		 * result.  Slow: ~10 min under TCG.  Invoke with:
+		 *   TEST_CMDLINE="test_mode test=rebuild-kernel" ./run.sh iso build
+		 *   qemu-system-i386 -cdrom makar-test.iso -serial stdio -display none -m 256
+		 * Marker REBUILD-KERNEL: ALL PASS / REBUILD-KERNEL: FAIL. */
+		if (TEST_WANT_EXPLICIT("rebuild-kernel")) {
+			Serial_WriteString("REBUILD-KERNEL: starting\n");
+			sh_run_file("/apps/rebuild-kernel.sh");
+			Serial_WriteString("REBUILD-KERNEL: finished\n");
+		}
+
 		#undef TEST_WANT
+		#undef TEST_WANT_EXPLICIT
 
 		uint8_t exit_val = (fails > 0) ? 1 : 0;
 		asm volatile("outb %b0, %w1" :: "a"(exit_val), "Nd"((uint16_t)0xF4));
