@@ -72,7 +72,7 @@ preserves this (the `unkillable` `continue` runs before `task_terminate`).
 Goal (per user): no cascade failures; scenarios pass **in isolation and in any order, within
 the same QEMU instance, with minimal reboots**; eventually migrate off QEMU HMP `sendkey`.
 
-### Done
+### Done & verified
 - **`tests/ui_runner.sh` `reset_shell` rewrite**: recover the shell **in-place first** —
   `alt-f1` (back to VT0) → `Ctrl-C` (abort/kill+reap any leftover foreground child; works now
   that the kernel restores focus on reap) → `cd /` → **probe** for a fresh `[shell:ready vt=0]`.
@@ -81,17 +81,16 @@ the same QEMU instance, with minimal reboots**; eventually migrate off QEMU HMP 
   one scenario. Guarded against `UI_REUSE_QEMU=1` (can't relaunch in that mode). Helpers added:
   `_serial_size`, `_reset_shell_inplace`. The in-place `^C` lands before each scenario's
   `start_bytes` mark, so it never pollutes a scenario's serial slice.
+- **Verified with the guard in place:** full suite **20/20** (zero reboots, zero fails);
+  `vt` + `bughunt` tail group **5/5** (incl. `vt-all-roundtrips`); **adversarial order 9/9**
+  (`ctrlc_kills_child` mid-sequence, `vt_all_roundtrips` early, `mnt_mountpoint` disk-mutation
+  interleaved) — order-independence holds.
+- **The earlier `v3` freeze at `vt-all-roundtrips` (16/20) was environmental, not a
+  regression**: the host slept overnight (serial log froze 00:58, resumed ~09:26), suspending
+  QEMU. Re-runs of that exact scenario pass cleanly.
 
-### ⚠️ Open / must verify before trusting the harness change
-- **The full-suite re-run (`v3`) with the new `reset_shell` died at scenario 17
-  (`vt-all-roundtrips`) — froze at 16/20, no final tally, QEMU process vanished.** The first 16
-  (incl. all previously-cascading ones, ctrlc, incore) passed with zero reboots. Unclear if the
-  death is caused by the `reset_shell` change interacting with the multi-VT scenario, or an
-  unrelated flake. **Next step: re-run `./run.sh ui vt bughunt` (the tail) and the full suite;
-  investigate the `vt-all-roundtrips` transition under the new reset.** Do NOT claim the harness
-  change is verified until a full 20/20 lands with it in place.
-- **Order-independence not yet tested.** Plan: `./run.sh ui <names…>` runs scenarios in the
-  given order — run an adversarial/reversed order and confirm 20/20.
+### Still open (lower priority)
+- HMP-off migration (below) is roadmap-only, not started.
 
 ## Future: migrate UI tests off HMP `sendkey` (roadmap, not started)
 
