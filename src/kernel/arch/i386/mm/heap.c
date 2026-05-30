@@ -59,6 +59,12 @@ void *kmalloc(size_t size)
     if (size == 0 || heap_head == NULL)
         return NULL;
 
+    /* Round up to 4-byte alignment so the remainder block produced by a
+     * split always starts at an aligned address.  Without this, any odd-
+     * sized allocation (e.g. kmalloc(strlen(path)+1)) misaligns every
+     * subsequent block in the freelist, eventually corrupting it. */
+    size = (size + 3u) & ~3u;
+
     block_hdr_t *blk = heap_head;
 
     while (blk) {
@@ -92,11 +98,45 @@ void kfree(void *ptr)
     if (!ptr)
         return;
 
+    /* Reject obviously-bogus pointers before dereferencing them.  Caught
+     * a stress-induced bug under heavy rebuild-kernel.sh fork/exec load
+     * where a non-heap pointer reached kfree and SIGSEGV'd the kernel.
+     * Print the caller so the upstream owner can be found. */
+    uintptr_t up = (uintptr_t)ptr;
+    if (up < HEAP_START + BLOCK_HDR_SIZE || up >= HEAP_MAX) {
+        Serial_WriteString("kfree: BAD POINTER ");
+        Serial_WriteHex(up);
+        Serial_WriteString(" caller=");
+        Serial_WriteHex((uintptr_t)__builtin_return_address(0));
+        Serial_WriteString("\n");
+        return;
+    }
+
     block_hdr_t *blk = (block_hdr_t *)((uint8_t *)ptr - BLOCK_HDR_SIZE);
     blk->is_free = 1;
 
-    /* Coalesce with the next block if it is also free. */
-    while (blk->next && blk->next->is_free) {
+    /* Coalesce with the next block if it is also free.  Validate next-pointer
+     * lies within the heap before deref -- a wild write from elsewhere can
+     * clobber a free block's `next` field, and following it would page-fault
+     * in the kernel.  Report the corrupt block so the upstream owner can be
+     * traced, then stop coalescing. */
+    while (blk->next) {
+        uintptr_t np = (uintptr_t)blk->next;
+        if (np < HEAP_START || np >= HEAP_MAX) {
+            Serial_WriteString("kfree: corrupt next in blk=");
+            Serial_WriteHex((uintptr_t)blk);
+            Serial_WriteString(" size=");
+            Serial_WriteHex((uintptr_t)blk->size);
+            Serial_WriteString(" next=");
+            Serial_WriteHex(np);
+            Serial_WriteString(" caller=");
+            Serial_WriteHex((uintptr_t)__builtin_return_address(0));
+            Serial_WriteString("\n");
+            blk->next = NULL;   /* prevent further deref; sacrifice some heap */
+            break;
+        }
+        if (!blk->next->is_free)
+            break;
         blk->size += BLOCK_HDR_SIZE + blk->next->size;
         blk->next  = blk->next->next;
     }

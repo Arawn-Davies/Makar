@@ -16,8 +16,9 @@ C# / Cosmos counterpart. The two share a command vocabulary,
 filesystem layout, and long-term binary-format goals while exploring
 how language choice shapes the implementation.
 
-**Current version:** 0.8.0 (see
-[`include/kernel/version.h`](https://github.com/Arawn-Davies/Makar/blob/main/src/kernel/include/kernel/version.h)).
+**Current version:** 0.9.0 (kernel self-host milestone; see
+[`include/kernel/version.h`](https://github.com/Arawn-Davies/Makar/blob/main/src/kernel/include/kernel/version.h)
+and [self-hosting handoff](handoff-self-hosting.md)).
 
 ## Quick links
 
@@ -27,6 +28,7 @@ how language choice shapes the implementation.
 - **[BASIC](basic.md)** — the C64-style integer BASIC interpreter (`basic.elf`)
 - **[Userland libc](userland-libc.md)** — porting roadmap toward musl/dash
 - **[TCC in-OS compiler](tcc-feasibility.md)** — porting TCC to compile C on a running Makar system
+- **[Rebuilding the kernel inside Makar](rebuild-kernel.md)** — `/apps/rebuild-kernel.sh`, build-origin banners, installing the freshly built kernel
 - **[Makar × Medli](makar-medli.md)** — sibling-project co-operation roadmap and VIX→VICS history
 - **[Repo on GitHub](https://github.com/Arawn-Davies/Makar)**
 

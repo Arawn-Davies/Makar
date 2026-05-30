@@ -23,6 +23,8 @@
 #define SYS_CHDIR      12   /* int chdir(const char *path) -- set calling task's cwd */
 #define SYS_LSEEK      19   /* off_t lseek(int fd, off_t offset, int whence)   */
 #define SYS_GETPID     20   /* pid_t getpid(void)                               */
+#define SYS_PIPE       42   /* int pipe(int pipefd[2]) -- alloc reader+writer  */
+#define SYS_DUP2       63   /* int dup2(int oldfd, int newfd) -- Linux i386 ABI*/
 #define SYS_WAIT4      114  /* pid_t wait4(pid, int *status, int options, void *rusage) */
 #define SYS_KILL       37   /* int kill(int pid, int signo)                     */
 #define SYS_RENAME     38   /* int rename(const char *old, const char *new)     */
@@ -99,6 +101,16 @@
                                  * Userspace shell calls this before each
                                  * prompt so ui_test.sh's wait_for_serial
                                  * keeps working unchanged. */
+#define SYS_CURSOR_POS     232  /* uint32_t cursor_pos(void) -> (col<<16)|row */
+#define SYS_VT_ENTER       233  /* int vt_enter(int focus_new) - attach this task
+                                 * as a makmux shell on the next VT slot. */
+#define SYS_VT_CLOSE       234  /* int vt_close(pid_t pid) - close task's VT */
+#define SYS_VT_OPEN_REQUEST 235 /* int vt_open_request(void) - consume Alt+T */
+#define SYS_VT_STATE       236 /* uint32_t vt_state(void) -> active<<16 | mask */
+#define SYS_VT_CLOCK_REQUEST 237 /* int vt_clock_request(void) - consume Alt+F5 */
+#define SYS_INSTALL          238 /* int install(void) - run the Limine installer TUI;
+                                  * blocks the calling task until the installer
+                                  * exits.  Returns 0 on success, -1 otherwise. */
 #define SYS_GETHOSTNAME    230  /* int gethostname(char *buf, size_t size) - read
                                  * /etc/hostname (or fallback "makar"), copy up
                                  * to size-1 bytes, NUL-terminate.  Returns
@@ -114,9 +126,18 @@
 #define CLOCK_REALTIME  0   /* Wall clock from CMOS RTC, seconds since 1970     */
 #define CLOCK_MONOTONIC 1   /* PIT-derived uptime, never jumps backwards        */
 
-/* Timeval / timespec -- Linux i386 layouts. */
+/* Timeval / timespec -- Linux i386 layouts.  Per-struct guards so this
+ * header coexists with src/userspace/syscall.h when the in-OS TCC
+ * kernel rebuild includes both (via kernel/timer.h -> stdio.h -> the
+ * userspace syscall.h chain). */
+#ifndef _MAKAR_STRUCT_TIMEVAL_DEFINED
+#define _MAKAR_STRUCT_TIMEVAL_DEFINED
 struct timeval  { int32_t tv_sec; int32_t tv_usec; };
+#endif
+#ifndef _MAKAR_STRUCT_TIMESPEC_DEFINED
+#define _MAKAR_STRUCT_TIMESPEC_DEFINED
 struct timespec { int32_t tv_sec; int32_t tv_nsec; };
+#endif
 
 /* fcntl cmd values (Linux i386 ABI subset). */
 #define F_GETFL         3
@@ -165,6 +186,8 @@ typedef struct {
  * Fields we cannot populate from Makar's filesystems are zero-filled by the
  * SYS_STAT / SYS_FSTAT implementation.
  * ---------------------------------------------------------------------- */
+#ifndef _MAKAR_STRUCT_STAT_DEFINED
+#define _MAKAR_STRUCT_STAT_DEFINED
 struct stat {
     uint32_t st_dev;
     uint32_t st_ino;
@@ -185,17 +208,21 @@ struct stat {
     uint32_t __unused4;
     uint32_t __unused5;
 };
+#endif
 
 /* Index-addressed dirent for SYS_READDIR(141).  Stable shape for both
  * kernel and userspace headers; the name buffer is sized for the longest
  * VFS path component (VFS_PATH_MAX is the full-path cap). */
 #define DIRENT_NAME_MAX 256
+#ifndef _MAKAR_STRUCT_DIRENT_DEFINED
+#define _MAKAR_STRUCT_DIRENT_DEFINED
 struct dirent {
     uint32_t d_ino;             /* synthetic; same FNV-1a as stat */
     uint8_t  d_type;            /* DT_REG / DT_DIR / DT_UNKNOWN */
     uint8_t  __pad[3];
     char     d_name[DIRENT_NAME_MAX];
 };
+#endif
 #define DT_UNKNOWN 0
 #define DT_DIR     4
 #define DT_REG     8

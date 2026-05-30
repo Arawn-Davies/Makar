@@ -8,6 +8,7 @@
  */
 #include "stdio.h"
 #include "malloc.h"
+#include "syscall.h"
 
 /* ---- Standard streams ----------------------------------------------------- */
 static FILE s_stdin  = { .fd = 0 };
@@ -143,27 +144,104 @@ int vsnprintf(char *buf, unsigned int sz, const char *fmt, va_list ap)
     for (const char *p = fmt; *p; p++) {
         if (*p != '%') { sb_put(&s, *p); continue; }
         p++;
+        /* Flags (minimal subset: `-`, `+`, ` ` ignored; `0` triggers
+         * zero-padding; `#` ignored). */
         char pad = ' '; int width = 0;
+        if (*p == '-' || *p == '+' || *p == ' ' || *p == '#') p++;
         if (*p == '0') { pad = '0'; p++; }
         while (*p >= '0' && *p <= '9') { width = width*10 + (*p - '0'); p++; }
+        /* Optional precision (.N) -- parsed but ignored for now; just
+         * keep the va_arg sequence aligned. */
+        if (*p == '.') {
+            p++;
+            while (*p >= '0' && *p <= '9') p++;
+        }
+        /* Length modifier: `h`, `hh`, `l`, `ll`, `z`, `t`, `j`.  On i386
+         * `long`, `size_t`, `ptrdiff_t`, `intmax_t` are all 32-bit, so
+         * a single `l`/`z`/`t`/`j` is a no-op for va_arg consumption.
+         * `ll` (long long) IS 64-bit -- mark it so the spec handlers
+         * below consume two slots, and format the full value. */
+        int is_ll = 0;
+        if (*p == 'h') { p++; if (*p == 'h') p++; }
+        else if (*p == 'l') { p++; if (*p == 'l') { is_ll = 1; p++; } }
+        else if (*p == 'z' || *p == 't' || *p == 'j') { p++; }
         switch (*p) {
         case 'c': sb_put(&s, (char)va_arg(ap, int)); break;
         case 's': {
             const char *str = va_arg(ap, const char *);
             if (!str) str = "(null)";
+            /* Sanity: reject obviously-bogus pointers (outside the
+             * user address window USER_CODE_BASE..USER_STACK_TOP)
+             * so a stale caller arg doesn't take down the whole
+             * task with a SIGSEGV while formatting an error message.
+             * Defensive only -- a valid pointer that happens to land
+             * outside this window (e.g. an .rodata in a different
+             * mapping) prints "(badptr)" instead of crashing. */
+            unsigned int up = (unsigned int)(unsigned long)str;
+            /* Valid ranges: [USER_CODE_BASE, brk) for code+heap, and
+             * the top 32 KiB of the user address space for stack. */
+            unsigned int brk_top = (unsigned int)(unsigned long)sys_brk((void *)0);
+            int in_codeheap = (up >= 0x40000000u && up < brk_top);
+            int in_stack    = (up >= 0xBFFE0000u && up <  0xC0000000u);
+            if (!in_codeheap && !in_stack) str = "(badptr)";
             int len = 0; while (str[len]) len++;
             while (len < width) { sb_put(&s, pad); len++; }
             sb_str(&s, str); break;
         }
         case 'd': case 'i': {
-            int v = va_arg(ap, int);
-            unsigned long uv = (v < 0) ? (unsigned long)(-(long)v) : (unsigned long)v;
-            sb_num(&s, uv, 10, 0, v < 0, width, pad);
+            if (is_ll) {
+                long long v = va_arg(ap, long long);
+                unsigned long long uv = (v < 0)
+                    ? (unsigned long long)(-(long long)v)
+                    : (unsigned long long)v;
+                /* Render via the existing sb_num path -- cast to ulong
+                 * is lossy for the full 64-bit range, but a typical
+                 * TCC %lld value (line numbers, sizes) fits in 32 bits.
+                 * Wrap-around above 2^32 is documented as best-effort. */
+                sb_num(&s, (unsigned long)uv, 10, 0, v < 0, width, pad);
+            } else {
+                int v = va_arg(ap, int);
+                unsigned long uv = (v < 0) ? (unsigned long)(-(long)v) : (unsigned long)v;
+                sb_num(&s, uv, 10, 0, v < 0, width, pad);
+            }
             break;
         }
-        case 'u': sb_num(&s, va_arg(ap, unsigned int), 10, 0, 0, width, pad); break;
-        case 'x': sb_num(&s, va_arg(ap, unsigned int), 16, 0, 0, width, pad); break;
-        case 'X': sb_num(&s, va_arg(ap, unsigned int), 16, 1, 0, width, pad); break;
+        case 'u': {
+            if (is_ll) {
+                unsigned long long v = va_arg(ap, unsigned long long);
+                sb_num(&s, (unsigned long)v, 10, 0, 0, width, pad);
+            } else {
+                sb_num(&s, va_arg(ap, unsigned int), 10, 0, 0, width, pad);
+            }
+            break;
+        }
+        case 'x': {
+            if (is_ll) {
+                unsigned long long v = va_arg(ap, unsigned long long);
+                sb_num(&s, (unsigned long)v, 16, 0, 0, width, pad);
+            } else {
+                sb_num(&s, va_arg(ap, unsigned int), 16, 0, 0, width, pad);
+            }
+            break;
+        }
+        case 'X': {
+            if (is_ll) {
+                unsigned long long v = va_arg(ap, unsigned long long);
+                sb_num(&s, (unsigned long)v, 16, 1, 0, width, pad);
+            } else {
+                sb_num(&s, va_arg(ap, unsigned int), 16, 1, 0, width, pad);
+            }
+            break;
+        }
+        case 'o': {
+            if (is_ll) {
+                unsigned long long v = va_arg(ap, unsigned long long);
+                sb_num(&s, (unsigned long)v, 8, 0, 0, width, pad);
+            } else {
+                sb_num(&s, va_arg(ap, unsigned int), 8, 0, 0, width, pad);
+            }
+            break;
+        }
         case 'p': sb_put(&s,'0'); sb_put(&s,'x');
                   sb_num(&s, (unsigned long)(unsigned int)va_arg(ap, void *), 16, 0, 0, 8, '0'); break;
         case '%': sb_put(&s, '%'); break;

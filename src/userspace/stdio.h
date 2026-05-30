@@ -34,12 +34,18 @@ int   fputs (const char *s, FILE *f);
 int   fputc (int c, FILE *f);
 int   fgetc (FILE *f);
 int   feof  (FILE *f);
+int   fseek (FILE *f, long offset, int whence);
+long  ftell (FILE *f);
+FILE *fdopen(int fd, const char *mode);
 
 /* Format helpers.  Supported conversions: %s %c %d %i %u %x %X %p %%
  * and the field-width prefix (e.g. %5d, %08x).  No floats (no FPU). */
 int snprintf (char *buf, unsigned int sz, const char *fmt, ...);
 int vsnprintf(char *buf, unsigned int sz, const char *fmt, va_list ap);
+int sprintf  (char *buf, const char *fmt, ...);
+int vsprintf (char *buf, const char *fmt, va_list ap);
 int fprintf  (FILE *f, const char *fmt, ...);
+int vfprintf (FILE *f, const char *fmt, va_list ap);
 int printf   (const char *fmt, ...);
 
 #endif

@@ -55,4 +55,21 @@ void shell_apply_scheme_for_tty(int tty);
  */
 int shell_enter_slot(int with_loading_screen);
 
+/*
+ * shell_enter_makmux_slot – attach the current task to a makmux-owned VT
+ * and name it mak.sh<N>.  focus_new selects whether the new pane becomes
+ * active immediately (Alt-T replacement behavior).  Unlike shell_enter_slot(),
+ * this is specifically for userspace makmux children, so it re-enables the
+ * kernel status bar hidden by mak.sh0 normal boot and preserves the original
+ * VT palettes.
+ */
+int shell_enter_makmux_slot(int focus_new);
+
+/*
+ * shell_enter_root_tty – boot prelude for the detached mak.sh0 login shell.
+ * This does not register a vtty slot; makmux owns the four switchable VT
+ * slots and creates mak.sh1..mak.sh4 as its children.
+ */
+void shell_enter_root_tty(void);
+
 #endif /* _KERNEL_SHELL_H */

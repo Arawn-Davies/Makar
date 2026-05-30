@@ -12,8 +12,8 @@
 #include <string.h>
 #include <kernel/version.h>   /* MAKAR_VERSION + SHELL_VERSION (single source) */
 
-#define SHELL_MAX_INPUT  256
-#define SHELL_MAX_ARGS   16   /* enough headroom for glob expansion */
+#define SHELL_MAX_INPUT  4096 /* room for rebuild-kernel.sh's link line */
+#define SHELL_MAX_ARGS   128  /* room for the full kernel .o list in one `ar`/link line */
 
 /* Medli-compatible identity: username and hostname shown in the prompt. */
 #define SHELL_USERNAME   "root"
@@ -48,12 +48,9 @@ typedef struct {
     uint32_t bg_rgb;  /* 24-bit VESA background                    */
 } shell_scheme_t;
 
-/* Indexed by VT slot 0..3.  Tracks the user's stated preferences:
- *   VT0  light green on black
- *   VT1  white on black
- *   VT2  white on blue (the classic Makar look, preserved as default
- *                       for the most-used secondary VT)
- *   VT3  black on white                                            */
+/* Indexed by makmux VT slot 0..3 (displayed as mak.sh1..mak.sh4).  Preserve
+ * the original VT palettes exactly; the detached mak.sh0 root tty has its
+ * own white-on-blue boot palette and does not use this table. */
 static const shell_scheme_t SHELL_SCHEMES[4] = {
     { 0x0A, 0x55FF55, 0x000000 },
     { 0x0F, 0xFFFFFF, 0x000000 },
@@ -109,6 +106,12 @@ int  shell_expand_globs(int argc, char **argv, int argv_cap,
 
 /* shell_cmd_apps.c – shared ELF launcher used by exec and PATH lookup */
 void shell_exec_elf(const char *path, int argc, char **argv);
+
+/* shell_cmd_apps.c – $? thread-back for builtins.  Set non-zero before
+ * returning from a builtin to publish it to the script interpreter. */
+int  shell_last_exec_status(void);
+void shell_reset_last_exec_status(void);
+void shell_set_last_exec_status(int s);
 
 /* Shared helper: parse decimal or 0x-prefixed hex string to uint32. */
 static inline uint32_t parse_uint(const char *s)

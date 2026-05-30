@@ -32,6 +32,35 @@ echo "makar" > isodir/etc/hostname
 cp -r src/. isodir/src/
 cp -r docs/. isodir/docs/
 
+# Kernel headers re-exposed at /usr/include/kernel-build/ so the in-OS
+# rebuild script (rebuild-kernel.sh, run from kernel-sh) can pass
+# `-I/usr/include/kernel-build` and have `#include <kernel/foo.h>` resolve.
+# Keeps it separate from /usr/include/ (which carries the userspace libc).
+mkdir -p isodir/usr/include/kernel-build
+cp -r src/kernel/include/. isodir/usr/include/kernel-build/
+
+# Also stage src/libc/include/ on top: the kernel-side libc headers
+# (string.h, stdio.h, ...) drag in <stddef.h> for size_t/NULL, which
+# the libc *.c sources in /src/libc/string and /src/libc/stdio need.
+# The userspace /usr/include/string.h deliberately avoids stddef and
+# uses a private string_size_t typedef instead -- great for the
+# ring-3 apps, wrong for the freestanding libc sources.  Without this
+# overlay TCC would pick up the userspace string.h and fail with
+# "'size_t' undeclared" / "'NULL' undeclared".
+cp -r src/libc/include/. isodir/usr/include/kernel-build/
+
+# Stage vendor/tinycc/ source onto the ISO at /src/tinycc/ so the in-OS TCC
+# can rebuild itself (the v1.0 self-host flex).  build-tcc.sh has already
+# applied the Makar-flavoured patches above, so the staged copy matches the
+# host-built tcc.elf exactly.  We skip the host build artefacts (*.o, *.log,
+# tcc.elf) -- they'd just be rebuilt anyway.
+if [ -d vendor/tinycc ]; then
+    mkdir -p isodir/src/tinycc
+    (cd vendor/tinycc && find . -type f \
+       \( -name '*.c' -o -name '*.h' -o -name '*.S' -o -name '*.def' \) \
+       -exec cp --parents {} ../../isodir/src/tinycc/ \;)
+fi
+
 # Vendored limine BIOS stage (v12.3.0).  The in-kernel installer reads this
 # off the CD and deploys it to the target HDD (boot sector -> MBR, stage2 ->
 # post-MBR gap, the file itself -> /limine on the rootfs).  The host build

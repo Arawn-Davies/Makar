@@ -197,7 +197,7 @@ int sh_try_assign(const char *line)
     memcpy(name, line, i);
     name[i] = '\0';
     const char *rhs = line + i + 1;
-    static char expanded[512];
+    static char expanded[4096];
     if (sh_expand(rhs, expanded, sizeof(expanded)) != 0) {
         t_writestring("sh: assignment expansion overflow\n");
         return 1;
@@ -238,7 +238,7 @@ int sh_exec_line(char *line)
 
     if (sh_try_assign(line)) return 1;
 
-    static char expanded[1024];
+    static char expanded[4096];
     if (sh_expand(line, expanded, sizeof(expanded)) != 0) {
         t_writestring("sh: line too long after expansion\n");
         return 0;
@@ -400,7 +400,7 @@ static int eval_condition(const char *line)
     size_t l = strlen(buf);
     while (l > 0 && (buf[l-1] == ';' || buf[l-1] == ' ' || buf[l-1] == '\t')) buf[--l] = '\0';
     if (l > 0 && buf[l-1] == ']') buf[--l] = '\0';
-    static char expanded[512];
+    static char expanded[4096];
     if (sh_expand(buf, expanded, sizeof(expanded)) != 0) return 0;
     char *argv[SHELL_MAX_ARGS];
     int argc = shell_parse(expanded, argv, SHELL_MAX_ARGS);
@@ -434,13 +434,23 @@ static int run_block(char **lines, int from, int to)
                  *   if <COND>; then <BODY>; fi
                  * Steps: find " then " or ";then "; that splits cond/body.
                  * Then strip trailing "; fi" from body. */
-                static char work[512];
+                static char work[4096];
                 strncpy(work, t, sizeof(work) - 1);
                 work[sizeof(work) - 1] = '\0';
                 /* skip past "if " */
                 char *cp = work + (work[2] == ' ' ? 3 : 2);
                 while (*cp == ' ') cp++;
-                char *then_kw = strstr(cp, "then");
+                /* Find a `then` keyword (whole-word: preceded by ; / WS or
+                 * BOL; followed by WS / `;`).  Avoids matching "then"
+                 * inside an arg like `ran-then`. */
+                char *then_kw = cp;
+                while ((then_kw = strstr(then_kw, "then"))) {
+                    int left_ok  = (then_kw == cp) || then_kw[-1] == ' ' || then_kw[-1] == '\t' || then_kw[-1] == ';';
+                    char nx = then_kw[4];
+                    int right_ok = (nx == ' ' || nx == '\t' || nx == ';');
+                    if (left_ok && right_ok) break;
+                    then_kw++;
+                }
                 if (then_kw) {
                     /* Cond ends just before `then` (and any `;` / spaces). */
                     char *cend = then_kw;
@@ -457,8 +467,28 @@ static int run_block(char **lines, int from, int to)
                         while (bl > 0 && (body[bl-1] == ' ' || body[bl-1] == ';')) bl--;
                         body[bl] = '\0';
                     }
+                    /* Split on `; else ` or ` else ` (outside-the-word delim
+                     * so an arg like `elsewhere` doesn't match).  At most
+                     * one else branch -- matches the single-body shape. */
+                    char *else_body = NULL;
+                    for (char *p = body; *p; p++) {
+                        if ((p == body || p[-1] == ';' || p[-1] == ' ' || p[-1] == '\t')
+                            && p[0] == 'e' && p[1] == 'l' && p[2] == 's' && p[3] == 'e'
+                            && (p[4] == ' ' || p[4] == '\t' || p[4] == ';' || p[4] == '\0')) {
+                            char *cut = p;
+                            while (cut > body && (cut[-1] == ' ' || cut[-1] == '\t' || cut[-1] == ';'))
+                                cut--;
+                            *cut = '\0';
+                            else_body = p + 4;
+                            while (*else_body == ' ' || *else_body == '\t' || *else_body == ';')
+                                else_body++;
+                            break;
+                        }
+                    }
                     if (eval_condition(cp)) {
                         sh_exec_line(body);
+                    } else if (else_body) {
+                        sh_exec_line(else_body);
                     }
                     i++;
                     continue;
@@ -495,7 +525,18 @@ static int run_block(char **lines, int from, int to)
                 static char cond[256];
                 strncpy(cond, ct, sizeof(cond) - 1);
                 cond[sizeof(cond) - 1] = '\0';
-                char *th = strstr(cond, "then");
+                /* Find a `then` keyword (whole-word: preceded by ; / WS or
+                 * BOL; followed by WS / `;` / EOL).  Without this guard
+                 * substring matches like `ran-then` inside the condition
+                 * would truncate it (e.g. `[ $x = ran-then ]` → `[ $x = ran-`). */
+                char *th = cond;
+                while ((th = strstr(th, "then"))) {
+                    int left_ok  = (th == cond) || th[-1] == ' ' || th[-1] == '\t' || th[-1] == ';';
+                    char nx = th[4];
+                    int right_ok = (nx == '\0' || nx == ' ' || nx == '\t' || nx == ';');
+                    if (left_ok && right_ok) break;
+                    th++;
+                }
                 if (th) {
                     while (th > cond && (th[-1] == ' ' || th[-1] == ';' || th[-1] == '\t'))
                         th--;
@@ -592,7 +633,7 @@ static int run_block(char **lines, int from, int to)
                     dw--;
                 *dw = '\0';
             }
-            static char expanded[512];
+            static char expanded[4096];
             if (sh_expand(wbuf, expanded, sizeof(expanded)) != 0) {
                 t_writestring("sh: for-list expansion overflow\n");
                 return -2;
@@ -614,7 +655,7 @@ static int run_block(char **lines, int from, int to)
          * recognised commands stay at 0 (their failure modes generally
          * print a message but don't currently thread a status back).
          * An unrecognised command yields 127, POSIX-style. */
-        static char copy[512];
+        static char copy[4096];
         strncpy(copy, lines[i], sizeof(copy) - 1);
         copy[sizeof(copy) - 1] = '\0';
         shell_reset_last_exec_status();
@@ -736,7 +777,8 @@ int sh_run_file(const char *path)
     char **flines = (char **)kmalloc((size_t)(oli * 4 + 16) * sizeof(char *));
     if (!flines) { kfree(olines); kfree(lines); kfree(data); return -1; }
     int fli = 0;
-    static char glue_buf[2048];
+    char *glue_buf = (char *)kmalloc(2048);
+    if (!glue_buf) { kfree(flines); kfree(olines); kfree(lines); kfree(data); return -1; }
     size_t glue_used = 0;
     for (int i = 0; i < oli; i++) {
         char *t = olines[i];
@@ -752,7 +794,7 @@ int sh_run_file(const char *path)
             if (fli > 0) {
                 char *prev = flines[fli - 1];
                 size_t pl = strlen(prev);
-                if (glue_used + pl + 3 + kwlen + 1 < sizeof(glue_buf)) {
+                if (glue_used + pl + 3 + kwlen + 1 < 2048) {
                     char *dst = glue_buf + glue_used;
                     memcpy(dst, prev, pl);
                     dst[pl] = ';'; dst[pl+1] = ' ';
@@ -776,14 +818,14 @@ int sh_run_file(const char *path)
     /* `else BODY` on one line: split into "else" + "BODY". */
     int  efli = 0;
     char **elines = (char **)kmalloc((size_t)(fli * 2 + 16) * sizeof(char *));
-    if (!elines) { kfree(flines); kfree(olines); kfree(lines); kfree(data); return -1; }
+    if (!elines) { kfree(glue_buf); kfree(flines); kfree(olines); kfree(lines); kfree(data); return -1; }
     for (int i = 0; i < fli; i++) {
         char *t = flines[i];
         char *p = t;
         while (*p == ' ' || *p == '\t') p++;
         if (strncmp(p, "else ", 5) == 0) {
             /* Emit `else`, then the body. */
-            if (glue_used + 5 < sizeof(glue_buf)) {
+            if (glue_used + 5 < 2048) {
                 memcpy(glue_buf + glue_used, "else", 5);
                 elines[efli++] = glue_buf + glue_used;
                 glue_used += 5;
@@ -803,6 +845,7 @@ int sh_run_file(const char *path)
     /* No further comment strip needed -- already done above. */
     int rc = run_block(lines, 0, li);
     kfree(lines);
+    kfree(glue_buf);
     kfree(data);
     return rc;
 }

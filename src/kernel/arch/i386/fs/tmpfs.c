@@ -13,7 +13,7 @@
 #include <string.h>
 #include <stddef.h>
 
-#define TMPFS_NAME_MAX    64
+#define TMPFS_NAME_MAX    256   /* room for nested-path-as-flat-name */
 #define TMPFS_FILE_MAX    (16u * 1024u * 1024u)
 
 typedef struct tmpfile {
@@ -26,15 +26,14 @@ typedef struct tmpfile {
 
 static tmpfile_t *s_files;
 
-/* Strip the leading '/' from a tmpfs-relative path, rejecting deeper paths
- * (/tmp is flat).  Returns the bare name, or NULL for "/" / malformed. */
+/* Strip the leading '/' from a tmpfs-relative path.  Returns the rest as
+ * a single flat name; inner slashes are preserved verbatim (tmpfs has no
+ * real subdirectories -- "/foo/bar.o" and "/foo_bar.o" are two distinct
+ * entries).  Returns NULL for "/" or malformed paths. */
 static const char *leaf_name(const char *path)
 {
     if (!path || path[0] != '/' || path[1] == '\0') return NULL;
-    const char *name = path + 1;
-    for (const char *q = name; *q; q++)
-        if (*q == '/') return NULL;       /* deeper than one level */
-    return name;
+    return path + 1;
 }
 
 /* Find an existing file by bare name. */
@@ -143,6 +142,15 @@ long tmpfs_size(const char *path)
     tmpfile_t  *f    = name ? find(name) : NULL;
     if (!f) return -1;
     return (long)f->len;
+}
+
+int tmpfs_mkdir(const char *path)
+{
+    /* Flat namespace -- directories are conceptual.  Accept any non-root
+     * path so scripts can `mkdir /tmp/sub` before writing files into it
+     * without seeing a spurious failure. */
+    if (!path || path[0] != '/' || path[1] == '\0') return -1;
+    return 0;
 }
 
 int tmpfs_delete(const char *path)

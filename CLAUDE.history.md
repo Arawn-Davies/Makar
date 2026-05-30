@@ -4,7 +4,28 @@ Companion to `CLAUDE.md`. Snapshot of subsystem state, recently-merged PRs, and 
 attribution. Consult for "what's already shipped" / "what does subsystem X do today"
 context; not needed for routine edits.
 
-## Current state (as of May 2026, v0.8.0)
+## Current state (as of May 2026, v0.9.0)
+
+**Kernel self-host milestone (v0.9)**: `./build-kernel-tcc.sh` (host) rebuilds
+the bootable Multiboot 2 kernel ELF end-to-end against the vendored source
+tree, using only our shipped TCC (no gcc).  The generated `/apps/rebuild-kernel.sh`
+runs the same recipe inside Makar (test-mode phase `REBUILD-KERNEL` opt-in via
+`TEST_CMDLINE='test_mode test=rebuild-kernel'`).  Required: a 4-byte size
+alignment in `kmalloc` (root cause of a long-tail heap corruption under heavy
+fork/exec), a NULL-guard in TCC's `asm_expr_sum`, four `__TINYC__`-gated
+source tweaks (`boot.S` header-in-`.text`, `chainload.S` far-jmp offset,
+`isr_asm.S` cpp-macro rewrite, `vtty.c`/`keyboard.c` `kernel/atomic.h` shim),
+a hoist of one nested function in `syscall.c`, drop of `__builtin_unreachable`
+in `libc/stdlib/abort.c`, and ISO-stage `/usr/include/kernel-build/` + TCC
+`stdint.h`/`limits.h` stubs.  Both host-side and in-OS paths preserved the
+existing v0.8 milestones (calc.elf + sh.elf still self-rebuild) and full
+`./run.sh iso test` (`KTEST_RESULT: PASS`, `INCORE/LIBC-TCC/SHELL-SMOKE: ALL PASS`,
+`ui_test: 20/20`).  In-OS rebuild completes the script end-to-end but ~19/75
+per-file compiles still fail with a `(null):3811692: invalid number syntax`
+diagnostic that points at a kernel-sh `exec` argv-passing bug, not the TCC
+recipe itself.  See `docs/handoff-self-hosting.md`.
+
+## Earlier state snapshot (v0.8.0)
 
 Makar boots to an interactive VESA shell with 4 independent TTYs.
 Alt+F1–F4 switches between them; each is a separate **preemptive** kernel
@@ -41,6 +62,7 @@ subsystems:
 | #130 | `feat/vics-vim-polish` | VIX rename (was VICS, C-Sharp acronym is dead), vim-style gutter + word wrap + flashing block caret, root `/` enumeration in `vfs_complete`, linux-like serial (`g_serial_verbose`, `console=ttyS0`, `verbose` builtin), UI-test framework (`tests/ui_test.sh`) wired into CI as a 4th parallel job, shell-side FB restore after fullscreen commands |
 | (pending) | `feat/devfs-fdisk` | Synthetic `/dev` block devices (devfs, `FD_KIND_BLOCKDEV`), `fdisk.elf` MBR editor, ATAPI READ CAPACITY for `/dev/cdrom` sizing; disk filesystems moved under `/mnt` (originally `/mnt/hd`, `/mnt/cdrom`, `/hd`+`/cdrom` aliases — the `/mnt/hd` slot and the bare aliases have since been retired in favour of rootfs election + Unix paths); `mount /dev/hdaN /mnt/<name>`; `umount /mnt/cdrom` eject; flush+unmount on shutdown/reboot; settable `PATH` shell var; `/proc/meminfo MemUsed` folds in heap; QEMU `-m 32` everywhere; ktest `test_devfs` + ui scenarios `ls-dev`/`ls-mnt` |
 | (pending) | `feat/tcc-shell` | **v0.8.0 in-OS TCC milestone + ring-3 shell MVP.** TCC compiles `/src/userspace/calc.c` and `sh.c` in-OS (verified `test_tcc_rebuild_calc` + `test_tcc_rebuild_sh`); fixed upstream NULL-deref in `tccelf.c:fill_local_got_entries`. Ring-3 page faults / GPFs now deliver SIGSEGV via `task_exit` (no kernel panic on userspace bugs); panic screen identifies running task. New ring-3 `sh.elf` (prompt + tokenize + `cd`/`pwd`/`exit` builtins + fork/execve/wait4) coexists with kernel shell. SYS_CHDIR(12) added. SYS_EXECVE auto-transfers keyboard focus to the new image; SYS_WAIT4 returns focus to the parent when the child reaps. HDD root layout: rootfs/bootfs prefix probes route `/usr`, `/etc`, `/home`, `/boot` at Linux paths; `ls /mnt` hides elevated mounts. Zsh-style tab cycling in the kernel shell. `SYSCALL_FILE_MAX` 8 → 16 MiB; kernel heap 16 → 32 MiB. Test runner reorg: `./run.sh ui [group_or_scenario]` + `./run.sh gui ...` with `fast`/`shell`/`cd_pwd`/`fs`/`posix`/`libc`/`vt`/`bughunt` groups; assert helpers print expected-vs-got on failure. Replaced `__builtin_unreachable` in `sys_exit` with `for(;;)` so TCC v0.9.27 can compile it. macOS Cocoa display defaulted for `gui`. |
+| [#181](https://github.com/Arawn-Davies/Makar/pull/181) | `feat/tcc-progress` | **POSIX-shell A1-A3 + TCC self-host plumbing (in progress).**  Slice 0: fixed an inline `if [ X ]; then BODY; else BODY; fi` parser bug in the kernel `sh_script.c` — the inline-if handler matched only single-body forms and silently dispatched the `else` clause as more body text; also made both inline and multi-line `then`-keyword detection word-boundary aware so values like `ran-then` no longer truncate the condition.  Slice 1: real `execvp` PATH walk in `tcc_compat.c` (hardcoded `/apps:/bin` until envp is plumbed); staged `vendor/tinycc/` source onto the ISO at `/src/tinycc/` for the in-OS self-rebuild; added vsnprintf `%l`/`%ll`/`%z`/`%t`/`%j`/`%h` length-modifier handling (previously hit `default:` and skipped consuming va_args, corrupting subsequent specifiers) + brk-aware `%s` pointer guard (prints `"(badptr)"` instead of SIGSEGV on stale pointers).  Slice 2: kernel `SYS_PIPE`(42), `SYS_DUP2`(63), `FD_KIND_PIPE`, refcounted 4 KiB `pipe_ring_t` shared across fork+dup2; `SYS_READ`/`SYS_WRITE` gain blocking pipe branches (task_yield, EOF, -EPIPE).  Slice 3: `sh.elf` extracts `< > >> 2> 2>>` redirects from argv before dispatch; pipeline stages apply per-stage redirects after the pipe dup2s.  Slice 4: top-level `&&`/`\|\|`/`&` list operators in `sh.elf` (gate next segment on `$?`; `&` records pid in 16-slot `jobs[]`; new `wait` builtin drains the table).  `compile-tcc-self` test infrastructure shipped but commented out pending an iso-test watchdog timeout bump — TCC successfully parses tcc.c in-OS once `-DCONFIG_TCC_STATIC` is passed but exceeds the 3-min CI budget.  Kernel self-host milestone (v0.9) shipped on the same branch; current handoff at `docs/handoff-self-hosting.md`. |
 | [#177](https://github.com/Arawn-Davies/Makar/pull/177) | `feat/tcc-progress` | **VFS mount-table refactor + Unix path sweep + ring-3 shell parity (slices 20b/20c) + TCC rebuild coverage.** Replaced the path-rewriting `resolve_rootfs_prefix` hack with a real VFS mount table (`s_mounts[]` in `vfs.c`, longest-prefix-match dispatch).  New `vfs_mount_root(spec)` honours `root=/dev/hdaN` Multiboot2 cmdline; auto-detects ext2 → FAT32 → CD-ROM fallback by probing `/usr/lib/crt0.o`.  Synthetic overlays `/dev` `/proc` `/tmp` `/log` are first-class mount-table entries; `/boot` mirrors a bound `/mnt/boot`.  `vfs_ensure_root_home()` mkdirs `/root` best-effort on writable rootfs boots.  Hard-removed the legacy `/mnt/hd` slot from the kernel (single-partition disks now fold into `/mnt/root`); swept every `/mnt/cdrom/...` and `/mnt/hd/...` reference in kernel + userspace + tests + docs to the new Unix paths (`/apps`, `/usr`, `/mnt/<name>`).  Ring-3 `sh.elf` gained inline-edit readline + 16-entry history (20b), per-shell variable table + `$VAR`/`$?` + `env`/`unset`/`read` builtins (20c), and full kernel-shell-parity dispatch (try_exec_path + .elf auto-append + $PATH walk + restricted makbox auto-route + Unknown-command message).  TCC rebuild coverage extended to `hello.c` and `makbox.c`.  New `root_home` GDB group verifies A4 on HDD boots.  Build: `./run.sh iso build` clean; graphical `glob_proc` + `usershell_vars` verified end-to-end. |
 
 ## Acknowledgements and FOSS attribution

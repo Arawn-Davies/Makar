@@ -287,12 +287,12 @@ static inline void asm_expr_sum(TCCState *s1, ExprValue *pe)
 		ElfSym *esym1, *esym2;
 		esym1 = elfsym(pe->sym);
 		esym2 = elfsym(e2.sym);
-		if (esym1 && esym1->st_shndx == esym2->st_shndx
+		if (esym1 && esym2 && esym1->st_shndx == esym2->st_shndx
 		    && esym1->st_shndx != SHN_UNDEF) {
 		    /* we also accept defined symbols in the same section */
 		    pe->v += esym1->st_value - esym2->st_value;
 		    pe->sym = NULL;
-		} else if (esym2->st_shndx == cur_text_section->sh_num) {
+		} else if (esym2 && esym2->st_shndx == cur_text_section->sh_num) {
 		    /* When subtracting a defined symbol in current section
 		       this actually makes the value PC-relative.  */
 		    pe->v -= esym2->st_value - ind - 4;

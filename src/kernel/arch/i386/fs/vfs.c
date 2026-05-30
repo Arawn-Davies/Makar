@@ -392,6 +392,7 @@ static int backend_mkdir(vfs_mount_t *m, const char *p)
     switch (m->backend) {
     case VFS_BACKEND_EXT2:  return ext2_mkdir(p);
     case VFS_BACKEND_FAT32: return fat32_mkdir(p);
+    case VFS_BACKEND_TMPFS: return tmpfs_mkdir(p);
     default: return -1;
     }
 }

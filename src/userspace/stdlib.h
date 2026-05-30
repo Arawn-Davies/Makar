@@ -90,6 +90,12 @@ static inline unsigned long strtoul(const char *s, char **endp, int base)
     return neg ? (unsigned long)(-(long)acc) : acc;
 }
 
+long long strtoll(const char *s, char **endp, int base);
+unsigned long long strtoull(const char *s, char **endp, int base);
+float strtof(const char *s, char **endp);
+double strtod(const char *s, char **endp);
+long double strtold(const char *s, char **endp);
+
 /* getenv: Makar has no env layer yet (SYS_EXECVE ignores envp), so every
  * lookup misses.  Provides the symbol TCC + ports want without forcing
  * a kernel slice today. */
@@ -126,5 +132,15 @@ static inline void qsort(void *base, unsigned int nmemb, unsigned int sz,
 
 /* sscanf: tiny subset -- %d, %u, %x, %s, %c, optional width. */
 int sscanf(const char *s, const char *fmt, ...);
+
+/* POSIX-ish process/file helpers provided by tcc_compat.c. */
+int remove(const char *path);
+int execvp(const char *file, char *const argv[]);
+__attribute__((noreturn)) void exit(int status);
+__attribute__((noreturn)) void abort(void);
+char *getcwd(char *buf, unsigned int size);
+int mprotect(void *addr, unsigned int len, int prot);
+void *mmap(void *addr, unsigned int len, int prot, int flags, int fd, long off);
+int munmap(void *addr, unsigned int len);
 
 #endif /* _USERSPACE_STDLIB_H */

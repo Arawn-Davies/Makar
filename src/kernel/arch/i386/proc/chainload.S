@@ -65,9 +65,16 @@ chainload_tramp_start:
 
     /* Far jump to flush the pipeline and re-enter real mode.
      * The target CS:IP is 0x0000 : (TRAMP_PHYS + offset of .Lreal_mode).
-     * We emit raw bytes because the linker does not know the runtime address. */
+     * We emit raw bytes because the linker does not know the runtime address.
+     * TCC's assembler cannot resolve forward symbol references, so under TCC
+     * we hardcode the offset.  Under gcc we keep the symbolic form so the
+     * value is validated every gcc build. */
     .byte   0xEA                    /* opcode: far jmp ptr16:16             */
+#ifdef __TINYC__
+    .word   TRAMP_PHYS + 0x1C       /* hardcoded: 0x1C = .Lreal_mode - tramp_start */
+#else
     .word   TRAMP_PHYS + (.Lreal_mode - chainload_tramp_start)
+#endif
     .word   0x0000
 
     /* ---- Real mode ------------------------------------------------------ */

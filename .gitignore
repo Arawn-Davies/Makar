@@ -26,8 +26,10 @@ src/userspace/*.o
 src/userspace/*.a
 src/userspace/*.elf
 
-# Vendored TCC build artefacts
-vendor/tinycc/build-stubs/
+# Vendored TCC build artefacts (NOT build-stubs -- those are
+# hand-written Makar-flavoured headers, source of truth for the
+# in-OS TCC sysroot.  Without them build-tcc.sh fails at stage time
+# with "cannot stat .../build-stubs/limits.h".)
 vendor/tinycc/build-tcc.log
 vendor/tinycc/*.o
 vendor/tinycc/lib/*.o

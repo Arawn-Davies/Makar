@@ -16,6 +16,7 @@
 
 #include <kernel/fd.h>
 #include <kernel/heap.h>
+#include <kernel/serial.h>
 #include <kernel/vfs.h>
 #include <string.h>
 
@@ -47,6 +48,23 @@ fd_table_t *fd_table_create_default(void)
     return tbl;
 }
 
+/* Decrement the right end's refcount on a pipe-kind slot.  Free the ring
+ * when both ends have hit zero.  Safe to call on slots already torn down. */
+static void pipe_release(fd_entry_t *e)
+{
+    if (!e || e->kind != FD_KIND_PIPE || !e->pipe)
+        return;
+    if (e->pipe_is_writer) {
+        if (e->pipe->refcount_w > 0) e->pipe->refcount_w--;
+    } else {
+        if (e->pipe->refcount_r > 0) e->pipe->refcount_r--;
+    }
+    if (e->pipe->refcount_r == 0 && e->pipe->refcount_w == 0) {
+        kfree(e->pipe);
+    }
+    e->pipe = NULL;
+}
+
 void fd_table_destroy(fd_table_t *tbl)
 {
     if (!tbl)
@@ -57,6 +75,8 @@ void fd_table_destroy(fd_table_t *tbl)
             (void)fd_flush_one(e);   /* best-effort on tear-down */
             if (e->data)
                 kfree(e->data);
+        } else if (e->kind == FD_KIND_PIPE) {
+            pipe_release(e);
         }
     }
     kfree(tbl);
@@ -99,6 +119,13 @@ fd_table_t *fd_table_clone(const fd_table_t *src)
             t->slots[i].data     = NULL;
             t->slots[i].capacity = 0;
             t->slots[i].dirty    = 0;
+        } else if (t->slots[i].kind == FD_KIND_PIPE && t->slots[i].pipe) {
+            /* Pipes share state across fork -- bump the right end's
+             * refcount so the ring survives until every clone closes. */
+            if (t->slots[i].pipe_is_writer)
+                t->slots[i].pipe->refcount_w++;
+            else
+                t->slots[i].pipe->refcount_r++;
         }
     }
     return t;
@@ -132,8 +159,25 @@ int fd_close(fd_table_t *tbl, int fd)
     int rc = 0;
     if (e->kind == FD_KIND_FILE) {
         rc = fd_flush_one(e);   /* propagates flush errors to the caller */
-        if (e->data)
+        /* Sanity-check the data pointer before freeing: under heavy
+         * fork/exec churn we have seen `e->data` come through with a
+         * bogus value (interior pointer into another allocation, ASCII
+         * bytes where a block header should be) -- likely a stale value
+         * surviving a kind transition.  Skip kfree on out-of-range or
+         * unaligned pointers; the guard in kfree would catch it too, but
+         * this keeps the cause local for diagnosis. */
+        uintptr_t dp = (uintptr_t)e->data;
+        if (dp >= HEAP_START && dp < HEAP_MAX && (dp & 3) == 0) {
             kfree(e->data);
+        } else if (dp) {
+            Serial_WriteString("fd_close: skip bogus data=");
+            Serial_WriteHex(dp);
+            Serial_WriteString(" cap=");
+            Serial_WriteHex(e->capacity);
+            Serial_WriteString("\n");
+        }
+    } else if (e->kind == FD_KIND_PIPE) {
+        pipe_release(e);
     }
     memset(e, 0, sizeof(*e));
     /* memset already zeroes e->kind (== FD_KIND_NONE). */

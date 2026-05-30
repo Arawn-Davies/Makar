@@ -192,15 +192,16 @@ task_t *task_create(const char *name, void (*entry)(void))
             if (t->exec_params) {
                 kfree(t->exec_params);
                 t->exec_params = NULL;
-    t->script_vars = NULL;
             }
 
             /* Reap the per-shell-task scripting variable table.  Same
              * deferred-free pattern as fd_table: don't touch from
-             * task_exit (which may run in arbitrary scheduler context). */
+             * task_exit (which may run in arbitrary scheduler context).
+             * sh_vars_free_for nulls t->script_vars after freeing. */
             if (t->script_vars) {
                 extern void sh_vars_free_for(void *task);
                 sh_vars_free_for(t);
+                t->script_vars = NULL;
             }
 
             /* Reuse the existing kernel stack. */
@@ -576,6 +577,26 @@ void task_yield(void)
     schedule();
 }
 
+void task_terminate(task_t *t, int status)
+{
+    if (!t)
+        return;
+    t->exit_status = status;
+
+    /* Decide whether to leave a zombie behind for wait4.  Only makes
+     * sense when the parent is a live ring-3 task that could plausibly
+     * issue SYS_WAIT4.  Kernel-internal tasks (shell/idle, page_dir ==
+     * kernel_pd) don't wait4, so their children go straight to DEAD and
+     * free their pool slot immediately on next task_create. */
+    int leave_zombie = 0;
+    if (t->parent_pid > 0) {
+        task_t *p = task_by_pid(t->parent_pid);
+        if (p && p->page_dir && p->page_dir != paging_kernel_pd())
+            leave_zombie = 1;
+    }
+    t->state = leave_zombie ? TASK_ZOMBIE : TASK_DEAD;
+}
+
 void __attribute__((noreturn)) task_exit(void)
 {
     disable_interrupts();
@@ -588,19 +609,9 @@ void __attribute__((noreturn)) task_exit(void)
                 c->state = TASK_DEAD;
         }
 
-        /* Decide whether to leave a zombie behind for wait4.  Only
-         * makes sense when the parent is a live ring-3 task that
-         * could plausibly issue SYS_WAIT4.  Kernel-internal tasks
-         * (shell/idle, page_dir == kernel_pd) don't wait4, so their
-         * children go straight to DEAD and free their pool slot
-         * immediately on next task_create. */
-        int leave_zombie = 0;
-        if (current_task->parent_pid > 0) {
-            task_t *p = task_by_pid(current_task->parent_pid);
-            if (p && p->page_dir && p->page_dir != paging_kernel_pd())
-                leave_zombie = 1;
-        }
-        current_task->state = leave_zombie ? TASK_ZOMBIE : TASK_DEAD;
+        /* exit_status was set by SYS_EXIT (or kill_userspace_fault) before
+         * we got here; preserve it through the zombie/dead decision. */
+        task_terminate(current_task, current_task->exit_status);
     }
     enable_interrupts();
 

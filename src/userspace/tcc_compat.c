@@ -121,11 +121,49 @@ void abort(void)
     while (1) {}
 }
 
+/* Hardcoded PATH -- Makar has no envp plumbing yet.  Mirrors the
+ * default in sh.elf's shell_path_dir() (which falls back to "/apps"
+ * when $PATH is unset).  /bin is included for forward compatibility
+ * once /usr/local/bin etc. land. */
+static const char *kExecvpPath = "/apps:/bin";
+
 int execvp(const char *file, char *const argv[])
 {
-    /* PATH search isn't expected on Makar from TCC's tool dispatch --
-     * absolute paths or one of the known apps suffice. */
-    return sys_execve(file, argv, 0);
+    if (!file || !*file) { errno = ENOENT; return -1; }
+
+    /* If the name contains a `/`, it's a path -- no PATH walk. */
+    for (const char *p = file; *p; p++) {
+        if (*p == '/') return sys_execve(file, argv, 0);
+    }
+
+    char buf[256];
+    const char *path = kExecvpPath;
+    int last_err = ENOENT;
+    while (*path) {
+        const char *seg = path;
+        while (*path && *path != ':') path++;
+        unsigned int slen = (unsigned int)(path - seg);
+        if (*path == ':') path++;
+        if (slen == 0) continue;
+
+        unsigned int fl = 0;
+        while (file[fl]) fl++;
+        if (slen + 1 + fl + 1 > sizeof(buf)) { last_err = EINVAL; continue; }
+
+        unsigned int j = 0;
+        for (unsigned int i = 0; i < slen; i++) buf[j++] = seg[i];
+        if (buf[j - 1] != '/') buf[j++] = '/';
+        for (unsigned int i = 0; i < fl; i++) buf[j++] = file[i];
+        buf[j] = '\0';
+
+        struct stat st;
+        if (sys_stat(buf, &st) != 0) continue;
+        sys_execve(buf, argv, 0);
+        /* Only reached if execve failed -- record and keep walking. */
+        last_err = EACCES;
+    }
+    errno = last_err;
+    return -1;
 }
 
 /* ---- 64-bit strtol/strtoul ------------------------------------------ */
@@ -136,13 +174,18 @@ long long strtoll(const char *s, char **endp, int base)
     while (*p == ' ' || *p == '\t') p++;
     int neg = 0;
     if (*p == '+' || *p == '-') { neg = (*p == '-'); p++; }
-    if ((base == 0 || base == 16) && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
-        p += 2; base = 16;
-    } else if (base == 0 && *p == '0') { p++; base = 8; }
-    else if (base == 0) base = 10;
-
     long long acc = 0;
     int any = 0;
+    if ((base == 0 || base == 16) && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        p += 2; base = 16;
+    } else if (base == 0 && *p == '0') {
+        /* Octal prefix: consume the '0' AND count it as a digit, so a bare
+         * "0" parses as the value 0 with endp past it (matches glibc).
+         * Without `any = 1` here, the digit loop below sees nothing more
+         * and the function returns endp=s, which breaks TCC's asm parser
+         * for any literal `0` (e.g. `.byte 0`). */
+        p++; base = 8; any = 1;
+    } else if (base == 0) base = 10;
     while (*p) {
         int d;
         if (*p >= '0' && *p <= '9') d = *p - '0';

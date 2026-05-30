@@ -106,6 +106,7 @@
 #include <kernel/vtty.h>
 #include <kernel/isr.h>
 #include <kernel/asm.h>
+#include <kernel/atomic.h>
 #include <kernel/task.h>
 #include <kernel/signal.h>
 #include <kernel/timer.h>
@@ -285,6 +286,7 @@ typedef uint8_t kc_t;
 #define KC_F10          0x44
 #define KC_F11          0x57
 #define KC_F12          0x58
+#define KC_T            0x14
 
 #define KC_EXT(b)       ((kc_t)((b) | 0x80))
 #define KC_RCTRL        KC_EXT(0x1D)   /* e0 1d */
@@ -798,10 +800,10 @@ void keyboard_set_raw(int on)
  *
  * Handles three classes of input:
  *
- *   1. Recognised extended keys (arrows, keypad enter/slash) become their
+ *   1. Recognised extended keys (arrows, page keys, keypad enter/slash) become their
  *      KEY_* sentinel bytes or their plain ASCII equivalents.
- *   2. Other extended keys are dropped (we'll add Home/End/PgUp/PgDn/Del
- *      as the shell grows to use them).
+ *   2. Other extended keys are dropped (we'll add Home/End/Del as the shell
+ *      grows to use them).
  *   3. Single-byte make codes are looked up in the QWERTY ASCII table,
  *      with shift XOR caps governing letter case and shift alone governing
  *      symbol case. Ctrl + letter folds the result into the corresponding
@@ -815,6 +817,8 @@ static unsigned char translate_make(kc_t kc)
         case KC_ARROW_DOWN:  return (unsigned char)KEY_ARROW_DOWN;
         case KC_ARROW_LEFT:  return (unsigned char)KEY_ARROW_LEFT;
         case KC_ARROW_RIGHT: return (unsigned char)KEY_ARROW_RIGHT;
+        case KC_PGUP:        return (unsigned char)KEY_PAGE_UP;
+        case KC_PGDN:        return (unsigned char)KEY_PAGE_DOWN;
         case KC_KP_ENTER:    return '\n';
         case KC_KP_SLASH:    return '/';
         default: break;
@@ -930,7 +934,8 @@ static void on_make(kc_t kc)
                 case KC_F2: vtty_switch(1); return;
                 case KC_F3: vtty_switch(2); return;
                 case KC_F4: vtty_switch(3); return;
-                case KC_F5: vesa_tty_toggle_clock(); return;  /* Makar <-> clock */
+                case KC_F5: vtty_request_clock_toggle(); return;  /* Makar <-> clock */
+                case KC_T:  vtty_request_open(); return;
                 default: break;
             }
         }

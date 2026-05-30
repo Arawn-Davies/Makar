@@ -1,8 +1,10 @@
 # Makar Shell & Userspace Survey
 
 > Exhaustive inventory of what's wired up today. Sourced by reading the
-> actual code, not aspirational. Last refreshed for v0.5.0 + VIX-polish
-> PR (May 2026).
+> actual code, not aspirational. Last refreshed at v0.9.0 (kernel
+> self-host milestone, May 2026).  For the freshest current-state
+> summary see `CLAUDE.history.md`; for canonical project layout see
+> `Directories.md`.
 
 ## Testing harness
 

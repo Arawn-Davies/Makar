@@ -240,6 +240,22 @@ static void vix_clamp_col(void)
     if (v_cur_col > max) v_cur_col = max;
 }
 
+static void vix_page_move(int dir)
+{
+    int budget = v_text_rows > 1 ? v_text_rows - 1 : 1;
+    int row = v_cur_row;
+
+    while (budget > 0) {
+        int next = row + dir;
+        if (next < 0 || next >= v_nlines) break;
+        row = next;
+        budget -= line_vrows(row);
+    }
+
+    v_cur_row = row;
+    vix_clamp_col();
+}
+
 static void vix_scroll(void)
 {
     if (v_cur_row < v_view_top) { v_view_top = v_cur_row; return; }
@@ -404,6 +420,8 @@ int main(int argc, char **argv)
 
         if (c == KEY_ARROW_UP)   { if (v_cur_row > 0) { v_cur_row--; vix_clamp_col(); } continue; }
         if (c == KEY_ARROW_DOWN) { if (v_cur_row < v_nlines - 1) { v_cur_row++; vix_clamp_col(); } continue; }
+        if (c == KEY_PAGE_UP)    { vix_page_move(-1); continue; }
+        if (c == KEY_PAGE_DOWN)  { vix_page_move(1);  continue; }
         if (c == KEY_ARROW_LEFT) {
             if (v_cur_col > 0) v_cur_col--;
             else if (v_cur_row > 0) { v_cur_row--; v_cur_col = v_len[v_cur_row]; }

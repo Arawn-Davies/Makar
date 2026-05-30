@@ -16,7 +16,7 @@ LDFLAGS=-T link.ld -nostdlib
 DESTDIR?=
 ISODIR?=$(CURDIR)/../../isodir
 
-PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf kbtester.elf makbox.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf fdisk.elf cfdisk.elf basic.elf filetest.elf alloctest.elf sh.elf
+PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf kbtester.elf makbox.elf makmux.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf fdisk.elf cfdisk.elf basic.elf filetest.elf alloctest.elf sh.elf ar.elf
 
 # libc.a -- single archive of the userspace shim (malloc + FILE* stdio +
 # setjmp/longjmp + string/memory helpers).  Shipped under /usr/lib on the
@@ -61,6 +61,9 @@ diskinfo.elf: crt0.o diskinfo.o
 makbox.elf: crt0.o makbox.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
+makmux.elf: crt0.o makmux.o
+	$(LD) $(LDFLAGS) -o $@ $^
+
 kbtester.elf: crt0.o kbtester.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
@@ -97,6 +100,9 @@ filetest.elf: crt0.o filetest.o libc.a
 alloctest.elf: crt0.o alloctest.o libc.a
 	$(LD) $(LDFLAGS) -o $@ crt0.o alloctest.o libc.a
 
+ar.elf: crt0.o ar.o libc.a
+	$(LD) $(LDFLAGS) -o $@ crt0.o ar.o libc.a
+
 # Archive of the userspace libc shim.  Built with rcs (replace, create
 # index) so successive builds replace stale objects in place.  Debug
 # sections are stripped from the archive because in-OS TCC trips over
@@ -121,7 +127,7 @@ install: all
 	rm -f $(ISODIR)/apps/ls.elf $(ISODIR)/apps/cp.elf $(ISODIR)/apps/mv.elf \
 	      $(ISODIR)/apps/rm.elf $(ISODIR)/apps/echo.elf $(ISODIR)/apps/fsutil.elf
 	cp $(PROGS) $(ISODIR)/apps/
-	cp demo.sh incore.sh $(ISODIR)/apps/
+	cp demo.sh incore.sh rebuild-kernel.sh kend.S $(ISODIR)/apps/
 	cp *.bas $(ISODIR)/apps/
 # /usr sysroot for the in-OS compiler (tcc) and any future hosted ports.
 # `crt0.o` is the C-runtime startup; `libc.a` the freestanding libc shim

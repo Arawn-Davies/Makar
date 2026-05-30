@@ -24,6 +24,18 @@ void vtty_init(void);
  * The first task to register (slot 0) becomes the initial focused TTY. */
 int vtty_register(void);
 
+/* Close the VT owned by pid, clearing its backing grid and freeing the slot
+ * for a future vtty_register().  Returns the closed slot, or -1. */
+int vtty_close_pid(int pid);
+
+/* Global Alt+T request queue consumed by makmux in userspace. */
+void vtty_request_open(void);
+int  vtty_take_open_request(void);
+
+/* Global Alt+F5 request queue consumed by makmux in userspace. */
+void vtty_request_clock_toggle(void);
+int  vtty_take_clock_toggle_request(void);
+
 /* Returns the currently active TTY index. */
 int vtty_active(void);
 
@@ -34,8 +46,11 @@ int vtty_is_focused(void);
  * to the new TTY's input queue.  Safe to call from IRQ context. */
 void vtty_switch(int n);
 
-/* Returns the number of registered TTY slots. */
+/* Returns the high-water number of registered TTY slots. */
 int vtty_count(void);
+
+/* Returns a bitmask of currently live TTY slots.  Bit 0 is VT1. */
+unsigned int vtty_live_mask(void);
 
 /* ------------------------------------------------------------------ */
 /* Per-TTY backing-grid access                                          */

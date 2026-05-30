@@ -688,10 +688,16 @@ build of `dash`:
 - **`SYS_READDIR`** (streaming `getdents`).  Today's `SYS_LS_DIR` returns a
   pre-rendered text blob — fine for the in-kernel shell's `ls`, useless for
   `opendir`/`readdir` (and for any userland shell's tab complete).
-- **`SYS_PIPE` + `dup2`**.  Both depend on a refcounted `open_file_t` layer
-  underneath `fd_table_t` so a forked child shares the parent's seek
-  position (POSIX requirement).  Today `fd_table_clone` deep-copies FILE
-  buffers per-fd, which is non-POSIX and rules out shared seeks.
+- **`SYS_PIPE` + `SYS_DUP2`**.  Shipped in PR #181 (numbers 42 / 63,
+  Linux i386 ABI).  `FD_KIND_PIPE` slots point at a shared
+  `pipe_ring_t` (4 KiB ring + reader/writer refcounts); fork bumps
+  the refcount instead of deep-copying, freeing the ring when both
+  ends hit zero.  Read blocks via `task_yield()` on empty (EOF when
+  all writers close); write blocks on full (`-EPIPE` when all readers
+  close).  The FILE-kind path still deep-copies on fork — the
+  `open_file_t` refcount refactor that would unify both kinds is
+  still pending.  Single-arg `dup(fd)` still missing (workaround:
+  `dup2(fd, lowest_free)`).
 - **`SYS_MMAP(MAP_ANONYMOUS)`**.  musl's allocator falls back to mmap for
   large allocations.  Implementing it as a `vmm_map_page` over an arbitrary
   range is straightforward; the tricky bit is per-task virtual-address
@@ -722,15 +728,20 @@ It compiles C to a static `ET_EXEC` ELF on disk — no fork, no JIT, no
 `mmap(PROT_EXEC)`. The workflow is CP/M-style: boot → write source in VIX →
 `tcc hello.c -o hello.elf` → `exec hello.elf`.
 
-**Current state (May 2026):** Phases 1 & 2 of the
-[TCC feasibility plan](tcc-feasibility.md) are shipped. The kernel-side file
-I/O surface (writable fds, `O_CREAT`/`O_TRUNC`/`O_APPEND`, `SYS_STAT`/
-`FSTAT`, `READDIR`, 8 MiB file cap) and the freestanding libc shim
-(`malloc`/`stdio`/`setjmp`/`ctype`/`stdlib`/POSIX wrappers) are both in tree
-with ktest + ui-test coverage. `build-tcc.sh` probes the cross-compile and
-logs the remaining porting gaps (primarily `tccrun.c`'s JIT/signal paths);
-Phase 3 (patch those out, produce `tcc.elf`, ship on the OS image) is the
-next milestone. See [TCC feasibility](tcc-feasibility.md) for the full plan.
+**Current state (May 2026, v0.9):** all original phases shipped, and
+self-hosting now covers the kernel itself.  `tcc.elf` ships on every ISO,
+userspace apps (`hello`, `calc`, `sh`, `makbox`) self-rebuild in-OS, and
+the bootable Multiboot 2 kernel ELF rebuilds end-to-end with our shipped
+TCC via `./build-kernel-tcc.sh` (host-side) or `/apps/rebuild-kernel.sh`
+(inside Makar).  Earlier groundwork shipped the kernel-side file I/O
+surface (writable fds, `O_CREAT`/`O_TRUNC`/`O_APPEND`, `SYS_STAT`/`FSTAT`,
+`SYS_READDIR`, 16 MiB file cap) and the freestanding libc shim
+(`malloc`/`stdio`/`setjmp`/`ctype`/`stdlib`/POSIX wrappers), both with
+ktest + ui-test coverage.  The boot banner reports `gcc-host` /
+`tcc-host` / `tcc-in-os` based on the build path.  See
+[TCC feasibility](tcc-feasibility.md) for the original spike and
+[handoff-self-hosting](handoff-self-hosting.md) for the kernel rebuild
+write-up.
 
 ---
 

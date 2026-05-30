@@ -17,8 +17,7 @@
 #
 # Kernel sh limitations: no functions, no command substitution, no
 # pipes, **no double-quote stripping in echo** (use bareword args).
-# Multi-line if/then/else/fi is required -- inline `if X; then Y; fi`
-# misbehaves after a nested script call, double-printing branches.
+# Inline `if X; then Y; else Z; fi` supported (slice 0 fix).
 
 echo SHELL-SMOKE: BEGIN
 fail=0
@@ -136,14 +135,41 @@ else
     fail=1
 fi
 
-## demo-script intentionally NOT run from here.  The kernel sh_script
-## interpreter has a known bug: after a nested `sh <file>` call, every
-## subsequent if/then/else/fi fires BOTH branches, double-printing the
-## verdict and the suite trailer.  Tracked in
-## docs/plans/userspace-shell-migration-HANDOFF.md.  Until the
-## interpreter is fixed, demo.sh is exercised standalone (e.g. by an
-## operator typing `sh /apps/demo.sh` at the prompt) or as a separate
-## test_mode suite that doesn't dispatch any if's after it.
+echo SHELL-SMOKE: nested-sh-parser-state
+sh /src/userspace/nested-probe.sh
+if [ 1 -eq 1 ]
+then
+    echo SHELL-SMOKE: [PASS] nested-sh-parser-state
+else
+    echo SHELL-SMOKE: [FAIL] nested-sh-parser-state
+    fail=1
+fi
+
+echo SHELL-SMOKE: inline-if-else-then
+result=neither
+if [ 1 -eq 1 ]; then result=ran-then; else result=ran-else; fi
+if [ $result = ran-then ]
+then
+    echo SHELL-SMOKE: [PASS] inline-if-else-then
+else
+    echo SHELL-SMOKE: [FAIL] inline-if-else-then
+    fail=1
+fi
+
+echo SHELL-SMOKE: inline-if-else-else
+result=neither
+if [ 0 -eq 1 ]; then result=ran-then; else result=ran-else; fi
+if [ $result = ran-else ]
+then
+    echo SHELL-SMOKE: [PASS] inline-if-else-else
+else
+    echo SHELL-SMOKE: [FAIL] inline-if-else-else
+    fail=1
+fi
+
+# Pipes (slice A1): `|` is supported in userspace /apps/sh.elf only.
+# Kernel sh (this interpreter) doesn't tokenize `|`; verify pipes by
+# typing `echo X | cat` directly into sh.elf during a UI scenario.
 
 if [ $fail -eq 0 ]
 then

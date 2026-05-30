@@ -11,5 +11,7 @@ void abort(void) {
 	printf("abort()\n");
 #endif
 	while (1) { }
-	__builtin_unreachable();
+#ifndef __TINYC__
+	__builtin_unreachable();  /* TCC 0.9.27 has no such builtin */
+#endif
 }

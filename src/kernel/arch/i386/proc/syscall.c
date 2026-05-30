@@ -78,6 +78,25 @@ static void ls_cb(const char *name, int is_dir, void *ctx)
     c->buf[c->off] = '\0';
 }
 
+/* Callback + context for SYS_READDIR.  Static name buffer is OK: the
+ * complete() backends can be re-entered but the kernel context is not. */
+struct rd_ctx { uint32_t target; uint32_t cur; int found; };
+static char s_name[DIRENT_NAME_MAX];
+static int  s_is_dir;
+static void readdir_collect_cb(const char *n, int is_dir, void *vctx)
+{
+    struct rd_ctx *c = (struct rd_ctx *)vctx;
+    if (c->found) return;
+    if (c->cur == c->target) {
+        uint32_t i = 0;
+        while (n[i] && i < DIRENT_NAME_MAX - 1) { s_name[i] = n[i]; i++; }
+        s_name[i] = '\0';
+        s_is_dir = is_dir;
+        c->found = 1;
+    }
+    c->cur++;
+}
+
 /* -------------------------------------------------------------------------
  * Checkpoint tracking
  * ------------------------------------------------------------------------- */
@@ -192,7 +211,7 @@ void syscall_dispatch(registers_t *regs)
 
         if (!upath) { regs->eax = (uint32_t)-14; break; }   /* -EFAULT */
 
-        enum { EXECVE_MAX_ARGC = 16, EXECVE_ARG_MAX = 256 };
+        enum { EXECVE_MAX_ARGC = 128, EXECVE_ARG_MAX = 256 };  /* full kernel-rebuild link line */
         static char  s_path[256];
         static char  s_argbuf[EXECVE_MAX_ARGC * EXECVE_ARG_MAX];
         static char *s_argv[EXECVE_MAX_ARGC + 1];
@@ -218,6 +237,38 @@ void syscall_dispatch(registers_t *regs)
             }
         }
         s_argv[kargc] = NULL;
+
+        /* A forked userspace shell child inherits the parent's task name
+         * until execve replaces the image.  Rename ordinary exec targets
+         * to their basename (without .elf) so /proc/tasks and maktop show
+         * makmux, tcc, etc.  Preserve mak.shN when makmux's VT children
+         * exec /apps/sh.elf; those task names are the terminal identity. */
+        {
+            task_t *me = task_current();
+            const char *base = s_path;
+            for (const char *q = s_path; *q; q++)
+                if (*q == '/') base = q + 1;
+            int is_sh = strcmp(base, "sh.elf") == 0 || strcmp(base, "sh") == 0;
+            int is_maksh = me && me->name &&
+                           me->name[0] == 'm' && me->name[1] == 'a' &&
+                           me->name[2] == 'k' && me->name[3] == '.' &&
+                           me->name[4] == 's' && me->name[5] == 'h';
+            if (me && !(is_sh && is_maksh)) {
+                size_t n = 0;
+                while (base[n] && n < sizeof(me->name_buf) - 1) {
+                    me->name_buf[n] = base[n];
+                    n++;
+                }
+                if (n >= 4 && me->name_buf[n-4] == '.' &&
+                              me->name_buf[n-3] == 'e' &&
+                              me->name_buf[n-2] == 'l' &&
+                              me->name_buf[n-1] == 'f') {
+                    n -= 4;
+                }
+                me->name_buf[n] = '\0';
+                me->name = me->name_buf;
+            }
+        }
 
         /* POSIX: execve resets all caught signal handlers to SIG_DFL.
          * SIG_IGN is also reset (Makar's sig_task_init clears everything,
@@ -324,6 +375,35 @@ void syscall_dispatch(registers_t *regs)
             long r = vfs_blockdev_pread(e->dev_node, buf, len, e->pos);
             if (r < 0) { regs->eax = (uint32_t)-1; }
             else { e->pos += (uint32_t)r; regs->eax = (uint32_t)r; }
+        } else if (e->kind == FD_KIND_PIPE) {
+            /* Reader on a pipe: spin-yield until data appears, the writers
+             * all close (EOF -> return 0), or the fd is non-blocking. */
+            if (e->pipe_is_writer || !e->pipe) {
+                regs->eax = (uint32_t)-1;
+                break;
+            }
+            pipe_ring_t *r = e->pipe;
+            for (;;) {
+                uint32_t avail = r->head - r->tail;
+                if (avail > 0) {
+                    if (avail > len) avail = len;
+                    for (uint32_t i = 0; i < avail; i++) {
+                        buf[i] = (char)r->buf[(r->tail + i) % PIPE_RING_CAP];
+                    }
+                    r->tail += avail;
+                    regs->eax = avail;
+                    break;
+                }
+                if (r->refcount_w == 0) {
+                    regs->eax = 0;          /* EOF: all writers closed */
+                    break;
+                }
+                if (e->flags & FD_FLAG_NONBLOCK) {
+                    regs->eax = (uint32_t)-11;  /* -EAGAIN */
+                    break;
+                }
+                task_yield();
+            }
         } else {
             regs->eax = (uint32_t)-1;   /* not a readable kind */
         }
@@ -413,6 +493,40 @@ void syscall_dispatch(registers_t *regs)
             if (e->pos > e->size) e->size = e->pos;
             e->dirty = 1;
             regs->eax = len;
+        } else if (e->kind == FD_KIND_PIPE) {
+            /* Writer on a pipe: spin-yield while ring is full.  If every
+             * reader closes (refcount_r == 0), writing returns -EPIPE. */
+            if (!e->pipe_is_writer || !e->pipe) {
+                regs->eax = (uint32_t)-1;
+                break;
+            }
+            pipe_ring_t *r = e->pipe;
+            uint32_t written = 0;
+            while (written < len) {
+                if (r->refcount_r == 0) {
+                    /* SIGPIPE not yet implemented; surface as -EPIPE. */
+                    regs->eax = written ? written : (uint32_t)-32;
+                    break;
+                }
+                uint32_t inflight = r->head - r->tail;
+                uint32_t space    = PIPE_RING_CAP - inflight;
+                if (space == 0) {
+                    if (e->flags & FD_FLAG_NONBLOCK) {
+                        regs->eax = written ? written : (uint32_t)-11;  /* EAGAIN */
+                        break;
+                    }
+                    task_yield();
+                    continue;
+                }
+                uint32_t chunk = len - written;
+                if (chunk > space) chunk = space;
+                for (uint32_t i = 0; i < chunk; i++) {
+                    r->buf[(r->head + i) % PIPE_RING_CAP] = (uint8_t)buf[written + i];
+                }
+                r->head += chunk;
+                written += chunk;
+            }
+            if (written == len) regs->eax = written;
         } else {
             /* KEYBOARD: not writable. */
             regs->eax = (uint32_t)-1;
@@ -797,6 +911,90 @@ void syscall_dispatch(registers_t *regs)
     }
 
     /* ------------------------------------------------------------------
+     * SYS_PIPE(42): create a unidirectional pipe.
+     * EBX = int pipefd[2] (out)  -- pipefd[0]=read end, pipefd[1]=write end
+     * Returns: 0 on success, -1 on error.
+     *
+     * Both ends point at the same 4 KiB pipe_ring_t; refcounted so
+     * fork+dup2 can share the buffer until the last fd closes.
+     * ------------------------------------------------------------------ */
+    case SYS_PIPE: {
+        int *pipefd = (int *)(uintptr_t)regs->ebx;
+        task_t *cur = task_current();
+        fd_table_t *tbl = cur ? cur->fd_table : NULL;
+        if (!pipefd || !tbl) { regs->eax = (uint32_t)-1; break; }
+        int rfd = fd_alloc(tbl);
+        if (rfd < 0) { regs->eax = (uint32_t)-1; break; }
+        /* Mark the reader slot allocated (so fd_alloc finds a different
+         * slot for the writer).  Set kind to NONE briefly is wrong;
+         * instead temporarily install the kind, then fix up after alloc. */
+        fd_entry_t *re = &tbl->slots[rfd];
+        re->kind = FD_KIND_PIPE;            /* reserve slot */
+        int wfd = fd_alloc(tbl);
+        if (wfd < 0) {
+            memset(re, 0, sizeof(*re));
+            regs->eax = (uint32_t)-1;
+            break;
+        }
+        fd_entry_t *we = &tbl->slots[wfd];
+        we->kind = FD_KIND_PIPE;
+        pipe_ring_t *ring = (pipe_ring_t *)kmalloc(sizeof(*ring));
+        if (!ring) {
+            memset(re, 0, sizeof(*re));
+            memset(we, 0, sizeof(*we));
+            regs->eax = (uint32_t)-1;
+            break;
+        }
+        ring->head = ring->tail = 0;
+        ring->refcount_r = 1;
+        ring->refcount_w = 1;
+        re->pipe = ring;
+        re->pipe_is_writer = 0;
+        we->pipe = ring;
+        we->pipe_is_writer = 1;
+        pipefd[0] = rfd;
+        pipefd[1] = wfd;
+        regs->eax = 0;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_DUP2(63): duplicate oldfd onto newfd, closing newfd first.
+     * EBX = oldfd, ECX = newfd
+     * Returns: newfd on success, -1 on error.
+     *
+     * For FD_KIND_PIPE the underlying ring is shared (refcount bump);
+     * other kinds shallow-copy the slot, with FILE slots intentionally
+     * NOT deep-copying their buffer -- dup2 of a FILE-kind fd today
+     * aliases the buffer pointer, which is undefined behaviour for
+     * concurrent writes but matches the "no real open_file_t" stance.
+     * ------------------------------------------------------------------ */
+    case SYS_DUP2: {
+        int oldfd = (int)regs->ebx;
+        int newfd = (int)regs->ecx;
+        task_t *cur = task_current();
+        fd_table_t *tbl = cur ? cur->fd_table : NULL;
+        if (!tbl || newfd < 0 || newfd >= TASK_MAX_FDS) {
+            regs->eax = (uint32_t)-1; break;
+        }
+        fd_entry_t *oe = fd_get(tbl, oldfd);
+        if (!oe) { regs->eax = (uint32_t)-1; break; }
+        if (oldfd == newfd) { regs->eax = (uint32_t)newfd; break; }
+        /* Close target if currently open (ignore close errors -- POSIX). */
+        if (tbl->slots[newfd].kind != FD_KIND_NONE) {
+            (void)fd_close(tbl, newfd);
+        }
+        fd_entry_t *ne = &tbl->slots[newfd];
+        memcpy(ne, oe, sizeof(*ne));
+        if (oe->kind == FD_KIND_PIPE && ne->pipe) {
+            if (ne->pipe_is_writer) ne->pipe->refcount_w++;
+            else                    ne->pipe->refcount_r++;
+        }
+        regs->eax = (uint32_t)newfd;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
      * SYS_BRK(45): set or query the user-space heap break.
      * EBX = requested new break (0 = query current break)
      * Returns: current break after the call.
@@ -938,29 +1136,8 @@ void syscall_dispatch(registers_t *regs)
         uint32_t       idx  = regs->ecx;
         struct dirent *ude  = (struct dirent *)(uintptr_t)regs->edx;
         if (!path || !ude) { regs->eax = (uint32_t)-1; break; }
-        struct rd_ctx { uint32_t target; uint32_t cur; int found;
-                        const char *name; int is_dir; };
-        struct rd_ctx ctx = { idx, 0, 0, 0, 0 };
-        /* Callback captures the Nth entry into a static buffer.  The
-         * complete() backends can be re-entered (slow), but a static
-         * buffer is fine in non-reentrant kernel context. */
-        static char  s_name[DIRENT_NAME_MAX];
-        static int   s_is_dir;
-        static struct rd_ctx *s_ctx;
-        s_ctx = &ctx;
-        void cb(const char *n, int is_dir, void *vctx) {
-            struct rd_ctx *c = (struct rd_ctx *)vctx;
-            if (c->found) return;
-            if (c->cur == c->target) {
-                uint32_t i = 0;
-                while (n[i] && i < DIRENT_NAME_MAX - 1) { s_name[i] = n[i]; i++; }
-                s_name[i] = '\0';
-                s_is_dir = is_dir;
-                c->found = 1;
-            }
-            c->cur++;
-        }
-        if (vfs_complete(path, "", cb, &ctx) != 0) {
+        struct rd_ctx ctx = { idx, 0, 0 };
+        if (vfs_complete(path, "", readdir_collect_cb, &ctx) != 0) {
             regs->eax = (uint32_t)-1; break;
         }
         if (!ctx.found) { regs->eax = 0; break; }
@@ -1036,7 +1213,7 @@ void syscall_dispatch(registers_t *regs)
          * app (e.g. maktop on VT2 while VT1 is visible) would bleed its
          * cells onto whatever VT is currently shown. */
         vt_buf_t *vt      = vtty_buf_current();
-        int       focused = vtty_is_focused();
+        int       focused = vt ? vtty_is_focused() : 1;
 
         /* SYS_PUTCH_AT cells carry their own colour attribute, so writing
          * each cell mutates the default pane's fg/bg.  Save the pane
@@ -1084,7 +1261,7 @@ void syscall_dispatch(registers_t *regs)
          * repaint; only move the visible hardware cursor when focused. */
         vt_buf_t *vt = vtty_buf_current();
         if (vt) vt_set_cursor(vt, regs->ebx, regs->ecx);
-        if (vtty_is_focused())
+        if (!vt || vtty_is_focused())
             t_set_cursor((size_t)regs->ebx, (size_t)regs->ecx);
         break;
     }
@@ -1104,7 +1281,7 @@ void syscall_dispatch(registers_t *regs)
                              s_vga_palette[(clr >> 4) & 0x0F]);
             vt_clear(vt);
         }
-        if (vtty_is_focused())
+        if (!vt || vtty_is_focused())
             t_fill(clr);
         break;
     }
@@ -1431,6 +1608,11 @@ void syscall_dispatch(registers_t *regs)
         regs->eax = (uint32_t)admin_eject();
         break;
     }
+    case SYS_INSTALL: {
+        if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
+        regs->eax = (uint32_t)admin_install();
+        break;
+    }
     case SYS_MOUNT: {
         if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
         regs->eax = (uint32_t)admin_mount((const char *)regs->ebx,
@@ -1474,6 +1656,37 @@ void syscall_dispatch(registers_t *regs)
             Serial_WriteString("]\n");
         }
         regs->eax = 0;
+        break;
+    }
+    case SYS_CURSOR_POS: {
+        uint32_t col = vesa_tty_is_ready() ? vesa_tty_get_col()
+                                           : (uint32_t)t_column;
+        uint32_t row = vesa_tty_is_ready() ? vesa_tty_get_row()
+                                           : (uint32_t)t_row;
+        regs->eax = ((col & 0xFFFFu) << 16) | (row & 0xFFFFu);
+        break;
+    }
+    case SYS_VT_ENTER: {
+        int slot = shell_enter_makmux_slot((int)regs->ebx != 0);
+        regs->eax = (uint32_t)slot;
+        break;
+    }
+    case SYS_VT_CLOSE: {
+        regs->eax = (uint32_t)(int32_t)vtty_close_pid((int)regs->ebx);
+        break;
+    }
+    case SYS_VT_OPEN_REQUEST: {
+        regs->eax = (uint32_t)vtty_take_open_request();
+        break;
+    }
+    case SYS_VT_STATE: {
+        uint32_t active = (uint32_t)(vtty_active() & 0xFFFF);
+        uint32_t mask = vtty_live_mask() & 0xFFFFu;
+        regs->eax = (active << 16) | mask;
+        break;
+    }
+    case SYS_VT_CLOCK_REQUEST: {
+        regs->eax = (uint32_t)vtty_take_clock_toggle_request();
         break;
     }
     case SYS_GETHOSTNAME: {

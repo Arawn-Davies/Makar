@@ -33,6 +33,7 @@ int admin_mount(const char *dev_path, const char *mnt_path);
 int admin_umount(const char *target);   /* target may be NULL */
 int admin_mkfs(const char *dev_path, const char *fstype);  /* "ext2"|"fat32" */
 int admin_eject(void);                   /* unmount + open CD-ROM tray */
+int admin_install(void);                 /* run installer TUI (Limine MBR + rootfs copy) */
 
 /* Scheduler / runtime tuning. */
 int admin_sched_quantum(int new_value);  /* <0 = query; returns current */

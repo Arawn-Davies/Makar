@@ -15,6 +15,8 @@
 #define SYS_CLOSE      6
 #define SYS_LSEEK      19
 #define SYS_GETPID     20
+#define SYS_PIPE       42
+#define SYS_DUP2       63
 #define SYS_KILL       37
 #define SYS_RENAME     38
 #define SYS_MKDIR      39
@@ -34,9 +36,20 @@
 #define W_OK 2
 #define R_OK 4
 
-/* Linux i386 layouts -- must match kernel/syscall.h. */
+/* Linux i386 layouts -- must match kernel/syscall.h.  Each struct has
+ * its own guard macro so the userspace + kernel headers can coexist
+ * when in-OS TCC rebuilds the kernel: kernel timer.h pulls in stdio.h
+ * which pulls in this header, while kernel source also independently
+ * includes kernel/syscall.h.  Whichever header is included first wins
+ * the struct definition; the second skips. */
+#ifndef _MAKAR_STRUCT_TIMEVAL_DEFINED
+#define _MAKAR_STRUCT_TIMEVAL_DEFINED
 struct timeval  { int tv_sec; int tv_usec; };
+#endif
+#ifndef _MAKAR_STRUCT_TIMESPEC_DEFINED
+#define _MAKAR_STRUCT_TIMESPEC_DEFINED
 struct timespec { int tv_sec; int tv_nsec; };
+#endif
 #define SYS_SIGRETURN  119
 #define SYS_DEBUG      100
 #define SYS_YIELD      158
@@ -68,6 +81,7 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_FGCOL         222
 #define SYS_BGCOL         223
 #define SYS_EJECT         224
+#define SYS_INSTALL       238
 #define SYS_MOUNT         225
 #define SYS_UMOUNT        226
 #define SYS_MKFS          227
@@ -75,6 +89,12 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_VERBOSE       229
 #define SYS_GETHOSTNAME   230
 #define SYS_SHELL_READY   231
+#define SYS_CURSOR_POS    232
+#define SYS_VT_ENTER      233
+#define SYS_VT_CLOSE      234
+#define SYS_VT_OPEN_REQUEST 235
+#define SYS_VT_STATE      236
+#define SYS_VT_CLOCK_REQUEST 237
 #define SYS_FCNTL        55
 #define SYS_STAT        106
 #define SYS_FSTAT       108
@@ -85,12 +105,15 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define DT_UNKNOWN 0
 #define DT_DIR     4
 #define DT_REG     8
+#ifndef _MAKAR_STRUCT_DIRENT_DEFINED
+#define _MAKAR_STRUCT_DIRENT_DEFINED
 struct dirent {
     unsigned int   d_ino;
     unsigned char  d_type;
     unsigned char  __pad[3];
     char           d_name[DIRENT_NAME_MAX];
 };
+#endif
 
 /* fcntl cmds */
 #define F_GETFL          3
@@ -140,6 +163,8 @@ typedef void (*sig_handler_t)(int);
 #define O_APPEND    02000
 
 /* Linux i386 struct stat (must match kernel/syscall.h). */
+#ifndef _MAKAR_STRUCT_STAT_DEFINED
+#define _MAKAR_STRUCT_STAT_DEFINED
 struct stat {
     unsigned int   st_dev;
     unsigned int   st_ino;
@@ -160,6 +185,7 @@ struct stat {
     unsigned int   __unused4;
     unsigned int   __unused5;
 };
+#endif
 #define S_IFMT   0170000
 #define S_IFREG  0100000
 #define S_IFDIR  0040000
@@ -223,11 +249,21 @@ typedef struct { unsigned char col, row, ch, clr; } tty_cell_t;
 #define KEY_CAPS_TOGGLE 0x94
 #define KEY_SUPER_DOWN  0x95
 #define KEY_MENU_DOWN   0x96
+#define KEY_PAGE_UP     0x97
+#define KEY_PAGE_DOWN   0x98
 #define KEY_CTRL_S      0x13
 #define KEY_CTRL_Q      0x11
 #define KEY_CTRL_C      0x03
 
 /* Raw syscall stubs. */
+static inline long syscall0(long nr)
+{
+    long ret;
+    __asm__ volatile ("int $0x80"
+        : "=a"(ret) : "0"(nr) : "memory");
+    return ret;
+}
+
 static inline long syscall1(long nr, long a1)
 {
     long ret;
@@ -431,6 +467,16 @@ static inline long sys_lseek(int fd, int offset, int whence)
     return syscall3(SYS_LSEEK, (long)fd, (long)offset, (long)whence);
 }
 
+static inline int sys_pipe(int pipefd[2])
+{
+    return (int)syscall1(SYS_PIPE, (long)pipefd);
+}
+
+static inline int sys_dup2(int oldfd, int newfd)
+{
+    return (int)syscall2(SYS_DUP2, (long)oldfd, (long)newfd);
+}
+
 static inline int sys_stat(const char *path, struct stat *st)
 {
     return (int)syscall2(SYS_STAT, (long)path, (long)st);
@@ -615,6 +661,10 @@ static inline int sys_eject(void)
 {
     return (int)syscall1(SYS_EJECT, 0);
 }
+static inline int sys_install(void)
+{
+    return (int)syscall1(SYS_INSTALL, 0);
+}
 static inline int sys_mount(const char *dev, const char *mnt)
 {
     return (int)syscall2(SYS_MOUNT, (long)dev, (long)mnt);
@@ -655,6 +705,36 @@ static inline int sys_gethostname(char *buf, unsigned int size)
 static inline void sys_shell_ready(void)
 {
     syscall1(SYS_SHELL_READY, 0);
+}
+
+static inline unsigned int sys_cursor_pos(void)
+{
+    return (unsigned int)syscall0(SYS_CURSOR_POS);
+}
+
+static inline int sys_vt_enter(int loading)
+{
+    return (int)syscall1(SYS_VT_ENTER, (long)loading);
+}
+
+static inline int sys_vt_close(int pid)
+{
+    return (int)syscall1(SYS_VT_CLOSE, (long)pid);
+}
+
+static inline int sys_vt_open_request(void)
+{
+    return (int)syscall0(SYS_VT_OPEN_REQUEST);
+}
+
+static inline unsigned int sys_vt_state(void)
+{
+    return (unsigned int)syscall0(SYS_VT_STATE);
+}
+
+static inline int sys_vt_clock_request(void)
+{
+    return (int)syscall0(SYS_VT_CLOCK_REQUEST);
 }
 
 #endif

@@ -74,8 +74,9 @@ What is **not** yet present:
 
 | Missing piece | Needed for |
 |---|---|
-| `SYS_PIPE` / `SYS_DUP2` | Shell pipelines.  Needs a refcounted `open_file_t` layer underneath `fd_table_t` so a forked child shares the parent's seek position (today `fd_table_clone` deep-copies FILE buffers per-fd, and the dirty bit is cleared on the child copy so only the parent's close flushes -- non-POSIX shortcut). |
-| `SYS_MMAP(MAP_ANONYMOUS)` | musl's large-allocation fallback |
+| `SYS_DUP` (single-arg) | POSIX `dup(fd)` -- callable today via `dup2(fd, fd_alloc())` workaround.  `SYS_PIPE` (42) and `SYS_DUP2` (63) themselves ship as of PR #181 with a refcounted `pipe_ring_t` shared across fork. |
+| Refcounted `open_file_t` for FILE-kind fds | A forked child currently gets its own copy of each FILE buffer (parent + child have independent seek positions; dirty bit cleared on child).  POSIX-correct shared open-file descriptions would need this -- not blocking for `sh.elf` pipelines because `FD_KIND_PIPE` already has its own per-kind refcount path. |
+| `SYS_MMAP(MAP_ANONYMOUS)` | musl's large-allocation fallback; also enables `tcc -run` (B3 of the POSIX+TCC roadmap). |
 
 ---
 

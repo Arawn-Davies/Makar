@@ -69,31 +69,39 @@ static void kprint_ok(void)
 }
 
 /*
- * user_shell_slot_entry – per-VT task entry that boots /apps/sh.elf
- * as a ring-3 login shell.
+ * user_shell_slot_entry – boot the default /apps/sh.elf userspace shell.
  *
- * Each VT slot's task runs this entry: register the VT, apply the
- * slot's colour scheme (so the framebuffer looks the same as if the
- * in-kernel shell had taken it), then drop into ring 3 by exec'ing
- * /apps/sh.elf with `--login`.  elf_exec only returns on failure
+ * Normal boot starts one detached userspace shell, mak.sh0.  Additional
+ * interactive VT shells belong to the explicit userspace makmux app, not
+ * to kernel boot.  This entry registers the initial VT, runs the boot
+ * loading/palette prelude, then drops into ring 3 by exec'ing /apps/sh.elf
+ * with `--login`.  elf_exec only returns on failure
  * (missing file, malformed ELF, OOM); in that case fall back to the
  * in-kernel rescue shell so the system stays usable.
  *
  * shell=rescue on the kernel cmdline skips this entirely and uses
- * shell_run on every VT — for the case where /apps/sh.elf itself
- * is broken or the rootfs hasn't mounted.
+ * rescu.sh for the case where /apps/sh.elf itself is broken or the rootfs
+ * hasn't mounted.
  */
 extern void user_shell_slot_entry(void);  /* fwd decl for task_create */
 void user_shell_slot_entry(void)
 {
-	/* Full shell prelude: SIGINT IGN, unkillable, vtty_register,
-	 * loading screen (slot 0 only), wait for ktest_bg, palette +
-	 * clear.  Mirrors what the in-kernel shell_run used to do
-	 * inline so the boot UX is identical. */
-	int slot = shell_enter_slot(1);   /* 1 = with loading screen */
-	if (slot < 0) {
-		Serial_WriteString("user-shell: shell_enter_slot failed\n");
-		for (;;) task_yield();
+	/* mak.sh0 is the detached boot shell.  It gets the loading-screen
+	 * tty path, but it is not one of makmux's four switchable VT slots. */
+	shell_enter_root_tty();
+	{
+		task_t *cur = task_current();
+		if (cur) {
+			cur->name_buf[0] = 'm';
+			cur->name_buf[1] = 'a';
+			cur->name_buf[2] = 'k';
+			cur->name_buf[3] = '.';
+			cur->name_buf[4] = 's';
+			cur->name_buf[5] = 'h';
+			cur->name_buf[6] = '0';
+			cur->name_buf[7] = '\0';
+			cur->name = cur->name_buf;
+		}
 	}
 
 	static const char *login_argv[] = { "sh.elf", "--login", NULL };
@@ -111,6 +119,11 @@ void user_shell_slot_entry(void)
 		while (n--) { char one[2] = { dec[n], 0 }; Serial_WriteString(one); }
 	}
 	Serial_WriteString("), falling back to kernel rescue shell\n");
+	{
+		task_t *cur = task_current();
+		if (cur)
+			cur->name = "rescu.sh";
+	}
 	shell_run();  /* never returns */
 }
 
@@ -169,7 +182,6 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	/* Subscribe the display's periodic widgets to the timer rather than
 	 * having the timer IRQ reach into the display layer directly. */
 	timer_register_tick_hook(t_spinner_tick);
-	timer_register_tick_hook(vesa_tty_status_clock_tick);
 	KLOG("timer: 100 Hz PIT started\n");
 
 	t_writestring("Registering PS/2 keyboard");
@@ -270,7 +282,22 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	vfs_auto_mount();
 	vfs_ensure_root_home();
 
-	t_writestring("\nAll subsystems ready.\n\n");
+	t_writestring("\nAll subsystems ready.\n");
+	/* MAKAR_BUILD_ORIGIN is set by arch/i386/boot/build_origin.c at
+	 * compile time -- "gcc-host" / "tcc-host" / "tcc-in-os". */
+	{
+		extern const char *MAKAR_BUILD_ORIGIN;
+		if (strcmp(MAKAR_BUILD_ORIGIN, "tcc-in-os") == 0) {
+			t_writestring("Self-hosted and built inside Makar! (TCC)\n\n");
+			Serial_WriteString("kernel: build=tcc-in-os (self-hosted, built inside Makar)\n");
+		} else if (strcmp(MAKAR_BUILD_ORIGIN, "tcc-host") == 0) {
+			t_writestring("Self-hosted kernel! (TCC, host build)\n\n");
+			Serial_WriteString("kernel: build=tcc-host (self-hosted, built on dev host)\n");
+		} else {
+			t_writestring("Host-built kernel! (GCC)\n\n");
+			Serial_WriteString("kernel: build=gcc-host\n");
+		}
+	}
 
 	t_writestring("Initializing multitasking");
 	kprint_ok();
@@ -293,16 +320,13 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 		/* shell=rescue boots a single in-kernel rescue shell on VT0
 		 * (Linux-style — no other VTs are spawned, so the operator's
 		 * keypresses can't be lost to a hung secondary slot).  The
-		 * normal path boots /apps/sh.elf as a ring-3 login shell on
-		 * each of the four VTs, with per-VT auto-fallback to the
-		 * rescue shell if /apps/sh.elf is missing or fails to load. */
+		 * normal path boots one detached /apps/sh.elf login shell as
+		 * mak.sh0.  The explicit userspace `makmux` application owns
+		 * the multi-VT shell experience. */
 		if (shell_rescue) {
-			task_create("rescue", shell_run);
+			task_create("rescu.sh", shell_run);
 		} else {
-			task_create("shell0", user_shell_slot_entry);
-			task_create("shell1", user_shell_slot_entry);
-			task_create("shell2", user_shell_slot_entry);
-			task_create("shell3", user_shell_slot_entry);
+			task_create("mak.sh0", user_shell_slot_entry);
 		}
 		task_create("ktest",  ktest_bg_task);
 	}
@@ -323,6 +347,12 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 		#define TEST_WANT(name) \
 			(test_spec == NULL || test_spec[0] == '\0' || \
 			 strcmp(test_spec, "all") == 0 || strstr(test_spec, (name)) != NULL)
+		/* Opt-in variant: must be named explicitly.  For long-running suites
+		 * we don't want firing on a bare `test_mode` (e.g. the in-OS kernel
+		 * rebuild takes minutes in TCG). */
+		#define TEST_WANT_EXPLICIT(name) \
+			(test_spec != NULL && test_spec[0] != '\0' && \
+			 strstr(test_spec, (name)) != NULL)
 
 		/* Wipe the "Initializing X... [OK]" boot lines off the
 		 * framebuffer before the test-mode dispatch starts.  Without
@@ -367,7 +397,20 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			Serial_WriteString("SHELL-SMOKE: finished\n");
 		}
 
+		/* In-OS kernel rebuild (opt-in only).  Runs /apps/rebuild-kernel.sh
+		 * which calls /apps/tcc.elf once per source file then links the
+		 * result.  Slow: ~10 min under TCG.  Invoke with:
+		 *   TEST_CMDLINE="test_mode test=rebuild-kernel" ./run.sh iso build
+		 *   qemu-system-i386 -cdrom makar-test.iso -serial stdio -display none -m 256
+		 * Marker REBUILD-KERNEL: ALL PASS / REBUILD-KERNEL: FAIL. */
+		if (TEST_WANT_EXPLICIT("rebuild-kernel")) {
+			Serial_WriteString("REBUILD-KERNEL: starting\n");
+			sh_run_file("/apps/rebuild-kernel.sh");
+			Serial_WriteString("REBUILD-KERNEL: finished\n");
+		}
+
 		#undef TEST_WANT
+		#undef TEST_WANT_EXPLICIT
 
 		uint8_t exit_val = (fails > 0) ? 1 : 0;
 		asm volatile("outb %b0, %w1" :: "a"(exit_val), "Nd"((uint16_t)0xF4));

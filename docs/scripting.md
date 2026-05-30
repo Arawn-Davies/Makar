@@ -5,7 +5,9 @@ nav_order: 7
 
 # Shell scripting
 
-The Makar shell exposes a small bash-flavoured scripting layer.  `fork()` / `execve()` / `wait4()` are available (slices 15+16), but the in-kernel shell hasn't yet rewired its dispatch to use them — no pipes, no command substitution yet, everything below still runs inside the calling shell task.  Per-VT isolation: each shell's variable table hangs off its `task_t`, so `NAME=foo` on VT0 doesn't show up in VT1.
+There are now **two** sh-flavoured interpreters in Makar.  This page documents the **in-kernel** scripting layer (`sh_script.c`) used by `sh /path/script.sh` and the test bootstraps (`shell-smoke.sh`, `libc-tcc.sh`, `incore.sh`).  The **userspace** shell (`/apps/sh.elf`, source `src/userspace/sh.c`) is what the operator types into interactively on every VT, and it ships with extras the in-kernel script layer doesn't have — pipes (`\|`), redirection (`< > >> 2> 2>>`), and list operators (`&& \|\| &` + `wait`).  Those landed in PR #181 and live in userspace only.
+
+`fork()` / `execve()` / `wait4()` are available kernel-wide.  The in-kernel script layer dispatches via the same `shell_dispatch_argv` path the interactive prompt uses; everything below still runs inside the calling shell task (no subshell).  Per-VT isolation: each shell's variable table hangs off its `task_t`, so `NAME=foo` on VT0 doesn't show up in VT1.
 
 Implementation: `kernel/sh_script.h`, `arch/i386/shell/sh_script.c`, `arch/i386/shell/shell_cmd_script.c`.
 
@@ -88,11 +90,11 @@ The `sh` builtin writes the script's final `$?` to serial as `sh: exit=N` so tes
 | `true` / `false` | POSIX status helpers. |
 | `datetime` / `date` / `time` | One-line `YYYY-MM-DD HH:MM:SS` from `/proc/rtc`.  For the fullscreen wall clock, use `clock.elf`. |
 
-## Limitations (and what they're waiting on)
+## Limitations of this layer (and where to find the missing features)
 
 - **No command substitution (`$(cmd)`)** — would require capturing a child's stdout into a buffer; needs subshell-equivalent.
-- **No pipes** — needs `SYS_PIPE` + `dup2` (fork is available; the missing piece is the open-file refcount layer that `pipe(2)` hangs off).
-- **No background jobs (`&`)** — the in-kernel shell would need to use `fork+execve+wait4` for child dispatch first; that's the slice 20 (userland shell) work.
+- **No pipes (`\|`), redirection (`< > >> 2> 2>>`), or list operators (`&& \|\| &`) here** — these all exist in `/apps/sh.elf` since PR #181 (kernel-side `SYS_PIPE`/`SYS_DUP2`/`FD_KIND_PIPE` ship in the same PR).  The in-kernel script interpreter (`sh_script.c`) hasn't been rewired to use them; if you need them, drive your workload through `sh.elf` instead.
+- **No `wait` builtin / `&` background here** — present in `sh.elf`; deferred from `sh_script.c` because the in-kernel script layer would need to fork-then-dispatch first (currently it dispatches in-process so backgrounding has no meaning).
 - **`elif` chained but `elif` itself can't appear on the same line as preceding body** — `; elif` is fine; `then A; elif [ Y ]; then B` works; bare `; elif` without preceding `; then BODY` may not parse.
 - **64 KiB scratch buffer for script source** — warns on truncation; chain `sh foo.sh; sh bar.sh` for bigger workloads.
 

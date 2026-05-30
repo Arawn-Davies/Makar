@@ -319,9 +319,13 @@ _run_ktest() {
     # a bounded test run rather than waiting on the GitHub-Actions job
     # timeout (6h default), so wrap QEMU in `timeout` (GNU coreutils) or
     # `gtimeout` (macOS via Homebrew coreutils); only prepend if present.
+    # 360s default gives headroom for the in-OS TCC self-rebuild test
+    # (compiling tcc.c on TCG-emulated i386 takes ~2 min); override via
+    # KTEST_TIMEOUT in the environment if you need more for slow hosts.
+    _ktest_secs="${KTEST_TIMEOUT:-360}"
     _tmo=""
-    if   command -v timeout  >/dev/null 2>&1; then _tmo="timeout 120"
-    elif command -v gtimeout >/dev/null 2>&1; then _tmo="gtimeout 120"
+    if   command -v timeout  >/dev/null 2>&1; then _tmo="timeout $_ktest_secs"
+    elif command -v gtimeout >/dev/null 2>&1; then _tmo="gtimeout $_ktest_secs"
     fi
     if [ -n "$_qemu" ]; then
         # shellcheck disable=SC2086
@@ -334,8 +338,8 @@ _run_ktest() {
             $_accel \
             2>/dev/null || true
     else
-        _drun --as-root --env "QEMU_ACCEL=$_accel" --env "KTEST_ISO_NAME=$_iso" -- \
-            'timeout 120 qemu-system-i386 \
+        _drun --as-root --env "QEMU_ACCEL=$_accel" --env "KTEST_ISO_NAME=$_iso" --env "KTEST_TIMEOUT=$_ktest_secs" -- \
+            'timeout "$KTEST_TIMEOUT" qemu-system-i386 \
                  -cdrom /work/$KTEST_ISO_NAME \
                  -m 32 \
                  -serial file:/work/ktest.log \

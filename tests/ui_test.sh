@@ -69,6 +69,34 @@ sendkey ret"
     assert_serial_contains "vendor_id" "GenuineIntel"
 }
 
+test_tab_root_path() {
+    # Absolute root completion: `/sr<Tab>` should complete to `/src/` and
+    # return to readline.  A prior userspace sh bug treated SYS_READDIR's
+    # end-of-directory return (0) as success and spun forever after Tab.
+    it "tab-root-path" \
+"$(keys "echo root-tab /sr")
+sendkey tab
+sendkey ret"
+    assert_serial_contains "root-tab" "/src/"
+}
+
+test_tab_vix_root_path() {
+    # The same absolute path completion must keep working after a command
+    # word.  This covers the operator workflow `vix /sr<Tab>`.
+    it_until "tab-vix-root-path" \
+"$(keys "vix /sr")
+sendkey tab
+sendkey ret
+PAUSE 1.0
+sendkey ctrl-q
+PAUSE 0.5
+$(keys "pwd")
+sendkey ret" \
+        '\[makbox:pwd\]' 20
+    assert_serial_contains "vix /src/" "[makbox:pwd] /"
+    assert_serial_not_contains "Kernel panic" "panic(cpu 0)" "SIGSEGV"
+}
+
 test_exec_hello() {
     # `exec /apps/hello.elf tester` prints "Hello, tester!" via
     # sys_write on fd 2 (stderr = FD_KIND_VGA_SERIAL).  Absolute path so
@@ -86,8 +114,9 @@ test_per_tty_cwd() {
     # Per-task cwd isolation across TTYs (slice 15).  Each shell task
     # owns task_t.cwd; vfs_getcwd/vfs_cd route through task_current.  We
     # cd VT0 to /proc, switch to VT3 and cd it to /apps, then
-    # switch back to VT0.  Asserting on the "~>" prompt suffix is
-    # unambiguous since only prompts end that way.
+    # switch back to VT0.  /apps/sh.elf's prompt is `root@HOST:CWD#`,
+    # so a sub-prompt with each cwd as a substring is enough to
+    # confirm the per-task cwd was honoured on each VT.
     #
     # Uses VT3 (not VT1/2) so reset_shell's `alt-f1` between tests
     # doesn't collide with this test's VT excursion.  Extra wait because
@@ -100,7 +129,7 @@ $(keys "cd $P_APPS")
 sendkey ret
 sendkey alt-f1" \
         2.0
-    assert_serial_contains "/proc~>" "/apps~>"
+    assert_serial_contains ":/proc#" ":/apps#"
 }
 
 test_cd_root() {
@@ -193,8 +222,102 @@ test_no_dead_in_proctasks() {
     it "no-dead-in-proctasks" \
 "$(keys "cat $P_PROC/tasks")
 sendkey ret"
-    assert_serial_contains "shell0" "shell1"
+    assert_serial_contains "mak.sh0"
     assert_serial_not_contains "DEAD"
+}
+
+test_makmux_tasks() {
+    # makmux is a userspace executable, not a second mak.sh0.  Launch it
+    # from the detached root shell, let it spawn mak.sh1..mak.sh4, then
+    # inspect /proc/tasks from the first mux VT.
+    it "makmux-tasks" \
+"$(keys "makmux")
+sendkey ret
+PAUSE 1.5
+$(keys "cat $P_PROC/tasks")
+sendkey ret
+PAUSE 0.8
+$(keys "exit")
+sendkey ret
+PAUSE 0.7
+$(keys "exit")
+sendkey ret
+PAUSE 0.7
+$(keys "exit")
+sendkey ret
+PAUSE 0.7
+$(keys "exit")
+sendkey ret" \
+        3.0
+    assert_serial_contains "makmux" "mak.sh0" "mak.sh1" "mak.sh2" "mak.sh3" "mak.sh4"
+    local n
+    n=$(grep -E '^[[:space:]]*[0-9]+[[:space:]]+mak\.sh0[[:space:]]' "$CURRENT_SEGMENT" | wc -l | tr -d ' ')
+    if [ "$n" != "1" ]; then
+        CURRENT_FAILED=1
+        echo "  - expected exactly one mak.sh0 task, saw $n"
+        echo "  - got: $(_assert_render_serial)"
+    fi
+}
+
+test_makmux_exit_alt_t() {
+    # tmux-style lifecycle: exit in a makmux VT closes that VT, not mak.sh0;
+    # Alt-T opens a replacement pane and focuses it.
+    it "makmux-exit-alt-t" \
+"$(keys "makmux")
+sendkey ret
+PAUSE 1.5
+$(keys "exit")
+sendkey ret
+PAUSE 1.2
+$(keys "cat $P_PROC/tasks")
+sendkey ret
+PAUSE 0.8
+sendkey alt-t
+PAUSE 1.2
+$(keys "cat $P_PROC/tasks")
+sendkey ret" \
+        5.0
+    assert_serial_contains "makmux" "mak.sh0" "mak.sh1" "mak.sh2" "mak.sh3" "mak.sh4"
+    local n
+    n=$(grep -E '^[[:space:]]*[0-9]+[[:space:]]+mak\.sh0[[:space:]]' "$CURRENT_SEGMENT" | wc -l | tr -d ' ')
+    if [ "$n" != "2" ]; then
+        CURRENT_FAILED=1
+        echo "  - expected mak.sh0 once in each /proc/tasks dump, saw $n"
+        echo "  - got: $(_assert_render_serial)"
+    fi
+}
+
+test_makmux_reopen_vt2() {
+    # Closing a middle VT must leave a reusable hole.  Alt-T should open a
+    # replacement in that hole, and Alt-F2 must switch to it afterward.
+    it "makmux-reopen-vt2" \
+"$(keys "makmux")
+sendkey ret
+PAUSE 1.5
+sendkey alt-f2
+PAUSE 0.8
+$(keys "exit")
+sendkey ret
+PAUSE 1.2
+sendkey alt-f3
+PAUSE 0.6
+sendkey alt-f4
+PAUSE 0.6
+sendkey alt-t
+PAUSE 1.2
+sendkey alt-f3
+PAUSE 0.6
+sendkey alt-f4
+PAUSE 0.6
+sendkey alt-f2
+PAUSE 0.8
+$(keys "echo vt2-reopened")
+sendkey ret
+PAUSE 0.8
+$(keys "cat $P_PROC/tasks")
+sendkey ret" \
+        5.0
+    assert_serial_contains "vt2-reopened" "makmux" "mak.sh2"
 }
 
 test_typo_doesnt_clear() {
@@ -492,7 +615,7 @@ test_ctrlc_kills_child() {
     # returns to the prompt -> type `pwd` -> makbox emits its `[makbox:pwd]`
     # serial provenance tag.  Presence of that tag is unambiguous evidence
     # the shell prompt is responsive again after the child was killed.
-    it "ctrlc-kills-child" \
+    it_until "ctrlc-kills-child" \
 "$(keys "exec $P_APPS/calc.elf")
 sendkey ret
 PAUSE 0.8
@@ -500,7 +623,7 @@ sendkey ctrl-c
 PAUSE 0.4
 $(keys "pwd")
 sendkey ret" \
-        2.0
+        "[makbox:pwd]" 8
     assert_serial_contains "[makbox:pwd]"
 }
 
@@ -508,15 +631,17 @@ test_ctrlc_cat() {
     # makbox cat installs a SIGINT handler and writes in small yielded
     # chunks, so Ctrl+C should stop a large stream promptly and return the
     # shell to an interactive prompt.
-    it "ctrlc-cat" \
+    it_until "ctrlc-cat" \
 "$(keys "cat /log/kernel.log")
 sendkey ret
 PAUSE 0.2
 sendkey ctrl-c
 PAUSE 0.4
+$(keys "echo status=\$?")
+sendkey ret
 $(keys "echo after-cat")
 sendkey ret" \
-        4.0
+        "after-cat" 8
     assert_serial_contains "status=130" "after-cat"
 }
 
@@ -697,7 +822,7 @@ sendkey ret
 $(keys "pwd")
 sendkey ret" \
         "[makbox:pwd]" 15
-    assert_serial_contains "sh.elf: ring-3 userspace shell" "/proc" "[makbox:pwd]"
+    assert_serial_contains "sh.elf: ring-3 shell" "/proc" "[makbox:pwd]"
     assert_serial_not_contains "Kernel panic" "SIGSEGV"
 }
 
@@ -722,7 +847,7 @@ sendkey ret
 $(keys "exit")
 sendkey ret" \
         "20" 15
-    assert_serial_contains "sh.elf: ring-3 userspace shell" "20"
+    assert_serial_contains "sh.elf: ring-3 shell" "20"
     assert_serial_not_contains "Kernel panic" "SIGSEGV"
 }
 
@@ -754,7 +879,7 @@ sendkey ret" \
     # the backspace-corrected variant.  All print "/\n".  We can't easily
     # count occurrences in assert_serial_contains, but seeing the prompt
     # come back after `exit` proves the loop didn't wedge.
-    assert_serial_contains "sh.elf: ring-3 userspace shell"
+    assert_serial_contains "sh.elf: ring-3 shell"
     assert_serial_not_contains "Kernel panic" "SIGSEGV" "command not found"
 }
 
@@ -792,7 +917,7 @@ sendkey ret
 $(keys "exit")
 sendkey ret" \
         "gone==end" 20
-    assert_serial_contains "sh.elf: ring-3 userspace shell" \
+    assert_serial_contains "sh.elf: ring-3 shell" \
                            "hello tester" \
                            "status=127" \
                            "gone==end"
@@ -821,8 +946,8 @@ $(keys "pwd")
 sendkey ret
 $(keys "exit")
 sendkey ret" \
-        "sh.elf: ring-3 userspace shell" 15
-    assert_serial_contains "sh.elf: ring-3 userspace shell"
+        "sh.elf: ring-3 shell" 15
+    assert_serial_contains "sh.elf: ring-3 shell"
     assert_serial_not_contains "Kernel panic" "SIGSEGV"
 }
 
@@ -920,7 +1045,7 @@ sendkey ret" \
 
 test_tcc_rebuild_makbox() {
     # In-OS rebuild of makbox.elf (the freestanding multicall busybox: ls /
-    # cat / cp / mv / rm / rmdir / echo / pwd).  Proves TCC handles the
+    # cat / cp / mv / rm / mkdir / rmdir / echo / pwd).  Proves TCC handles the
     # larger multicall dispatcher + every applet's syscall surface against
     # the same shim-free build the shipped binary uses.  Asserts on the
     # `pwd` applet's output (deterministic across boots once we cd /).
@@ -1506,7 +1631,7 @@ sendkey ret"
 ## stay here.  Anything that just typed a command and grep'd serial
 ## migrated to /src/userspace/shell-smoke.sh (run via `./run.sh gui
 ## smoke` or as part of test_mode bootup).
-SHELL_TESTS=(tab_path tab_cycle typo_doesnt_clear calc_brackets)
+SHELL_TESTS=(tab_path tab_root_path tab_cycle typo_doesnt_clear calc_brackets)
 CD_PWD_TESTS=(per_tty_cwd)
 FS_TESTS=(mnt_mountpoint)                        # needs scratch disk; stays HMP
 POSIX_TESTS=(user_sigusr1_handler ctrlc_kills_child ctrlc_cat usershell_smoke usershell_execve usershell_history usershell_vars)

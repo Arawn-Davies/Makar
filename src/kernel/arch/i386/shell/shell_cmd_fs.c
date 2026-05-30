@@ -186,14 +186,15 @@ static void cmd_mkdir(int argc, char **argv)
         t_writestring("Usage: mkdir <path>...\n");
         return;
     }
+    int any_fail = 0;
     for (int i = 1; i < argc; i++) {
         int err = vfs_mkdir(argv[i]);
         switch (err) {
         case  0: break;
-        case -1: t_writestring("mkdir: path error: ");    t_writestring(argv[i]); t_putchar('\n'); break;
-        case -2: t_writestring("mkdir: I/O error: ");     t_writestring(argv[i]); t_putchar('\n'); break;
-        case -4: t_writestring("mkdir: disk full: ");     t_writestring(argv[i]); t_putchar('\n'); break;
-        case -6: t_writestring("mkdir: already exists: ");t_writestring(argv[i]); t_putchar('\n'); break;
+        case -1: t_writestring("mkdir: cannot create '");  t_writestring(argv[i]); t_writestring("'\n"); any_fail = 1; break;
+        case -2: t_writestring("mkdir: I/O error: '");     t_writestring(argv[i]); t_writestring("'\n"); any_fail = 1; break;
+        case -4: t_writestring("mkdir: disk full: '");     t_writestring(argv[i]); t_writestring("'\n"); any_fail = 1; break;
+        case -6: t_writestring("mkdir: already exists: '");t_writestring(argv[i]); t_writestring("'\n"); any_fail = 1; break;
         default:
             if (err < 0) {
                 t_writestring("mkdir: error ");
@@ -201,10 +202,12 @@ static void cmd_mkdir(int argc, char **argv)
                 t_writestring(": ");
                 t_writestring(argv[i]);
                 t_putchar('\n');
+                any_fail = 1;
             }
             break;
         }
     }
+    if (any_fail) shell_set_last_exec_status(1);
 }
 
 static void cmd_mkfs(int argc, char **argv)

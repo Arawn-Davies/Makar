@@ -53,7 +53,9 @@ are filled.
 
 | Name | Why it's not here | Workaround |
 |---|---|---|
-| `pipe` / `dup` / `dup2` | Slice 28 not started | -- |
+| `pipe` (42) | **Present (PR #181)** -- 4 KiB `pipe_ring_t` shared via refcount, `task_yield()`-blocking | -- |
+| `dup2` (63) | **Present (PR #181)** -- closes newfd if open, shallow-copies the slot, bumps `FD_KIND_PIPE` refcount | -- |
+| `dup` (single-arg) | Not yet present | Use `dup2(fd, fd_alloc())` -- TODO once `SYS_DUP` lands |
 | `mmap` / `munmap` | No anon-mapping ABI, no `PROT_EXEC` | `brk` for heap; ELF loader for code |
 | `ioctl` | No device tree past `/dev` block devices | Makar-ext `SYS_PUTCH_AT` etc. |
 | `select` / `poll` / `epoll` | Kernel has no fd-readiness model | `SYS_GETKEY` blocks on the focused TTY |
@@ -79,13 +81,13 @@ to `/usr/include/`.
 
 | Header | Coverage | Gaps |
 |---|---|---|
-| `<stdio.h>` | `fopen`/`fread`/`fwrite`/`fclose`/`fputs`/`fputc`/`fgetc`/`fflush`/`printf`/`fprintf`/`sprintf`/`snprintf`/`vsnprintf` | No `freopen`, `setbuf`, `tmpfile`, `popen` (no pipes); no wide-char variants |
+| `<stdio.h>` | `fopen`/`fread`/`fwrite`/`fclose`/`fputs`/`fputc`/`fgetc`/`fflush`/`printf`/`fprintf`/`sprintf`/`snprintf`/`vsnprintf` (handles `%l`/`%ll`/`%z`/`%t`/`%j`/`%h` length modifiers + `%o`; `%s` brk-aware bad-pointer guard since PR #181) | No `freopen`, `setbuf`, `tmpfile`, `popen` (no in-process pipe API yet -- the kernel has `pipe(2)` but no libc wrapper); no wide-char variants |
 | `<string.h>` | `memcmp`/`memcpy`/`memmove`/`memset`/`strlen`/`strcpy`/`strncpy`/`strcat`/`strcmp`/`strncmp`/`strchr`/`strrchr`/`strstr`/`strdup` | No `strtok_r`, `strerror`, `strxfrm` |
 | `<stdlib.h>` | `malloc`/`free`/`calloc`/`realloc`/`strtol`/`atoi`/`qsort`/`getenv`/`strdup`/`exit`/`abort`/`sscanf` | No `bsearch`, `system`, `mblen`, `wcs*`; no `setenv`/`putenv`/`unsetenv` (env is read-only via `getenv`) |
 | `<ctype.h>` | Full ASCII set | No locale awareness (always C locale) |
 | `<setjmp.h>` | `setjmp`/`longjmp` | No `sigsetjmp`/`siglongjmp` |
 | `<errno.h>` | Defines (`EPERM`, `ENOENT`, `EBADF`, ...) shipped; the 30a–30e wrappers set `errno`; legacy syscalls still return `-1` without setting it | Partially POSIX-conformant |
-| `<unistd.h>` | Thin syscall wrappers; `access()`, `getpid()`, `getppid()`, `unlink()`, `rmdir()` present | No `sleep`, `alarm`, `pause`, `pipe`, `dup` |
+| `<unistd.h>` | Thin syscall wrappers; `access()`, `getpid()`, `getppid()`, `unlink()`, `rmdir()` present | No `sleep`, `alarm`, `pause`; libc wrappers around `SYS_PIPE`/`SYS_DUP2` not yet exposed (used directly from `sh.elf` via `sys_pipe`/`sys_dup2`) |
 | `<fcntl.h>` | `O_RDONLY/WRONLY/RDWR/CREAT/TRUNC/APPEND` constants only | No `O_NONBLOCK`, `O_SYNC`; no `creat`, `posix_fadvise` |
 | `<sys/stat.h>` | `struct stat` with limited fields (see syscall table); `mkdir()` wrapper present (mode ignored) | No `chmod`/`umask` enforcement |
 | `<dirent.h>` | Full POSIX shape: `DIR *`, `opendir`/`readdir`/`closedir` over `SYS_READDIR(141)` | -- |
@@ -111,15 +113,25 @@ subset.
 - Statement separation: `;`, newline
 - `$?` reflects: built-ins (always 0), unknown command (127), `[` test (0/1/2), and -- after recent work -- `exec <elf>` child exit status (low 8 bits)
 
+### Present in `/apps/sh.elf` only (PR #181, slices A1-A3)
+
+These work in the **userspace** shell but not the in-kernel sh interpreter:
+
+| Feature | Notes |
+|---|---|
+| Pipes `cmd1 \| cmd2 \| ...` | Up to 8 stages; quote-aware tokenize; per-stage fork + `dup2`(pipefd, 0/1); parent `wait4`s each child; `$?` = last stage's status |
+| Redirection `<`, `>`, `>>`, `2>`, `2>>` | Extracted from argv pre-dispatch; applied via `open`+`dup2` in the forked child; commutes with pipes |
+| `&&` / `\|\|` | Gate next segment on previous segment's `$?` |
+| `&` background + `wait` builtin | 16-slot `jobs[]` table; `wait` (no args) drains all; `wait <pid>` waits on one |
+
 ### Absent
 
 | Feature | Notes |
 |---|---|
 | Command substitution `$(cmd)` / backticks | Not parsed |
-| Pipes `\|` | Needs `pipe`/`dup` syscalls -- slice 28 |
-| Redirection `<` / `>` / `>>` / `2>` | Same prerequisite as pipes |
-| Subshells `( ... )` | Needs `fork`-only-subshell semantics on the in-kernel shell |
-| Background jobs `&` + `jobs`/`fg`/`bg` | No job control |
+| Pipes / redirection / list ops **in the in-kernel sh interpreter** | Only `/apps/sh.elf` (ring-3) supports these; kernel `sh_script.c` does not |
+| Subshells `( ... )` | Not parsed |
+| `jobs` / `fg` / `bg` / process groups / `tcsetpgrp` | No real job control (just the `jobs[]` table) |
 | Functions `name() { ... }` | Not parsed |
 | `case ... esac` | Not parsed |
 | `getopts`, `trap`, `eval`, `exec` (re-exec self), `export` | -- |
