@@ -54,7 +54,7 @@ static inline uint32_t align_up  (uint32_t v, uint32_t a) { return (v + a - 1u) 
  * elf_exec
  * ------------------------------------------------------------------------- */
 
-#define ELF_MAX_ARGC  16
+#define ELF_MAX_ARGC  128   /* room for tcc.elf's full kernel-rebuild link line */
 #define ELF_ARG_MAX   256
 
 int elf_exec(const char *path, int argc, const char *const *argv)

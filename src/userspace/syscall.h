@@ -36,9 +36,20 @@
 #define W_OK 2
 #define R_OK 4
 
-/* Linux i386 layouts -- must match kernel/syscall.h. */
+/* Linux i386 layouts -- must match kernel/syscall.h.  Each struct has
+ * its own guard macro so the userspace + kernel headers can coexist
+ * when in-OS TCC rebuilds the kernel: kernel timer.h pulls in stdio.h
+ * which pulls in this header, while kernel source also independently
+ * includes kernel/syscall.h.  Whichever header is included first wins
+ * the struct definition; the second skips. */
+#ifndef _MAKAR_STRUCT_TIMEVAL_DEFINED
+#define _MAKAR_STRUCT_TIMEVAL_DEFINED
 struct timeval  { int tv_sec; int tv_usec; };
+#endif
+#ifndef _MAKAR_STRUCT_TIMESPEC_DEFINED
+#define _MAKAR_STRUCT_TIMESPEC_DEFINED
 struct timespec { int tv_sec; int tv_nsec; };
+#endif
 #define SYS_SIGRETURN  119
 #define SYS_DEBUG      100
 #define SYS_YIELD      158
@@ -94,12 +105,15 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define DT_UNKNOWN 0
 #define DT_DIR     4
 #define DT_REG     8
+#ifndef _MAKAR_STRUCT_DIRENT_DEFINED
+#define _MAKAR_STRUCT_DIRENT_DEFINED
 struct dirent {
     unsigned int   d_ino;
     unsigned char  d_type;
     unsigned char  __pad[3];
     char           d_name[DIRENT_NAME_MAX];
 };
+#endif
 
 /* fcntl cmds */
 #define F_GETFL          3
@@ -149,6 +163,8 @@ typedef void (*sig_handler_t)(int);
 #define O_APPEND    02000
 
 /* Linux i386 struct stat (must match kernel/syscall.h). */
+#ifndef _MAKAR_STRUCT_STAT_DEFINED
+#define _MAKAR_STRUCT_STAT_DEFINED
 struct stat {
     unsigned int   st_dev;
     unsigned int   st_ino;
@@ -169,6 +185,7 @@ struct stat {
     unsigned int   __unused4;
     unsigned int   __unused5;
 };
+#endif
 #define S_IFMT   0170000
 #define S_IFREG  0100000
 #define S_IFDIR  0040000

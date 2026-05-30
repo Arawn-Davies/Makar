@@ -211,7 +211,7 @@ void syscall_dispatch(registers_t *regs)
 
         if (!upath) { regs->eax = (uint32_t)-14; break; }   /* -EFAULT */
 
-        enum { EXECVE_MAX_ARGC = 16, EXECVE_ARG_MAX = 256 };
+        enum { EXECVE_MAX_ARGC = 128, EXECVE_ARG_MAX = 256 };  /* full kernel-rebuild link line */
         static char  s_path[256];
         static char  s_argbuf[EXECVE_MAX_ARGC * EXECVE_ARG_MAX];
         static char *s_argv[EXECVE_MAX_ARGC + 1];

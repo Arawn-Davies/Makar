@@ -39,6 +39,16 @@ cp -r docs/. isodir/docs/
 mkdir -p isodir/usr/include/kernel-build
 cp -r src/kernel/include/. isodir/usr/include/kernel-build/
 
+# Also stage src/libc/include/ on top: the kernel-side libc headers
+# (string.h, stdio.h, ...) drag in <stddef.h> for size_t/NULL, which
+# the libc *.c sources in /src/libc/string and /src/libc/stdio need.
+# The userspace /usr/include/string.h deliberately avoids stddef and
+# uses a private string_size_t typedef instead -- great for the
+# ring-3 apps, wrong for the freestanding libc sources.  Without this
+# overlay TCC would pick up the userspace string.h and fail with
+# "'size_t' undeclared" / "'NULL' undeclared".
+cp -r src/libc/include/. isodir/usr/include/kernel-build/
+
 # Stage vendor/tinycc/ source onto the ISO at /src/tinycc/ so the in-OS TCC
 # can rebuild itself (the v1.0 self-host flex).  build-tcc.sh has already
 # applied the Makar-flavoured patches above, so the staged copy matches the

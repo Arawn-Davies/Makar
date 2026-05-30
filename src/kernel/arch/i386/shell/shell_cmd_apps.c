@@ -37,7 +37,7 @@ static void cmd_install(int argc, char **argv)
     installer_run();
 }
 
-#define EXEC_MAX_ARGS  16
+#define EXEC_MAX_ARGS  128   /* room for rebuild-kernel.sh's full link line */
 #define EXEC_ARG_MAX   256
 
 /* Per-call exec params, allocated on the heap and handed off to the new
@@ -98,6 +98,12 @@ static int s_last_exec_status = 0;
 
 int  shell_last_exec_status(void)         { return s_last_exec_status; }
 void shell_reset_last_exec_status(void)   { s_last_exec_status = 0; }
+
+/* Builtin failure-status setter: lets in-tree builtins (mkdir, etc.)
+ * thread a non-zero $? back to the script interpreter without changing
+ * every void-returning entry-table signature.  Calls before the next
+ * `shell_reset_last_exec_status()` win the slot. */
+void shell_set_last_exec_status(int s)    { s_last_exec_status = s & 0xFF; }
 
 void shell_exec_elf(const char *path, int argc, char **argv)
 {

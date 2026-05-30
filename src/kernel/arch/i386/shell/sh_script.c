@@ -197,7 +197,7 @@ int sh_try_assign(const char *line)
     memcpy(name, line, i);
     name[i] = '\0';
     const char *rhs = line + i + 1;
-    static char expanded[512];
+    static char expanded[4096];
     if (sh_expand(rhs, expanded, sizeof(expanded)) != 0) {
         t_writestring("sh: assignment expansion overflow\n");
         return 1;
@@ -238,7 +238,7 @@ int sh_exec_line(char *line)
 
     if (sh_try_assign(line)) return 1;
 
-    static char expanded[1024];
+    static char expanded[4096];
     if (sh_expand(line, expanded, sizeof(expanded)) != 0) {
         t_writestring("sh: line too long after expansion\n");
         return 0;
@@ -400,7 +400,7 @@ static int eval_condition(const char *line)
     size_t l = strlen(buf);
     while (l > 0 && (buf[l-1] == ';' || buf[l-1] == ' ' || buf[l-1] == '\t')) buf[--l] = '\0';
     if (l > 0 && buf[l-1] == ']') buf[--l] = '\0';
-    static char expanded[512];
+    static char expanded[4096];
     if (sh_expand(buf, expanded, sizeof(expanded)) != 0) return 0;
     char *argv[SHELL_MAX_ARGS];
     int argc = shell_parse(expanded, argv, SHELL_MAX_ARGS);
@@ -434,7 +434,7 @@ static int run_block(char **lines, int from, int to)
                  *   if <COND>; then <BODY>; fi
                  * Steps: find " then " or ";then "; that splits cond/body.
                  * Then strip trailing "; fi" from body. */
-                static char work[512];
+                static char work[4096];
                 strncpy(work, t, sizeof(work) - 1);
                 work[sizeof(work) - 1] = '\0';
                 /* skip past "if " */
@@ -633,7 +633,7 @@ static int run_block(char **lines, int from, int to)
                     dw--;
                 *dw = '\0';
             }
-            static char expanded[512];
+            static char expanded[4096];
             if (sh_expand(wbuf, expanded, sizeof(expanded)) != 0) {
                 t_writestring("sh: for-list expansion overflow\n");
                 return -2;
@@ -655,7 +655,7 @@ static int run_block(char **lines, int from, int to)
          * recognised commands stay at 0 (their failure modes generally
          * print a message but don't currently thread a status back).
          * An unrecognised command yields 127, POSIX-style. */
-        static char copy[512];
+        static char copy[4096];
         strncpy(copy, lines[i], sizeof(copy) - 1);
         copy[sizeof(copy) - 1] = '\0';
         shell_reset_last_exec_status();
