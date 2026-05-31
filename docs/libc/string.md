@@ -1,6 +1,7 @@
 ---
 title: string
 parent: libc
+grand_parent: Reference
 ---
 
 # string - Memory and string utilities

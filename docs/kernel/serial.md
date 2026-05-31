@@ -1,6 +1,7 @@
 ---
 title: serial
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # serial - Serial port (UART) driver

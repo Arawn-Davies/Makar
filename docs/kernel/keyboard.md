@@ -1,6 +1,7 @@
 ---
 title: keyboard
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # keyboard - PS/2 keyboard driver

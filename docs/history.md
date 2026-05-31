@@ -1,6 +1,7 @@
 ---
 title: History
-nav_order: 7
+parent: About
+nav_order: 1
 ---
 
 # Changelog

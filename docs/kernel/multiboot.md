@@ -1,6 +1,7 @@
 ---
 title: multiboot
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # multiboot - Multiboot 2 structure definitions

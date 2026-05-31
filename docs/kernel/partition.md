@@ -1,6 +1,7 @@
 ---
 title: partition
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # Partition Driver (`partition.c` / `partition.h`)

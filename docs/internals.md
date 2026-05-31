@@ -1,7 +1,8 @@
 ---
 title: Internals
 layout: default
-nav_order: 9
+parent: Reference
+nav_order: 1
 permalink: /internals
 ---
 

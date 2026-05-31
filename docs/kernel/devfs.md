@@ -1,6 +1,7 @@
 ---
 title: devfs
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # devfs - synthetic /dev block devices

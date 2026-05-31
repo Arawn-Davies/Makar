@@ -1,6 +1,7 @@
 ---
 title: vtty
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # vtty - virtual TTY manager

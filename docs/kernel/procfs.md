@@ -1,6 +1,7 @@
 ---
 title: procfs
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # procfs - synthetic /proc filesystem

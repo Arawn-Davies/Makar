@@ -1,6 +1,7 @@
 ---
 title: Building & running
-nav_order: 2
+parent: Getting started
+nav_order: 1
 ---
 
 # Building & Running Makar

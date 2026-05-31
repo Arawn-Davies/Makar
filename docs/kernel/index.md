@@ -1,6 +1,7 @@
 ---
 title: Kernel subsystems
-nav_order: 10
+parent: Reference
+nav_order: 4
 has_children: true
 permalink: /kernel/
 ---

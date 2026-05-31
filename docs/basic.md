@@ -1,6 +1,7 @@
 ---
 title: BASIC
-nav_order: 8
+parent: Using Makar
+nav_order: 1
 ---
 
 # Makar BASIC (`basic.elf`)

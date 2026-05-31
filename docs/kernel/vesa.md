@@ -1,6 +1,7 @@
 ---
 title: vesa
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # vesa - VESA linear framebuffer driver

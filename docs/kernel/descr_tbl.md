@@ -1,6 +1,7 @@
 ---
 title: descr_tbl
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # descr_tbl - GDT and IDT initialisation

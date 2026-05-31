@@ -1,6 +1,7 @@
 ---
 title: WSL2
-nav_order: 6
+parent: Getting started
+nav_order: 3
 ---
 
 # Building Makar on WSL2

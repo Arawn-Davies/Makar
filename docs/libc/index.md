@@ -1,6 +1,7 @@
 ---
 title: libc
-nav_order: 11
+parent: Reference
+nav_order: 5
 has_children: true
 permalink: /libc/
 ---

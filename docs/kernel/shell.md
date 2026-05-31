@@ -1,6 +1,7 @@
 ---
 title: shell
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # shell - Interactive kernel command shell

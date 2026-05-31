@@ -1,6 +1,7 @@
 ---
 title: TCC in-OS — feasibility spike (shipped)
-nav_order: 5
+parent: Development
+nav_order: 2
 ---
 
 # Porting TCC to run inside Makar — historical write-up

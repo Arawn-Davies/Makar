@@ -1,6 +1,7 @@
 ---
 title: kernel
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # kernel - Boot entry point

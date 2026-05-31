@@ -1,6 +1,7 @@
 ---
 title: types
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # types - Common type aliases and geometric structs

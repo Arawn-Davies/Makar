@@ -1,3 +1,9 @@
+---
+title: Rebuilding the kernel
+parent: Using Makar
+nav_order: 3
+---
+
 # Rebuilding the kernel inside Makar
 
 Makar can recompile its own kernel from source using the shipped TinyCC

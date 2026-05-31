@@ -1,6 +1,7 @@
 ---
 title: vga
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # vga - VGA text-mode constants and low-level helpers

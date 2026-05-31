@@ -1,6 +1,7 @@
 ---
 title: paging
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # paging - Paging and virtual memory

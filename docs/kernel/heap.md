@@ -1,6 +1,7 @@
 ---
 title: heap
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # heap - Kernel heap allocator

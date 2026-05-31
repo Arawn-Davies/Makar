@@ -1,6 +1,7 @@
 ---
 title: system
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # system - Panic, halt, and assertion helpers

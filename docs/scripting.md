@@ -1,6 +1,7 @@
 ---
 title: Shell scripting
-nav_order: 7
+parent: Using Makar
+nav_order: 2
 ---
 
 # Shell scripting

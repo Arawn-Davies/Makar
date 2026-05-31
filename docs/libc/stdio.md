@@ -1,6 +1,7 @@
 ---
 title: stdio
 parent: libc
+grand_parent: Reference
 ---
 
 # stdio - Standard I/O

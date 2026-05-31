@@ -1,6 +1,7 @@
 ---
 title: pmm
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # pmm - Physical memory manager

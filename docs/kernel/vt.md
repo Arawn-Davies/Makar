@@ -1,6 +1,7 @@
 ---
 title: vt
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # vt - virtual console backing grid

@@ -1,6 +1,7 @@
 ---
 title: tty
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # tty - VGA text terminal driver

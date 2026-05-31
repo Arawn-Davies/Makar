@@ -1,6 +1,7 @@
 ---
 title: AI assistance
-nav_order: 9
+parent: About
+nav_order: 2
 ---
 
 # AI assistance

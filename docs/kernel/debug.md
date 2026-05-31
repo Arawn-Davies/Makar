@@ -1,6 +1,7 @@
 ---
 title: debug
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # debug - INT 1 / INT 3 debug-exception handlers

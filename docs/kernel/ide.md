@@ -1,6 +1,7 @@
 ---
 title: ide
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # IDE Driver (`ide.c` / `ide.h`)

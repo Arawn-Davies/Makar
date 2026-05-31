@@ -1,6 +1,7 @@
 ---
 title: isr
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # isr - Interrupt and IRQ dispatch

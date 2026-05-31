@@ -1,6 +1,7 @@
 ---
 title: timer
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # timer - PIT timer driver and `ksleep`

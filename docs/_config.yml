@@ -26,25 +26,12 @@ gh_edit_branch: "main"
 gh_edit_source: docs
 gh_edit_view_mode: "tree"
 
-# Top-right header links.  In just-the-docs aux_links render as the
-# horizontal nav bar across the top of every page.
+# Top-right header link. The sidebar owns internal navigation.
 aux_links:
-  "Home":
-    - "/Makar/"
-  "Building":
-    - "/Makar/building.html"
-  "Testing":
-    - "/Makar/testing.html"
-  "History":
-    - "/Makar/history.html"
-  "Kernel":
-    - "/Makar/kernel/"
   "View on GitHub":
     - "https://github.com/Arawn-Davies/Makar"
-  "Medli":
-    - "https://github.com/Arawn-Davies/Medli"
 
-# Internal links stay in-tab; external (GitHub / Medli) open new tab.
+# Keep the GitHub link in the current tab.
 aux_links_new_tab: false
 
 # Code-copy button on every fenced block.

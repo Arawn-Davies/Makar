@@ -1,5 +1,7 @@
 ---
 title: ext2
+parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # ext2 filesystem driver

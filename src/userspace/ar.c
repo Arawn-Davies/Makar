@@ -2,8 +2,9 @@
  * ar.c -- minimal BSD-style `ar rcs <archive> <object>...` for Makar.
  *
  * Implements just enough of the System V / BSD ar(1) format to let
- * in-OS TCC stitch a set of .o files into a libk.a / libc.a -- the
- * v1.0 leg-2 self-rebuild ladder needs this (see docs/plans/v1.md).
+ * in-OS TCC stitch a set of .o files into a libk.a / libc.a.  The
+ * archive smoke is part of the self-hosting regression ladder; see the
+ * remaining compiler self-rebuild work in docs/plans/v1.md.
  *
  * Supported operations:
  *   ar rcs OUT IN1 [IN2 ...]    create/replace OUT; add IN*; "ranlib"

@@ -1,6 +1,7 @@
 ---
 title: asm
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # asm - Inline x86 port I/O and CPU-control helpers

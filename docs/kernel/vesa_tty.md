@@ -1,6 +1,7 @@
 ---
 title: vesa_tty
 parent: Kernel subsystems
+grand_parent: Reference
 ---
 
 # vesa_tty - VESA bitmap-font text renderer

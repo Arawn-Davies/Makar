@@ -1,3 +1,9 @@
+---
+title: POSIX compliance
+parent: Reference
+nav_order: 2
+---
+
 # POSIX compliance
 
 Snapshot of where Makar sits relative to POSIX.1-2017 / SUSv4.  Not

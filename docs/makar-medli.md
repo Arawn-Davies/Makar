@@ -1,6 +1,7 @@
 ---
 title: Makar × Medli
-nav_order: 5
+parent: Development
+nav_order: 3
 ---
 
 # Makar × Medli — Co-operation roadmap

@@ -1640,7 +1640,7 @@ POSIX_TESTS=(user_sigusr1_handler ctrlc_kills_child ctrlc_cat usershell_smoke us
 ## The whole libc + TCC self-rebuild matrix now runs from
 ## /src/userspace/libc-tcc.sh during test_mode bootup.  Marker
 ## `LIBC-TCC: ALL PASS` / `LIBC-TCC: FAIL` on serial; checked by
-## run.sh _check_ktest.  See docs/plans/userspace-shell-migration-HANDOFF.md.
+## run.sh _check_ktest. See src/userspace/libc-tcc.sh for the matrix.
 ##
 ## Empty arrays kept so `./run.sh ui libc` is a no-op rather than an
 ## error.  Use `./run.sh iso test` for the actual coverage.
