@@ -826,7 +826,7 @@ case "$MODE" in
 "iso boot")
     _build_iso "CFLAGS='-O0 -g3'"
     if [ ! -f "$REPO_ROOT/hdd.img" ]; then
-        _drun --as-root --env "MAKAR_HDD_SIZE_MB=$MAKAR_HDD_SIZE_MB" -- \
+        _drun --env "MAKAR_HDD_SIZE_MB=$MAKAR_HDD_SIZE_MB" -- \
             "qemu-img create -f raw hdd.img \${MAKAR_HDD_SIZE_MB}M"
     fi
     _run_qemu_interactive \
