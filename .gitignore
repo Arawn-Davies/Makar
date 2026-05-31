@@ -2,6 +2,7 @@
 *.iso
 *.img
 *.qcow2
+_site/
 isodir
 sysroot
 

@@ -4,49 +4,28 @@ description: >-
   multitasking shell, FAT32 + ISO9660 + synthetic /proc, ring-3 ELF
   userspace, VIX editor.  Sibling project of Medli (C# / Cosmos).
 
-# Remote theme so we're not pinned to GitHub Pages' bundled-themes
-# list.  just-the-docs is a documentation-shaped theme with a sidebar,
-# search, and a light/dark/auto colour-scheme toggle.
-remote_theme: just-the-docs/just-the-docs@v0.10.0
+theme: just-the-docs
 
-# Default colour scheme.  just-the-docs accepts only "light" or "dark"
-# in _config.yml (there is no "auto"); we pick dark as the baseline
-# because that's what looks best on a hobby-kernel docs site.  A
-# runtime toggle is enabled below.
+url: https://arawn-davies.co.uk
+baseurl: /makar
+
 color_scheme: dark
-
-# Search across every rendered page.
 search_enabled: true
+heading_anchors: true
 
-# Per-page edit link (handy for hobby docs).
-gh_edit_link: true
-gh_edit_link_text: "Edit this page on GitHub"
-gh_edit_repository: "https://github.com/Arawn-Davies/makar"
-gh_edit_branch: "main"
-gh_edit_source: docs
-gh_edit_view_mode: "tree"
-
-# Top-right header link. The sidebar owns internal navigation.
 aux_links:
   "View on GitHub":
     - "https://github.com/Arawn-Davies/makar"
 
-# Keep the GitHub link in the current tab.
-aux_links_new_tab: false
-
-# Code-copy button on every fenced block.
 enable_copy_code_button: true
+aux_links_new_tab: true
 
-# Convert .md links to .html so the existing relative links keep working.
 plugins:
   - jekyll-relative-links
-  - jekyll-seo-tag
-  - jekyll-sitemap
 relative_links:
   enabled: true
   collections: true
 
-# Anything in /docs is fair game; nothing to exclude from /docs itself.
 exclude:
   - Gemfile
   - Gemfile.lock
