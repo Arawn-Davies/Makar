@@ -1,7 +1,7 @@
 # Makar
 
-[![Build & Test](https://github.com/Arawn-Davies/Makar/actions/workflows/build-test.yml/badge.svg)](https://github.com/Arawn-Davies/Makar/actions/workflows/build-test.yml)
-[![Release](https://github.com/Arawn-Davies/Makar/actions/workflows/release.yml/badge.svg)](https://github.com/Arawn-Davies/Makar/actions/workflows/release.yml)
+[![Build & Test](https://github.com/Arawn-Davies/makar/actions/workflows/build-test.yml/badge.svg)](https://github.com/Arawn-Davies/makar/actions/workflows/build-test.yml)
+[![Release](https://github.com/Arawn-Davies/makar/actions/workflows/release.yml/badge.svg)](https://github.com/Arawn-Davies/makar/actions/workflows/release.yml)
 
 > *We're standing on the shoulders of giants, and none of this would be
 > possible without the hard work and contributions of the thousands of
@@ -25,7 +25,7 @@ now built with our shipped TCC against the vendored source tree
 Makar).  Builds on v0.8's in-OS TCC: `tcc.elf` on bare metal, `calc.elf`
 and `sh.elf` self-rebuilding from in-tree source, and ring-3 page faults
 delivering SIGSEGV instead of panicking the kernel.  See
-[`docs/handoff-self-hosting.md`](docs/handoff-self-hosting.md).
+[`docs/rebuild-kernel.md`](docs/rebuild-kernel.md).
 
 Self-contained: kernel, libc fragment, ring-3 userspace, ELF loader, **four
 independent TTYs (Alt+F1–F4 to switch)**, **in-OS TinyCC compiler**
@@ -107,7 +107,7 @@ shipping (May 2026):
   builds a valid Multiboot 2 kernel ELF from the vendored source using
   only our shipped TCC; `/apps/rebuild-kernel.sh` runs the same recipe
   inside Makar.  Boot banner reports build origin (`gcc-host` /
-  `tcc-host` / `tcc-in-os`).  See `docs/handoff-self-hosting.md`.
+  `tcc-host` / `tcc-in-os`).  See `docs/rebuild-kernel.md`.
 - **v0.8 in-OS TCC milestone** ✅ — `tcc.elf` ships on every ISO;
   `calc.elf` and `sh.elf` self-rebuild via `./run.sh ui libc`.
 - **HDD root layout** ✅ — `/usr`, `/etc`, `/home`, `/boot` resolved via

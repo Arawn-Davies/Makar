@@ -741,8 +741,7 @@ surface (writable fds, `O_CREAT`/`O_TRUNC`/`O_APPEND`, `SYS_STAT`/`FSTAT`,
 ktest + ui-test coverage.  The boot banner reports `gcc-host` /
 `tcc-host` / `tcc-in-os` based on the build path.  See
 [TCC feasibility](tcc-feasibility.md) for the original spike and
-[handoff-self-hosting](handoff-self-hosting.md) for the kernel rebuild
-write-up.
+[rebuilding the kernel](rebuild-kernel.md) for the maintained guide.
 
 ---
 

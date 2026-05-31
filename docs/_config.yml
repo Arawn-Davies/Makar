@@ -21,7 +21,7 @@ search_enabled: true
 # Per-page edit link (handy for hobby docs).
 gh_edit_link: true
 gh_edit_link_text: "Edit this page on GitHub"
-gh_edit_repository: "https://github.com/Arawn-Davies/Makar"
+gh_edit_repository: "https://github.com/Arawn-Davies/makar"
 gh_edit_branch: "main"
 gh_edit_source: docs
 gh_edit_view_mode: "tree"
@@ -29,7 +29,7 @@ gh_edit_view_mode: "tree"
 # Top-right header link. The sidebar owns internal navigation.
 aux_links:
   "View on GitHub":
-    - "https://github.com/Arawn-Davies/Makar"
+    - "https://github.com/Arawn-Davies/makar"
 
 # Keep the GitHub link in the current tab.
 aux_links_new_tab: false

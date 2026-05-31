@@ -193,8 +193,7 @@ in-OS asm still parse, without paying for the full rebuild-kernel run.
 
 ## See also
 
-- `docs/handoff-self-hosting.md` — historical write-up of the slices
-  that delivered v0.9 self-host
+- `docs/history.md` — shipped v0.9 self-host changes
 - `docs/tcc-feasibility.md` — why TCC, what's covered, what's left
 - `docs/userland-libc.md` — the libc side of the same effort
 - `src/userspace/rebuild-kernel.sh` — the generated driver (do not

@@ -33,20 +33,20 @@ truth; this table mirrors it.
 |     6 | Keyboard hardening                                     | ✅ shipped (#127)           | —                                                                                  |
 |     7 | Test-infra cleanup (ccache, fan-out CI)                | ✅ shipped (#125)           | —                                                                                  |
 |     8 | Per-task consumer migration (vtty/fd/cwd)              | ✅ complete                 | —                                                                                  |
-|     9 | Linux-style signal subsystem                           | ✅ shipped (#154)           | [#144](https://github.com/Arawn-Davies/Makar/issues/144)                          |
-|    10 | Preemption hardening                                   | ✅ shipped (#154)           | [#145](https://github.com/Arawn-Davies/Makar/issues/145)                          |
+|     9 | Linux-style signal subsystem                           | ✅ shipped (#154)           | [#144](https://github.com/Arawn-Davies/makar/issues/144)                          |
+|    10 | Preemption hardening                                   | ✅ shipped (#154)           | [#145](https://github.com/Arawn-Davies/makar/issues/145)                          |
 |    11 | Per-TTY screen buffers + status bar + `/proc`          | ✅ shipped (#129)           | —                                                                                  |
 |    12 | Per-task FD table                                      | ✅ shipped (#134)           | —                                                                                  |
 |    13 | VFS `task->cwd` authoritative                          | ✅ shipped (#135)           | —                                                                                  |
 |    14 | makbox multicall + `SYS_GETCWD` + exec race fix        | ✅ shipped (#137)           | —                                                                                  |
-|    15 | fork() + copy-on-write (15a-e)                         | ✅ shipped (#166)           | rolled into [#121](https://github.com/Arawn-Davies/Makar/issues/121)              |
-|    16 | execve + wait4 + `TASK_ZOMBIE` (16a-b)                 | ✅ shipped (#166)           | rolled into [#121](https://github.com/Arawn-Davies/Makar/issues/121)              |
-|    17 | UTF-8 terminal                                         | ⏭ deferred                  | [#148](https://github.com/Arawn-Davies/Makar/issues/148)                          |
-|    18 | `ps`-style task listing (covered by `/proc/tasks`)     | ⏭ deferred                  | [#147](https://github.com/Arawn-Davies/Makar/issues/147)                          |
-|    19 | VGA-text fallback per-TTY                              | ⏭ queued                    | [#146](https://github.com/Arawn-Davies/Makar/issues/146)                          |
+|    15 | fork() + copy-on-write (15a-e)                         | ✅ shipped (#166)           | rolled into [#121](https://github.com/Arawn-Davies/makar/issues/121)              |
+|    16 | execve + wait4 + `TASK_ZOMBIE` (16a-b)                 | ✅ shipped (#166)           | rolled into [#121](https://github.com/Arawn-Davies/makar/issues/121)              |
+|    17 | UTF-8 terminal                                         | ⏭ deferred                  | [#148](https://github.com/Arawn-Davies/makar/issues/148)                          |
+|    18 | `ps`-style task listing (covered by `/proc/tasks`)     | ⏭ deferred                  | [#147](https://github.com/Arawn-Davies/makar/issues/147)                          |
+|    19 | VGA-text fallback per-TTY                              | ⏭ queued                    | [#146](https://github.com/Arawn-Davies/makar/issues/146)                          |
 |    20 | Userland shell (`sh.elf`, multi-PR feature, 20a-f)     | 🟢 20a-c shipped, 20g (POSIX A1-A3 pipes/redir/list-ops) shipped via PR #181 | —                                                                                  |
 |    21 | COM2 serial-input mode for ui-test runner              | ⏭ planned                   | —                                                                                  |
-|    28 | `SYS_PIPE` + `SYS_DUP2` + `FD_KIND_PIPE`               | ✅ shipped ([PR #181](https://github.com/Arawn-Davies/Makar/pull/181)) | refcounted `pipe_ring_t`, 4 KiB ring, blocking via `task_yield`. Single-arg `SYS_DUP` + FILE-kind open_file_t refcount still pending. |
+|    28 | `SYS_PIPE` + `SYS_DUP2` + `FD_KIND_PIPE`               | ✅ shipped ([PR #181](https://github.com/Arawn-Davies/makar/pull/181)) | refcounted `pipe_ring_t`, 4 KiB ring, blocking via `task_yield`. Single-arg `SYS_DUP` + FILE-kind open_file_t refcount still pending. |
 
 ### Bash-flavoured shell scripting
 
@@ -74,7 +74,7 @@ against the libc shim and lives at `/apps/tcc.elf` on every ISO; userspace
 apps (`hello`, `calc`, `sh`, `makbox`) self-rebuild in-OS; the kernel
 rebuilds end-to-end with `./build-kernel-tcc.sh` (host) or
 `/apps/rebuild-kernel.sh` (in-OS) — see
-[handoff-self-hosting](handoff-self-hosting.md).  Earlier groundwork:
+[rebuilding the kernel](rebuild-kernel.md).  Earlier groundwork:
 Phase 1 brought writable `FD_KIND_FILE`, `O_CREAT`/`O_TRUNC`/`O_APPEND`,
 `SYS_STAT/FSTAT`, `SYS_READDIR`, growable buffers (`SYSCALL_FILE_MAX` lifted
 to 16 MiB).  Phase 2 brought the userspace libc shim: `malloc`/`free`/
@@ -85,7 +85,7 @@ to 16 MiB).  Phase 2 brought the userspace libc shim: `malloc`/`free`/
 self-rebuild milestones; v1.0 stays gated on the polish phase (full-green
 tests, hardened harness, "10× dev experience" tooling).
 
-Slices 15+16 closed the `fork`/`execve`/`wait4` half of [#121](https://github.com/Arawn-Davies/Makar/issues/121);
+Slices 15+16 closed the `fork`/`execve`/`wait4` half of [#121](https://github.com/Arawn-Davies/makar/issues/121);
 the remaining libc/musl/dash half is still open under the same issue.
 Slice 20 (paused) carries the userland-shell follow-on.
 
@@ -94,9 +94,9 @@ Slice 20 (paused) carries the userland-shell follow-on.
 NIC driver → lwIP → DHCP/DNS → simple HTTP/Telnet daemons.
 
 Open:
-- [#122 — RTL8139 + lwIP + DHCP/DNS](https://github.com/Arawn-Davies/Makar/issues/122)
+- [#122 — RTL8139 + lwIP + DHCP/DNS](https://github.com/Arawn-Davies/makar/issues/122)
   — full stack epic.
-- [#141 — IP/TCP over NE2000 or virtio-net](https://github.com/Arawn-Davies/Makar/issues/141)
+- [#141 — IP/TCP over NE2000 or virtio-net](https://github.com/Arawn-Davies/makar/issues/141)
   — alternative driver target (NE2000/virtio) for the same stack.
 
 ### Makar × Medli interop
@@ -104,11 +104,11 @@ Open:
 Sharing data + binaries with the Medli project.
 
 Open:
-- [#138 — COM loader (flat DOS-style binaries)](https://github.com/Arawn-Davies/Makar/issues/138)
-- [#139 — Serial shell over COM1](https://github.com/Arawn-Davies/Makar/issues/139)
-- [#140 — MXF executable format (joint binary format)](https://github.com/Arawn-Davies/Makar/issues/140)
-- [#142 — Login + user accounts (`System\Data\usrinfo.sys`)](https://github.com/Arawn-Davies/Makar/issues/142)
-- [#143 — INI-style config and data exchange](https://github.com/Arawn-Davies/Makar/issues/143)
+- [#138 — COM loader (flat DOS-style binaries)](https://github.com/Arawn-Davies/makar/issues/138)
+- [#139 — Serial shell over COM1](https://github.com/Arawn-Davies/makar/issues/139)
+- [#140 — MXF executable format (joint binary format)](https://github.com/Arawn-Davies/makar/issues/140)
+- [#142 — Login + user accounts (`System\Data\usrinfo.sys`)](https://github.com/Arawn-Davies/makar/issues/142)
+- [#143 — INI-style config and data exchange](https://github.com/Arawn-Davies/makar/issues/143)
 
 Background: [Makar × Medli](makar-medli.md).
 
@@ -117,14 +117,14 @@ Background: [Makar × Medli](makar-medli.md).
 Things the kernel needs to be properly preemptive + signal-aware.
 
 Shipped (PR #154):
-- [#144 — Linux-style signal subsystem](https://github.com/Arawn-Davies/Makar/issues/144)
+- [#144 — Linux-style signal subsystem](https://github.com/Arawn-Davies/makar/issues/144)
   (slice 8) — per-task handler table, scheduler-driven default-terminate
   delivery, `SYS_KILL(37)` / `SYS_SIGNAL(48)` / `SYS_SIGRETURN(119)`,
   ring-3 trampoline so user-installed handlers actually run, Ctrl+C →
   SIGINT migration (removed `g_sigint` / `keyboard_sigint_consume`),
   `task_t.unkillable` flag protecting idle + shell tasks, `maktop.elf`
   htop-style task viewer with F9 signal picker.
-- [#145 — Preemption hardening](https://github.com/Arawn-Davies/Makar/issues/145)
+- [#145 — Preemption hardening](https://github.com/Arawn-Davies/makar/issues/145)
   (slice 9) — `in_schedule` re-entrancy guard cleared before
   `task_switch`, `irq_save_disable` / `irq_restore` wrapping the
   critical section, per-task `kticks` accounting in `/proc/tasks`,
@@ -141,12 +141,12 @@ exposes Unix-style synthetic mounts so userspace tools have a uniform
 handle on drivers and devices.
 
 Open:
-- [#151 — Adopt Medli-compatible `/Users/` `/Apps/` `/System/` layout](https://github.com/Arawn-Davies/Makar/issues/151)
+- [#151 — Adopt Medli-compatible `/Users/` `/Apps/` `/System/` layout](https://github.com/Arawn-Davies/makar/issues/151)
   (migrate today's flat `/apps/` to Medli's canonical FAT32 structure
   from [`Paths.cs`](https://github.com/Arawn-Davies/Medli/blob/main/Medli/Common/Paths.cs)
   so user data + binaries move between Makar and Medli without
   translation)
-- [#152 — Proper HDD install with GRUB2 (Ubuntu/Arch-style)](https://github.com/Arawn-Davies/Makar/issues/152)
+- [#152 — Proper HDD install with GRUB2 (Ubuntu/Arch-style)](https://github.com/Arawn-Davies/makar/issues/152)
   (today's in-kernel `install` is fragile: whole-disk format, copied
   `core.img`, no `grub.cfg` generation, no module verification.  Fix
   it into a real installer — depends on #149/#150/#151)
@@ -165,19 +165,19 @@ Already shipped:
 ### Display + terminal
 
 Open:
-- [#146 — VGA-text fallback per-TTY backing buffers](https://github.com/Arawn-Davies/Makar/issues/146)
+- [#146 — VGA-text fallback per-TTY backing buffers](https://github.com/Arawn-Davies/makar/issues/146)
   (slice 19)
-- [#148 — UTF-8 terminal with ASCII fallback](https://github.com/Arawn-Davies/Makar/issues/148)
+- [#148 — UTF-8 terminal with ASCII fallback](https://github.com/Arawn-Davies/makar/issues/148)
   (slice 17, deferred)
 
 ### Shell
 
 Open:
-- [#147 — `ps`-style task listing](https://github.com/Arawn-Davies/Makar/issues/147)
+- [#147 — `ps`-style task listing](https://github.com/Arawn-Davies/makar/issues/147)
   (slice 18; today's `cat /proc/tasks` covers this)
 - Slice 20 — userland `sh.elf` (multi-PR feature, paused)
 
-(`serial shell over COM1` lives under the Makar×Medli theme as [#139](https://github.com/Arawn-Davies/Makar/issues/139).)
+(`serial shell over COM1` lives under the Makar×Medli theme as [#139](https://github.com/Arawn-Davies/makar/issues/139).)
 
 ## What's already shipped
 

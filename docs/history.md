@@ -20,8 +20,8 @@ now built end-to-end with our shipped TCC — host-side via
 `./build-kernel-tcc.sh`, in-OS via the generated
 `/apps/rebuild-kernel.sh` (kernel-sh script driving `/apps/tcc.elf`
 once per source).  Boot banner reports build origin
-(`gcc-host` / `tcc-host` / `tcc-in-os`).  Full write-up in
-[handoff-self-hosting](handoff-self-hosting.md).
+(`gcc-host` / `tcc-host` / `tcc-in-os`). See the
+[kernel rebuild guide](rebuild-kernel.md).
 
 ### Added
 - `build-kernel-tcc.sh` host driver + generator for the in-OS rebuild
@@ -344,7 +344,7 @@ overview here.
 
 ## 0.5.0 — 2026-05-14
 
-[#129](https://github.com/Arawn-Davies/Makar/pull/129).  First tagged
+[#129](https://github.com/Arawn-Davies/makar/pull/129).  First tagged
 release.
 
 ### Added
@@ -372,7 +372,7 @@ release.
   ui-test).
 - KVM gated behind `MAKAR_USE_KVM=1`, off by default (CI reproducibility).
 
-[#125](https://github.com/Arawn-Davies/Makar/pull/125).
+[#125](https://github.com/Arawn-Davies/makar/pull/125).
 
 ## 2026-05-12 — Keyboard hardening
 
@@ -384,7 +384,7 @@ release.
 - `unsigned char` audit complete across the dispatch path — no more
   sign-extension hazards on sentinel compares.
 
-[#127](https://github.com/Arawn-Davies/Makar/pull/127).
+[#127](https://github.com/Arawn-Davies/makar/pull/127).
 
 ## 2026-05-12 — Keyboard rewrite
 
@@ -399,7 +399,7 @@ release.
 - `kbtester.elf` — live ring-3 diagnostic dumping every event
   (scancode/keycode/sentinel/modifier) to serial.
 
-[#124](https://github.com/Arawn-Davies/Makar/pull/124).
+[#124](https://github.com/Arawn-Davies/makar/pull/124).
 
 ## 2026-05-08 — Preemptive tasking
 
@@ -415,7 +415,7 @@ release.
 - Dead-task user-PD reaper (deferred free on slot reuse) closes a UAF
   that occurred when a timer IRQ landed inside `vmm_free_pd`.
 
-[#123](https://github.com/Arawn-Davies/Makar/pull/123).
+[#123](https://github.com/Arawn-Davies/makar/pull/123).
 
 ## 2026-05-02 — FAT32 userspace fileops
 
@@ -425,7 +425,7 @@ release.
 - Shell builtins `rm` / `rmdir` / `mv` and ring-3 apps `rm.elf` /
   `mv.elf` / `cp.elf`.
 
-[#120](https://github.com/Arawn-Davies/Makar/pull/120).
+[#120](https://github.com/Arawn-Davies/makar/pull/120).
 
 ## 2026-05-02 — Multi-TTY
 
@@ -435,7 +435,7 @@ release.
 - Pane-aware VICS editor.
 - `lsman` / `man <cmd>` replace `help`.
 
-[#119](https://github.com/Arawn-Davies/Makar/pull/119).
+[#119](https://github.com/Arawn-Davies/makar/pull/119).
 
 ## 2026-05-01 — Userspace
 
@@ -444,7 +444,7 @@ release.
   loader (`elf_exec`) with argc/argv, syscall surface.
 - `exec` shell command.
 
-[#118](https://github.com/Arawn-Davies/Makar/pull/118).
+[#118](https://github.com/Arawn-Davies/makar/pull/118).
 
 ## 2026-05-01 — Shell polish
 
@@ -453,7 +453,7 @@ release.
 - 720p VESA default (`-vga std`).
 - Ctrl+C sigint, tab completion, `calc.elf`.
 
-[#117](https://github.com/Arawn-Davies/Makar/pull/117).
+[#117](https://github.com/Arawn-Davies/makar/pull/117).
 
 ## 2026-04-30 — Build consolidation
 
@@ -462,7 +462,7 @@ release.
   entrypoint).  Replaces the prior tangle of docker-compose targets
   and manual qemu invocations.
 
-[#116](https://github.com/Arawn-Davies/Makar/pull/116).
+[#116](https://github.com/Arawn-Davies/makar/pull/116).
 
 ## 2026-04-29 — HDD path + auto-release
 
@@ -471,15 +471,15 @@ release.
   (`generate-hdd.sh`), interactive boot, GDB test.
 - Auto-release workflow on `main` merge.
 
-[#114](https://github.com/Arawn-Davies/Makar/pull/114),
-[#115](https://github.com/Arawn-Davies/Makar/pull/115).
+[#114](https://github.com/Arawn-Davies/makar/pull/114),
+[#115](https://github.com/Arawn-Davies/makar/pull/115).
 
 ## 2026-04-29 — VESA panes
 
 ### Added
 - VESA pane abstraction (`vesa_pane_t`) — phase 1 of split-pane support.
 
-[#113](https://github.com/Arawn-Davies/Makar/pull/113).
+[#113](https://github.com/Arawn-Davies/makar/pull/113).
 
 ## 2026-04-26 — Display & I/O
 
@@ -490,9 +490,9 @@ release.
 - Ring-3 stdin support.
 - `exec` waits for the child task before returning to the prompt.
 
-[#110](https://github.com/Arawn-Davies/Makar/pull/110),
-[#111](https://github.com/Arawn-Davies/Makar/pull/111),
-[#112](https://github.com/Arawn-Davies/Makar/pull/112).
+[#110](https://github.com/Arawn-Davies/makar/pull/110),
+[#111](https://github.com/Arawn-Davies/makar/pull/111),
+[#112](https://github.com/Arawn-Davies/makar/pull/112).
 
 ## 2026-04-25 — VMM + ring-3
 
@@ -505,7 +505,7 @@ release.
 ### Fixed
 - Cross-platform build under macOS arm64 (Docker image targeting).
 
-[#53](https://github.com/Arawn-Davies/Makar/pull/53).
+[#53](https://github.com/Arawn-Davies/makar/pull/53).
 
 ## 2026-04-12 — Filesystem + name
 
@@ -526,11 +526,11 @@ release.
 
 ### Added
 - Cooperative multitasking + `int 0x80` syscall stub
-  ([#42](https://github.com/Arawn-Davies/Makar/pull/42)).
+  ([#42](https://github.com/Arawn-Davies/makar/pull/42)).
 - ATA PIO IDE driver
-  ([#41](https://github.com/Arawn-Davies/Makar/pull/41)).
+  ([#41](https://github.com/Arawn-Davies/makar/pull/41)).
 - MBR + GPT partition probe + `mkpart`
-  ([#45](https://github.com/Arawn-Davies/Makar/pull/45)).
+  ([#45](https://github.com/Arawn-Davies/makar/pull/45)).
 
 ### Changed
 - Source tree reshuffle: kernel moves under `src/kernel/arch/i386/`.
@@ -539,7 +539,7 @@ release.
 
 ### Added
 - Paging cleanup, ACPI support, on-demand ktest harness
-  ([#44](https://github.com/Arawn-Davies/Makar/pull/44)).
+  ([#44](https://github.com/Arawn-Davies/makar/pull/44)).
 
 ## 2026-04-09 — Rebirth
 

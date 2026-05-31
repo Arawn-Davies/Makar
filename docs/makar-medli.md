@@ -18,7 +18,7 @@ UX conventions, command vocabulary, and (eventually) binary formats.
 | **Language** | C (i686-elf-gcc, `-std=gnu11`). No C++ anywhere — no `extern "C"`, no managed runtime. | C# / X#, .NET via Cosmos / IL2CPU |
 | **Runtime** | Bare metal — manual PMM + paging + heap | Cosmos managed kernel + GC |
 | **Target** | i686, ELF32, multiboot 2 (GRUB) | x86, Cosmos PE |
-| **Repo** | [Arawn-Davies/Makar](https://github.com/Arawn-Davies/Makar) | [Arawn-Davies/Medli](https://github.com/Arawn-Davies/Medli) |
+| **Repo** | [Arawn-Davies/Makar](https://github.com/Arawn-Davies/makar) | [Arawn-Davies/Medli](https://github.com/Arawn-Davies/Medli) |
 | **Path separator** | `/` (Unix) | `\` (DOS-style, `Paths.Separator = @"\"`) |
 | **Current version** | 0.7.0 | (see Medli repo) |
 

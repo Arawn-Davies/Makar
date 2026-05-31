@@ -17,7 +17,7 @@ host-side, in-OS in progress).  The sysroot (`/usr/lib/`, `/usr/include/`,
 This page was originally a forward-looking feasibility spike; it now reads
 as a historical write-up of how the path was scoped + landed.  For the
 current state and the kernel-self-host work specifically, see
-[handoff-self-hosting.md](handoff-self-hosting.md) and `CLAUDE.history.md`.
+[rebuild-kernel.md](rebuild-kernel.md) and `CLAUDE.history.md`.
 
 Goal at the time of writing: get TCC compiled as a cross-target, inventory
 exactly what it needs to *run* on a live Makar system and compile/link other

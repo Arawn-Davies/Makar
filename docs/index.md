@@ -17,8 +17,8 @@ filesystem layout, and long-term binary-format goals while exploring
 how language choice shapes the implementation.
 
 **Current version:** 0.9.0 (kernel self-host milestone; see
-[`include/kernel/version.h`](https://github.com/Arawn-Davies/Makar/blob/main/src/kernel/include/kernel/version.h)
-and [self-hosting handoff](handoff-self-hosting.md)).
+[`include/kernel/version.h`](https://github.com/Arawn-Davies/makar/blob/main/src/kernel/include/kernel/version.h)
+and [kernel rebuild guide](rebuild-kernel.md)).
 
 ## Quick links
 
@@ -30,7 +30,7 @@ and [self-hosting handoff](handoff-self-hosting.md)).
 - **[TCC in-OS compiler](tcc-feasibility.md)** — porting TCC to compile C on a running Makar system
 - **[Rebuilding the kernel inside Makar](rebuild-kernel.md)** — `/apps/rebuild-kernel.sh`, build-origin banners, installing the freshly built kernel
 - **[Makar × Medli](makar-medli.md)** — sibling-project co-operation roadmap and VIX→VICS history
-- **[Repo on GitHub](https://github.com/Arawn-Davies/Makar)**
+- **[Repo on GitHub](https://github.com/Arawn-Davies/makar)**
 
 ## What works today
 
@@ -136,7 +136,7 @@ tests/                        gdb_boot_test.py, ui_test.sh
 ## Acknowledgements
 
 Makar draws on the work of many FOSS projects. Full attribution in
-[LICENSES/THANKS.md](https://github.com/Arawn-Davies/Makar/blob/main/LICENSES/THANKS.md)
+[LICENSES/THANKS.md](https://github.com/Arawn-Davies/makar/blob/main/LICENSES/THANKS.md)
 and per-file source-level credits. Key influences:
 
 - **Linux kernel** (GPLv2) — syscall ABI, ELF loading model, process memory layout

@@ -10,7 +10,7 @@ nav_order: 4
 across versions, we carry a feature *sideways* between sibling projects
 that share the same UX target but live on different stacks.
 
-- [Makar](https://github.com/Arawn-Davies/Makar) — bare-metal C on
+- [Makar](https://github.com/Arawn-Davies/makar) — bare-metal C on
   i686-elf, GRUB Multiboot 2, manual paging/IRQs.
 - [Medli](https://github.com/Arawn-Davies/Medli) — C# on
   [Cosmos](https://github.com/CosmosOS/Cosmos), which uses IL2CPU to

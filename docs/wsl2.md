@@ -33,7 +33,7 @@ Open your WSL2 terminal (e.g. Ubuntu):
 # Clone into the WSL2 filesystem for best I/O performance.
 # Avoid /mnt/c/ paths - they use the 9P bridge and are much slower.
 cd ~
-git clone https://github.com/Arawn-Davies/Makar.git
+git clone https://github.com/Arawn-Davies/makar.git
 cd Makar
 
 # Build the ISO using Docker Compose
