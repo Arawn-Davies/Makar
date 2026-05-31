@@ -33,22 +33,41 @@ further divided into logical groups:
 A freestanding C library built in two flavours:
 
 * **`libk`** - kernel variant (`-D__is_libk`), linked into the kernel.
-* **`libc`** - hosted variant (not yet built), intended for future userspace.
+* **`libc`** - freestanding userspace variant, archived into `libc.a` and
+  shipped to `/usr/lib/` on the ISO.
 
-Provides `stdio`, `stdlib`, and `string` primitives.
+Provides `stdio`, `stdlib`, `string`, `setjmp`, and `ctype` primitives.
 
 ---
 
 ## `src/userspace/` - Userspace (Ring 3)
 
-*Placeholder - not yet built.*
+Freestanding ring-3 ELF binaries built with the i686-elf cross-compiler,
+linked against `crt0.S` + `libc.a`.  All programs use the `int 0x80` Linux
+i386 syscall ABI exposed by the kernel.
 
-This is the future home of Ring-3 programs (init, shell, user utilities).
-Once the kernel exposes a stable syscall ABI and ELF loader, user programs
-will be added here and linked against `libc`.
+| Binary | Description |
+|---|---|
+| `sh.elf` | POSIX-shaped userspace shell (default login shell, mak.sh0 / mak.sh1-4) |
+| `makmux.elf` | VT multiplexer — spawns mak.sh1-4, draws the status bar |
+| `makbox.elf` | Busybox-style multicall binary: `ls`, `cat`, `cp`, `mv`, `rm`, `rmdir`, `echo`, `pwd` |
+| `vix.elf` | vi-style text editor |
+| `tcc.elf` | TinyCC v0.9.27 — in-OS C compiler |
+| `basic.elf` | C64-flavoured integer BASIC REPL + file runner |
+| `calc.elf` | bc-style expression calculator |
+| `clock.elf` | Fullscreen RTC wall-clock |
+| `maktop.elf` | Task monitor (ps/top style) |
+| `fdisk.elf` / `cfdisk.elf` | MBR partition editors |
+| `kbtester.elf` | Keyboard diagnostic — logs scancodes/keycodes to serial |
+| `diskinfo.elf` | Partition table + FAT32 BPB dump |
+| `hello.elf` | Hello-world smoke test |
+| `*.c` (test apps) | `forktest`, `execvetest`, `alloctest`, `filetest`, `sigtest`, `lines` |
+| `demo.sh`, `incore.sh` | In-kernel shell-script examples / UI test driver |
+| `*.bas` | BASIC sample programs (`mandelbrot.bas`, `lines.bas`) |
 
-See [`src/userspace/README.md`](src/userspace/README.md) for the planned
-sub-structure.
+Support files: `syscall.h` (inline syscall stubs), `malloc.c`, `stdio.c`,
+`string.c`, `crt0.S`, `link.ld`, `libc.a`.  Headers ship to `/usr/include/`
+on the ISO; TCC sysroot lives at `/usr/lib/tcc/`.
 
 ---
 

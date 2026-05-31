@@ -70,7 +70,7 @@ are filled.
 
 ### Makar extensions (200+)
 
-Documented in `src/kernel/include/kernel/syscall.h`.  Cover terminal
+Documented in [`docs/syscalls.md`](../syscalls.md) and `src/kernel/include/kernel/syscall.h`.  Cover terminal
 control (`PUTCH_AT`, `SET_CURSOR`, `TTY_CLEAR`, `TERM_SIZE`,
 `CARET_STYLE`), framebuffer (`FB_INFO`, `DRAW_LINE`), raw keyboard
 (`GETKEY`, `KEYBOARD_RAW`), serial (`WRITE_SERIAL`), FS shortcuts
@@ -156,7 +156,7 @@ the VFS.
 
 ## Process / signal model
 
-- Tasks: kernel-scheduled, fixed pool (`MAX_TASKS = 8`).  No clone(2),
+- Tasks: kernel-scheduled, fixed pool (`MAX_TASKS = 32`).  No clone(2),
   no thread groups.
 - pid space: monotonic from 2 (idle = 1).  No pid recycling concerns
   within a session.
@@ -191,8 +191,10 @@ the VFS.
 If you're bringing a POSIX-flavoured app over:
 
 1. **No floats.**  Use fixed-point or refactor to integer math.
-2. **No `pipe` / redirection.**  Restructure to single-process; use
-   intermediate temp files in `/tmp` if needed.
+2. **`pipe` and redirection work in `/apps/sh.elf`** (PR #181): `|`, `<`,
+   `>`, `>>`, `2>`, `&&`, `||`, `&`.  The in-kernel `sh_script.c`
+   interpreter does not support them — use `/apps/sh.elf` for scripts
+   that need pipelines.
 3. **No `mmap`.**  Stick to `brk`-based malloc; the libc shim does
    this transparently.
 4. **No real `errno`.**  Check syscall return for `-1`; cause-of-failure
