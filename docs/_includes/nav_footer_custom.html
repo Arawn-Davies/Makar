@@ -1,31 +1,4 @@
-<button class="btn js-toggle-dark-mode">Switch to light mode</button>
-
 <p>
   <a href="https://arawn-davies.co.uk">arawn-davies.co.uk</a><br>
   Built with <a href="https://github.com/just-the-docs/just-the-docs">Just the Docs</a>.
 </p>
-
-<script>
-  // Default scheme comes from _config.yml (color_scheme: dark).
-  // Toggle persists the user's preference in localStorage so it
-  // survives navigation.
-  const toggleDarkMode = document.querySelector('.js-toggle-dark-mode');
-
-  const savedScheme = localStorage.getItem('jtd-color-scheme');
-  if (savedScheme === 'light') {
-    jtd.setTheme('light');
-    toggleDarkMode.textContent = 'Switch to dark mode';
-  }
-
-  jtd.addEvent(toggleDarkMode, 'click', function () {
-    if (jtd.getTheme() === 'dark') {
-      jtd.setTheme('light');
-      localStorage.setItem('jtd-color-scheme', 'light');
-      toggleDarkMode.textContent = 'Switch to dark mode';
-    } else {
-      jtd.setTheme('dark');
-      localStorage.setItem('jtd-color-scheme', 'dark');
-      toggleDarkMode.textContent = 'Switch to light mode';
-    }
-  });
-</script>

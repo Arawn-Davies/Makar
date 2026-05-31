@@ -1,0 +1,42 @@
+<nav aria-label="Auxiliary" class="aux-nav">
+  <ul class="aux-nav-list">
+    <li class="aux-nav-list-item">
+      <a href="#" class="site-button js-toggle-dark-mode" role="button">Light mode</a>
+    </li>
+    {% for link in site.aux_links %}
+      <li class="aux-nav-list-item">
+        <a href="{{ link.last }}" class="site-button"
+          {% if site.aux_links_new_tab %}
+          target="_blank" rel="noopener noreferrer"
+          {% endif %}
+        >
+          {{ link.first }}
+        </a>
+      </li>
+    {% endfor %}
+  </ul>
+</nav>
+
+<script>
+  const toggleDarkMode = document.querySelector('.js-toggle-dark-mode');
+  const savedScheme = localStorage.getItem('jtd-color-scheme');
+
+  if (savedScheme === 'light') {
+    jtd.setTheme('light');
+    toggleDarkMode.textContent = 'Dark mode';
+  }
+
+  jtd.addEvent(toggleDarkMode, 'click', function (event) {
+    event.preventDefault();
+
+    if (jtd.getTheme() === 'dark') {
+      jtd.setTheme('light');
+      localStorage.setItem('jtd-color-scheme', 'light');
+      toggleDarkMode.textContent = 'Dark mode';
+    } else {
+      jtd.setTheme('dark');
+      localStorage.setItem('jtd-color-scheme', 'dark');
+      toggleDarkMode.textContent = 'Light mode';
+    }
+  });
+</script>
