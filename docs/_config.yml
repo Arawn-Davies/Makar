@@ -4,7 +4,9 @@ description: >-
   multitasking shell, FAT32 + ISO9660 + synthetic /proc, ring-3 ELF
   userspace, VIX editor.  Sibling project of Medli (C# / Cosmos).
 
-theme: just-the-docs
+# Remote theme so the native GitHub Pages build (Deploy from a branch, /docs)
+# can resolve just-the-docs without a Gemfile — same setup as the Medli3 site.
+remote_theme: just-the-docs/just-the-docs@v0.10.0
 
 url: https://arawn-davies.co.uk
 baseurl: /makar
@@ -27,6 +29,4 @@ relative_links:
   collections: true
 
 exclude:
-  - Gemfile
-  - Gemfile.lock
   - vendor
