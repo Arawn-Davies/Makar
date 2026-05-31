@@ -54,6 +54,7 @@ enable_copy_code_button: true
 footer_content: >-
   Makar - © Arawn Davies.  BSD-3-Clause Clear.  Built with Jekyll +
   just-the-docs.  Sibling project: <a href="https://github.com/Arawn-Davies/Medli">Medli</a>.
+  <a href="https://arawn-davies.co.uk">Home: arawn-davies.co.uk</a>
 
 # Convert .md links to .html so the existing relative links keep working.
 plugins:

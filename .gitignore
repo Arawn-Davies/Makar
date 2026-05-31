@@ -18,6 +18,9 @@ sysroot
 *.pyc
 tests/groups/__pycache__/
 
+# OS cruft
+.DS_Store
+
 # Compiled binary artifacts (no extension) that appear in arch dirs
 src/kernel/arch/*/dt_asm
 
