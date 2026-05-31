@@ -97,6 +97,14 @@ typedef struct task {
      * clean up after exec" behaviour doesn't clobber their output. */
     int           fb_touched;
 
+    /* Display colors saved at the point this task forked a child.
+     * SYS_WAIT4 reads these back when a fb_touched child is reaped so the
+     * parent's colour scheme is restored before the screen is cleared --
+     * otherwise the VT children's palette (e.g. makmux's green-on-black)
+     * would bleed into the parent's next prompt. */
+    uint32_t      disp_fg_saved;
+    uint32_t      disp_bg_saved;
+
     /* --- tick accounting ---
      * Cumulative PIT ticks (100 Hz) during which this task was the
      * current_task at IRQ 0 time.  Incremented by timer_callback before

@@ -13,7 +13,7 @@
 #define CHILD_COUNT 4
 #define STATUS_LABEL_COL 1
 #define STATUS_LABEL_W   18
-#define STATUS_BAR_CLR   ((VGA_BLACK << 4) | VGA_LGREY)
+#define STATUS_BAR_CLR   ((VGA_BROWN << 4) | VGA_WHITE)
 #define STATUS_ACTIVE_CLR ((VGA_YELLOW << 4) | VGA_BLACK)
 
 static int s_child_pids[CHILD_COUNT];
@@ -215,6 +215,14 @@ int main(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
+
+    /* Refuse to nest: if VT slots are already registered another makmux
+     * (or a nested exec of makmux from within mak.sh1-4) is already
+     * running.  live_mask != 0 is the indicator. */
+    if (sys_vt_state() & 0xFFFF) {
+        put_s("makmux: already running -- cannot nest makmux\n");
+        return 1;
+    }
 
     put_s("makmux: starting mak.sh1-4\n");
 

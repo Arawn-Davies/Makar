@@ -924,9 +924,10 @@ static void on_make(kc_t kc)
         default: break;
     }
 
-    /* Cooked-mode shortcuts: Alt+Fn TTY switch and Ctrl-A pane prefix.
-     * Raw-mode apps (kbtester) need every keystroke as data, so these
-     * intercepts are suspended for the duration of their session. */
+    /* Cooked-mode shortcuts: Alt+Fn TTY switch, Ctrl+Tab cycle, and
+     * Ctrl-A pane prefix.  Raw-mode apps (kbtester) need every keystroke
+     * as data, so these intercepts are suspended for the duration of their
+     * session. */
     if (!raw) {
         if (mod_alt) {
             switch (kc) {
@@ -938,6 +939,18 @@ static void on_make(kc_t kc)
                 case KC_T:  vtty_request_open(); return;
                 default: break;
             }
+        }
+        /* Ctrl+Tab: cycle forward through live VT slots.
+         * Ctrl+Shift+Tab: cycle backward.
+         * Useful on Windows hosts where Alt+F4 is pre-mapped. */
+        if (mod_ctrl && kc == KC_TAB) {
+            int n = vtty_count();
+            if (n > 1) {
+                int cur  = vtty_active();
+                int next = mod_shift ? (cur + n - 1) % n : (cur + 1) % n;
+                vtty_switch(next);
+            }
+            return;
         }
     }
 

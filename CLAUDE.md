@@ -188,50 +188,7 @@ The VFS is a single static mount table (`s_mounts[]` in `src/kernel/arch/i386/fs
 **`/log` is read-only from userspace** (Linux `/var/log` model): the VFS rejects writes routed through `backend_write_file` with `"write: read-only filesystem (/log)"`.  Kernel-side `klog_write` + friends still append into the ring directly via `ring_append` -- they bypass the VFS.  Use `/tmp` for user-writable scratch (wholesale overwrite, 16 files × 512 KiB).  `/log` files are append-only rings (dmesg-style); a `fopen("w")` re-write would otherwise double the content on every run, which bit `alloctest`'s FILE* roundtrip test.
 
 ### Syscall ABI (`int 0x80`, Linux i386 convention)
-Authoritative table in `src/kernel/include/kernel/syscall.h`. Selected entries:
-
-| EAX | Syscall          | Args |
-|-----|------------------|------|
-| 1   | SYS_EXIT         | EBX = status.  Sets `task_current()->exit_status` before transitioning to ZOMBIE/DEAD (see SYS_WAIT4). |
-| 2   | SYS_FORK         | -.  COW-clone the calling task; returns child pid in parent, 0 in child, -EAGAIN on failure. (slice 15) |
-| 3   | SYS_READ         | EBX = fd (0=stdin keyboard, ≥3=VFS), ECX = buf, EDX = count |
-| 4   | SYS_WRITE        | EBX = fd, ECX = buf, EDX = count. fd 1 = VGA, fd 2 = VGA + COM1, ≥3 = VFS.  A `FD_KIND_BLOCKDEV` fd writes via `devfs_pwrite` at the fd's byte offset.  A writable `FD_KIND_FILE` fd mutates its in-memory buffer (krealloc grow, geometric doubling); the dirty buffer is flushed back via `vfs_write_file(path, ...)` on `SYS_CLOSE`. |
-| 5   | SYS_OPEN         | EBX = path, ECX = flags (`O_RDONLY/WRONLY/RDWR` ∨ `O_CREAT 0100` ∨ `O_TRUNC 01000` ∨ `O_APPEND 02000`; Linux i386 values).  Returns fd.  `/dev` block devices bind as `FD_KIND_BLOCKDEV` (no eager buffer); other paths eager-buffer existing content up to `SYSCALL_FILE_MAX` (16 MiB, bumped from 8 MiB in v0.8).  `O_CREAT` creates an empty buffer when the path doesn't exist; `O_TRUNC` discards the eager-load and starts empty.  The opened path is kept inline on the fd slot so the close-time flush doesn't need a second lookup. |
-| 6   | SYS_CLOSE        | EBX = fd.  Flushes any dirty `FD_KIND_FILE` buffer via `vfs_write_file`; returns -1 if the backend rejects the flush (the buffer is freed regardless). |
-| 106 | SYS_STAT         | EBX = path, ECX = `struct stat *`.  Populates `st_mode`/`st_size`/`st_nlink`/`st_blksize`/`st_ino`; other fields zero-filled.  `st_ino` is a stable-per-boot FNV-1a-32 hash of the path. |
-| 108 | SYS_FSTAT        | EBX = fd, ECX = `struct stat *`.  Same shape as SYS_STAT; for `FD_KIND_FILE` `st_size` reflects pending (unflushed) writes. |
-| 11  | SYS_EXECVE       | EBX = path, ECX = argv (NULL-terminated `char *const argv[]`), EDX = envp (ignored).  On success doesn't return.  Also auto-transfers keyboard focus + VT foreground to the new image (job-control shorthand for shells; pairs with SYS_WAIT4's reverse transfer on child reap). |
-| 12  | SYS_CHDIR        | EBX = path.  Sets calling task's cwd via vfs_cd (normalises ../ and //).  Returns 0/-1.  Added v0.8 for the ring-3 sh.elf. |
-| 10  | SYS_UNLINK       | EBX = path.  POSIX alias of SYS_DELETE_FILE(208). |
-| 19  | SYS_LSEEK        | EBX = fd, ECX = offset, EDX = whence (works on `FD_KIND_FILE` and `FD_KIND_BLOCKDEV`) |
-| 20  | SYS_GETPID       | Returns `task_current()->pid` (idle = 1). |
-| 42  | SYS_PIPE         | EBX = `int pipefd[2]` (out).  Allocates two fd slots backed by a shared 4 KiB `pipe_ring_t` (refcounted reader + writer ends).  Returns 0 / -1. |
-| 63  | SYS_DUP2         | EBX = oldfd, ECX = newfd.  Closes `newfd` if open, shallow-copies the slot; for `FD_KIND_PIPE` bumps the appropriate end's refcount.  Returns `newfd`/-1. |
-| 37  | SYS_KILL         | EBX = pid, ECX = signo |
-| 38  | SYS_RENAME       | EBX = old, ECX = new.  POSIX alias of SYS_RENAME_FILE(209). |
-| 39  | SYS_MKDIR        | EBX = path, ECX = mode (ignored).  Calls `vfs_mkdir`. |
-| 40  | SYS_RMDIR        | EBX = path.  POSIX alias of SYS_DELETE_DIR(210). |
-| 45  | SYS_BRK          | EBX = new break (returns current/new break) |
-| 48  | SYS_SIGNAL       | EBX = signo, ECX = handler (returns previous handler) |
-| 64  | SYS_GETPPID      | Returns `task_current()->parent_pid` (0 = no userspace ancestor). |
-| 78  | SYS_GETTIMEOFDAY | EBX = `struct timeval *`, ECX = `struct timezone *` (ignored).  `tv_sec` from CMOS RTC; `tv_usec` resolution = 10 ms (PIT tick modulo). |
-| 265 | SYS_CLOCK_GETTIME| EBX = clockid (`CLOCK_REALTIME=0`, `CLOCK_MONOTONIC=1`), ECX = `struct timespec *`.  Same 10 ms resolution. |
-| 100 | SYS_DEBUG        | EBX = uint32 checkpoint (prints to VGA + serial) |
-| 114 | SYS_WAIT4        | EBX = pid (-1 = any child), ECX = `int *status`, EDX = options (WNOHANG=1), ESI = rusage ptr (ignored).  Returns child pid, 0 (WNOHANG no zombie), or -ECHILD.  When a child is reaped, keyboard focus + VT foreground transfer back to the wait4-ing parent (counterpart to SYS_EXECVE's forward transfer).  (slice 16b) |
-| 119 | SYS_SIGRETURN    | - (sigframe trampoline, not for direct use) |
-| 158 | SYS_YIELD        | - |
-| 200 | SYS_GETKEY       | raw single-char keyboard read |
-| 201–204 | SYS_PUTCH_AT / SET_CURSOR / TTY_CLEAR / TERM_SIZE | direct TTY ops for full-screen apps (vix) |
-| 218 | SYS_CARET_STYLE | set VESA caret style (0=line, 2=flashing block); returns previous.  No-op in VGA-text mode.  Used by vix.elf |
-| 205 | SYS_WRITE_FILE   | path, buf, len |
-| 206 | SYS_LS_DIR       | path, buf, bufsz |
-| 207 | SYS_DISK_INFO    | buf, bufsz |
-| 208–210 | SYS_DELETE_FILE / RENAME_FILE / DELETE_DIR | FAT32 mutations |
-| 211 | SYS_WRITE_SERIAL | buf, len — COM1-only (no framebuffer) |
-| 212 | SYS_KEYBOARD_RAW | enable/disable raw mode (1 = raw bytes, no sentinel translation) |
-| 213 | SYS_SHELL_CLEAR  | same as `clear` shell builtin |
-| 214 | SYS_UPTIME       | returns 100 Hz PIT tick counter |
-| 215 | SYS_GETCWD       | EBX = char *buf, ECX = size. Copies calling task's cwd; returns strlen or -1 |
+Full table: **`docs/syscalls.md`**.  Authoritative number assignments: `src/kernel/include/kernel/syscall.h`.  Userspace wrappers: `src/userspace/syscall.h`.
 
 ### Keyboard (layered driver, PR #124)
 Stack: PS/2 IRQ → scancode (set-1 + 0xE0 prefix) → keycode (HID-style abstract code) → ASCII/sentinel → per-TTY ring → consumer (shell, kbtester).
@@ -255,24 +212,7 @@ Stack: PS/2 IRQ → scancode (set-1 + 0xE0 prefix) → keycode (HID-style abstra
 - `datetime` / `date` / `time` builtins — one-line `YYYY-MM-DD HH:MM:SS` from `/proc/rtc`.  Scriptable; for fullscreen use see `clock.elf`.
 
 ### Shell scripting (sh-flavoured)
-The kernel shell exposes a per-shell-task scripting layer (`kernel/sh_script.h`, `arch/i386/shell/sh_script.c`):
-
-| Surface | Behaviour |
-|---|---|
-| `NAME=value` | Per-task assignment.  RHS shell-expanded.  Stored in `task_t.script_vars` (isolated per VT — VT0's vars don't leak into VT1, matching the per-VT palette model). |
-| `$VAR` / `${VAR}` / `$?` | Expansion at REPL or inside scripts.  `$?` is the last command's exit status (set after every dispatched line and every `[ TEST ]`).  For `exec <elf>` lines `$?` reflects the child's `SYS_EXIT` value (low 8 bits) via `shell_last_exec_status()` -- so `exec /apps/alloctest.elf; if [ $? -eq 0 ] ...` works.  Built-in commands yield `$?=0` (no failure-status threading yet); an unrecognised command yields `127` POSIX-style. |
-| `env` / `unset NAME ...` | Dump table / remove vars. |
-| `read VAR` | Reads one line of input from the keyboard into VAR. |
-| `[ TEST ]` | String tests (`-z`/`-n`/`=`/`!=`) and integer tests (`-eq`/`-ne`/`-lt`/`-le`/`-gt`/`-ge`).  Non-numeric operand to integer ops fails with `[: integer expected`. |
-| `sh script.sh` / `./script.sh` | Run a script file (path ending in `.sh` dispatches through the script interpreter; arbitrary paths still try to ELF-exec). |
-| `# comment` | End-of-line comments (outside quotes). |
-| `if / elif / else / fi` | Chained, both multi-line and single-line `if [ X ]; then CMD; fi` forms. |
-| `while ... do ... done` | Multi-statement `do` bodies via `;`-split preprocessor. |
-| `for VAR in WORDS; do ... done` | Word-list iteration with `$VAR` expansion in the list. |
-| `sleep N` | Busy-yield until N seconds elapse (PIT-driven). |
-| `true` / `false` | POSIX status helpers. |
-
-Limitations of the **in-kernel** sh interpreter: no command substitution (`$(cmd)`), no pipes, no `< > >> 2>` redirection, no `&&`/`||`/`&`, no subshells.  Those features all live in **`/apps/sh.elf` (userspace)** as of PR #181 (slices A1-A3 of the POSIX-shell roadmap).  Inline `if [ X ]; then Y; else Z; fi` is supported in both interpreters (slice 0 fix in PR #181).  No double-quote stripping in the tokenizer (`echo "X"` prints literal `"X"`); use bareword args or single quotes.  See `src/userspace/demo.sh` for a worked example exercising every surface, and `src/userspace/incore.sh` for the in-kernel UI-test driver pattern.
+Full reference: **`docs/scripting.md`**.  Implementation: `kernel/sh_script.h`, `arch/i386/shell/sh_script.c`.  Worked example: `src/userspace/demo.sh` (ships as `/apps/demo.sh`).  In-kernel UI-test driver pattern: `src/userspace/incore.sh`.
 
 ### VMM (per-task page directories)
 - `vmm_create_pd()` - allocates a page directory and mirrors kernel PDEs (indices 0–63)

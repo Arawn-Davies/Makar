@@ -127,7 +127,7 @@ static task_t *vtty_owner(int n)
 int vtty_register(void)
 {
     int slot = -1;
-    for (int i = 0; i < VTTY_MAX; i++) {
+    for (int i = 0; i < VTTY_MAX - 1; i++) {   /* -1: skip root slot */
         if (!vtty_owner(i)) { slot = i; break; }
     }
     if (slot < 0) return -1;
@@ -141,6 +141,19 @@ int vtty_register(void)
     return slot;
 }
 
+int vtty_register_root(void)
+{
+    task_t *me = task_current();
+    if (!me) return -1;
+    me->tty = VTTY_ROOT_SLOT;
+    /* Root slot is focused whenever vtty_nslots == 0; set keyboard focus
+     * now since mak.sh0 starts before any makmux VTs exist. */
+    keyboard_set_focus(me);
+    vt_buf_t *vt = vtty_buf(VTTY_ROOT_SLOT);
+    if (vt) vt_clear(vt);
+    return VTTY_ROOT_SLOT;
+}
+
 int vtty_close_pid(int pid)
 {
     int slot = -1;
@@ -151,7 +164,7 @@ int vtty_close_pid(int pid)
         t->tty = TASK_TTY_NONE;
         break;
     }
-    if (slot < 0 || slot >= VTTY_MAX) return -1;
+    if (slot < 0 || slot >= VTTY_MAX || slot == VTTY_ROOT_SLOT) return -1;
 
     for (int i = 0; i < task_count(); i++) {
         task_t *t = task_get(i);
@@ -169,6 +182,10 @@ int vtty_close_pid(int pid)
     if (vtty_nslots == 0) {
         vtty_current = 0;
         keyboard_set_focus(task_current());
+        /* Erase the stale makmux status bar row now that no VT children
+         * remain; the root slot's vtty_request_repaint (from SYS_WAIT4
+         * when mak.sh0 reaps makmux) will repaint the text area above it. */
+        vesa_tty_set_status_visible(0);
     } else if (vtty_current == slot || vtty_current >= vtty_nslots) {
         int next = -1;
         for (int i = slot; i < vtty_nslots; i++) {
@@ -222,7 +239,11 @@ int vtty_active(void)
 int vtty_is_focused(void)
 {
     task_t *me = task_current();
-    return me && me->tty == vtty_current;
+    if (!me) return 0;
+    /* Root slot is focused whenever no makmux VT children are registered. */
+    if (me->tty == VTTY_ROOT_SLOT)
+        return vtty_nslots == 0;
+    return me->tty >= 0 && me->tty == vtty_current;
 }
 
 int vtty_count(void)
@@ -230,10 +251,17 @@ int vtty_count(void)
     return vtty_nslots;
 }
 
+void vtty_request_repaint(int slot)
+{
+    if (slot < 0 || slot >= VTTY_MAX) return;
+    __atomic_store_n(&vtty_pending, slot, __ATOMIC_RELEASE);
+}
+
 unsigned int vtty_live_mask(void)
 {
     unsigned int mask = 0;
     for (int i = 0; i < VTTY_MAX; i++) {
+        if (i == VTTY_ROOT_SLOT) continue;   /* hidden console, not user-visible */
         if (vtty_owner(i))
             mask |= (1u << i);
     }
@@ -258,12 +286,15 @@ vt_buf_t *vtty_buf_current(void)
 
 vt_buf_t *vtty_buf_focused(void)
 {
+    /* When no makmux VTs exist the root slot is the active display. */
+    if (vtty_nslots == 0)
+        return vtty_buf(VTTY_ROOT_SLOT);
     return vtty_buf(vtty_current);
 }
 
 void vtty_switch(int n)
 {
-    if (n < 0 || n >= vtty_nslots || n == vtty_current) return;
+    if (n < 0 || n >= vtty_nslots || n == vtty_current || n == VTTY_ROOT_SLOT) return;
     /* Foreground task override beats the slot's shell.  Falls back to
      * the slot owner when no fullscreen child is currently running. */
     task_t *fg    = __atomic_load_n(&vtty_foreground[n], __ATOMIC_ACQUIRE);

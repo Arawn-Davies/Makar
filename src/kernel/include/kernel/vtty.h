@@ -12,7 +12,13 @@
 #include <kernel/task.h>
 #include <kernel/vt.h>
 
-#define VTTY_MAX 4
+/* Slots 0..VTTY_MAX-2 are the user-visible VT slots (makmux VT1-4).
+ * Slot VTTY_ROOT_SLOT is the hidden "console" slot for mak.sh0: it has a
+ * full backing buffer (so its content is preserved across makmux sessions)
+ * but it is excluded from Ctrl+Tab cycling, Alt+Fn switching, and the
+ * makmux status bar — exactly like Linux's tty0/console. */
+#define VTTY_MAX      5
+#define VTTY_ROOT_SLOT 4
 
 /* Call once before spawning shell tasks.  Allocates per-slot backing
  * grids sized from the active display geometry (VESA cell dims if the
@@ -23,6 +29,13 @@ void vtty_init(void);
  * Returns the slot index (0-based), or -1 if full.
  * The first task to register (slot 0) becomes the initial focused TTY. */
 int vtty_register(void);
+
+/* Register the calling task as the hidden root console (VTTY_ROOT_SLOT).
+ * The root slot has a backing buffer but is excluded from Ctrl+Tab cycling,
+ * Alt+Fn switching, vtty_live_mask(), and vtty_count() — it is never visible
+ * in the makmux status bar.  The root slot is "focused" whenever no makmux
+ * VT children exist (vtty_count() == 0). */
+int vtty_register_root(void);
 
 /* Close the VT owned by pid, clearing its backing grid and freeing the slot
  * for a future vtty_register().  Returns the closed slot, or -1. */
@@ -72,6 +85,11 @@ vt_buf_t *vtty_buf_focused(void);
  * Safe to call from task context (yields, REPL polling); cheap when
  * no switch is pending. */
 void vtty_drain_pending(void);
+
+/* Request a deferred repaint of slot from task context (sets vtty_pending).
+ * Used by SYS_WAIT4 to trigger a VT clear+repaint after a fullscreen child
+ * exits, without doing pixel work in interrupt/syscall context. */
+void vtty_request_repaint(int slot);
 
 /* Foreground task override.  When a slot has a foreground task set
  * (e.g. shell_exec_elf's child taking focus), vtty_switch routes

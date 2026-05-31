@@ -11,6 +11,7 @@
  */
 
 #include <kernel/task.h>
+#include <kernel/vtty.h>
 #include <kernel/fd.h>
 #include <kernel/signal.h>
 #include <kernel/heap.h>
@@ -369,13 +370,19 @@ task_t *task_fork(registers_t *parent_regs)
 
     sig_task_init(t);
 
-    /* Inherit cwd + tty from parent. */
+    /* Inherit cwd + tty from parent.
+     * VTTY_ROOT_SLOT is the hidden console owned exclusively by mak.sh0;
+     * forked children (makmux, its sh.elf children, etc.) must not inherit
+     * it or they would corrupt mak.sh0's backing buffer with their own
+     * SYS_PUTCH_AT output and break focused-write detection. */
     {
         size_t n = strlen(current_task->cwd);
         if (n >= VFS_PATH_MAX) n = VFS_PATH_MAX - 1;
         memcpy(t->cwd, current_task->cwd, n);
         t->cwd[n] = '\0';
-        t->tty    = current_task->tty;
+        t->tty    = (current_task->tty == VTTY_ROOT_SLOT)
+                    ? TASK_TTY_NONE
+                    : current_task->tty;
     }
 
     /* Lay down the child's kernel stack:

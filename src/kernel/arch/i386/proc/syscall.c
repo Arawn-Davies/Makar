@@ -165,6 +165,7 @@ void syscall_dispatch(registers_t *regs)
                     if (ustatus)
                         *ustatus = c->exit_status;
                     int cpid = c->pid;
+                    int child_fb = c->fb_touched;
                     c->state = TASK_DEAD;
                     /* Counterpart to SYS_EXECVE's "child takes focus" rule:
                      * when the reaper sees the foreground child go zombie,
@@ -172,6 +173,45 @@ void syscall_dispatch(registers_t *regs)
                      * (sh.elf, kernel shell, ...) becomes the next reader. */
                     keyboard_set_focus(me);
                     vtty_set_foreground(me->tty, me);
+                    /* Userspace sh.elf runs fullscreen apps via fork+execve+
+                     * wait4; unlike the kernel shell it has no snapshot/
+                     * restore path.  Clear the screen on the child's way out
+                     * so the next prompt lands on a blank slate, not the
+                     * app's frozen last frame. */
+                    if (child_fb) {
+                        if (me->tty >= 0 && me->tty < VTTY_MAX) {
+                            vt_buf_t *pvt = vtty_buf(me->tty);
+                            if (vesa_tty_is_ready()) {
+                                vesa_pane_t *_dp = vesa_tty_default_pane();
+                                if (_dp && (me->disp_fg_saved | me->disp_bg_saved)) {
+                                    _dp->fg = me->disp_fg_saved;
+                                    _dp->bg = me->disp_bg_saved;
+                                }
+                                if (me->tty != VTTY_ROOT_SLOT && pvt) {
+                                    /* Normal VT: child wrote into this buffer,
+                                     * clear it so the parent's next prompt
+                                     * lands on a blank slate. */
+                                    vt_set_color(pvt,
+                                                 me->disp_fg_saved ? me->disp_fg_saved : pvt->fg,
+                                                 me->disp_bg_saved ? me->disp_bg_saved : pvt->bg);
+                                    vt_clear(pvt);
+                                }
+                                /* Root slot: buffer retains mak.sh0's prior
+                                 * output — repaint as-is to restore the
+                                 * screen the user had before makmux ran. */
+                            }
+                            vtty_request_repaint(me->tty);
+                        } else if (vesa_tty_is_ready()) {
+                            /* Truly no-VT parent (shouldn't occur in normal
+                             * operation now that mak.sh0 uses VTTY_ROOT_SLOT,
+                             * but keep as a safe fallback). */
+                            vesa_pane_t *_dp = vesa_tty_default_pane();
+                            if (_dp && (me->disp_fg_saved | me->disp_bg_saved)) {
+                                vesa_tty_setcolor(me->disp_fg_saved, me->disp_bg_saved);
+                            }
+                            vesa_tty_clear();
+                        }
+                    }
                     regs->eax = (uint32_t)cpid;
                     Serial_WriteString("[sys_wait4] parent pid=");
                     Serial_WriteDec((uint32_t)me->pid);
@@ -303,6 +343,19 @@ void syscall_dispatch(registers_t *regs)
      * Child returns through fork_child_iret, never through this dispatch.
      * ------------------------------------------------------------------ */
     case SYS_FORK: {
+        /* Snapshot the parent's current display colours before forking.
+         * SYS_WAIT4 reads these back when a fb_touched child is reaped so
+         * the parent's palette (e.g. white-on-blue for mak.sh0) is
+         * restored before the screen is cleared rather than inheriting
+         * whatever the last VT child was drawing with. */
+        task_t *me_fork = task_current();
+        if (me_fork && vesa_tty_is_ready()) {
+            vesa_pane_t *_dp = vesa_tty_default_pane();
+            if (_dp) {
+                me_fork->disp_fg_saved = _dp->fg;
+                me_fork->disp_bg_saved = _dp->bg;
+            }
+        }
         task_t *child = task_fork(regs);
         if (!child) {
             regs->eax = (uint32_t)-11;   /* -EAGAIN */
@@ -724,7 +777,7 @@ void syscall_dispatch(registers_t *regs)
         uint32_t rows = vesa_tty_get_rows();
         uint32_t cell_h = rows ? (fb->height / rows) : 0;
         int32_t y_max = (int32_t)fb->height;
-        if (cell_h && y_max > (int32_t)cell_h
+        if (vtty_count() > 0 && cell_h && y_max > (int32_t)cell_h
             && VESA_TTY_STATUS_ROWS > 0)
             y_max -= (int32_t)(cell_h * VESA_TTY_STATUS_ROWS);
         int32_t x_max = (int32_t)fb->width;
@@ -1240,7 +1293,14 @@ void syscall_dispatch(registers_t *regs)
                 t_putentryat((char)ch, clr, col, row);
                 if (dp) {
                     vesa_tty_setcolor(fg, bg);
-                    vesa_tty_put_at((char)ch, col, row);
+                    /* Status-bar cells (row >= drawable pane height) bypass
+                     * vesa_tty_put_at which routes through the default pane
+                     * and clips at p->rows.  paint_cell only guards against
+                     * row >= tty_rows so the physical status row is reachable. */
+                    if ((uint32_t)row >= dp->rows)
+                        vesa_tty_paint_cell(col, row, (char)ch, fg, bg);
+                    else
+                        vesa_tty_put_at((char)ch, col, row);
                 }
             }
         }
@@ -1292,16 +1352,18 @@ void syscall_dispatch(registers_t *regs)
      * ------------------------------------------------------------------ */
     case SYS_TERM_SIZE: {
         /* Report the *drawable* area, not the full framebuffer.  The
-         * bottom VESA_TTY_STATUS_ROWS row is reserved for the tmux-style
-         * VT bar -- fullscreen apps (maktop, clock, vix) that paint up
-         * to (rows-1) would otherwise stomp the bar.  Resolution-aware
-         * because both vesa_tty_get_rows() and the constant scale with
-         * the chosen mode. */
+         * bottom VESA_TTY_STATUS_ROWS row is reserved for the makmux
+         * status bar -- but only when makmux has registered VT children
+         * (vtty_count() > 0).  Without makmux, fullscreen apps get the
+         * whole screen; with makmux they get (rows-1) so they don't stomp
+         * the bar.  Resolution-aware because vesa_tty_get_rows() and the
+         * constant scale with the chosen mode. */
         uint32_t cols, rows;
         if (vesa_tty_is_ready()) {
             cols = vesa_tty_get_cols();
             rows = vesa_tty_get_rows();
-            if (rows > VESA_TTY_STATUS_ROWS) rows -= VESA_TTY_STATUS_ROWS;
+            if (vtty_count() > 0 && rows > VESA_TTY_STATUS_ROWS)
+                rows -= VESA_TTY_STATUS_ROWS;
         } else {
             cols = VGA_WIDTH;
             rows = (uint32_t)t_get_rows();

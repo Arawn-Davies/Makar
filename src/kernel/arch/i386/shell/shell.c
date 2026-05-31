@@ -1095,7 +1095,26 @@ int shell_enter_makmux_slot(int focus_new)
     while (!vtty_is_focused())
         task_yield();
 
-    shell_clear_screen();
+    /* Clear the VT buffer and repaint via vesa_tty_paint_buf rather than
+     * calling shell_clear_screen() (which calls vesa_tty_clear → vesa_clear,
+     * wiping the full framebuffer including the makmux status-bar row).
+     * vesa_tty_paint_buf only covers rows 0..vt->rows-1 so the status row
+     * is preserved.  Apply the per-VT palette first so the clear cells carry
+     * the right background colour. */
+    int _tty = task_current() ? task_current()->tty : 0;
+    if (_tty < 0) _tty = 0;
+    shell_apply_scheme_for_tty(_tty);
+    if (vesa_tty_is_ready()) {
+        vt_buf_t *vt = vtty_buf_current();
+        if (vt) {
+            vt_clear(vt);
+            vesa_tty_paint_buf(vt);
+        } else {
+            shell_clear_screen();
+        }
+    } else {
+        shell_clear_screen();
+    }
     return slot;
 }
 
@@ -1103,8 +1122,11 @@ void shell_enter_root_tty(void)
 {
     sig_set_handler(task_current(), SIGINT, SIG_IGN);
     task_current()->unkillable = 1;
-    task_current()->tty = TASK_TTY_NONE;
-    keyboard_set_focus(task_current());
+    /* Assign the hidden root VT slot so mak.sh0 has a backing buffer that
+     * is preserved across makmux sessions.  vtty_register_root() sets
+     * tty=VTTY_ROOT_SLOT and gives keyboard focus; it does NOT increment
+     * vtty_nslots so this slot stays invisible to Ctrl+Tab and makmux. */
+    vtty_register_root();
 
     terminal_set_colorscheme(SHELL_COLOR_VGA);
     if (vesa_tty_is_ready()) {
