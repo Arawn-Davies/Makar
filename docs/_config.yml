@@ -5,8 +5,9 @@ description: >-
   userspace, VIX editor.  Sibling project of Medli (C# / Cosmos).
 
 # Remote theme so the native GitHub Pages build (Deploy from a branch, /docs)
-# can resolve just-the-docs without a Gemfile — same setup as the Medli3 site.
-remote_theme: just-the-docs/just-the-docs@v0.10.0
+# can resolve just-the-docs without a Gemfile — same setup as the Medli3 site
+# (unpinned = latest, matching Medli3).
+remote_theme: just-the-docs/just-the-docs
 
 url: https://arawn-davies.co.uk
 baseurl: /makar
