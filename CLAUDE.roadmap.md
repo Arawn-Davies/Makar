@@ -94,6 +94,11 @@ The long-term goal is a self-hosting userspace. Prerequisites and approach:
 - **USB HID keyboard**: currently PS/2 only. QEMU emulates PS/2 by default; real hardware may need USB HID via OHCI/EHCI.
 - **Network**: RTL8139 driver → lwIP → DHCP/DNS → wget/curl-lite.
 - **64-bit (x86-64)**: significant rewrite - new GDT/IDT, long mode entry, 64-bit paging. Worth considering once userspace is stable on i386.
+- **Host shared folder** (QEMU-assisted file exchange between guest and host directory): four options in increasing complexity:
+  1. **Second FAT32 virtio-blk image** — `qemu-img create -f raw shared.img 64M`, format FAT32, pass as `-drive file=shared.img,if=virtio`. Host loop-mounts it to read/write files; guest already has FAT32 read/write. Coarse-grained (can't both hold open at once) but zero new driver work. Best near-term option.
+  2. **Serial file transfer (COM2)** — bespoke length-prefixed framing over a second `-serial` channel; a small host-side daemon maps packets to a real directory. No new QEMU flags; works with the existing serial driver. COM1 stays for debug/ktest output.
+  3. **TFTP over `-netdev user`** — QEMU's user-mode network exposes a host directory via TFTP root (`-tftp /path`). Guest downloads files with a trivial UDP client. Write-back requires a separate PUT channel or scp workaround.
+  4. **VirtFS / 9P** — `-fsdev local,path=...,security_model=mapped -device virtio-9p-pci`. Most capable (bidirectional, live). Requires virtio-pci enumeration + a 9P filesystem driver in Makar — significant but well-documented (Linux 9p driver is the reference). Correct long-term path once virtio-pci exists.
 
 ## Next: "Serious dev work in-place" (write, compile, run C on a live Makar system)
 
