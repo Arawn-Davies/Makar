@@ -478,6 +478,14 @@ void vesa_tty_set_status_visible(int v)
 {
 	s_status_visible = v ? 1 : 0;
 	if (!tty_ready) return;
+	/* Keep pane rows in sync so SYS_PUTCH_AT's is_status clip and the
+	 * pane-scroll fallback match the actual usable area.  With makmux
+	 * running (v=1) the bottom row is the status bar; without it (v=0)
+	 * mak.sh0 gets the full screen including that row. */
+	default_pane.rows = s_status_visible
+	    ? (tty_rows > VESA_TTY_STATUS_ROWS
+	           ? tty_rows - VESA_TTY_STATUS_ROWS : tty_rows)
+	    : tty_rows;
 	if (!v) {
 		uint32_t row = tty_rows - 1;
 		for (uint32_t c = 0; c < tty_cols; c++)

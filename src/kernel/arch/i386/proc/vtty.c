@@ -92,7 +92,11 @@ void vtty_init(void)
 
     vtty_bufs_ready = true;
     for (int i = 0; i < VTTY_MAX; i++) {
-        if (!vt_init(&vtty_bufs[i], cols, rows,
+        /* Root slot (mak.sh0) gets full tty height so text and scrolling
+         * can reach the bottom row when no status bar is visible.
+         * Makmux slots 0-3 use the status-bar-reserved height. */
+        uint32_t slot_rows = (i == VTTY_ROOT_SLOT) ? vesa_tty_get_rows() : rows;
+        if (!vt_init(&vtty_bufs[i], cols, slot_rows,
                      VTTY_DEFAULT_FG, VTTY_DEFAULT_BG)) {
             /* Allocation failed: leave cells == NULL so vt_putchar
              * becomes a no-op for that slot.  Better than panic at boot. */

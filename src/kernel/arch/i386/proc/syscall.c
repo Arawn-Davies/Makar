@@ -1285,25 +1285,28 @@ void syscall_dispatch(registers_t *regs)
             uint32_t fg = s_vga_palette[clr & 0x0F];
             uint32_t bg = s_vga_palette[(clr >> 4) & 0x0F];
 
-            /* Only update the VT buffer for cells that are within the
-             * drawable pane.  Status-bar cells (row >= dp->rows) are
-             * painted directly to the framebuffer via vesa_tty_paint_cell
-             * below; writing them into vt also runs vt_set_color which
-             * would overwrite vt->fg/bg with the status-bar palette and
-             * corrupt the parent's colour scheme on repaint. */
-            if (vt && (uint32_t)row < dp->rows) {
+            int is_status = dp && (uint32_t)row >= dp->rows;
+
+            /* Drawable-area cells: write into the VT buffer and render to
+             * the framebuffer when focused.  Skip vt_set_color/vt_put_at
+             * for status-bar rows — they must not overwrite vt->fg/bg with
+             * the status-bar palette (which would corrupt mak.sh0's colours
+             * on repaint) and vt_put_at silently ignores out-of-range rows
+             * anyway. */
+            if (vt && !is_status) {
                 vt_set_color(vt, fg, bg);
                 vt_put_at(vt, (char)ch, col, row);
             }
-            if (focused) {
+
+            /* Framebuffer write:
+             *  - drawable rows  → only when focused (normal VT isolation)
+             *  - status-bar row → always; makmux owns the bottom row
+             *    regardless of which VT is active or focused. */
+            if (focused || is_status) {
                 t_putentryat((char)ch, clr, col, row);
                 if (dp) {
                     vesa_tty_setcolor(fg, bg);
-                    /* Status-bar cells (row >= drawable pane height) bypass
-                     * vesa_tty_put_at which routes through the default pane
-                     * and clips at p->rows.  paint_cell only guards against
-                     * row >= tty_rows so the physical status row is reachable. */
-                    if ((uint32_t)row >= dp->rows)
+                    if (is_status)
                         vesa_tty_paint_cell(col, row, (char)ch, fg, bg);
                     else
                         vesa_tty_put_at((char)ch, col, row);
