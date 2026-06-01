@@ -1482,17 +1482,25 @@ void syscall_dispatch(registers_t *regs)
     else while (_v) { _d[--_i] = (char)('0' + _v % 10); _v /= 10; } \
     PCI_APPEND(_d + _i); } while(0)
 
-        for (int i = 0; i < pci_device_count && off < cap - 64; i++) {
+        for (int i = 0; i < pci_device_count && off < cap - 96; i++) {
             const pci_device_t *d = &pci_devices[i];
-            PCI_BYTE_HEX(d->bus);    buf[off++] = ':';
-            PCI_BYTE_HEX(d->dev);    buf[off++] = '.';
+            /* BB:DD.F  Class [CCSS]: Vendor Device (rev RR) [IRQ=N] */
+            PCI_BYTE_HEX(d->bus);  buf[off++] = ':';
+            PCI_BYTE_HEX(d->dev);  buf[off++] = '.';
             buf[off++] = (char)('0' + d->func);
             PCI_APPEND("  ");
             PCI_APPEND(pci_class_name(d->class_code, d->subclass));
             PCI_APPEND(" [");
             PCI_BYTE_HEX(d->class_code); PCI_BYTE_HEX(d->subclass);
             PCI_APPEND("]: ");
-            PCI_WORD_HEX(d->vendor_id); buf[off++] = ':'; PCI_WORD_HEX(d->device_id);
+            /* Vendor name (fall back to hex) */
+            const char *vname = pci_vendor_name(d->vendor_id);
+            if (vname) { PCI_APPEND(vname); buf[off++] = ' '; }
+            else { PCI_WORD_HEX(d->vendor_id); buf[off++] = ':'; }
+            /* Device name (fall back to hex) */
+            const char *dname = pci_device_name(d->vendor_id, d->device_id);
+            if (dname) { PCI_APPEND(dname); }
+            else { PCI_WORD_HEX(d->device_id); }
             PCI_APPEND("  (rev "); PCI_BYTE_HEX(d->revision_id); buf[off++] = ')';
             if (d->irq_line && d->irq_line != 0xFF) {
                 PCI_APPEND("  IRQ="); PCI_DEC(d->irq_line);
