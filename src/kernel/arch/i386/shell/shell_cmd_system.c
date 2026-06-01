@@ -7,6 +7,7 @@
 #include "shell_priv.h"
 
 #include <kernel/tty.h>
+#include <kernel/keyboard.h>
 #include <kernel/timer.h>
 #include <kernel/heap.h>
 #include <kernel/task.h>
@@ -17,6 +18,7 @@
 #include <kernel/vfs.h>
 #include <kernel/installer.h>
 #include <kernel/admin.h>
+#include <kernel/auth.h>
 
 static void cmd_echo(int argc, char **argv)
 {
@@ -256,6 +258,61 @@ static void cmd_date(int argc, char **argv)
     if (got > 0 && buf[got - 1] != '\n') t_putchar('\n');
 }
 
+/* Masked password read: echoes '*' per character. */
+static void read_password(char *buf, size_t max)
+{
+    size_t len = 0;
+    while (1) {
+        unsigned char c = keyboard_getchar();
+        if (c == '\n' || c == '\r') break;
+        if (c == '\b' || c == 127) {
+            if (len) { len--; t_backspace(); }
+            continue;
+        }
+        if (c < 0x20 || c > 0x7E) continue;
+        if (len < max - 1) { buf[len++] = (char)c; t_putchar('*'); }
+    }
+    buf[len] = '\0';
+}
+
+static void cmd_passwd(int argc, char **argv)
+{
+    const char *user = (argc >= 2) ? argv[1] : auth_current_user();
+    char pass1[256], pass2[256];
+
+    if (!vfs_rootfs_is_disk()) {
+        t_writestring("passwd: no writable rootfs (live session).\n");
+        return;
+    }
+
+    t_writestring("Changing password for ");
+    t_writestring(user);
+    t_writestring(".\n");
+    t_writestring("New password: ");
+    read_password(pass1, sizeof(pass1));
+    t_putchar('\n');
+
+    t_writestring("Retype new password: ");
+    read_password(pass2, sizeof(pass2));
+    t_putchar('\n');
+    if (strcmp(pass1, pass2) != 0) {
+        t_writestring("passwd: passwords do not match.\n");
+        return;
+    }
+    if (shadow_set_password(user, pass1) == 0)
+        t_writestring("passwd: password updated successfully.\n");
+    else
+        t_writestring("passwd: failed to update /etc/shadow.\n");
+}
+
+static void cmd_logout(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    /* auth_logout() shows the login screen and returns; the shell prompt
+     * returns afterwards, so the user is "back in" as whoever logged in. */
+    auth_logout();
+}
+
 const shell_cmd_entry_t system_cmds[] = {
     { "datetime", cmd_date     },   /* canonical: one line "YYYY-MM-DD HH:MM:SS" */
     { "date",     cmd_date     },   /* alias */
@@ -270,5 +327,7 @@ const shell_cmd_entry_t system_cmds[] = {
     { "ktest",    cmd_ktest    },
     { "verbose",  cmd_verbose  },
     { "sched_quantum", cmd_sched_quantum },
+    { "passwd",  cmd_passwd  },
+    { "logout",  cmd_logout  },
     { NULL, NULL }
 };

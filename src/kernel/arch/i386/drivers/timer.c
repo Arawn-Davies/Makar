@@ -21,6 +21,7 @@
 #include <kernel/timer.h>
 #include <kernel/isr.h>
 #include <kernel/serial.h>
+#include <kernel/debug.h>
 #include <kernel/task.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -80,13 +81,29 @@ uint32_t timer_get_ticks(void)
 	return tick;
 }
 
+/* rdtsc - read the CPU timestamp counter (always advances, independent of
+ * the PIT and the timer ISR).  Used as a safety valve in ksleep to detect
+ * a stuck timer before entering an infinite spin. */
+static inline uint64_t rdtsc(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
 void ksleep(uint32_t ticks)
 {
-	/* Note: wraps safely since both values are uint32_t and
-	 * the comparison handles the common case where ticks is small. */
-	uint32_t end = tick + ticks;
-	while (tick < end)
-		;
+    /* 100 Hz PIT → each tick is 10 ms.  A modern CPU does ~1e9 cycles/s
+     * so 10 ms ≈ 10_000_000 cycles.  Allow 5× headroom (50 M cycles/tick)
+     * before declaring the timer stuck and panicking.  This never false-fires
+     * on real hardware; it only catches the case where the timer ISR has
+     * stopped delivering IRQ 0 entirely. */
+    uint32_t end = tick + ticks;
+    uint64_t tsc_limit = rdtsc() + (uint64_t)ticks * 50000000ULL;
+    while (tick < end) {
+        if (rdtsc() > tsc_limit)
+            KPANIC("ksleep: timer ISR appears stuck (PIT IRQ 0 not firing)");
+    }
 }
 
 void init_timer(uint32_t frequency)

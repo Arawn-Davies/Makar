@@ -3,6 +3,10 @@
 
 #include <stddef.h>
 
+/* Set to 1 by kernel_main when `live` appears on the kernel cmdline.
+ * shell_login_loop reads this to skip authentication on live ISO sessions. */
+extern int g_live_boot;
+
 /*
  * Minimal kernel REPL over VGA + PS/2 keyboard.
  *
@@ -71,5 +75,18 @@ int shell_enter_makmux_slot(int focus_new);
  * slots and creates mak.sh1..mak.sh4 as its children.
  */
 void shell_enter_root_tty(void);
+
+/*
+ * shell_login_loop – mak.sh0 session manager.
+ *
+ * Called after shell_enter_root_tty() completes.  Loops forever:
+ *   1. Show login_screen() (blocks until authenticated).
+ *   2. Spawn /apps/sh.elf --login as a child task and wait for it to exit.
+ *   3. Go to 1.
+ *
+ * Typing `exit` or Ctrl-D in mak.sh0 returns here; mak.sh1-4 (spawned by
+ * makmux) never call this and exit normally without re-authentication.
+ */
+void shell_login_loop(void);
 
 #endif /* _KERNEL_SHELL_H */

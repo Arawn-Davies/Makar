@@ -58,6 +58,12 @@ void vesa_tty_disable(void);
 uint32_t vesa_tty_get_cols(void);
 uint32_t vesa_tty_get_rows(void);
 
+/* Rows available for content: get_rows() minus the status bar row when the
+ * bar is visible, get_rows() in full when it is hidden (e.g. mak.sh0 login,
+ * full-screen apps before makmux starts).  Prefer this over get_rows() in
+ * any code that lays out a full-screen TUI. */
+uint32_t vesa_tty_usable_rows(void);
+
 /* ------------------------------------------------------------------ */
 /* Default pane - covers the whole screen                              */
 /* ------------------------------------------------------------------ */

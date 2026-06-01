@@ -1754,6 +1754,8 @@ int main(int argc, char **argv, char **envp)
     for (int i = 1; i < argc; i++) {
         if (s_eq(argv[i], "--login")) g_login = 1;
         else if (s_eq(argv[i], "--makmux")) g_quiet_start = 1;
+        else if (s_starts(argv[i], "--user="))
+            s_copy(g_username, argv[i] + 7, sizeof(g_username));
         else if (argv[i][0] != '-')   script_path = argv[i];
     }
 
@@ -1761,6 +1763,40 @@ int main(int argc, char **argv, char **envp)
     char hbuf[HOST_MAX];
     int hn = sys_gethostname(hbuf, sizeof(hbuf));
     if (hn > 0) s_copy(g_hostname, hbuf, sizeof(g_hostname));
+
+    /* Set HOME based on username: root -> /root, others -> /home/<user>. */
+    {
+        static char home_val[VFS_PATH_MAX];
+        if (s_eq(g_username, "root")) {
+            s_copy(home_val, "/root", sizeof(home_val));
+        } else {
+            home_val[0] = '/'; home_val[1] = 'h'; home_val[2] = 'o';
+            home_val[3] = 'm'; home_val[4] = 'e'; home_val[5] = '/';
+            s_copy(home_val + 6, g_username, sizeof(home_val) - 6);
+        }
+        var_set("HOME", home_val);
+    }
+
+    /* Source ~/.makrc on login shells (best-effort; missing file is fine). */
+    if (g_login) {
+        const char *home = var_get("HOME");
+        if (home && *home) {
+            static char rc_path[VFS_PATH_MAX];
+            unsigned int hl = s_len(home);
+            unsigned int i;
+            for (i = 0; i < hl && i < sizeof(rc_path)-8; i++) rc_path[i] = home[i];
+            rc_path[i++]='/'; rc_path[i++]='.'; rc_path[i++]='m';
+            rc_path[i++]='a'; rc_path[i++]='k'; rc_path[i++]='r';
+            rc_path[i++]='c'; rc_path[i] = '\0';
+            int rcfd = sys_open(rc_path, O_RDONLY);
+            if (rcfd >= 0) {
+                static char rcbuf[4096];
+                int rd = sys_read(rcfd, rcbuf, sizeof(rcbuf) - 1);
+                sys_close(rcfd);
+                if (rd > 0) { rcbuf[rd] = '\0'; run_script_buf(rcbuf); }
+            }
+        }
+    }
 
     /* Non-interactive: run script and exit. */
     if (script_path) {

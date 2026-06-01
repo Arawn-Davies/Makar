@@ -772,15 +772,13 @@ void syscall_dispatch(registers_t *regs)
         int32_t y1 = (int32_t)(int16_t)(regs->ecx & 0xFFFFu);
         uint32_t rgb = regs->edx & 0xFFFFFFu;
 
-        /* Drawable area excludes the status row.  vesa_tty_get_rows()
-         * is in cell units; cell_h derives from the FB / row count so
-         * we honour whatever font scale the operator selected. */
-        uint32_t rows = vesa_tty_get_rows();
-        uint32_t cell_h = rows ? (fb->height / rows) : 0;
-        int32_t y_max = (int32_t)fb->height;
-        if (vtty_count() > 0 && cell_h && y_max > (int32_t)cell_h
-            && VESA_TTY_STATUS_ROWS > 0)
-            y_max -= (int32_t)(cell_h * VESA_TTY_STATUS_ROWS);
+        /* Drawable area excludes the status row when visible.
+         * cell_h derives from total FB / total rows so the scale is right;
+         * usable_rows() tells us how many content rows to allow. */
+        uint32_t total_rows = vesa_tty_get_rows();
+        uint32_t cell_h = total_rows ? (fb->height / total_rows) : 0;
+        uint32_t usable  = vesa_tty_usable_rows();
+        int32_t y_max = (int32_t)(cell_h ? cell_h * usable : fb->height);
         int32_t x_max = (int32_t)fb->width;
 
         int32_t dx =  (x1 > x0) ? (x1 - x0) : (x0 - x1);
@@ -1380,9 +1378,7 @@ void syscall_dispatch(registers_t *regs)
         uint32_t cols, rows;
         if (vesa_tty_is_ready()) {
             cols = vesa_tty_get_cols();
-            rows = vesa_tty_get_rows();
-            if (vtty_count() > 0 && rows > VESA_TTY_STATUS_ROWS)
-                rows -= VESA_TTY_STATUS_ROWS;
+            rows = vesa_tty_usable_rows();
         } else {
             cols = VGA_WIDTH;
             rows = (uint32_t)t_get_rows();

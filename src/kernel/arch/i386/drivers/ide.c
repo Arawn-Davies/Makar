@@ -15,6 +15,7 @@
 #include <kernel/asm.h>
 #include <kernel/tty.h>
 #include <kernel/serial.h>
+#include <kernel/debug.h>
 
 #include <stddef.h>
 #include <string.h>
@@ -133,9 +134,15 @@ static int ide_poll(uint8_t ch, int check_drq)
 {
     ide_400ns_delay(ch);
 
+    /* Bounded poll: ~5 million iterations covers any realistic ATA response
+     * time under QEMU TCG.  If BSY never clears the drive is gone and we
+     * must not spin forever. */
     uint8_t status;
+    uint32_t limit = 5000000;
     do {
         status = ide_read_altstatus(ch);
+        if (--limit == 0)
+            KPANIC("ide_poll: ATA drive BSY never cleared (drive hung or absent)");
     } while (status & ATA_SR_BSY);
 
     if (status & ATA_SR_ERR)  return 1;

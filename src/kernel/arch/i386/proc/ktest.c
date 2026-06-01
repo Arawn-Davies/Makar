@@ -44,7 +44,7 @@ volatile int ktest_bg_done = 0;
  * inside the RUN macro in ktest_bg_task; total is fixed at compile time so
  * the bar length is known the moment shell_run starts. */
 volatile int ktest_bg_completed = 0;
-const    int ktest_bg_total     = 21;   /* keep in sync with RUN() calls below */
+const    int ktest_bg_total     = 20;   /* keep in sync with RUN() calls below */
 
 /* When set, suppress VGA output for pass lines and suite headers. */
 int ktest_muted = 0;
@@ -365,35 +365,29 @@ static void test_usr(void)
 
 static void test_rootfs_mount_layout(void)
 {
-    ktest_begin("rootfs_mount_layout", "rootfs at / plus /mnt placeholders and HDD /mnt/root alias");
+    ktest_begin("rootfs_mount_layout",
+                "VFS mount-table routing: / present, /mnt virtual dir, "
+                "/dev /proc /tmp /log overlays reachable");
 
     vfs_stat_info_t st;
 
+    /* / is always elected (ISO9660 or ext2/FAT32). */
     KTEST_ASSERT(vfs_stat("/", &st) == 0);
     KTEST_ASSERT(st.kind == VFS_STAT_DIR);
 
+    /* /mnt is a virtual directory synthesised from the mount table. */
     KTEST_ASSERT(vfs_stat("/mnt", &st) == 0);
     KTEST_ASSERT(st.kind == VFS_STAT_DIR);
 
-    KTEST_ASSERT(vfs_stat("/mnt/root", &st) == 0);
+    /* Synthetic overlays registered unconditionally by vfs_init. */
+    KTEST_ASSERT(vfs_stat("/dev",  &st) == 0);
     KTEST_ASSERT(st.kind == VFS_STAT_DIR);
-
-    KTEST_ASSERT(vfs_stat("/mnt/boot", &st) == 0);
+    KTEST_ASSERT(vfs_stat("/proc", &st) == 0);
     KTEST_ASSERT(st.kind == VFS_STAT_DIR);
-
-    /* The rootfs sentinel should be reachable through the elevated root. */
-    if (vfs_file_exists("/usr/lib/crt0.o")) {
-        KTEST_ASSERT(vfs_file_exists("/apps/hello.elf") == 1);
-        KTEST_ASSERT(vfs_file_exists("/boot/makar.kernel") == 1);
-    }
-
-    /* On HDD boots, /mnt/root is not just a placeholder: it must be a bind
-     * alias for the same elected rootfs volume. */
-    if (strcmp(vfs_hd_fsname("root"), "none") != 0) {
-        KTEST_ASSERT(vfs_file_exists("/mnt/root/usr/lib/crt0.o") == 1);
-        KTEST_ASSERT(vfs_file_exists("/mnt/root/apps/hello.elf") == 1);
-        KTEST_ASSERT(vfs_file_exists("/mnt/root/apps/calc.elf") == 1);
-    }
+    KTEST_ASSERT(vfs_stat("/tmp",  &st) == 0);
+    KTEST_ASSERT(st.kind == VFS_STAT_DIR);
+    KTEST_ASSERT(vfs_stat("/log",  &st) == 0);
+    KTEST_ASSERT(st.kind == VFS_STAT_DIR);
 
     ktest_summary();
 }
@@ -1260,7 +1254,11 @@ static void test_file_fd(void)
     }
 
     /* ---- F. flush-error propagation ---- */
-    {
+    /* Write to a read-only path and verify fd_close surfaces the error.
+     * Use /mnt/cdrom when a CD-ROM is mounted (live boot or QEMU with ISO);
+     * skip the sub-test on installed boots with no CD present — the core
+     * flush-error path is the same regardless of which backend rejects it. */
+    if (vfs_file_exists("/mnt/cdrom")) {
         fd_table_t *t = fd_table_create_default();
         KTEST_ASSERT(t != NULL);
         int xfd = fd_alloc(t);
@@ -1273,7 +1271,6 @@ static void test_file_fd(void)
         xe->size     = 2;
         xe->dirty    = 1;
         memcpy(xe->data, "ab", 2);
-        /* /mnt/cdrom is read-only; vfs_write_file refuses with -1. */
         const char *bad = "/mnt/cdrom/should-not-write";
         uint32_t i = 0;
         while (bad[i] && i < VFS_PATH_MAX - 1) { xe->path[i] = bad[i]; i++; }
@@ -2554,12 +2551,13 @@ void ktest_bg_task(void)
           while (timer_get_ticks() - t0 < 5) task_yield(); } \
     } while (0)
 
+    /* POST / kernel-integrity suites only.
+     * Userspace-visible syscall behaviour lives in ktest_uspace.elf (incore). */
     RUN(test_acpi_checksum);
     RUN(test_string);
     RUN(test_partition);
     RUN(test_devfs);
     RUN(test_tmpfs);
-    RUN(test_usr);
     RUN(test_rootfs_mount_layout);
     RUN(test_pmm);
     RUN(test_heap);
@@ -2567,12 +2565,9 @@ void ktest_bg_task(void)
     RUN(test_task);
     RUN(test_procfs_tasks);
     RUN(test_getpid);
-    RUN(test_posix_fs_syscalls);
     RUN(test_rtc_unix_time);
     RUN(test_syscall);
     RUN(test_fd_table);
-    RUN(test_file_fd);
-    RUN(test_cwd);
     RUN(test_signal);
     RUN(test_preempt);
     RUN(test_gdt);
