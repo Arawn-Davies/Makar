@@ -885,6 +885,19 @@ int vfs_hd_mounted(void)
     return 0;
 }
 
+int vfs_rootfs_is_disk(void)
+{
+    /* True when the entry mounted at "/" is ext2 or FAT32 (installed system).
+     * False when it is ISO9660 (live CD) or absent (no-rootfs boot). */
+    for (int i = 0; i < s_nmounts; i++) {
+        if (s_mounts[i].mountpoint[0] == '/' && s_mounts[i].mountpoint[1] == '\0') {
+            vfs_backend_t b = s_mounts[i].backend;
+            return (b == VFS_BACKEND_EXT2 || b == VFS_BACKEND_FAT32);
+        }
+    }
+    return 0;
+}
+
 const char *vfs_hd_fsname(const char *name)
 {
     int mi = name ? mount_find_slot(name) : -1;

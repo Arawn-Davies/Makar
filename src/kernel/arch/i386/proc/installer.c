@@ -26,6 +26,10 @@
  */
 
 #include <kernel/installer.h>
+#include <kernel/auth.h>
+#include <kernel/acpi.h>
+#include <kernel/timer.h>
+#include <kernel/rtc.h>
 #include <kernel/ide.h>
 #include <kernel/iso9660.h>
 #include <kernel/partition.h>
@@ -105,6 +109,12 @@ static int  s_q_head, s_q_tail;
 static struct { char name[64]; int is_dir; } s_ents[ENTS_MAX];
 static int s_nents;
 
+/* Installed target info, set during do_install so the account-creation
+ * wizard can remount the data partition without re-discovering it. */
+static uint8_t  s_inst_drive;
+static uint32_t s_inst_data_lba;
+static int      s_inst_fs;
+
 /* ------------------------------------------------------------------------- */
 /* Geometry                                                                  */
 /* ------------------------------------------------------------------------- */
@@ -117,8 +127,7 @@ static void tui_geometry(void)
     g_gui = vesa_tty_is_ready();
     if (g_gui) {
         g_cols = vesa_tty_get_cols();
-        uint32_t r = vesa_tty_get_rows();
-        g_rows = (r > VESA_TTY_STATUS_ROWS) ? (r - VESA_TTY_STATUS_ROWS) : r;
+        g_rows = vesa_tty_usable_rows();
     } else {
         g_cols = 80;
         g_rows = 49;   /* 80x50 VGA text, minus status row */
@@ -184,6 +193,55 @@ static void readline(char *buf, size_t max)
         if (c == '\b') { if (len) { len--; t_backspace(); } continue; }
         if (c < 0x20 || c > 0x7E) continue;
         if (len < max - 1) { buf[len++] = (char)c; t_putchar((char)c); }
+    }
+    buf[len] = '\0';
+}
+
+/* Masked password readline: echoes '*' per character with a '_' cursor.
+ * GUI mode paints at (field_col, row); VGA mode echoes to terminal cursor. */
+static void readline_masked(char *buf, size_t max,
+                            uint32_t field_col, uint32_t row)
+{
+    size_t len = 0;
+
+    /* Draw initial cursor */
+    if (g_gui)
+        vesa_tty_paint_string_at(field_col, row, "_", C_TITLE, C_BG);
+
+    while (1) {
+        unsigned char c = getkey();
+        if (c == '\n' || c == '\r') {
+            /* Clear cursor on commit */
+            if (g_gui)
+                vesa_tty_paint_string_at(field_col + (uint32_t)len, row, " ", C_FG, C_BG);
+            break;
+        }
+        if (c == '\b' || c == 127) {
+            if (len) {
+                /* Erase cursor at current pos */
+                if (g_gui)
+                    vesa_tty_paint_string_at(field_col + (uint32_t)len, row, " ", C_FG, C_BG);
+                len--;
+                /* Erase the star that was at len */
+                if (g_gui)
+                    vesa_tty_paint_string_at(field_col + (uint32_t)len, row, "_", C_TITLE, C_BG);
+                else
+                    t_backspace();
+            }
+            continue;
+        }
+        if (c < 0x20 || c > 0x7E) continue;
+        if (len < max - 1) {
+            /* Overwrite cursor with star, advance cursor */
+            if (g_gui) {
+                vesa_tty_paint_string_at(field_col + (uint32_t)len, row, "*", C_FG, C_BG);
+            } else {
+                t_putchar('*');
+            }
+            buf[len++] = (char)c;
+            if (g_gui)
+                vesa_tty_paint_string_at(field_col + (uint32_t)len, row, "_", C_TITLE, C_BG);
+        }
     }
     buf[len] = '\0';
 }
@@ -768,6 +826,10 @@ static int do_install(uint8_t drive, uint32_t disk_sectors, int fs)
         return -5;
     }
     g_root_fs = fs;
+    /* Record for the post-install account-creation step. */
+    s_inst_drive    = drive;
+    s_inst_data_lba = data_lba;
+    s_inst_fs       = fs;
 
     copy_tree("/apps");
     copy_tree("/docs");
@@ -969,18 +1031,373 @@ void installer_run(void)
      * directly to the framebuffer and does not mirror to COM1). */
     t_writestring(rc == 0 ? "INSTALL: complete ok\n" : "INSTALL: failed\n");
 
-    if (g_gui) {
-        tui_frame("Installer", "Press a key to return to the shell");
-        if (rc == 0) {
-            tui_center(6, "Installation complete!", C_OK, C_BG);
-            tui_center(8, "Remove the CD and reboot to start Makar from disk.", C_FG, C_BG);
-        } else {
+    if (rc != 0) {
+        if (g_gui) {
+            tui_frame("Installer", "Press a key to return to the shell");
             tui_center(6, "Installation FAILED.", C_WARN, C_BG);
             tui_center(8, "See the messages above; nothing was finalised.", C_DIM, C_BG);
+            getkey();
+        } else {
+            t_writestring("\n=== Installation FAILED ===\n");
         }
-        getkey();
-    } else {
-        t_writestring(rc == 0 ? "\n=== Installation complete! ===\n"
-                              : "\n=== Installation FAILED ===\n");
+        return;
     }
+
+    /* ------------------------------------------------------------------ */
+    /* Wizard: collect hostname + account data (no disk I/O)              */
+    /* All inputs are gathered first; a single mount writes everything.   */
+    /* ------------------------------------------------------------------ */
+
+    /* --- Hostname --- */
+    Serial_WriteString("INSTALL>hostname\n");
+    char w_hostname[64];
+    w_hostname[0] = '\0';
+    {
+        if (g_gui) {
+            tui_frame("Set hostname", "Enter a name for this machine (letters, digits, hyphens)");
+            uint32_t mid  = g_rows / 2;
+            uint32_t lcol = (g_cols / 2) > 20 ? (g_cols / 2) - 20 : 2;
+            uint32_t fcol = lcol + 12;
+            tui_at(lcol, mid, "Hostname:   ", C_FG, C_BG);
+            {
+                char blank[32]; for (int i=0;i<20;i++) blank[i]=' '; blank[20]='\0';
+                vesa_tty_paint_string_at(fcol, mid, blank, C_FG, C_BG);
+            }
+            tui_at(lcol, mid + 2, "Press Enter to accept (default: makar)", C_DIM, C_BG);
+            {
+                size_t len = 0;
+                vesa_tty_paint_string_at(fcol, mid, "_", C_TITLE, C_BG);
+                while (1) {
+                    unsigned char c = getkey();
+                    if (c == '\n' || c == '\r') {
+                        vesa_tty_paint_string_at(fcol+(uint32_t)len, mid, " ", C_FG, C_BG);
+                        break;
+                    }
+                    if (c == '\b' || c == 127) {
+                        if (len) {
+                            vesa_tty_paint_string_at(fcol+(uint32_t)len, mid, " ", C_FG, C_BG);
+                            len--;
+                            vesa_tty_paint_string_at(fcol+(uint32_t)len, mid, "_", C_TITLE, C_BG);
+                        }
+                        continue;
+                    }
+                    if (c < 0x20 || c > 0x7E) continue;
+                    if (len < sizeof(w_hostname)-1) {
+                        char ch[2] = {(char)c, '\0'};
+                        vesa_tty_paint_string_at(fcol+(uint32_t)len, mid, ch, C_FG, C_BG);
+                        w_hostname[len++] = (char)c;
+                        vesa_tty_paint_string_at(fcol+(uint32_t)len, mid, "_", C_TITLE, C_BG);
+                    }
+                }
+                w_hostname[len] = '\0';
+            }
+        } else {
+            t_writestring("\nHostname (default: makar): ");
+            readline(w_hostname, sizeof(w_hostname));
+        }
+        if (!w_hostname[0]) {
+            w_hostname[0]='m'; w_hostname[1]='a'; w_hostname[2]='k';
+            w_hostname[3]='a'; w_hostname[4]='r'; w_hostname[5]='\0';
+        }
+    }
+
+    /* --- Accounts --- */
+    Serial_WriteString("INSTALL>accounts\n");
+
+    /* Per-account wizard state; shadow lines built in memory. */
+    struct {
+        char username[64];
+        char shadow_line[256];
+        size_t shadow_len;
+    } w_accts[2];
+    int w_naccts = 0;
+
+    static const struct { const char *user; const char *prompt; int required; }
+    acct_steps[] = {
+        { "root", "Set root password", 1 },
+        { NULL,   "Create a user",     0 },
+    };
+
+    for (int step = 0; step < 2; step++) {
+        const char *fixed_user = acct_steps[step].user;
+        const char *title      = acct_steps[step].prompt;
+        int         required   = acct_steps[step].required;
+
+        char username[64];
+        char pass1[256], pass2[256];
+
+        if (g_gui) {
+            tui_frame(title,
+                      required ? "Enter a password for root  (Enter to skip)"
+                               : "Y = create user   N / Enter = skip");
+
+            uint32_t mid  = g_rows / 2;
+            uint32_t lcol = (g_cols / 2) > 20 ? (g_cols / 2) - 20 : 2;
+            uint32_t fcol = lcol + 14;
+
+            if (!fixed_user) {
+                tui_at(lcol, mid - 2, "Create an additional user? [y/N]", C_FG, C_BG);
+                {
+                    unsigned char ans = getkey();
+                    if (ans != 'y' && ans != 'Y') goto next_acct;
+                }
+                tui_at(lcol, mid - 4, "Username:     ", C_FG, C_BG);
+                {
+                    char blank[32]; for (int i=0;i<20;i++) blank[i]=' '; blank[20]='\0';
+                    vesa_tty_paint_string_at(fcol, mid - 4, blank, C_FG, C_BG);
+                }
+                {
+                    char blank[40]; for (int i=0;i<36;i++) blank[i]=' '; blank[36]='\0';
+                    vesa_tty_paint_string_at(lcol, mid - 2, blank, C_FG, C_BG);
+                }
+                {
+                    size_t len = 0;
+                    vesa_tty_paint_string_at(fcol, mid-4, "_", C_TITLE, C_BG);
+                    while (1) {
+                        unsigned char c = getkey();
+                        if (c == '\n' || c == '\r') {
+                            vesa_tty_paint_string_at(fcol+(uint32_t)len, mid-4, " ", C_FG, C_BG);
+                            break;
+                        }
+                        if (c == 0x1B) { username[0]='\0'; break; }
+                        if (c == '\b' || c == 127) {
+                            if (len) {
+                                vesa_tty_paint_string_at(fcol+(uint32_t)len, mid-4, " ", C_FG, C_BG);
+                                len--;
+                                vesa_tty_paint_string_at(fcol+(uint32_t)len, mid-4, "_", C_TITLE, C_BG);
+                            }
+                            continue;
+                        }
+                        if (c < 0x20 || c > 0x7E) continue;
+                        if (len < sizeof(username)-1) {
+                            char ch[2]={(char)c,'\0'};
+                            vesa_tty_paint_string_at(fcol+(uint32_t)len, mid-4, ch, C_FG, C_BG);
+                            username[len++]=(char)c;
+                            vesa_tty_paint_string_at(fcol+(uint32_t)len, mid-4, "_", C_TITLE, C_BG);
+                        }
+                    }
+                    username[len]='\0';
+                }
+                if (!username[0]) goto next_acct;
+            } else {
+                for (int i=0; fixed_user[i] && i<(int)sizeof(username)-1; i++)
+                    username[i] = fixed_user[i];
+                username[sizeof(username)-1] = '\0';
+            }
+
+            uint32_t row_pass  = fixed_user ? mid - 2 : mid;
+            uint32_t row_pass2 = row_pass + 2;
+            uint32_t row_hint  = row_pass2 + 2;
+
+            tui_at(lcol, row_pass,  "Password:     ", C_FG, C_BG);
+            tui_at(lcol, row_pass2, "Confirm:      ", C_FG, C_BG);
+            tui_at(lcol, row_hint,  "Press Enter to confirm", C_DIM, C_BG);
+
+            char blanks[32]; for (int i=0;i<20;i++) blanks[i]=' '; blanks[20]='\0';
+            vesa_tty_paint_string_at(fcol, row_pass,  blanks, C_FG, C_BG);
+            vesa_tty_paint_string_at(fcol, row_pass2, blanks, C_FG, C_BG);
+
+            readline_masked(pass1, sizeof(pass1), fcol, row_pass);
+            if (!pass1[0] && required) {
+                tui_at(lcol, row_hint, "Password unchanged (skipped).       ", C_DIM, C_BG);
+                goto next_acct;
+            }
+            if (!pass1[0]) goto next_acct;
+
+            readline_masked(pass2, sizeof(pass2), fcol, row_pass2);
+            if (strcmp(pass1, pass2) != 0) {
+                tui_at(lcol, row_hint, "Passwords do not match. Press a key.", C_WARN, C_BG);
+                getkey();
+                goto next_acct;
+            }
+        } else {
+            if (!fixed_user) {
+                t_writestring("\nCreate a user (blank to skip): ");
+                readline(username, sizeof(username));
+                if (!username[0]) goto next_acct;
+            } else {
+                for (int i=0; fixed_user[i] && i<(int)sizeof(username)-1; i++)
+                    username[i] = fixed_user[i];
+                username[sizeof(username)-1] = '\0';
+                t_writestring("\nSet root password (Enter to skip): ");
+            }
+            readline_masked(pass1, sizeof(pass1), 0, 0);
+            if (!pass1[0]) goto next_acct;
+            t_writestring("Confirm: ");
+            readline_masked(pass2, sizeof(pass2), 0, 0);
+            if (strcmp(pass1, pass2) != 0) {
+                t_writestring("Passwords do not match.\n");
+                goto next_acct;
+            }
+        }
+
+        /* Build shadow line in memory — no disk I/O here. */
+        if (w_naccts < 2) {
+            /* Copy username */
+            size_t ui = 0;
+            while (username[ui] && ui < sizeof(w_accts[0].username)-1) {
+                w_accts[w_naccts].username[ui] = username[ui]; ui++;
+            }
+            w_accts[w_naccts].username[ui] = '\0';
+
+            /* Compute salt + hash */
+            char salt[17], hash[17];
+            {
+                uint32_t ticks = timer_get_ticks();
+                uint32_t rtcsec = 0; rtc_unix_time(&rtcsec);
+                uint8_t seed[8];
+                seed[0]=(uint8_t)ticks;       seed[1]=(uint8_t)(ticks>>8);
+                seed[2]=(uint8_t)(ticks>>16);  seed[3]=(uint8_t)(ticks>>24);
+                seed[4]=(uint8_t)rtcsec;       seed[5]=(uint8_t)(rtcsec>>8);
+                seed[6]=(uint8_t)(rtcsec>>16); seed[7]=(uint8_t)(rtcsec>>24);
+                microhash_hex16(seed, 8, salt);
+            }
+            {
+                size_t plen = strlen(pass1);
+                if (plen > 256) plen = 256;
+                uint8_t combined[16 + 256];
+                for (int i = 0; i < 16; i++) combined[i] = (uint8_t)salt[i];
+                for (size_t i = 0; i < plen; i++) combined[16+i] = (uint8_t)pass1[i];
+                microhash_hex16(combined, 16 + plen, hash);
+            }
+
+            /* "username:$mh$<salt16>$<hash16>:::::::\n" */
+            char *ln = w_accts[w_naccts].shadow_line;
+            size_t pos = 0;
+            for (size_t i = 0; username[i] && pos < 64; i++) ln[pos++] = username[i];
+            ln[pos++]=':'; ln[pos++]='$'; ln[pos++]='m';
+            ln[pos++]='h'; ln[pos++]='$';
+            for (int i=0;i<16;i++) ln[pos++]=salt[i];
+            ln[pos++]='$';
+            for (int i=0;i<16;i++) ln[pos++]=hash[i];
+            const char *tail = ":::::::\n";
+            for (int i=0;tail[i];i++) ln[pos++]=tail[i];
+            w_accts[w_naccts].shadow_len = pos;
+            w_naccts++;
+        }
+
+        next_acct:;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Single disk write: hostname + shadow + home dirs                   */
+    /* One mount/unmount — no double-remount of the live rootfs.          */
+    /* ------------------------------------------------------------------ */
+    {
+        int mnt = (s_inst_fs == ROOTFS_EXT2)
+            ? ext2_mount(s_inst_drive, s_inst_data_lba)
+            : fat32_mount(s_inst_drive, s_inst_data_lba);
+
+        if (mnt == 0) {
+            g_root_fs = s_inst_fs;
+
+            rfs_mkdir("/etc");
+
+            /* /etc/hostname */
+            {
+                size_t hlen = strlen(w_hostname);
+                char hfile[66];
+                for (size_t i = 0; i < hlen; i++) hfile[i] = w_hostname[i];
+                hfile[hlen] = '\n'; hfile[hlen+1] = '\0';
+                rfs_write("/etc/hostname", hfile, (uint32_t)(hlen + 1));
+                Serial_WriteString("[install] hostname: ");
+                Serial_WriteString(w_hostname);
+                Serial_WriteString("\n");
+            }
+
+            /* /etc/shadow — concatenate all entries */
+            if (w_naccts > 0) {
+                static char shadow_buf[512];
+                size_t spos = 0;
+                for (int i = 0; i < w_naccts; i++) {
+                    size_t llen = w_accts[i].shadow_len;
+                    if (spos + llen < sizeof(shadow_buf)) {
+                        for (size_t j = 0; j < llen; j++)
+                            shadow_buf[spos++] = w_accts[i].shadow_line[j];
+                        Serial_WriteString("[install] shadow written for: ");
+                        Serial_WriteString(w_accts[i].username);
+                        Serial_WriteString("\n");
+                    }
+                }
+                rfs_write("/etc/shadow", shadow_buf, (uint32_t)spos);
+            }
+
+            /* Home directories + default .makrc */
+            rfs_mkdir("/root");
+            rfs_mkdir("/home");
+            for (int i = 0; i < w_naccts; i++) {
+                int is_root = (w_accts[i].username[0]=='r' &&
+                               w_accts[i].username[1]=='o' &&
+                               w_accts[i].username[2]=='o' &&
+                               w_accts[i].username[3]=='t' &&
+                               w_accts[i].username[4]=='\0');
+
+                /* Compute home dir path */
+                char hdir[80];
+                size_t p = 0;
+                if (is_root) {
+                    hdir[p++]='/'; hdir[p++]='r'; hdir[p++]='o';
+                    hdir[p++]='o'; hdir[p++]='t'; hdir[p]='\0';
+                } else {
+                    hdir[p++]='/'; hdir[p++]='h'; hdir[p++]='o';
+                    hdir[p++]='m'; hdir[p++]='e'; hdir[p++]='/';
+                    for (size_t j = 0; w_accts[i].username[j] && p < sizeof(hdir)-1; j++)
+                        hdir[p++] = w_accts[i].username[j];
+                    hdir[p] = '\0';
+                    rfs_mkdir(hdir);
+                }
+                Serial_WriteString("[install] homedir: ");
+                Serial_WriteString(hdir);
+                Serial_WriteString("\n");
+
+                /* Write ~/.makrc with defaults */
+                char rc_path[88];
+                p = 0;
+                for (size_t j = 0; hdir[j] && p < sizeof(rc_path)-8; j++)
+                    rc_path[p++] = hdir[j];
+                rc_path[p++]='/'; rc_path[p++]='.'; rc_path[p++]='m';
+                rc_path[p++]='a'; rc_path[p++]='k'; rc_path[p++]='r';
+                rc_path[p++]='c'; rc_path[p]='\0';
+
+                /* Default .makrc content */
+                static const char makrc_root[] =
+                    "# ~/.makrc -- sourced by sh.elf on login\n"
+                    "PATH=/apps:/bin\n";
+                static const char makrc_user[] =
+                    "# ~/.makrc -- sourced by sh.elf on login\n"
+                    "PATH=/apps:/bin\n";
+                const char *rc_content = is_root ? makrc_root : makrc_user;
+                size_t rc_len = 0;
+                while (rc_content[rc_len]) rc_len++;
+                rfs_write(rc_path, rc_content, (uint32_t)rc_len);
+                Serial_WriteString("[install] makrc: ");
+                Serial_WriteString(rc_path);
+                Serial_WriteString("\n");
+            }
+
+            if (s_inst_fs == ROOTFS_EXT2) ext2_unmount();
+            else fat32_unmount();
+        } else {
+            Serial_WriteString("[install] WARNING: could not mount data fs for post-install writes\n");
+        }
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Done                                                                 */
+    /* ------------------------------------------------------------------ */
+
+    Serial_WriteString("[install] complete — rebooting\n");
+    if (g_gui) {
+        tui_frame("Installer", "Rebooting...");
+        tui_center(6, "Installation complete!", C_OK, C_BG);
+        tui_center(8, "Remove the install media. Rebooting in 3 seconds...", C_FG, C_BG);
+    } else {
+        t_writestring("\n=== Installation complete! Rebooting... ===\n");
+    }
+    /* Yield ~1500 times so the scheduler runs and the user can read the
+     * message.  task_yield() works even if the timer tick is stuck, because
+     * keyboard_getchar() uses the same mechanism and we know it runs. */
+    for (int i = 0; i < 1500; i++)
+        task_yield();
+    acpi_reboot();
 }

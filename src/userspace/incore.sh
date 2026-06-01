@@ -36,4 +36,8 @@ echo INCORE: RUN alloctest
 exec /apps/alloctest.elf
 if [ $? -eq 0 ]; then echo INCORE: PASS alloctest; else echo INCORE: FAIL alloctest; fail=1; fi
 
+echo INCORE: RUN ktest_uspace
+exec /apps/ktest_uspace.elf
+if [ $? -eq 0 ]; then echo INCORE: PASS ktest_uspace; else echo INCORE: FAIL ktest_uspace; fail=1; fi
+
 if [ $fail -eq 0 ]; then echo INCORE: ALL PASS; else echo INCORE: FAIL; fi

@@ -494,6 +494,13 @@ void vesa_tty_set_status_visible(int v)
 	}
 }
 
+uint32_t vesa_tty_usable_rows(void)
+{
+    if (s_status_visible && tty_rows > VESA_TTY_STATUS_ROWS)
+        return tty_rows - VESA_TTY_STATUS_ROWS;
+    return tty_rows;
+}
+
 /* ---------------------------------------------------------------------------
  * Legacy status-bar entry points.  makmux owns the actual tab bar in
  * userspace; the kernel only reserves the bottom row and offers raw cell

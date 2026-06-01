@@ -11,6 +11,7 @@
 #include "shell_priv.h"
 
 #include <kernel/shell.h>
+#include <kernel/auth.h>
 #include <kernel/keyboard.h>
 #include <kernel/vtty.h>
 #include <kernel/tty.h>
@@ -1182,10 +1183,87 @@ void shell_enter_root_tty(void)
     } else {
         t_fill(SHELL_COLOR_VGA);
     }
+    /* Boot splash ends here; the login prompt follows in shell_login_loop. */
+}
 
-    t_writestring("Makar " MAKAR_VERSION "\n");
-    t_writestring("Type 'help' for commands, 'about' for credits.\n");
-    t_writestring("Welcome back, " SHELL_USERNAME "!\n\n");
+/*
+ * shell_login_loop – mak.sh0 session manager.
+ *
+ * Called once after shell_enter_root_tty() has shown the boot splash and
+ * loading bar.  Runs the Medli/Makar login flow (Linux-style: authenticate
+ * first, then hand off to the shell) and restarts it whenever the user
+ * types `exit` or Ctrl-D in their session.
+ *
+ * Only mak.sh0 calls this.  mak.sh1–4 (spawned by makmux) exit normally
+ * without re-authentication.
+ */
+void shell_login_loop(void)
+{
+    for (;;) {
+        /* --- Authenticate (installed systems only) ---
+         * Require login when all three conditions hold:
+         *   1. Booted without `live` on the cmdline (not a live ISO session)
+         *   2. The rootfs at / is a disk filesystem (ext2 or FAT32)
+         *   3. /etc/shadow exists (password has been configured)
+         * Any live ISO boot — even one where the kernel elected an HDD as
+         * rootfs — skips authentication entirely. */
+        if (!g_live_boot && vfs_rootfs_is_disk() && vfs_file_exists("/etc/shadow"))
+            login_screen();
+
+        /* --- Session start: clear to the shell's own palette and print
+         *     the build-info banner, matching the pre-login-flow UX. --- */
+        terminal_set_colorscheme(SHELL_COLOR_VGA);
+        if (vesa_tty_is_ready()) {
+            vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
+            vesa_tty_clear();
+        } else {
+            t_fill(SHELL_COLOR_VGA);
+        }
+        t_writestring("Makar " MAKAR_VERSION "\n");
+        t_writestring("Type 'help' for commands, 'about' for credits.\n");
+        if (!g_live_boot && vfs_rootfs_is_disk() && vfs_file_exists("/etc/shadow")) {
+            t_writestring("Welcome back, ");
+            t_writestring(auth_current_user());
+            t_writestring("!\n\n");
+        } else {
+            t_writestring("Welcome, user@makar! (live session)\n\n");
+        }
+
+        /* --- Spawn sh.elf --login --user=<name> --- */
+        {
+            /* Build --user=<name> into a stack buffer so it outlives the call. */
+            static char user_arg[48];
+            const char *u = auth_current_user();
+            size_t i = 0;
+            const char *pfx = "--user=";
+            while (*pfx) user_arg[i++] = *pfx++;
+            while (*u && i < sizeof(user_arg) - 1) user_arg[i++] = *u++;
+            user_arg[i] = '\0';
+
+            /* On a live boot the rootfs may be the installed HDD, whose
+             * /apps/sh.elf is stale.  Always run from the CD-ROM when live
+             * so the session uses the current build. */
+            const char *sh_path = g_live_boot && vfs_file_exists("/mnt/cdrom/apps/sh.elf")
+                                  ? "/mnt/cdrom/apps/sh.elf"
+                                  : "/apps/sh.elf";
+
+            const char *argv[4] = { "sh.elf", "--login", user_arg, NULL };
+            shell_exec_elf(sh_path, 3, (char **)argv);
+        }
+
+        /* shell_exec_elf blocks until the child dies, then returns here.
+         * The next loop iteration shows the login prompt again. */
+
+        /* Drain any stale keyboard input before the next login attempt. */
+        while (keyboard_poll()) {}
+
+        /* Repaint a clean login backdrop (login_screen does its own clear,
+         * but a brief visual "session ended" is cleaner). */
+        if (vesa_tty_is_ready()) {
+            vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
+            vesa_tty_clear();
+        }
+    }
 }
 
 /*

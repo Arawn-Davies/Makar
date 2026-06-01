@@ -29,6 +29,10 @@
 #include <kernel/sh_script.h>
 #include <kernel/elf.h>
 
+/* Set to 1 when `live` appears on the kernel cmdline (live ISO boot).
+ * Suppresses login regardless of rootfs type. */
+int g_live_boot = 0;
+
 /*
  * Column at which "[ OK ]" starts, counting from 0.
  * "[ OK ]" is 6 characters wide, so it occupies columns 74–79 on an
@@ -105,27 +109,10 @@ void user_shell_slot_entry(void)
 		}
 	}
 
-	static const char *login_argv[] = { "sh.elf", "--login", NULL };
-	int rc = elf_exec("/apps/sh.elf", 2, (const char *const *)login_argv);
-
-	/* elf_exec returned -> /apps/sh.elf could not be loaded.  Print a
-	 * diagnostic and fall back to the in-kernel rescue shell on this
-	 * VT so the user still has a prompt. */
-	Serial_WriteString("user-shell: /apps/sh.elf failed to exec (rc=");
-	{
-		char dec[12]; int n = 0; int v = rc;
-		if (v < 0) { Serial_WriteString("-"); v = -v; }
-		if (v == 0) dec[n++] = '0';
-		while (v) { dec[n++] = (char)('0' + (v % 10)); v /= 10; }
-		while (n--) { char one[2] = { dec[n], 0 }; Serial_WriteString(one); }
-	}
-	Serial_WriteString("), falling back to kernel rescue shell\n");
-	{
-		task_t *cur = task_current();
-		if (cur)
-			cur->name = "rescu.sh";
-	}
-	shell_run();  /* never returns */
+	/* Linux-style login flow: login_screen → sh.elf session → loop.
+	 * shell_login_loop never returns; it shows the login prompt after
+	 * every session exit so mak.sh0 always requires re-authentication. */
+	shell_login_loop();
 }
 
 void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
@@ -202,6 +189,8 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 
 	/* Parse Multiboot 2 tags: boot device and kernel command line. */
 	int test_mode = 0;
+	int live_boot = 0;          /* `live` on cmdline → live CD session,
+	                             * skip login regardless of rootfs type. */
 	int console_serial = 0;     /* "console=ttyS0" - keep g_serial_verbose
 	                             * on after boot so the shell mirrors to
 	                             * COM1.  Linux-style: dmesg + tty over
@@ -240,6 +229,8 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 						(multiboot2_tag_cmdline_t *)tag;
 					if (strstr(cmd->string, "test_mode"))
 						test_mode = 1;
+					if (strstr(cmd->string, "live"))
+						live_boot = 1;
 					if (strstr(cmd->string, "console=ttyS0"))
 						console_serial = 1;
 					const char *rp = strstr(cmd->string, "root=");
@@ -323,6 +314,7 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 		Serial_WriteString("kernel: boot complete\n");
 		if (!console_serial)
 			g_serial_verbose = 0;
+		g_live_boot = live_boot;
 		/* shell=rescue boots a single in-kernel rescue shell on VT0
 		 * (Linux-style — no other VTs are spawned, so the operator's
 		 * keypresses can't be lost to a hung secondary slot).  The

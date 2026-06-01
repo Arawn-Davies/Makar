@@ -124,12 +124,14 @@ fi
 # ── Interactive ISO ──────────────────────────────────────────────────────────
 # Shipped menu: default = Makar OS, 5s timeout, with a fallback that exits to
 # the next bootable device.  KERNEL_ARGS appends to the main entry only.
+# `live` on the cmdline tells kernel_main this is a live ISO session so the
+# login screen is skipped even if an installed HDD is auto-detected.
 cat > isodir/boot/grub/grub.cfg << EOF
 set default=0
 set timeout=3
 
 menuentry "Makar OS" {
-	multiboot2 /boot/makar.kernel${KERNEL_ARGS:+ $KERNEL_ARGS}
+	multiboot2 /boot/makar.kernel live${KERNEL_ARGS:+ $KERNEL_ARGS}
 }
 
 menuentry "Next available device" {
@@ -163,7 +165,7 @@ set default=0
 set timeout=3
 
 menuentry "Makar OS" {
-	multiboot2 /boot/makar.kernel${KERNEL_ARGS:+ $KERNEL_ARGS}
+	multiboot2 /boot/makar.kernel live${KERNEL_ARGS:+ $KERNEL_ARGS}
 }
 
 menuentry "Next available device" {

@@ -27,7 +27,7 @@ All build, test, and boot operations go through a single entrypoint:
 # CI-style split modes (build once, run many — used by .github/workflows/build-test.yml)
 ./run.sh iso build      # kernel + makar.iso + makar-test.iso, no run
 ./run.sh hdd build      # kernel + makar-hdd-test.img, no run
-./run.sh ktest      # ktest against existing makar-test.iso
+./run.sh ktest      # build + run kernel ktest only (test=ktest; no incore/libc-tcc)
 ./run.sh gdb iso    # GDB ISO boot test against existing makar.iso
 ./run.sh gdb hdd    # GDB HDD boot test against existing makar-hdd-test.img
 
@@ -66,9 +66,16 @@ QEMU steps prefer host `qemu-system-i386` when Docker is the build context; fall
 **Full CI suite** (`iso-test`: ktest + GDB boot checkpoints):
 ```sh
 ./run.sh iso test
-# Phase 1: test_mode ISO → ktest_run_all() → QEMU exits.  Output: ktest.log
+# Phase 1: test_mode ISO → ktest_run_all() + incore + libc-tcc + shell-smoke → QEMU exits.  Output: ktest.log
 # Phase 2: debug ISO + FAT32 test disk → full GDB test suite.  Output: gdb-test.log
 # exits 0 on pass, 1 on any failure
+```
+
+**Kernel-only ktest** (fast, no incore/libc-tcc/shell-smoke):
+```sh
+./run.sh ktest
+# Builds makar-test.iso with test=ktest cmdline, boots headless, streams serial live.
+# Output: ktest.log.  Use this for iterating on kernel changes.
 ```
 
 **HDD boot test:**
@@ -99,7 +106,7 @@ docker run --rm -it -v "$PWD:/work" -w /work arawn780/gcc-cross-i686-elf:fast \
 `generate-hdd.sh` uses `grub-mkimage` (not `grub-install`) to avoid the UUID-search failure that `grub-install` produces when probing loop devices inside Docker. The FAT32 partition receives the kernel at `/boot/makar.kernel` and userspace binaries from `isodir/apps/` at `/apps/`.
 
 **In-kernel test suite (interactive)**: shell command `ktest` runs all suites from the kernel shell.
-At boot (when `test_mode` is *not* in the cmdline), `ktest_bg_task` runs all suites silently in the background - only prints to VGA on failure; always writes `KTEST_BG: PASS/FAIL` to serial.
+At boot (when `test_mode` is *not* in the cmdline), `ktest_bg_task` runs the 20 POST/integrity suites in the background. Each suite emits `[ktest-bg] <suite>: PASS n/n` (or `FAIL`) to serial as it completes, followed by a final `KTEST_BG: PASS` or `KTEST_BG: FAIL`.
 
 **In-kernel UI tests (`src/userspace/incore.sh`)**: a shell-script test driver that runs the non-interactive UI scenarios (hello, forktest, execvetest, alloctest) directly from inside the kernel via the kernel sh interpreter.  Each test invokes its ELF and branches on `$?` (the ELF's own exit status) instead of HMP+serial-grep round-trips; the final marker `INCORE: ALL PASS` (or `INCORE: FAIL`) is what the runner asserts on.  Fronted by the single HMP scenario `test_incore` (`./run.sh ui incore`).  Faster than per-test HMP, no typing races, and the test logic lives in a `.sh` file you can edit without touching the runner.  Tradeoff: loses per-scenario screendump evidence on panic, so only use for tests that don't depend on framebuffer state.  Interactive features (TAB, Ctrl-C, VT switching, sh.elf readline, fullscreen apps) stay in HMP-driven scenarios where the keyboard event itself is under test.
 
