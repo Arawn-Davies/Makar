@@ -311,7 +311,6 @@ _run_ktest() {
     local _qemu _iso
     _qemu=$(_host_qemu)
     _iso="${KTEST_ISO:-makar-test.iso}"
-    rm -f "$REPO_ROOT/ktest.log"
 
     local _accel _tmo
     _accel=$(_qemu_accel)
@@ -331,23 +330,23 @@ _run_ktest() {
         # shellcheck disable=SC2086
         $_tmo "$_qemu" \
             -cdrom "$REPO_ROOT/$_iso" \
-            -serial "file:$REPO_ROOT/ktest.log" \
+            -serial stdio \
             -display none \
             -no-reboot \
             -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
             $_accel \
-            2>/dev/null || true
+            2>/dev/null </dev/null | tee "$REPO_ROOT/ktest.log" || true
     else
         _drun --as-root --env "QEMU_ACCEL=$_accel" --env "KTEST_ISO_NAME=$_iso" --env "KTEST_TIMEOUT=$_ktest_secs" -- \
             'timeout "$KTEST_TIMEOUT" qemu-system-i386 \
                  -cdrom /work/$KTEST_ISO_NAME \
                  -m 32 \
-                 -serial file:/work/ktest.log \
+                 -serial stdio \
                  -display none \
                  -no-reboot \
                  -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
                  $QEMU_ACCEL \
-                 2>/dev/null || true'
+                 2>/dev/null </dev/null | tee /work/ktest.log || true'
     fi
     _check_ktest
 }
@@ -367,10 +366,10 @@ _check_ktest() {
     #   "INCORE: PASS <test>" / "INCORE: FAIL <test>"
     #   "INCORE: ALL PASS"    / "INCORE: FAIL"
     # Plus any kernel panic / KPANIC line if a test corrupted state.
-    echo "---- ktest transcript ----"
-    grep -E "^(\[ktest\]|  PASS:|  FAIL:|KTEST_RESULT|INCORE:|LIBC-TCC:|SHELL-SMOKE:|KPANIC|kpanic)" \
+    # Serial output already streamed live; echo verdict lines so they're
+    # visible at the top of the CI step summary too.
+    grep -E "^(KTEST_RESULT|KTEST_BG:|INCORE:|LIBC-TCC:|SHELL-SMOKE:|KPANIC|kpanic)" \
         "$REPO_ROOT/ktest.log" || true
-    echo "---- end ktest transcript ----"
 
     local ktest_status=unknown
     if grep -q "KTEST_RESULT: PASS" "$REPO_ROOT/ktest.log"; then

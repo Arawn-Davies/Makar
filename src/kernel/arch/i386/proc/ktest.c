@@ -2536,17 +2536,24 @@ void ktest_bg_task(void)
     ktest_bg_completed = 0;
 
     #define RUN(suite) do { \
-        Serial_WriteString("[ktest-bg] >> " #suite "\n"); \
         suite(); \
         total_pass += ktest_pass_count; \
         total_fail += ktest_fail_count; \
         ktest_bg_completed++; \
-        Serial_WriteString("[ktest-bg] << " #suite " (" \
-                            #suite " pass count below)\n"); \
+        Serial_WriteString("[ktest-bg] " #suite ": "); \
+        if (ktest_fail_count == 0) { \
+            Serial_WriteString("PASS "); \
+        } else { \
+            Serial_WriteString("FAIL "); \
+        } \
+        Serial_WriteDec((uint32_t)ktest_pass_count); \
+        Serial_WriteString("/"); \
+        Serial_WriteDec((uint32_t)(ktest_pass_count + ktest_fail_count)); \
+        Serial_WriteString("\n"); \
         /* Brief pacing keeps the loading screen visible while not pushing \
          * iso-test's 120 s GDB budget into the failure regime under TCG. \
          * 5 ticks @ 100 Hz = 50 ms; visible on real HW, ~650 ms total over \
-         * 13 suites in TCG. */ \
+         * 20 suites in TCG. */ \
         { uint32_t t0 = timer_get_ticks(); \
           while (timer_get_ticks() - t0 < 5) task_yield(); } \
     } while (0)
