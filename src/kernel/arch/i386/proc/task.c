@@ -371,18 +371,17 @@ task_t *task_fork(registers_t *parent_regs)
     sig_task_init(t);
 
     /* Inherit cwd + tty from parent.
-     * VTTY_ROOT_SLOT is the hidden console owned exclusively by mak.sh0;
-     * forked children (makmux, its sh.elf children, etc.) must not inherit
-     * it or they would corrupt mak.sh0's backing buffer with their own
-     * SYS_PUTCH_AT output and break focused-write detection. */
+     * VTTY_ROOT_SLOT children (ls, cat, command substitutions) must
+     * inherit the slot so their SYS_WRITE output flows through vtty_bufs[4]
+     * and keeps the VT-buffer cursor in sync with the framebuffer cursor.
+     * SYS_PUTCH_AT guards status-bar rows from corrupting vt->fg/bg, so
+     * fullscreen apps that call it (makmux, vix, ...) are also safe. */
     {
         size_t n = strlen(current_task->cwd);
         if (n >= VFS_PATH_MAX) n = VFS_PATH_MAX - 1;
         memcpy(t->cwd, current_task->cwd, n);
         t->cwd[n] = '\0';
-        t->tty    = (current_task->tty == VTTY_ROOT_SLOT)
-                    ? TASK_TTY_NONE
-                    : current_task->tty;
+        t->tty    = current_task->tty;
     }
 
     /* Lay down the child's kernel stack:

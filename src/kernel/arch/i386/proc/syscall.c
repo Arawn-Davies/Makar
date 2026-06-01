@@ -1285,7 +1285,13 @@ void syscall_dispatch(registers_t *regs)
             uint32_t fg = s_vga_palette[clr & 0x0F];
             uint32_t bg = s_vga_palette[(clr >> 4) & 0x0F];
 
-            if (vt) {
+            /* Only update the VT buffer for cells that are within the
+             * drawable pane.  Status-bar cells (row >= dp->rows) are
+             * painted directly to the framebuffer via vesa_tty_paint_cell
+             * below; writing them into vt also runs vt_set_color which
+             * would overwrite vt->fg/bg with the status-bar palette and
+             * corrupt the parent's colour scheme on repaint. */
+            if (vt && (uint32_t)row < dp->rows) {
                 vt_set_color(vt, fg, bg);
                 vt_put_at(vt, (char)ch, col, row);
             }

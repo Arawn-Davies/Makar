@@ -82,7 +82,15 @@ static void print_palette(void)
 
 void shell_apply_scheme_for_tty(int tty)
 {
-    if (tty < 0 || tty >= 4) tty = 0;
+    /* VTTY_ROOT_SLOT (mak.sh0's hidden console) and any other out-of-range
+     * value use the boot palette (white on blue), not SHELL_SCHEMES[0]
+     * which is the light-green-on-black VT1 scheme. */
+    if (tty < 0 || tty >= 4) {
+        terminal_set_colorscheme(SHELL_COLOR_VGA);
+        if (vesa_tty_is_ready())
+            vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
+        return;
+    }
     const shell_scheme_t *s = &SHELL_SCHEMES[tty];
     terminal_set_colorscheme(s->vga);
     if (vesa_tty_is_ready())
@@ -93,7 +101,8 @@ void shell_clear_screen(void)
 {
     int tty = 0;
     task_t *t = task_current();
-    if (t && t->tty >= 0 && t->tty < 4) tty = t->tty;
+    if (t) tty = t->tty;   /* pass actual tty; shell_apply_scheme_for_tty
+                             * handles VTTY_ROOT_SLOT and out-of-range */
     shell_apply_scheme_for_tty(tty);
     if (vesa_tty_is_ready())
         vesa_tty_clear();
