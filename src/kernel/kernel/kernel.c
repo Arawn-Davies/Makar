@@ -23,6 +23,7 @@
 #include <kernel/task.h>
 #include <kernel/syscall.h>
 #include <kernel/acpi.h>
+#include <kernel/pci.h>
 #include <kernel/ktest.h>
 #include <kernel/vtty.h>
 #include <kernel/sh_script.h>
@@ -193,6 +194,11 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	kprint_ok();
 	ide_init();
 	KLOG("ide: ATA PIO scan complete\n");
+
+	t_writestring("Scanning PCI bus");
+	kprint_ok();
+	pci_init();
+	KLOG("pci: bus scan complete\n");
 
 	/* Parse Multiboot 2 tags: boot device and kernel command line. */
 	int test_mode = 0;

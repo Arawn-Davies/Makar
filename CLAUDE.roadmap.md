@@ -90,6 +90,30 @@ The long-term goal is a self-hosting userspace. Prerequisites and approach:
    - True POSIX processes require `fork` (COW) + separate address spaces. The current VMM can map per-task page directories; `fork` would clone one.
    - Alternative: implement `posix_spawn` semantics (create + exec without fork) - sufficient for a non-interactive shell and simpler to implement.
 
+### PCI / PCIe bus (groundplane — in progress)
+
+Skeleton landed (`src/kernel/arch/i386/drivers/pci.c` + `include/kernel/pci.h`).  `pci_init()` scans all 256 buses at boot via legacy I/O ports 0xCF8/0xCFC.  `lspci` shell command prints the full device table.
+
+Remaining slices:
+1. **ACPI MCFG parsing** — augment `acpi.c` to locate the PCIe MMIO config space base address (needed for extended config space > offset 0xFF and PCIe-only devices).
+2. **Driver binding** — `pci_driver_t` registration table; `pci_probe_all()` walks `pci_devices[]` matching vendor/device or class/subclass to a registered driver.
+3. **RTL8139 NIC** — `src/kernel/arch/i386/drivers/net/rtl8139.c`; PCI 10EC:8139.  BAR0 = I/O base.  Tx ring + Rx ring, IRQ handler, expose as `net0` device node.  Enables `ping`, `wget`, NFS mount.
+4. **virtio-net** — for QEMU `-device virtio-net-pci`; simpler than real NIC (no undocumented register quirks).  Good companion driver to RTL8139.
+5. **USB host controller detection** — `src/kernel/arch/i386/drivers/usb/usb.c`; detect UHCI/OHCI/EHCI/xHCI controllers via PCI class 0x0C:0x03.  Foundation only — full HID stack comes later.
+6. **USB HID keyboard** — OHCI/UHCI driver + USB HID class + boot protocol keyboard; fallback when PS/2 is absent on real hardware.
+
+### User accounts / login (groundplane — skeleton only)
+
+Files: `src/kernel/arch/i386/auth/` (`sha256.c`, `shadow.c`, `login.c`, `auth.h`).  Not wired in yet.
+
+Plan:
+1. **SHA-256** — port from Medli `SHA256.cs` (261 lines C#) to freestanding C.  No salt yet, just `sha256_hex(input, out[65])`.
+2. **`/etc/shadow` + `/etc/passwd`** — subset of Linux format.  `shadow_verify(user, pass)` reads `/etc/shadow`, extracts `$6$<salt>$<hash>`, re-hashes input with salt, compares.  `shadow_set_password` generates 16-char salt from PIT ticks + RTC entropy.
+3. **Login screen** — `login_screen()` in `login.c`: full-screen white-on-blue prompt; masked password input; max 3 attempts.  Triggered when `sh.elf --login` receives `exit`/Ctrl-D (replace the current "cannot exit" message).
+4. **`task_t` uid/gid fields** — add `uint16_t uid, gid` to `task_t`; populate on login; `task_is_admin()` checks `uid == 0`.
+5. **`sudo` builtin** — in `sh.elf`: `sudo <cmd>` prompts for password, re-checks `shadow_verify`, forks child with uid=0.  Kernel side: `SYS_SETUID(23)` restricted to uid=0 or shadow-verified callers.
+6. **`/etc/passwd` + `/home/<user>`** — `vfs_ensure_user_dirs()` creates standard home dirs; `adduser`/`deluser` shell commands.
+
 ### Hardware / platform
 - **USB HID keyboard**: currently PS/2 only. QEMU emulates PS/2 by default; real hardware may need USB HID via OHCI/EHCI.
 - **Network**: RTL8139 driver → lwIP → DHCP/DNS → wget/curl-lite.

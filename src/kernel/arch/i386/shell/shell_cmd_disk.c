@@ -1,7 +1,7 @@
 /*
- * shell_cmd_disk.c -- disk and partition shell commands.
+ * shell_cmd_disk.c -- disk, partition and hardware shell commands.
  *
- * Commands: lsdisks  lspart  mkpart  readsector  chainload
+ * Commands: lsdisks  lspart  mkpart  readsector  chainload  lspci
  */
 
 #include "shell_priv.h"
@@ -10,6 +10,7 @@
 #include <kernel/ide.h>
 #include <kernel/partition.h>
 #include <kernel/chainload.h>
+#include <kernel/pci.h>
 
 /* ---------------------------------------------------------------------------
  * Private helpers
@@ -392,11 +393,42 @@ static void cmd_chainload(int argc, char **argv)
  * Module table
  * --------------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------------
+ * lspci - list PCI devices
+ * --------------------------------------------------------------------------- */
+static void cmd_lspci(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    if (pci_device_count == 0) {
+        t_writestring("lspci: no devices found (pci_init not run?)\n");
+        return;
+    }
+    for (int i = 0; i < pci_device_count; i++) {
+        const pci_device_t *d = &pci_devices[i];
+        /* BB:DD.F  ClassName [CCSS]: VVVV:DDDD  (rev RR) */
+        t_hex((uint32_t)d->bus);  t_putchar(':');
+        t_hex((uint32_t)d->dev);  t_putchar('.');
+        t_dec((uint32_t)d->func); t_writestring("  ");
+        t_writestring(pci_class_name(d->class_code, d->subclass));
+        t_writestring(" [");
+        t_hex((uint32_t)d->class_code); t_hex((uint32_t)d->subclass);
+        t_writestring("]: ");
+        t_hex((uint32_t)d->vendor_id); t_putchar(':');
+        t_hex((uint32_t)d->device_id);
+        t_writestring("  (rev "); t_hex((uint32_t)d->revision_id); t_putchar(')');
+        if (d->irq_line && d->irq_line != 0xFF) {
+            t_writestring("  IRQ="); t_dec((uint32_t)d->irq_line);
+        }
+        t_putchar('\n');
+    }
+}
+
 const shell_cmd_entry_t disk_cmds[] = {
     { "lsdisks",    cmd_lsdisks    },
     { "lspart",     cmd_lspart     },
     { "mkpart",     cmd_mkpart     },
     { "readsector", cmd_readsector },
     { "chainload",  cmd_chainload  },
+    { "lspci",      cmd_lspci      },
     { NULL, NULL }
 };
