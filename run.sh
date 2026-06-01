@@ -920,9 +920,9 @@ case "$MODE" in
     ;;
 
 # ── ktest (headless, default) ────────────────────────────────────────────────
-# Incremental build of makar-test.iso, then run ktest against it headless.
+# Incremental build of makar-test.iso (ktest suite only), then run headless.
 ktest)
-    _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
+    _build_iso "TEST_CMDLINE='test_mode test=ktest' CFLAGS='-O0 -g3' TEST_ISO=1"
     _run_ktest
     ;;
 
@@ -974,7 +974,7 @@ ktest)
         echo "       Install qemu-system-i386 with X11/SDL/Cocoa support." >&2
         exit 1
     fi
-    _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
+    _build_iso "TEST_CMDLINE='test_mode test=ktest' CFLAGS='-O0 -g3' TEST_ISO=1"
     echo "==> Running ktest suite (graphical QEMU - window closes on completion)..."
     rm -f "$REPO_ROOT/ktest.log"
     "$QEMU_BIN" \
