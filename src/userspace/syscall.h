@@ -61,6 +61,7 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_WRITE_FILE 205
 #define SYS_LS_DIR     206
 #define SYS_DISK_INFO    207
+#define SYS_PCI_INFO     239
 #define SYS_DELETE_FILE  208
 #define SYS_RENAME_FILE  209
 #define SYS_DELETE_DIR   210
@@ -568,6 +569,12 @@ static inline int sys_ls_dir(const char *path, char *buf, unsigned int bufsz)
 static inline int sys_disk_info(char *buf, unsigned int bufsz)
 {
     return (int)syscall2(SYS_DISK_INFO, (long)buf, (long)bufsz);
+}
+
+/* Get PCI device list as text. Returns bytes written. */
+static inline int sys_pci_info(char *buf, unsigned int bufsz)
+{
+    return (int)syscall2(SYS_PCI_INFO, (long)buf, (long)bufsz);
 }
 
 /* Delete a file. Returns 0 on success, -1 on error. */
