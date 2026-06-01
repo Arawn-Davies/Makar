@@ -114,6 +114,27 @@ Plan:
 5. **`sudo` builtin** — in `sh.elf`: `sudo <cmd>` prompts for password, re-checks `shadow_verify`, forks child with uid=0.  Kernel side: `SYS_SETUID(23)` restricted to uid=0 or shadow-verified callers.
 6. **`/etc/passwd` + `/home/<user>`** — `vfs_ensure_user_dirs()` creates standard home dirs; `adduser`/`deluser` shell commands.
 
+### UEFI / modern platform support
+
+**Current state:** Makar boots via GRUB 2 Multiboot 2, which acts as a bridge. GRUB itself is UEFI-aware (boots from an ESP, uses GOP for early output), then delivers Makar the same Multiboot 2 info structure regardless of whether the firmware is legacy BIOS or UEFI. This means Makar already boots on UEFI machines today — it just doesn't know or care; GRUB absorbs the difference.
+
+**Short-term (no kernel changes, QEMU testing):**
+- Test with `OVMF` UEFI firmware: `qemu-system-i386 -bios /usr/share/OVMF/OVMF_CODE.fd` — validate framebuffer, ACPI, PCI enumeration all work the same.
+- Test with `-machine q35` (modern PCIe chipset model) vs. the default `-machine pc` (i440FX, classic ISA/PCI). `q35` exposes PCIe root ports and an ICH9 southbridge instead of PIIX3 — `lspci` output will differ and the SATA/AHCI path matters for disk access.
+
+**Medium-term (kernel-visible UEFI differences):**
+1. **GOP framebuffer** — on UEFI/OVMF, Bochs VBE I/O ports (`0x01CE`/`0x01CF`) may be absent; the framebuffer is a GOP linear framebuffer whose address is in the Multiboot 2 framebuffer tag. `vesa.c` already reads the MB2 tag, so this should work — but `bochs_vbe_available()` will return false and the `setmode` command won't be able to switch resolutions at runtime. Proper fix: detect GOP base address and implement mode-setting via GRUB's `videoinfo`/`set gfxmode` or a virtio-GPU device.
+2. **ACPI RSDP on UEFI** — firmware places the RSDP in EFI config tables rather than the EBDA/BIOS ROM scan range. GRUB copies the RSDP pointer into the Multiboot 2 ACPI tag. `acpi.c` currently scans EBDA/ROM; add a fast-path that reads the MB2 ACPI v1/v2 tag first (OSDev: tag type 14/15), falls back to memory scan only on BIOS boots. This also surfaces the **MCFG** table needed for PCIe extended config space.
+3. **q35 / ICH9 differences** — q35 uses an AHCI SATA controller (PCI class 01:06, prog_if 01) rather than legacy IDE. `ide.c` speaks to the legacy 0x1F0/0x170 I/O ports which won't exist on q35. Need an AHCI driver (or fall back to the CD-ROM path for live boots). Disk writes only matter for HDD install flows.
+
+**Long-term — native x86-64 + UEFI:**
+- A 32-bit kernel can boot via UEFI with a 32-bit UEFI firmware (IA-32 UEFI), but these are rare; virtually all modern UEFI firmware is 64-bit.
+- The correct long-term path is a 64-bit kernel: new GDT (long-mode segments), IDT (64-bit gates), paging (4-level PT), SysCall/SysRet ABI, UEFI runtime services for time/NVRAM.
+- A 64-bit Makar would also run natively in the majority of hosted environments (VirtualBox, VMware, Hyper-V, real hardware) without needing GRUB to bridge the bitness gap.
+- **Recommended approach:** keep the i386 build working (it's the development sandbox); start a parallel `arch/x86_64/` subtree once the i386 userspace and driver stack is reasonably complete. The shell, VFS, and userspace ELFs are architecture-independent and would port with minimal changes.
+
+**Modular architecture note:** the driver and subsystem split (`drivers/`, `fs/`, `mm/`, `proc/`, `display/`, `auth/`) already follows a module-per-directory pattern. Extending to x86-64 means a new `arch/x86_64/` alongside `arch/i386/`; shared kernel code (VFS, task scheduler logic, shell, crypto) lives under `kernel/` and is compiled once for whichever arch is targeted. The `make.config` per-arch object list is the seam — each arch provides its own `make.config` naming its objects, and the top-level Makefile picks the right one via `ARCH`.
+
 ### Hardware / platform
 - **USB HID keyboard**: currently PS/2 only. QEMU emulates PS/2 by default; real hardware may need USB HID via OHCI/EHCI.
 - **Network**: RTL8139 driver → lwIP → DHCP/DNS → wget/curl-lite.

@@ -31,5 +31,7 @@ uint16_t    pci_read16 (uint8_t bus, uint8_t dev, uint8_t func, uint8_t off);
 uint8_t     pci_read8  (uint8_t bus, uint8_t dev, uint8_t func, uint8_t off);
 void        pci_write32(uint8_t bus, uint8_t dev, uint8_t func, uint8_t off, uint32_t val);
 const char *pci_class_name(uint8_t class_code, uint8_t subclass);
+const char *pci_vendor_name(uint16_t vendor);
+const char *pci_device_name(uint16_t vendor, uint16_t device);
 
 #endif /* _KERNEL_PCI_H */

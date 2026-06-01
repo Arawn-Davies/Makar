@@ -108,6 +108,8 @@
 #define SYS_VT_OPEN_REQUEST 235 /* int vt_open_request(void) - consume Alt+T */
 #define SYS_VT_STATE       236 /* uint32_t vt_state(void) -> active<<16 | mask */
 #define SYS_VT_CLOCK_REQUEST 237 /* int vt_clock_request(void) - consume Alt+F5 */
+#define SYS_PCI_INFO         239 /* int pci_info(char *buf, uint32_t bufsz) - render
+                                  * pci_devices[] as text.  Returns bytes written. */
 #define SYS_INSTALL          238 /* int install(void) - run the Limine installer TUI;
                                   * blocks the calling task until the installer
                                   * exits.  Returns 0 on success, -1 otherwise. */

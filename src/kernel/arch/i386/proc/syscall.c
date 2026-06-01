@@ -43,6 +43,7 @@
 #include <kernel/vtty.h>
 #include <kernel/vt.h>
 #include <kernel/ide.h>
+#include <kernel/pci.h>
 #include <kernel/timer.h>
 #include <kernel/rtc.h>
 #include <string.h>
@@ -1455,6 +1456,61 @@ void syscall_dispatch(registers_t *regs)
             for (const char *s = tail; *s && off < cap - 2; s++)
                 buf[off++] = *s;
         }
+        buf[off] = '\0';
+        regs->eax = off;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_PCI_INFO(239): render pci_devices[] as text.
+     * EBX = buf, ECX = bufsz.  Returns bytes written.
+     * ------------------------------------------------------------------ */
+    case SYS_PCI_INFO: {
+        char    *buf = (char *)(uintptr_t)regs->ebx;
+        uint32_t cap = regs->ecx;
+        if (!buf || cap == 0) { regs->eax = 0; break; }
+        uint32_t off = 0;
+
+#define PCI_APPEND(s) do { for (const char *_p = (s); *_p && off < cap - 2; _p++) buf[off++] = *_p; } while(0)
+#define PCI_BYTE_HEX(v) do { \
+    static const char _h[] = "0123456789ABCDEF"; \
+    if (off + 2 < cap) { buf[off++] = _h[((v)>>4)&0xF]; buf[off++] = _h[(v)&0xF]; } } while(0)
+#define PCI_WORD_HEX(v) do { PCI_BYTE_HEX((v)>>8); PCI_BYTE_HEX(v); } while(0)
+#define PCI_DEC(v) do { \
+    char _d[6]; int _i = 5; _d[_i] = '\0'; uint32_t _v = (v); \
+    if (!_v) _d[--_i] = '0'; \
+    else while (_v) { _d[--_i] = (char)('0' + _v % 10); _v /= 10; } \
+    PCI_APPEND(_d + _i); } while(0)
+
+        for (int i = 0; i < pci_device_count && off < cap - 96; i++) {
+            const pci_device_t *d = &pci_devices[i];
+            /* BB:DD.F  Class [CCSS]: Vendor Device (rev RR) [IRQ=N] */
+            PCI_BYTE_HEX(d->bus);  buf[off++] = ':';
+            PCI_BYTE_HEX(d->dev);  buf[off++] = '.';
+            buf[off++] = (char)('0' + d->func);
+            PCI_APPEND("  ");
+            PCI_APPEND(pci_class_name(d->class_code, d->subclass));
+            PCI_APPEND(" [");
+            PCI_BYTE_HEX(d->class_code); PCI_BYTE_HEX(d->subclass);
+            PCI_APPEND("]: ");
+            /* Vendor name (fall back to hex) */
+            const char *vname = pci_vendor_name(d->vendor_id);
+            if (vname) { PCI_APPEND(vname); buf[off++] = ' '; }
+            else { PCI_WORD_HEX(d->vendor_id); buf[off++] = ':'; }
+            /* Device name (fall back to hex) */
+            const char *dname = pci_device_name(d->vendor_id, d->device_id);
+            if (dname) { PCI_APPEND(dname); }
+            else { PCI_WORD_HEX(d->device_id); }
+            PCI_APPEND("  (rev "); PCI_BYTE_HEX(d->revision_id); buf[off++] = ')';
+            if (d->irq_line && d->irq_line != 0xFF) {
+                PCI_APPEND("  IRQ="); PCI_DEC(d->irq_line);
+            }
+            buf[off++] = '\n';
+        }
+#undef PCI_APPEND
+#undef PCI_BYTE_HEX
+#undef PCI_WORD_HEX
+#undef PCI_DEC
         buf[off] = '\0';
         regs->eax = off;
         break;
