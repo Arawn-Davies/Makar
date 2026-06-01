@@ -1273,8 +1273,12 @@ void syscall_dispatch(registers_t *regs)
          * colours up-front and restore at the end so apps that paint
          * coloured chrome (kbtester, future status bars) don't leave the
          * shell stuck in their palette after exit. */
-        vesa_pane_t *dp = (focused && vesa_tty_is_ready())
-                              ? vesa_tty_default_pane() : NULL;
+        /* Always fetch dp so is_status can be computed even for unfocused
+         * tasks (e.g. makmux parent on VTTY_ROOT_SLOT drawing the status
+         * bar while mak.sh1 is the focused VT).  The save/restore below
+         * also needs dp to prevent amber status-bar colours from bleeding
+         * into the focused task's palette. */
+        vesa_pane_t *dp = vesa_tty_is_ready() ? vesa_tty_default_pane() : NULL;
         uint32_t saved_fg = dp ? dp->fg : 0;
         uint32_t saved_bg = dp ? dp->bg : 0;
         for (uint32_t i = 0; i < n; i++) {
@@ -1305,7 +1309,12 @@ void syscall_dispatch(registers_t *regs)
             if (focused || is_status) {
                 t_putentryat((char)ch, clr, col, row);
                 if (dp) {
-                    vesa_tty_setcolor(fg, bg);
+                    /* vesa_tty_paint_cell takes fg/bg directly; vesa_tty_put_at
+                     * reads vt->fg/bg which vt_set_color already set above.
+                     * Do NOT call vesa_tty_setcolor here — it would pollute
+                     * default_pane and the calling task's VT buffer fg/bg with
+                     * whatever colours the current cell carries (status-bar
+                     * amber, etc.), corrupting subsequent output. */
                     if (is_status)
                         vesa_tty_paint_cell(col, row, (char)ch, fg, bg);
                     else
