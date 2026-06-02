@@ -29,6 +29,7 @@ src/kernel/arch/*/dt_asm
 src/userspace/*.o
 src/userspace/*.a
 src/userspace/*.elf
+src/userspace/.tcc.stamp
 
 # Vendored TCC build artefacts (NOT build-stubs -- those are
 # hand-written Makar-flavoured headers, source of truth for the

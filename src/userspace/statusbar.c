@@ -15,7 +15,7 @@
  * (`cpu`/`mem` = busy/used % -- same source + calc as maktop; `rootfs` =
  *  used/total MiB (ext2-only, empty on FAT32/ISO9660); `command` = the active
  *  VT's foreground task; `tabs` = the makmux VT strip.)
- * Default ~/.sbrc:  left hostname / center tabs / right cpu mem rootfs time.
+ * Default ~/.sbrc:  left command / center tabs / right cpu mem rootfs time.
  *
  * Alt+F5 toggles the whole bar (reserve <-> free the row).
  *
@@ -240,7 +240,7 @@ static char g_right[SEC_MAX];
 static void set_default_layout(void)
 {
     unsigned int o;
-    o=0; s_cat(g_left,&o,SEC_MAX,"hostname");
+    o=0; s_cat(g_left,&o,SEC_MAX,"command");    /* active VT's foreground exe */
     o=0; s_cat(g_center,&o,SEC_MAX,"tabs");     /* makmux VT tabs */
     o=0; s_cat(g_right,&o,SEC_MAX,"cpu mem rootfs time");
 }
@@ -327,15 +327,18 @@ static int sb_has(const char *list,const char *tok)
     return 0;
 }
 
-/* Render the live VT tabs centred, active highlighted.  Shells (slots 0-3)
- * show "VTn"; named app-tabs show their name.  No-op if makmux isn't running
- * (mask == 0).  Returns 1 if it drew tabs. */
-static int render_tabs(tty_cell_t *cells,unsigned int *n,unsigned int row,unsigned int cols)
+/* Render the live VT tabs centred within the [lo,hi) column window (the gap
+ * between the left and right sections, so the tabs never paint over the
+ * resource widgets).  Active highlighted; shells show "VTn", named app-tabs
+ * show their name.  Tabs that don't fit the window are clipped.  No-op if
+ * makmux isn't running (mask == 0).  Returns 1 if it drew tabs. */
+static int render_tabs(tty_cell_t *cells,unsigned int *n,unsigned int row,
+                       unsigned int lo,unsigned int hi)
 {
     unsigned int state=(unsigned int)sys_vt_state();
     unsigned int active=(state>>16)&0xFFFFu;
     unsigned int mask=state&0xFFFFu;
-    if(!mask) return 0;
+    if(!mask || hi<=lo) return 0;
 
     char  lab[8][18];
     int   idx[8], cnt=0;
@@ -353,10 +356,11 @@ static int render_tabs(tty_cell_t *cells,unsigned int *n,unsigned int row,unsign
     }
     if(!cnt) return 0;
 
-    unsigned int c=(cols>total)?(cols-total)/2u:0u;
+    unsigned int avail=hi-lo;
+    unsigned int c=(avail>total)?(lo+(avail-total)/2u):lo;
     for(int k=0;k<cnt;k++){
         unsigned char clr=(idx[k]==(int)active)?SB_TAB_ACT:SB_CLR;
-        for(unsigned int j=0; lab[k][j] && c<cols; j++)
+        for(unsigned int j=0; lab[k][j] && c<hi; j++)
             put_cell(cells,n,c++,row,lab[k][j],clr);
     }
     return 1;
@@ -377,19 +381,29 @@ static void draw(void)
     tty_cell_t cells[SB_MAXCELLS]; unsigned int n=0;
     for(unsigned int c=0;c<cols;c++) put_cell(cells,&n,c,row,' ',SB_CLR);
 
+    unsigned int ll=s_len(left);
     if(left[0])   put_str(cells,&n,1,row,left,SB_CLR);
 
     unsigned int rl=s_len(right);
     if(rl && cols>rl+1) put_str(cells,&n,cols-rl-1,row,right,SB_CLR);
 
+    /* Centre window = the gap between the left and right sections, so the
+     * tabs / centre widget never overpaint the resource readouts.  One cell
+     * of padding on each side. */
+    unsigned int lo=left[0] ? (1+ll+1) : 0;
+    unsigned int hi=(rl && cols>rl+1) ? (cols-rl-1) : cols;
+    if(hi>cols) hi=cols;
+    if(lo>hi)   lo=hi;
+
     /* Center: the live VT tabs when requested (the makmux strip), else a
      * normal widget string. */
     if(sb_has(g_center,"tabs")){
-        render_tabs(cells,&n,row,cols);
+        render_tabs(cells,&n,row,lo,hi);
     } else {
         char center[SEC_MAX]; build_section(g_center,center);
         unsigned int cl=s_len(center);
-        if(cl && cols>cl){ unsigned int cc=(cols-cl)/2u; put_str(cells,&n,cc,row,center,SB_CLR); }
+        unsigned int avail=hi-lo;
+        if(cl && avail>cl){ unsigned int cc=lo+(avail-cl)/2u; put_str(cells,&n,cc,row,center,SB_CLR); }
     }
 
     sys_putch_at(cells,n);

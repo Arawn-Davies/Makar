@@ -1826,8 +1826,13 @@ void syscall_dispatch(registers_t *regs)
         break;
     }
     case SYS_VT_STATE: {
-        uint32_t active = (uint32_t)(vtty_active() & 0xFFFF);
         uint32_t mask = vtty_live_mask() & 0xFFFFu;
+        /* High 16 bits = focused tty.  With makmux running that's the active
+         * VT slot (0-3); with no VT children the root console (mak.sh0) is
+         * focused, so report VTTY_ROOT_SLOT -- lets the userspace statusbar's
+         * `command` widget find the root shell's foreground task. */
+        uint32_t active = mask ? (uint32_t)(vtty_active() & 0xFFFF)
+                               : (uint32_t)VTTY_ROOT_SLOT;
         regs->eax = (active << 16) | mask;
         break;
     }

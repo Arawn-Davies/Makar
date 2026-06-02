@@ -143,14 +143,28 @@ static task_t *vtty_owner(int n)
 
 int vtty_register(void)
 {
+    task_t *me = task_current();
     int slot = -1;
+
+    /* Claim the lowest free slot ATOMICALLY.  makmux forks all four VT
+     * children before yielding, and syscalls run with interrupts enabled
+     * (sti in isr_asm.S), so the PIT can preempt this task between the
+     * vtty_owner() "is it free?" check and the me->tty assignment that marks
+     * it taken.  Without the IF guard, two children both read the same slot
+     * as free and both claim it -- producing two shells on slot 0 (the
+     * "duplicate mak.sh1" bug).  cli/sti makes find-then-claim indivisible. */
+    uint32_t flags;
+    asm volatile("pushfl; popl %0; cli" : "=r"(flags) :: "memory");
     for (int i = 0; i < VTTY_MAX - 1; i++) {   /* -1: skip root slot */
         if (!vtty_owner(i)) { slot = i; break; }
     }
+    if (slot >= 0) {
+        if (me) me->tty = slot;
+        if (slot >= vtty_nslots) vtty_nslots = slot + 1;
+    }
+    asm volatile("pushl %0; popfl" :: "r"(flags) : "memory", "cc");
+
     if (slot < 0) return -1;
-    if (slot >= vtty_nslots) vtty_nslots = slot + 1;
-    task_t *me = task_current();
-    if (me) me->tty = slot;
     if (slot == 0)
         keyboard_set_focus(me);
     vt_buf_t *vt = vtty_buf(slot);

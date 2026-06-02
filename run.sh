@@ -434,6 +434,10 @@ _make_fat32_disk() {
     rm -f "$REPO_ROOT/$_img"
     _drun --env "MAKAR_DISK_MB=$_sz" -- \
         "IMG='/work/$_img'
+         pkgs=''
+         command -v sfdisk   >/dev/null 2>&1 || pkgs=\"\$pkgs fdisk\"
+         command -v mkfs.fat >/dev/null 2>&1 || pkgs=\"\$pkgs dosfstools\"
+         if [ -n \"\$pkgs\" ]; then apt-get update -qq >/dev/null && apt-get install -y --no-install-recommends \$pkgs >/dev/null; fi
          truncate -s \${MAKAR_DISK_MB}M \"\$IMG\"
          printf 'label: dos\nstart=2048, type=c\n' | sfdisk \"\$IMG\" >/dev/null 2>&1
          mkfs.fat -F 32 -n MAKAR --offset 2048 \"\$IMG\" >/dev/null

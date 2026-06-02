@@ -26,6 +26,7 @@
  */
 
 #include <kernel/installer.h>
+#include <kernel/task.h>
 #include <kernel/auth.h>
 #include <kernel/acpi.h>
 #include <kernel/timer.h>
@@ -112,8 +113,13 @@ static int s_nents;
 /* Installed target info, set during do_install so the account-creation
  * wizard can remount the data partition without re-discovering it. */
 static uint8_t  s_inst_drive;
+static uint32_t s_inst_boot_lba;
 static uint32_t s_inst_data_lba;
 static int      s_inst_fs;
+
+/* Optional component trees, chosen in the wizard (default: install both). */
+static int      s_inst_docs = 1;   /* copy /docs to the target rootfs */
+static int      s_inst_src  = 1;   /* copy /src  to the target rootfs */
 
 /* ------------------------------------------------------------------------- */
 /* Geometry                                                                  */
@@ -383,6 +389,7 @@ static void exec_screen(const char *title)
 {
     s_log_n = 0;
     if (g_gui) {
+        vesa_tty_clear();
         tui_frame(title, "Installing - please wait...");
         s_box_top   = 2;
         s_box_bot   = (g_rows > 4) ? g_rows - 3 : g_rows - 1;
@@ -779,29 +786,8 @@ static int do_install(uint8_t drive, uint32_t disk_sectors, int fs)
         return -2;
     }
 
-    tui_log("Mounting boot partition...");
-    if (fat32_mounted()) fat32_unmount();
-    if ((rc = fat32_mount(drive, boot_lba)) != 0) {
-        tui_log_rc("  ERROR: boot mount failed.", rc); return -3;
-    }
-    g_root_fs = ROOTFS_FAT32;
-
-    tui_log("Creating boot directory tree...");
-    if ((rc = fat32_mkdir("/boot"))   != 0) tui_log_rc("  WARNING: mkdir /boot failed.", rc);
-    if ((rc = fat32_mkdir("/limine")) != 0) tui_log_rc("  WARNING: mkdir /limine failed.", rc);
-
-    tui_log("Copying kernel...");
-    copy_one("/boot/makar.kernel", "/boot/makar.kernel");
-
-    tui_log("Copying limine-bios.sys...");
-    copy_one(LIMINE_SYS_ISO_PATH, "/limine/limine-bios.sys");
-
-    tui_log("Writing limine.conf...");
-    if ((rc = rfs_write("/limine/limine.conf", limine_conf,
-                        (uint32_t)(sizeof(limine_conf) - 1))) != 0)
-        tui_log_rc("  WARNING: failed to write limine.conf.", rc);
-
-    fat32_unmount();
+    /* Boot files are copied after the remaining wizard inputs have been
+     * collected.  This phase only prepares the filesystem. */
 
     /* ---- Partition 2: data (apps / docs / src) ---- */
 
@@ -828,24 +814,13 @@ static int do_install(uint8_t drive, uint32_t disk_sectors, int fs)
     g_root_fs = fs;
     /* Record for the post-install account-creation step. */
     s_inst_drive    = drive;
+    s_inst_boot_lba = boot_lba;
     s_inst_data_lba = data_lba;
     s_inst_fs       = fs;
 
-    copy_tree("/apps");
-    copy_tree("/docs");
-    copy_tree("/src");
-    copy_tree("/usr");
-
-    /* /bin is the scratch + output directory the in-OS kernel rebuild
-     * (rebuild-kernel.sh) writes to.  tmpfs has no subdirectories, so
-     * the rebuild can't use /tmp; it needs a real writable dir on the
-     * rootfs.  Create it empty here so the first `mkdir /bin/ktcc` from
-     * the script doesn't try to create a directory inside a missing
-     * parent.  No source tree to copy -- /bin lives only on the target. */
-    if (rfs_mkdir("/bin") != 0)
-        tui_log("  WARNING: mkdir /bin on rootfs failed (rebuild-kernel will need it).");
-
-    /* Flush data partition before touching the bootloader. */
+    /* Data partition contents are copied after the remaining wizard inputs
+     * have been collected, so the installer does not spend time mirroring
+     * large trees before hostname/account prompts. */
     if (fs == ROOTFS_EXT2) ext2_unmount(); else fat32_unmount();
 
     /* ---- limine MBR install ---- */
@@ -916,7 +891,23 @@ static int build_drive_list(void)
 /* installer_run                                                             */
 /* ------------------------------------------------------------------------- */
 
+static void installer_run_inner(void);
+
+/* Public entry: run the wizard with the calling task renamed "installer" so
+ * the userspace status bar's `command` widget reflects what's on screen.  The
+ * name is restored on every exit path (the success path reboots, so its
+ * restore is moot).  name is just a const char* pointer, so swapping it to a
+ * string literal and back is safe. */
 void installer_run(void)
+{
+    task_t     *me    = task_current();
+    const char *saved = me ? me->name : (const char *)0;
+    if (me) me->name = "installer";
+    installer_run_inner();
+    if (me) me->name = saved;
+}
+
+static void installer_run_inner(void)
 {
     tui_geometry();
     Serial_WriteString("INSTALL>welcome\n");
@@ -1017,30 +1008,29 @@ void installer_run(void)
         return;
     }
 
-    s_filebuf = (uint8_t *)kmalloc(INST_MAX_FILE_SIZE);
-    if (!s_filebuf) {
-        t_writestring("Error: out of memory for transfer buffer.\n");
-        return;
-    }
-
-    int rc = do_install((uint8_t)drive, hdd->size, fs);
-    kfree(s_filebuf);
-    s_filebuf = NULL;
-
-    /* Serial-visible result marker (the GUI "done" screen below is painted
-     * directly to the framebuffer and does not mirror to COM1). */
-    t_writestring(rc == 0 ? "INSTALL: complete ok\n" : "INSTALL: failed\n");
-
-    if (rc != 0) {
+    /* ---- Optional components: docs + source trees (default: install both) ---- */
+    Serial_WriteString("INSTALL>components\n");
+    {
+        unsigned char a1 = 0, a2 = 0;
         if (g_gui) {
-            tui_frame("Installer", "Press a key to return to the shell");
-            tui_center(6, "Installation FAILED.", C_WARN, C_BG);
-            tui_center(8, "See the messages above; nothing was finalised.", C_DIM, C_BG);
-            getkey();
+            tui_frame("Components", "Choose which optional trees to install.");
+            uint32_t mid  = g_rows / 2;
+            uint32_t lcol = (g_cols / 2) > 20 ? (g_cols / 2) - 20 : 2;
+            tui_at(lcol, mid - 1, "Install documentation (/docs)? [Y/n]", C_FG, C_BG);
+            a1 = getkey();
+            tui_at(lcol, mid + 1, "Install source code (/src)? [Y/n]", C_FG, C_BG);
+            a2 = getkey();
         } else {
-            t_writestring("\n=== Installation FAILED ===\n");
+            char buf[8];
+            t_writestring("Install documentation (/docs)? [Y/n] ");
+            readline(buf, sizeof(buf)); a1 = (unsigned char)buf[0];
+            t_writestring("Install source code (/src)? [Y/n] ");
+            readline(buf, sizeof(buf)); a2 = (unsigned char)buf[0];
         }
-        return;
+        s_inst_docs = (a1 == 'n' || a1 == 'N') ? 0 : 1;
+        s_inst_src  = (a2 == 'n' || a2 == 'N') ? 0 : 1;
+        Serial_WriteString(s_inst_docs ? "[install] docs: yes\n" : "[install] docs: no\n");
+        Serial_WriteString(s_inst_src  ? "[install] src: yes\n"  : "[install] src: no\n");
     }
 
     /* ------------------------------------------------------------------ */
@@ -1325,9 +1315,69 @@ void installer_run(void)
     }
 
     /* ------------------------------------------------------------------ */
-    /* Single disk write: hostname + shadow + home dirs                   */
-    /* One mount/unmount — no double-remount of the live rootfs.          */
+    /* Disk preparation: no partitioning/formatting/copying starts until */
+    /* all installer input has been collected.                           */
     /* ------------------------------------------------------------------ */
+
+    s_filebuf = (uint8_t *)kmalloc(INST_MAX_FILE_SIZE);
+    if (!s_filebuf) {
+        t_writestring("Error: out of memory for transfer buffer.\n");
+        return;
+    }
+
+    int rc = do_install((uint8_t)drive, hdd->size, fs);
+
+    if (rc != 0) {
+        t_writestring("INSTALL: failed\n");
+        kfree(s_filebuf);
+        s_filebuf = NULL;
+        if (g_gui) {
+            tui_frame("Installer", "Press a key to return to the shell");
+            tui_center(6, "Installation FAILED.", C_WARN, C_BG);
+            tui_center(8, "See the messages above; nothing was finalised.", C_DIM, C_BG);
+            getkey();
+        } else {
+            t_writestring("\n=== Installation FAILED ===\n");
+        }
+        return;
+    }
+    Serial_WriteString("INSTALL: disk prepared ok\n");
+
+    /* ------------------------------------------------------------------ */
+    /* Final disk writes: boot files, account config, and optional trees. */
+    /* All file copying happens here, after the remaining wizard inputs. */
+    /* ------------------------------------------------------------------ */
+    {
+        tui_log("Mounting boot partition...");
+        if (fat32_mounted()) fat32_unmount();
+        int bm = fat32_mount(s_inst_drive, s_inst_boot_lba);
+        if (bm == 0) {
+            g_root_fs = ROOTFS_FAT32;
+
+            tui_log("Creating boot directory tree...");
+            int brc;
+            if ((brc = fat32_mkdir("/boot")) != 0)
+                tui_log_rc("  WARNING: mkdir /boot failed.", brc);
+            if ((brc = fat32_mkdir("/limine")) != 0)
+                tui_log_rc("  WARNING: mkdir /limine failed.", brc);
+
+            tui_log("Copying kernel...");
+            copy_one("/boot/makar.kernel", "/boot/makar.kernel");
+
+            tui_log("Copying limine-bios.sys...");
+            copy_one(LIMINE_SYS_ISO_PATH, "/limine/limine-bios.sys");
+
+            tui_log("Writing limine.conf...");
+            if ((brc = rfs_write("/limine/limine.conf", limine_conf,
+                                  (uint32_t)(sizeof(limine_conf) - 1))) != 0)
+                tui_log_rc("  WARNING: failed to write limine.conf.", brc);
+
+            fat32_unmount();
+        } else {
+            tui_log_rc("  WARNING: boot mount failed during final copy.", bm);
+        }
+    }
+
     {
         int mnt = (s_inst_fs == ROOTFS_EXT2)
             ? ext2_mount(s_inst_drive, s_inst_data_lba)
@@ -1455,8 +1505,8 @@ void installer_run(void)
                 Serial_WriteString(vix_path);
                 Serial_WriteString("\n");
 
-                /* Write ~/.sbrc -- statusbar.elf layout (hostname left,
-                 * date+time right).  Sections: left/center/right + widgets. */
+                /* Write ~/.sbrc -- statusbar.elf layout (foreground command
+                 * left, resources right).  Sections: left/center/right + widgets. */
                 char sb_path[88];
                 p = 0;
                 for (size_t j = 0; hdir[j] && p < sizeof(sb_path) - 7; j++)
@@ -1468,7 +1518,7 @@ void installer_run(void)
                     "# ~/.sbrc -- statusbar layout: <section> <widgets...>\n"
                     "# widgets: hostname user date time datetime uptime\n"
                     "#          cpu mem rootfs command tabs\n"
-                    "left hostname\n"
+                    "left command\n"
                     "center tabs\n"
                     "right cpu mem rootfs time\n";
                 size_t sb_len = 0;
@@ -1479,17 +1529,34 @@ void installer_run(void)
                 Serial_WriteString("\n");
             }
 
+            copy_tree("/apps");
+            if (s_inst_docs) copy_tree("/docs");
+            if (s_inst_src)  copy_tree("/src");
+            copy_tree("/usr");
+
+            /* /bin is the scratch + output directory the in-OS kernel rebuild
+             * (rebuild-kernel.sh) writes to.  tmpfs has no subdirectories, so
+             * the rebuild can't use /tmp; it needs a real writable dir on the
+             * rootfs.  Create it empty here so the first `mkdir /bin/ktcc` from
+             * the script doesn't try to create a directory inside a missing
+             * parent.  No source tree to copy -- /bin lives only on the target. */
+            if (rfs_mkdir("/bin") != 0)
+                tui_log("  WARNING: mkdir /bin on rootfs failed (rebuild-kernel will need it).");
+
             if (s_inst_fs == ROOTFS_EXT2) ext2_unmount();
             else fat32_unmount();
         } else {
             Serial_WriteString("[install] WARNING: could not mount data fs for post-install writes\n");
         }
     }
+    kfree(s_filebuf);
+    s_filebuf = NULL;
 
     /* ------------------------------------------------------------------ */
     /* Done                                                                 */
     /* ------------------------------------------------------------------ */
 
+    t_writestring("INSTALL: complete ok\n");
     Serial_WriteString("[install] complete — rebooting\n");
     if (g_gui) {
         tui_frame("Installer", "Rebooting...");
@@ -1498,10 +1565,8 @@ void installer_run(void)
     } else {
         t_writestring("\n=== Installation complete! Rebooting... ===\n");
     }
-    /* Yield ~1500 times so the scheduler runs and the user can read the
-     * message.  task_yield() works even if the timer tick is stuck, because
-     * keyboard_getchar() uses the same mechanism and we know it runs. */
-    for (int i = 0; i < 1500; i++)
+    uint32_t reboot_at = timer_get_ticks() + 300u; /* 3 seconds at 100 Hz */
+    while (timer_get_ticks() < reboot_at)
         task_yield();
     acpi_reboot();
 }
