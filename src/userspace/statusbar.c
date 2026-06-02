@@ -12,9 +12,9 @@
  *     <section> <widget> [<widget> ...]        section = left | center | right
  *
  * Widgets: hostname user date time datetime uptime cpu mem rootfs command tabs.
- * (`cpu` = busy %, `mem`/`rootfs` = used/total MiB, `command` = the active VT's
- *  foreground task, `tabs` = the makmux VT strip.  `rootfs` is ext2-only -- it
- *  renders empty on FAT32/ISO9660 rootfs.)
+ * (`cpu`/`mem` = busy/used % -- same source + calc as maktop; `rootfs` =
+ *  used/total MiB (ext2-only, empty on FAT32/ISO9660); `command` = the active
+ *  VT's foreground task; `tabs` = the makmux VT strip.)
  * Default ~/.sbrc:  left hostname / center tabs / right cpu mem rootfs time.
  *
  * Alt+F5 toggles the whole bar (reserve <-> free the row).
@@ -123,14 +123,15 @@ static void active_command(char *out,unsigned int cap)
     if(best[0]){ unsigned int o=0; s_cat(out,&o,cap,best); }
 }
 
-/* Cumulative ticks the idle task (pid 1) has run, from /proc/tasks. */
-static unsigned int proc_idle_ticks(void)
+/* Sum of TICKS across all tasks except the idle task (pid 1), from
+ * /proc/tasks -- maktop's CPU% basis. */
+static unsigned int proc_busy_ticks(void)
 {
     char buf[1024]; int fd=sys_open("/proc/tasks",O_RDONLY);
     if(fd<0) return 0;
     long r=sys_read(fd,buf,sizeof(buf)-1); sys_close(fd);
     if(r<=0) return 0; buf[r]='\0';
-    long i=0; int line=0;
+    long i=0; int line=0; unsigned int sum=0;
     while(i<r){
         char tok[6][20]; int nt=0;
         while(i<r && buf[i]!='\n'){
@@ -142,12 +143,12 @@ static unsigned int proc_idle_ticks(void)
         }
         if(i<r) i++;
         if(line++==0) continue;
-        if(nt>=5 && tok[0][0]=='1' && tok[0][1]=='\0'){    /* pid 1 = idle */
-            unsigned int v=0; for(int k=0;tok[4][k];k++) v=v*10+(unsigned int)(tok[4][k]-'0');
-            return v;
-        }
+        if(nt<5) continue;
+        if(tok[0][0]=='1' && tok[0][1]=='\0') continue;     /* skip idle (pid 1) */
+        unsigned int v=0; for(int k=0;tok[4][k];k++) v=v*10+(unsigned int)(tok[4][k]-'0');
+        sum+=v;
     }
-    return 0;
+    return sum;
 }
 
 /* Append the named widget's current value to out[]. */
@@ -188,11 +189,12 @@ static void widget(const char *name,char *out,unsigned int *o,unsigned int cap)
     }
 
     if(s_eq(name,"mem")){
-        unsigned int used=meminfo_kb("MemUsed"), total=meminfo_kb("MemTotal");
+        /* maktop's calc: (MemTotal - MemFree) / MemTotal as a percentage. */
+        unsigned int total=meminfo_kb("MemTotal"), freekb=meminfo_kb("MemFree");
         if(total){
-            char a[12],b[12]; sb_uitoa(used/1024u,a); sb_uitoa(total/1024u,b);
-            s_cat(out,o,cap,"MEM "); s_cat(out,o,cap,a);
-            s_cat(out,o,cap,"/"); s_cat(out,o,cap,b); s_cat(out,o,cap,"M");
+            unsigned int pct=(total>freekb)?(total-freekb)*100u/total:0u;
+            char b[8]; sb_uitoa(pct,b);
+            s_cat(out,o,cap,"MEM "); s_cat(out,o,cap,b); s_cat(out,o,cap,"%");
         }
         return;
     }
@@ -204,14 +206,17 @@ static void widget(const char *name,char *out,unsigned int *o,unsigned int cap)
     }
 
     if(s_eq(name,"cpu")){
-        static unsigned int last_idle=0,last_up=0; static int have=0;
-        unsigned int idle=proc_idle_ticks(), up=sys_uptime(), busy=0;
+        /* maktop's calc: non-idle task ticks delta over real-time (uptime)
+         * delta, as a percentage. */
+        static unsigned int last_busy=0,last_up=0; static int have=0;
+        unsigned int busy=proc_busy_ticks(), up=sys_uptime(), pct=0;
         if(have && up>last_up){
-            unsigned int dt=up-last_up, di=(idle>=last_idle)?(idle-last_idle):0u;
-            busy=(dt>di)?(dt-di)*100u/dt:0u;
+            unsigned int dt=up-last_up;
+            unsigned int db=(busy>last_busy)?(busy-last_busy):0u;
+            pct=db*100u/dt; if(pct>100u) pct=100u;
         }
-        last_idle=idle; last_up=up; have=1;
-        char b[8]; sb_uitoa(busy,b);
+        last_busy=busy; last_up=up; have=1;
+        char b[8]; sb_uitoa(pct,b);
         s_cat(out,o,cap,"CPU "); s_cat(out,o,cap,b); s_cat(out,o,cap,"%");
         return;
     }
