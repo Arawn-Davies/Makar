@@ -128,6 +128,12 @@ static int shadow_find(const char *username, char salt[17], char stored[17])
  * Public API
  * -------------------------------------------------------------------------*/
 
+int shadow_user_exists(const char *username)
+{
+    char salt[17], stored[17];
+    return shadow_find(username, salt, stored) == 1 ? 1 : 0;
+}
+
 int shadow_verify(const char *username, const char *password)
 {
     char salt[17], stored[17];
