@@ -36,12 +36,21 @@
 
 #define CTRL_S  '\x13'
 #define CTRL_Q  '\x11'
+#define CTRL_N  '\x0E'   /* toggle line numbers */
+
+#define VIX_USER_MAX    64
 
 /* Runtime geometry (set in main from the pane). */
 static int v_cols;        /* total pane width                       */
 static int v_text_cols;   /* usable content width = v_cols - gutter */
 static int v_text_rows;   /* visible content rows (status excluded) */
 static int v_status_row;  /* status-bar row                         */
+
+/* Line numbers: OFF by default.  Turned on at runtime with Ctrl-N or via a
+ * `set linenumbers` (alias `set number` / `set nu`) line in ~/.vixrc.  When
+ * off the gutter has zero width and text starts at column 0. */
+static int v_linenumbers; /* 0 = off (default), 1 = on               */
+static int v_gutter;      /* current gutter width (VIX_GUTTER_W or 0) */
 
 /* Editor buffer. */
 static char v_lines[VIX_MAX_LINES][VIX_LINE_CAP + 1];
@@ -116,6 +125,8 @@ static int line_vrows(int li)
  * continuation marker on later segments. */
 static void vix_draw_gutter(int screen_row, int line_one_based, int seg)
 {
+    if (v_gutter <= 0) return;   /* line numbers off: no gutter */
+
     char gut[VIX_GUTTER_W + 1];
     for (int i = 0; i < VIX_GUTTER_W; i++) gut[i] = ' ';
     gut[VIX_GUTTER_W] = '\0';
@@ -147,9 +158,9 @@ static void vix_draw_text(int screen_row, int line_idx, int seg_start)
     for (int c = 0; c < v_text_cols; c++) {
         int  idx = seg_start + c;
         char ch  = (s && idx < len) ? s[idx] : ' ';
-        vix_put(VIX_GUTTER_W + c, screen_row, ch, VIX_CLR_TEXT);
+        vix_put(v_gutter + c, screen_row, ch, VIX_CLR_TEXT);
     }
-    for (int c = VIX_GUTTER_W + v_text_cols; c < v_cols; c++)
+    for (int c = v_gutter + v_text_cols; c < v_cols; c++)
         vix_put(c, screen_row, ' ', VIX_CLR_TEXT);
 }
 
@@ -178,7 +189,7 @@ static void vix_draw_status(void)
         vix_append(bar, cap, &off, "/");
         vix_uitoa((unsigned int)v_nlines, tmp);
         vix_append(bar, cap, &off, tmp);
-        vix_append(bar, cap, &off, " | ^S:Save  ^Q:Quit");
+        vix_append(bar, cap, &off, " | ^S:Save  ^Q:Quit  ^N:Num");
     }
 
     while (off < v_cols && off < VIX_STATUS_BUF - 1) bar[off++] = ' ';
@@ -219,8 +230,8 @@ static void vix_redraw(void)
     /* Vim-style empty rows past EOF: blank gutter + '~'. */
     while (vrow < v_text_rows) {
         vix_draw_gutter(vrow, 0, 0);
-        vix_put(VIX_GUTTER_W, vrow, '~', VIX_CLR_GUTTER);
-        for (int c = VIX_GUTTER_W + 1; c < v_cols; c++)
+        vix_put(v_gutter, vrow, '~', VIX_CLR_GUTTER);
+        for (int c = v_gutter + 1; c < v_cols; c++)
             vix_put(c, vrow, ' ', VIX_CLR_TEXT);
         vrow++;
     }
@@ -230,7 +241,7 @@ static void vix_redraw(void)
 
     int cur_vrow  = vix_cursor_vrow();
     int cur_inseg = v_cur_col % (v_text_cols > 0 ? v_text_cols : 1);
-    sys_set_cursor((unsigned int)(VIX_GUTTER_W + cur_inseg),
+    sys_set_cursor((unsigned int)(v_gutter + cur_inseg),
                    (unsigned int)cur_vrow);
 }
 
@@ -357,6 +368,93 @@ static int vix_save(void)
     return err;
 }
 
+/* Recompute the gutter width and usable text width from v_linenumbers.
+ * Called at startup and whenever line numbers are toggled. */
+static void vix_recompute_geometry(void)
+{
+    v_gutter    = v_linenumbers ? VIX_GUTTER_W : 0;
+    v_text_cols = (v_cols > v_gutter + 1) ? (v_cols - v_gutter) : v_cols;
+    if (v_text_cols > VIX_LINE_CAP) v_text_cols = VIX_LINE_CAP;
+}
+
+static int vix_streq(const char *a, const char *b)
+{
+    while (*a && *b) { if (*a != *b) return 0; a++; b++; }
+    return *a == *b;
+}
+
+static int vix_starts(const char *s, const char *pfx)
+{
+    while (*pfx) { if (*s != *pfx) return 0; s++; pfx++; }
+    return 1;
+}
+
+/* Apply one `set ...` directive (from ~/.vixrc or a future command line).
+ * Recognises linenumbers / number / nu and their `no...` negations. */
+static void vix_apply_setting(const char *s)
+{
+    while (*s == ' ' || *s == '\t') s++;
+    if (!vix_starts(s, "set")) return;
+    s += 3;
+    while (*s == ' ' || *s == '\t') s++;
+
+    if (vix_streq(s, "linenumbers") || vix_streq(s, "number") || vix_streq(s, "nu"))
+        v_linenumbers = 1;
+    else if (vix_streq(s, "nolinenumbers") || vix_streq(s, "nonumber") || vix_streq(s, "nonu"))
+        v_linenumbers = 0;
+
+    vix_recompute_geometry();
+}
+
+/* Read ~/.vixrc and apply each `set` directive.  Home is derived from the
+ * current user (root -> /root, otherwise /home/<user>) via SYS_WHOAMI, since
+ * userspace has no environment to carry $HOME.  Best-effort: a missing file,
+ * unknown user, or unreadable rc just leaves the defaults in place. */
+static void vix_load_vixrc(void)
+{
+    char user[VIX_USER_MAX];
+    if (sys_whoami(user, sizeof(user)) <= 0) return;
+
+    char path[VFS_PATH_MAX];
+    int o = 0;
+    if (vix_streq(user, "root")) {
+        const char *h = "/root";
+        while (*h && o < VFS_PATH_MAX - 8) path[o++] = *h++;
+    } else {
+        const char *h = "/home/";
+        while (*h && o < VFS_PATH_MAX - 8) path[o++] = *h++;
+        for (int i = 0; user[i] && o < VFS_PATH_MAX - 8; i++) path[o++] = user[i];
+    }
+    const char *suf = "/.vixrc";
+    while (*suf && o < VFS_PATH_MAX - 1) path[o++] = *suf++;
+    path[o] = '\0';
+
+    int fd = sys_open(path, O_RDONLY);
+    if (fd < 0) return;
+    static char rc[2048];
+    long n = sys_read(fd, rc, sizeof(rc) - 1);
+    sys_close(fd);
+    if (n <= 0) return;
+    rc[n] = '\0';
+
+    long i = 0;
+    while (i < n) {
+        char line[128];
+        int  li = 0;
+        while (i < n && rc[i] != '\n') {
+            if (li < (int)sizeof(line) - 1) line[li++] = rc[i];
+            i++;
+        }
+        line[li] = '\0';
+        if (i < n) i++;                 /* skip newline */
+
+        const char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0' || *p == '#' || *p == '"') continue;   /* blank/comment */
+        vix_apply_setting(p);
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) {
@@ -374,8 +472,11 @@ int main(int argc, char **argv)
     if (rows  > VIX_MAX_ROWS)  rows = VIX_MAX_ROWS;
     v_text_rows  = rows - 1;
     v_status_row = rows - 1;
-    v_text_cols  = (v_cols > VIX_GUTTER_W + 1) ? (v_cols - VIX_GUTTER_W) : v_cols;
-    if (v_text_cols > VIX_LINE_CAP) v_text_cols = VIX_LINE_CAP;
+
+    /* Line numbers default off; ~/.vixrc may flip them on with
+     * `set linenumbers`.  Load it before computing the gutter geometry. */
+    vix_load_vixrc();
+    vix_recompute_geometry();
 
     /* Store path. */
     const char *src = argv[1];
@@ -415,6 +516,12 @@ int main(int argc, char **argv)
         if (c == KEY_CTRL_S || c == CTRL_S) {
             if (v_path[0]) v_save_msg = (vix_save() == 0) ? 1 : -1;
             else           v_save_msg = -1;
+            continue;
+        }
+
+        if (c == CTRL_N) {   /* toggle line numbers (mirrors `set linenumbers`) */
+            v_linenumbers = !v_linenumbers;
+            vix_recompute_geometry();
             continue;
         }
 
