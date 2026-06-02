@@ -121,7 +121,11 @@ case "${1:-}" in
             MODE="ktest"; shift 1
         fi ;;
     kbtest)
-        MODE="kbtest"; shift 1 ;;
+        if [ "${2:-}" = "gui" ] || [ "${2:-}" = "graphical" ]; then
+            MODE="kbtest gui"; shift 2
+        else
+            MODE="kbtest"; shift 1
+        fi ;;
     ui)
         MODE="ui"; shift 1 ;;
     gui)
@@ -814,12 +818,17 @@ _build_iso() {
 # the kernel keyboard_test_driver injects keys and emits KBTEST markers.  The
 # driver loops forever, so we poll serial for "KBTEST: done" then stop QEMU.
 _run_kbtest() {
-    echo "==> Running keyboard-injection test (headless QEMU)..."
+    # $1 = "gui" -> visible QEMU window (watch the injection drive the shell);
+    # otherwise headless.  Serial still goes to a file for the assertions.
+    local _disp="-display none"
+    [ "${1:-}" = "gui" ] && { _disp="${QEMU_DISPLAY:+-display $QEMU_DISPLAY}"; echo "==> Running keyboard-injection test (graphical window)..."; } \
+                         || echo "==> Running keyboard-injection test (headless QEMU)..."
     local _qemu; _qemu=$(_host_qemu)
     if [ -z "$_qemu" ]; then echo "==> kbtest needs host qemu-system-i386"; return 1; fi
     local _log="$REPO_ROOT/kbtest.log"; rm -f "$_log"
     local _secs="${KBTEST_TIMEOUT:-90}"
-    "$_qemu" -cdrom "$REPO_ROOT/makar.iso" -m 256 -vga std -display none \
+    # shellcheck disable=SC2086
+    "$_qemu" -cdrom "$REPO_ROOT/makar.iso" -m 256 -vga std $_disp \
         -serial "file:$_log" -no-reboot >/dev/null 2>&1 &
     local _qp=$! _i=0
     while [ "$_i" -lt "$_secs" ]; do
@@ -967,6 +976,11 @@ ktest)
 "kbtest")
     KERNEL_ARGS="kbtest${KERNEL_ARGS:+ $KERNEL_ARGS}" _build_iso "CFLAGS='-O0 -g3'"
     _run_kbtest
+    ;;
+
+"kbtest gui")
+    KERNEL_ARGS="kbtest${KERNEL_ARGS:+ $KERNEL_ARGS}" _build_iso "CFLAGS='-O0 -g3'"
+    _run_kbtest gui
     ;;
 
 # ── ktest graphical ──────────────────────────────────────────────────────────
