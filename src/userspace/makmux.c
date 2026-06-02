@@ -50,7 +50,20 @@ static void child_shell(void)
         sys_exit(1);
     }
 
-    char *argv[] = { "sh.elf", "--makmux", 0 };
+    /* Pass the session user so the VT shell's prompt matches mak.sh0
+     * (user@ with '$', not the default root@ with '#'). */
+    static char user_arg[48];
+    char uname[40];
+    int have_user = (sys_whoami(uname, sizeof(uname)) > 0 && uname[0]);
+    if (have_user) {
+        const char *pfx = "--user=";
+        int o = 0;
+        for (int i = 0; pfx[i]; i++) user_arg[o++] = pfx[i];
+        for (int i = 0; uname[i] && o < (int)sizeof(user_arg) - 1; i++) user_arg[o++] = uname[i];
+        user_arg[o] = '\0';
+    }
+
+    char *argv[] = { "sh.elf", "--makmux", have_user ? user_arg : 0, 0 };
     sys_execve("/apps/sh.elf", argv, (char *const *)0);
     put_s("makmux: exec /apps/sh.elf failed on VT ");
     put_dec(slot);

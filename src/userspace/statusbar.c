@@ -11,9 +11,10 @@
  *
  *     <section> <widget> [<widget> ...]        section = left | center | right
  *
- * Widgets: hostname user date time datetime uptime  (command/mem/rootfs are
- * reserved names for later phases -- they render empty for now).  Default
- * when ~/.sbrc is absent:  left hostname  /  right time.
+ * Widgets: hostname user date time datetime uptime mem command tabs.
+ * (`command` = the active VT's foreground task; `tabs` = the makmux VT strip;
+ *  `rootfs` is reserved -- needs a statvfs-style syscall the kernel lacks.)
+ * Default when ~/.sbrc is absent:  left hostname / center tabs / right time.
  *
  * Alt+F5 toggles the whole bar (reserve <-> free the row).
  *
@@ -57,6 +58,70 @@ static int read_rtc(char *buf,unsigned int cap)
 static char g_host[48];
 static char g_user[48];
 
+static void sb_uitoa(unsigned int v,char *buf)
+{
+    char t[12]; int i=0;
+    if(v==0){ buf[0]='0'; buf[1]='\0'; return; }
+    while(v){ t[i++]=(char)('0'+v%10); v/=10; }
+    int j=0; while(i>0) buf[j++]=t[--i]; buf[j]='\0';
+}
+
+/* Value (kB) of a "Label:   N kB" line in /proc/meminfo, or 0. */
+static unsigned int meminfo_kb(const char *label)
+{
+    char buf[512]; int fd=sys_open("/proc/meminfo",O_RDONLY);
+    if(fd<0) return 0;
+    long r=sys_read(fd,buf,sizeof(buf)-1); sys_close(fd);
+    if(r<=0) return 0; buf[r]='\0';
+    unsigned int ll=0; while(label[ll]) ll++;
+    for(long i=0;i<r;){
+        long j=0; while(j<(long)ll && buf[i+j]==label[j]) j++;
+        if(j==(long)ll && buf[i+ll]==':'){
+            const char *p=buf+i+ll+1; while(*p==' ') p++;
+            unsigned int v=0; while(*p>='0'&&*p<='9'){ v=v*10+(unsigned int)(*p-'0'); p++; }
+            return v;
+        }
+        while(i<r && buf[i]!='\n') i++;
+        i++;
+    }
+    return 0;
+}
+
+/* Foreground command of the active VT: the live task with that tty and the
+ * highest pid (a running child outranks its shell).  Empty if none. */
+static void active_command(char *out,unsigned int cap)
+{
+    out[0]='\0';
+    unsigned int active=((unsigned int)sys_vt_state()>>16)&0xFFFFu;
+    char buf[1024]; int fd=sys_open("/proc/tasks",O_RDONLY);
+    if(fd<0) return;
+    long r=sys_read(fd,buf,sizeof(buf)-1); sys_close(fd);
+    if(r<=0) return; buf[r]='\0';
+
+    long i=0; int line=0; int best_pid=-1; char best[20]; best[0]='\0';
+    while(i<r){
+        char tok[5][20]; int nt=0;
+        while(i<r && buf[i]!='\n'){
+            while(i<r && (buf[i]==' '||buf[i]=='\t')) i++;
+            if(i>=r||buf[i]=='\n') break;
+            int tl=0;
+            while(i<r&&buf[i]!=' '&&buf[i]!='\t'&&buf[i]!='\n'){
+                if(nt<5 && tl<19) tok[nt][tl++]=buf[i];
+                i++;
+            }
+            if(nt<5){ tok[nt][tl]='\0'; nt++; }
+        }
+        if(i<r) i++;
+        if(line++==0) continue;                 /* header row */
+        if(nt<4 || tok[3][0]=='-') continue;     /* no tty */
+        unsigned int tn=0; for(int k=0;tok[3][k];k++) tn=tn*10+(unsigned int)(tok[3][k]-'0');
+        if(tn!=active) continue;
+        int pid=0; for(int k=0;tok[0][k];k++) pid=pid*10+(tok[0][k]-'0');
+        if(pid>best_pid){ best_pid=pid; int b=0; while(tok[1][b]&&b<19){best[b]=tok[1][b];b++;} best[b]='\0'; }
+    }
+    if(best[0]){ unsigned int o=0; s_cat(out,&o,cap,best); }
+}
+
 /* Append the named widget's current value to out[]. */
 static void widget(const char *name,char *out,unsigned int *o,unsigned int cap)
 {
@@ -94,7 +159,24 @@ static void widget(const char *name,char *out,unsigned int *o,unsigned int cap)
         return;
     }
 
-    /* command / mem / rootfs: reserved for a later phase -> render empty. */
+    if(s_eq(name,"mem")){
+        unsigned int used=meminfo_kb("MemUsed"), total=meminfo_kb("MemTotal");
+        if(total){
+            char a[12],b[12]; sb_uitoa(used/1024u,a); sb_uitoa(total/1024u,b);
+            s_cat(out,o,cap,"MEM "); s_cat(out,o,cap,a);
+            s_cat(out,o,cap,"/"); s_cat(out,o,cap,b); s_cat(out,o,cap,"M");
+        }
+        return;
+    }
+
+    if(s_eq(name,"command")){
+        char cmd[20]; active_command(cmd,sizeof(cmd));
+        if(cmd[0]) s_cat(out,o,cap,cmd);
+        return;
+    }
+
+    /* rootfs: needs a fs-free-blocks (statvfs-style) syscall the kernel
+     * doesn't expose yet -> render empty for now. */
 }
 
 /* ---- ~/.sbrc -> three section widget-lists ------------------------------ */
