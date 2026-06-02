@@ -941,10 +941,10 @@ static void on_make(kc_t kc)
                 default: break;
             }
         }
-        /* Ctrl+Tab: cycle forward through live VT slots.
-         * Ctrl+Shift+Tab: cycle backward.
-         * Useful on Windows hosts where Alt+F4 is pre-mapped. */
-        if (mod_ctrl && kc == KC_TAB) {
+        /* Alt+Tab / Ctrl+Tab: cycle forward through live VT slots.
+         * Alt+Shift+Tab / Ctrl+Shift+Tab: cycle backward.  (Ctrl+Tab kept as
+         * an alias for Windows hosts where Alt+Tab is grabbed by the host WM.) */
+        if ((mod_alt || mod_ctrl) && kc == KC_TAB) {
             int n = vtty_count();
             if (n > 1) {
                 int cur  = vtty_active();
@@ -1195,12 +1195,39 @@ void keyboard_test_driver(void)
     ksleep(80);                 /* let sh.elf reach its first prompt */
 
     Serial_WriteString("KBTEST: start\n");
+    int pass = 1;
 
+    /* 1: type a command -> shell runs it -> output reaches serial.  Proves
+     *    inject -> decode -> ring -> shell -> exec -> serial end to end. */
     keyboard_inject_text("verbose on\n");   /* mirror shell output to serial */
     ksleep(80);
     keyboard_inject_text("echo KBINJECT_OK\n");
     ksleep(150);
 
+    /* 2: makmux + Alt-Tab / Alt-Shift-Tab VT cycling.  Asserts directly on
+     *    in-kernel state (vtty_active) -- no serial-scrape needed. */
+    keyboard_inject_text("makmux\n");
+    ksleep(400);                /* let makmux fork mak.sh1-4 + take focus */
+    if (vtty_count() > 1) {
+        int a0 = vtty_active();
+        keyboard_inject_key(KC_TAB, 0, 0, 1);   /* Alt+Tab       -> forward  */
+        ksleep(40);
+        int a1 = vtty_active();
+        keyboard_inject_key(KC_TAB, 1, 0, 1);   /* Alt+Shift+Tab -> backward */
+        ksleep(40);
+        int a2 = vtty_active();
+        if (a1 != a0 && a2 == a0) {
+            Serial_WriteString("KBTEST: alt-tab PASS\n");
+        } else {
+            Serial_WriteString("KBTEST: alt-tab FAIL\n");
+            pass = 0;
+        }
+    } else {
+        Serial_WriteString("KBTEST: alt-tab FAIL (makmux spawned no VTs)\n");
+        pass = 0;
+    }
+
+    Serial_WriteString(pass ? "KBTEST: ALL PASS\n" : "KBTEST: FAIL\n");
     Serial_WriteString("KBTEST: done\n");
     for (;;)
         task_yield();

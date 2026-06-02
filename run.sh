@@ -830,7 +830,9 @@ _run_kbtest() {
     sleep 1; kill "$_qp" 2>/dev/null
     echo "--- kbtest serial ---"
     grep -aE "KBTEST:|KBINJECT_OK|PAGE FAULT|panic\(cpu" "$_log" || true
-    if grep -q "KBINJECT_OK" "$_log" 2>/dev/null && ! grep -q "PAGE FAULT\|panic(cpu" "$_log" 2>/dev/null; then
+    if grep -q "KBINJECT_OK" "$_log" 2>/dev/null \
+       && grep -q "KBTEST: ALL PASS" "$_log" 2>/dev/null \
+       && ! grep -q "PAGE FAULT\|panic(cpu" "$_log" 2>/dev/null; then
         echo "==> kbtest PASS"; return 0
     fi
     echo "==> kbtest FAIL (see $_log)"; return 1
