@@ -951,6 +951,25 @@ sendkey ret" \
     assert_serial_not_contains "Kernel panic" "SIGSEGV"
 }
 
+test_tcc_rebuild_statusbar() {
+    # Self-host: in-OS TCC rebuilds statusbar.c (freestanding, only syscall.h,
+    # no floats).  It's a long-running loop so we don't exec it -- just prove
+    # the compile produced an ELF (ls shows it; a compile error leaves no file).
+    reset_shell
+    CURRENT_NAME=tcc-rebuild-statusbar
+    local sb1=$(wc -c < "$SERIAL_LOG")
+    send_script "$(keys "tcc /src/userspace/statusbar.c -o /tmp/statusbar.elf")
+sendkey ret"
+    wait_for_serial '\[shell:ready vt=0\]' "$sb1" 90 || \
+        echo "  - stage1: tcc compile of statusbar.c never returned to prompt"
+    it_until "tcc-rebuild-statusbar" \
+"$(keys "ls /tmp/statusbar.elf")
+sendkey ret" \
+        "statusbar.elf" 15
+    assert_serial_contains "statusbar.elf"
+    assert_serial_not_contains "Kernel panic" "SIGSEGV" "error:"
+}
+
 test_tcc_hello() {
     # Phase-3-of-TCC-port slice: cross-built tcc.elf compiles a known C
     # source on a running Makar guest and the freshly-emitted ELF is
