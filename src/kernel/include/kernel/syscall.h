@@ -117,6 +117,14 @@
                                  * /etc/hostname (or fallback "makar"), copy up
                                  * to size-1 bytes, NUL-terminate.  Returns
                                  * strlen on success, -1 if buf invalid. */
+#define SYS_WHOAMI         240  /* int whoami(char *buf, size_t size) - copy the
+                                 * current session's username (auth_current_user,
+                                 * "user" on live boots) up to size-1 bytes,
+                                 * NUL-terminate.  Returns strlen, -1 if invalid. */
+#define SYS_STATUSBAR      241  /* int statusbar(int cmd) - reserve/free the bottom
+                                 * status row (mechanism for userspace statusbar.elf).
+                                 * cmd: 1=enable (reserve), 0=disable (free), <0=query.
+                                 * Returns the resulting enabled state (0/1). */
 
 /* Back to Linux i386 ABI numbers for the next set. */
 #define SYS_FCNTL      55   /* int fcntl(int fd, int cmd, int arg) - F_GETFL/F_SETFL */

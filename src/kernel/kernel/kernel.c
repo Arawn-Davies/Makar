@@ -33,6 +33,10 @@
  * Suppresses login regardless of rootfs type. */
 int g_live_boot = 0;
 
+/* `autologin=<user>` from the kernel cmdline.  Overrides /etc/autologin;
+ * empty = not set.  Read by shell_login_loop -> auth_try_autologin. */
+char g_autologin_user[64] = {0};
+
 /*
  * Column at which "[ OK ]" starts, counting from 0.
  * "[ OK ]" is 6 characters wide, so it occupies columns 74–79 on an
@@ -115,6 +119,28 @@ void user_shell_slot_entry(void)
 	shell_login_loop();
 }
 
+/*
+ * statusbar_entry – become /apps/statusbar.elf, the userspace renderer for
+ * the kernel's reserved bottom status row (hostname + clock now; ~/.sbrc
+ * widgets later).  Runs as a detached background task with no VT slot; its
+ * status-row cells reach the framebuffer regardless of which VT is focused.
+ * Waits for the boot ktests so the prompt + enabled row are up first.
+ */
+extern void statusbar_entry(void);
+void statusbar_entry(void)
+{
+	while (!ktest_bg_done)
+		task_yield();
+	const char *path = (g_live_boot && vfs_file_exists("/mnt/cdrom/apps/statusbar.elf"))
+	                   ? "/mnt/cdrom/apps/statusbar.elf"
+	                   : "/apps/statusbar.elf";
+	const char *argv[2] = { "statusbar", NULL };
+	elf_exec(path, 1, argv);
+	/* exec failed (missing/broken ELF): idle harmlessly, no status bar. */
+	for (;;)
+		task_yield();
+}
+
 void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 {
 	terminal_initialize();
@@ -154,14 +180,97 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 
 	t_writestring("Initializing display mode");
 	kprint_ok();
-	if (bochs_vbe_available()) {
-		vesa_tty_set_scale(2);
-		bochs_vbe_set_mode(1280, 720, 32);
-		vesa_update_geometry(1280, 720, 32);
-		vesa_tty_init();
-	} else {
-		vesa_tty_disable();
-		terminal_set_rows(50);
+	{
+		/* vmode=<720p|1080p|480p|WxH> from the boot cmdline.  GRUB and Limine
+		 * both feed the multiboot2 CMDLINE tag; the full cmdline parse runs
+		 * later, so peek for vmode= now since the display comes up first.
+		 * Absent/unsupported -> default 720p. */
+		char vmode[16]; vmode[0] = '\0';
+		if (magic == MULTIBOOT2_BOOTLOADER_MAGIC) {
+			uint8_t *tp = (uint8_t *)mbi + sizeof(multiboot2_info_t);
+			uint8_t *te = (uint8_t *)mbi + mbi->total_size;
+			while (tp < te) {
+				multiboot2_tag_t *tag = (multiboot2_tag_t *)tp;
+				if (tag->type == MULTIBOOT2_TAG_TYPE_END) break;
+				if (tag->type == MULTIBOOT2_TAG_TYPE_CMDLINE) {
+					const char *vp = strstr(
+						((multiboot2_tag_cmdline_t *)tag)->string, "vmode=");
+					if (vp) {
+						vp += 6;
+						size_t k = 0;
+						while (*vp && *vp != ' ' && *vp != '\t' &&
+						       k + 1 < sizeof(vmode))
+							vmode[k++] = *vp++;
+						vmode[k] = '\0';
+					}
+					break;
+				}
+				tp += (tag->size + 7u) & ~7u;
+			}
+		}
+
+		if (bochs_vbe_available()) {
+			/* Highest mode the adapter can scan out: this is the framebuffer
+			 * span we pre-map below, before any task PD is snapshotted, so a
+			 * later setmode up to this size never reaches an unmapped FB region
+			 * (the 1080p page-fault-at-0xFD400000 bug). */
+			static const struct { uint32_t w, h; } prefs[] = {
+				{ 1920, 1080 }, { 1280, 720 }, { 640, 480 },
+			};
+			uint32_t max_w = 0, max_h = 0;
+			for (uint32_t i = 0; i < sizeof(prefs)/sizeof(prefs[0]); i++) {
+				if (bochs_vbe_mode_supported(prefs[i].w, prefs[i].h, 32)) {
+					max_w = prefs[i].w; max_h = prefs[i].h; break;
+				}
+			}
+			if (max_w == 0) { max_w = 1280; max_h = 720; }
+
+			/* Active boot mode: vmode= if given and supported; else default
+			 * 720p; else the max the adapter supports. */
+			uint32_t bw = 0, bh = 0;
+			if (vmode[0]) {
+				uint32_t rw = 0, rh = 0;
+				if (!strcmp(vmode,"1080p") || !strcmp(vmode,"1920x1080")) { rw=1920; rh=1080; }
+				else if (!strcmp(vmode,"720p") || !strcmp(vmode,"1280x720")) { rw=1280; rh=720; }
+				else if (!strcmp(vmode,"480p") || !strcmp(vmode,"640x480")) { rw=640; rh=480; }
+				if (rw && bochs_vbe_mode_supported(rw, rh, 32)) { bw = rw; bh = rh; }
+			}
+			if (bw == 0) {
+				if (bochs_vbe_mode_supported(1280, 720, 32)) { bw = 1280; bh = 720; }
+				else { bw = max_w; bh = max_h; }
+			}
+
+			/* Pre-map the max-supported FB span into the kernel PD (pre-tasking). */
+			{
+				const vesa_fb_t *fbp = vesa_get_fb();
+				if (fbp)
+					paging_map_region((uint32_t)(uintptr_t)fbp->addr,
+					                  max_w * max_h * 4u);
+			}
+
+			{
+				uint32_t cw = 0, ch = 0, cb = 0;
+				bochs_vbe_caps(&cw, &ch, &cb);
+				Serial_WriteString("display: VBE caps max=");
+				Serial_WriteDec(cw); Serial_WriteString("x");
+				Serial_WriteDec(ch); Serial_WriteString("x"); Serial_WriteDec(cb);
+				Serial_WriteString(" vram="); Serial_WriteDec(bochs_vbe_vram_bytes());
+				Serial_WriteString(" premap="); Serial_WriteDec(max_w);
+				Serial_WriteString("x"); Serial_WriteDec(max_h);
+				Serial_WriteString(" -> mode ");
+				Serial_WriteDec(bw); Serial_WriteString("x"); Serial_WriteDec(bh);
+				if (vmode[0]) { Serial_WriteString(" (vmode="); Serial_WriteString(vmode); Serial_WriteString(")"); }
+				Serial_WriteString("\n");
+			}
+
+			vesa_tty_set_scale(bw >= 1280 ? 2 : 1);
+			bochs_vbe_set_mode(bw, bh, 32);
+			vesa_update_geometry(bw, bh, 32);
+			vesa_tty_init();
+		} else {
+			vesa_tty_disable();
+			terminal_set_rows(50);
+		}
 	}
 
 	t_writestring("Starting timer (100 Hz)");
@@ -254,6 +363,18 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 						    sp[3] == 'c' && sp[4] == 'u' && sp[5] == 'e')
 							shell_rescue = 1;
 					}
+					/* autologin=<user> - skip the password prompt and sign in as
+					 * <user> (must exist in /etc/shadow); overrides /etc/autologin. */
+					const char *ap = strstr(cmd->string, "autologin=");
+					if (ap) {
+						ap += 10;
+						size_t j = 0;
+						while (*ap && *ap != ' ' && *ap != '\t' &&
+						       j + 1 < sizeof(g_autologin_user)) {
+							g_autologin_user[j++] = *ap++;
+						}
+						g_autologin_user[j] = '\0';
+					}
 					/* test=<comma-list> -- which test-mode scripts to run. */
 					const char *tp = strstr(cmd->string, "test=");
 					if (tp) {
@@ -325,6 +446,9 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			task_create("rescu.sh", shell_run);
 		} else {
 			task_create("mak.sh0", user_shell_slot_entry);
+			/* Userspace status-bar renderer (skipped on the rescue path,
+			 * which wants a single bare in-kernel shell). */
+			task_create("statusbar", statusbar_entry);
 		}
 		task_create("ktest",  ktest_bg_task);
 	}

@@ -905,9 +905,13 @@ static void shell_print_prompt(void)
                                            : (uint32_t)t_column;
     if (cur_col != 0) t_putchar('\n');
 
-    t_writestring(SHELL_USERNAME "@" SHELL_HOSTNAME ":");
+    const char *user = auth_current_user();
+    if (!user || !*user) user = SHELL_USERNAME;
+    t_writestring(user);
+    t_writestring("@" SHELL_HOSTNAME ":");
     t_writestring(vfs_getcwd());
-    t_writestring("# ");
+    /* root -> '#', any other user -> '$' (standard sh convention). */
+    t_writestring(strcmp(user, "root") == 0 ? "# " : "$ ");
 }
 
 /* ---------------------------------------------------------------------------
@@ -1013,10 +1017,9 @@ int shell_enter_slot(int with_loading_screen)
             task_yield();
         while (keyboard_poll()) {}
 
-        /* Loading is over.  Keep the kernel VT status bar hidden on the
-         * default shell: the tabbed VT UI belongs to the userspace makmux
-         * app, not to normal boot. */
-        vesa_tty_set_status_visible(0);
+        /* Loading is over.  Enable the kernel status bar (statusbar_task
+         * owns the bottom row from here on); Alt+F5 toggles it off. */
+        vesa_tty_set_status_visible(1);
 
         /* Switch into this VT's per-VT palette and clear so the banner
          * prints on the VT's bg colour (the loading screen left the FB
@@ -1175,7 +1178,9 @@ void shell_enter_root_tty(void)
         task_yield();
     while (keyboard_poll()) {}
 
-    vesa_tty_set_status_visible(0);
+    /* Boot splash done: enable the kernel status bar (statusbar_task owns
+     * the bottom row from here; Alt+F5 toggles it). */
+    vesa_tty_set_status_visible(1);
     terminal_set_colorscheme(SHELL_COLOR_VGA);
     if (vesa_tty_is_ready()) {
         vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
@@ -1207,8 +1212,13 @@ void shell_login_loop(void)
          *   3. /etc/shadow exists (password has been configured)
          * Any live ISO boot — even one where the kernel elected an HDD as
          * rootfs — skips authentication entirely. */
-        if (!g_live_boot && vfs_rootfs_is_disk() && vfs_file_exists("/etc/shadow"))
-            login_screen();
+        if (!g_live_boot && vfs_rootfs_is_disk() && vfs_file_exists("/etc/shadow")) {
+            /* Try auto-login first (cmdline autologin=<user>, else
+             * /etc/autologin).  Falls through to the password prompt when
+             * not configured or the named user is invalid. */
+            if (!auth_try_autologin(g_autologin_user[0] ? g_autologin_user : (const char *)0))
+                login_screen();
+        }
 
         /* --- Session start: clear to the shell's own palette and print
          *     the build-info banner, matching the pre-login-flow UX. --- */
@@ -1227,6 +1237,27 @@ void shell_login_loop(void)
             t_writestring("!\n\n");
         } else {
             t_writestring("Welcome, user@makar! (live session)\n\n");
+        }
+
+        /* --- Ensure the login user's home directory exists ---
+         * The login shell cd's into HOME on startup; create it here on a
+         * writable rootfs so that lands somewhere real.  root -> /root,
+         * everyone else -> /home/<user>.  No-op on a read-only (live ISO)
+         * rootfs, where the shell stays at '/' instead. */
+        if (vfs_rootfs_is_disk()) {
+            const char *u = auth_current_user();
+            if (u && strcmp(u, "root") == 0) {
+                if (!vfs_file_exists("/root")) vfs_mkdir("/root");
+            } else if (u && *u) {
+                if (!vfs_file_exists("/home")) vfs_mkdir("/home");
+                char home_path[VFS_PATH_MAX];
+                size_t hi = 0;
+                const char *hp = "/home/";
+                while (*hp && hi < sizeof(home_path) - 1) home_path[hi++] = *hp++;
+                while (*u && hi < sizeof(home_path) - 1) home_path[hi++] = *u++;
+                home_path[hi] = '\0';
+                if (!vfs_file_exists(home_path)) vfs_mkdir(home_path);
+            }
         }
 
         /* --- Spawn sh.elf --login --user=<name> --- */

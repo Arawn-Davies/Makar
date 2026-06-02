@@ -45,7 +45,8 @@ int vtty_close_pid(int pid);
 void vtty_request_open(void);
 int  vtty_take_open_request(void);
 
-/* Global Alt+F5 request queue consumed by makmux in userspace. */
+/* Global Alt+F5 request queue.  Consumed by userspace statusbar.elf (via
+ * SYS_VT_CLOCK_REQUEST) to toggle the bottom status bar on/off. */
 void vtty_request_clock_toggle(void);
 int  vtty_take_clock_toggle_request(void);
 

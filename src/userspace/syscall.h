@@ -89,6 +89,8 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_SCHED_QUANTUM 228
 #define SYS_VERBOSE       229
 #define SYS_GETHOSTNAME   230
+#define SYS_WHOAMI        240
+#define SYS_STATUSBAR     241
 #define SYS_SHELL_READY   231
 #define SYS_CURSOR_POS    232
 #define SYS_VT_ENTER      233
@@ -705,6 +707,22 @@ static inline int sys_gethostname(char *buf, unsigned int size)
 {
     return (int)syscall2(SYS_GETHOSTNAME, (long)buf, (long)size);
 }
+
+/* Copy the current session's username ("user" on live boots) into buf,
+ * capped at size-1 bytes, NUL-terminated.  Returns strlen, -1 on bad args. */
+static inline int sys_whoami(char *buf, unsigned int size)
+{
+    return (int)syscall2(SYS_WHOAMI, (long)buf, (long)size);
+}
+
+/* Status-bar reservation (statusbar.elf uses this).  cmd: 1=enable/reserve the
+ * bottom row, 0=disable/free it, <0=query only.  Returns the enabled state. */
+static inline int sys_statusbar(int cmd)
+{
+    return (int)syscall1(SYS_STATUSBAR, (long)cmd);
+}
+static inline int sys_statusbar_enabled(void) { return sys_statusbar(-1); }
+static inline int sys_statusbar_set(int on)   { return sys_statusbar(on ? 1 : 0); }
 
 /* Emit `[shell:ready vt=N]` on COM1 when g_serial_verbose is set.
  * Called by /apps/sh.elf before each prompt so ui_test.sh's
