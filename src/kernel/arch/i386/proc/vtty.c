@@ -200,9 +200,13 @@ int vtty_close_pid(int pid)
     if (vtty_nslots == 0) {
         vtty_current = 0;
         keyboard_set_focus(task_current());
-        /* No VT children left: the status bar stays enabled (statusbar_task
-         * just stops drawing tabs since vtty_count() == 0).  The bar is no
-         * longer tied to makmux's lifetime. */
+        /* No VT children left: the status bar stays enabled (it just stops
+         * drawing tabs since vtty_count() == 0).  Restore mak.sh0's screen --
+         * the VT children/app-tabs drew over the framebuffer, and makmux
+         * itself no longer paints (so its wait4 reaper can't), so repaint the
+         * root console's backing buffer when the last VT closes.  mak.sh0 owns
+         * VTTY_ROOT_SLOT, so its next keyboard_getchar drains this repaint. */
+        vtty_request_repaint(VTTY_ROOT_SLOT);
     } else if (vtty_current == slot || vtty_current >= vtty_nslots) {
         int next = -1;
         for (int i = slot; i < vtty_nslots; i++) {

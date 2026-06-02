@@ -1233,6 +1233,22 @@ void keyboard_test_driver(void)
             Serial_WriteString("KBTEST: app-tab FAIL\n");
             pass = 0;
         }
+
+        /* 4: close every tab -> makmux exits -> focus + screen return to
+         *    mak.sh0 (the root console).  Asserts vtty_count() drops to 0. */
+        keyboard_inject_text("q");          /* quit maktop (q/Esc/F10) */
+        ksleep(150);
+        for (int e = 0; e < 5; e++) {       /* exit the four VT shells */
+            keyboard_inject_text("exit\n");
+            ksleep(120);
+        }
+        ksleep(150);
+        if (vtty_count() == 0) {
+            Serial_WriteString("KBTEST: exit-restore PASS\n");
+        } else {
+            Serial_WriteString("KBTEST: exit-restore FAIL\n");
+            pass = 0;
+        }
     } else {
         Serial_WriteString("KBTEST: alt-tab FAIL (makmux spawned no VTs)\n");
         pass = 0;
