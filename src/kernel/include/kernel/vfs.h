@@ -117,6 +117,7 @@ const char *vfs_hd_fsname(const char *name);
 /* 1 when the rootfs at "/" is ext2 or FAT32 (installed system); 0 on live
  * ISO9660 boots or when no rootfs has been elected. */
 int         vfs_rootfs_is_disk(void);
+int         vfs_statfs(uint32_t *total_kb, uint32_t *free_kb);
 void        vfs_print_mounts(void);
 
 /* Empty-mountpoint management (Linux-style: a mountpoint is a directory under

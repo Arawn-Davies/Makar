@@ -11,10 +11,11 @@
  *
  *     <section> <widget> [<widget> ...]        section = left | center | right
  *
- * Widgets: hostname user date time datetime uptime mem command tabs.
- * (`command` = the active VT's foreground task; `tabs` = the makmux VT strip;
- *  `rootfs` is reserved -- needs a statvfs-style syscall the kernel lacks.)
- * Default when ~/.sbrc is absent:  left hostname / center tabs / right time.
+ * Widgets: hostname user date time datetime uptime cpu mem rootfs command tabs.
+ * (`cpu` = busy %, `mem`/`rootfs` = used/total MiB, `command` = the active VT's
+ *  foreground task, `tabs` = the makmux VT strip.  `rootfs` is ext2-only -- it
+ *  renders empty on FAT32/ISO9660 rootfs.)
+ * Default ~/.sbrc:  left hostname / center tabs / right cpu mem rootfs time.
  *
  * Alt+F5 toggles the whole bar (reserve <-> free the row).
  *
@@ -122,6 +123,33 @@ static void active_command(char *out,unsigned int cap)
     if(best[0]){ unsigned int o=0; s_cat(out,&o,cap,best); }
 }
 
+/* Cumulative ticks the idle task (pid 1) has run, from /proc/tasks. */
+static unsigned int proc_idle_ticks(void)
+{
+    char buf[1024]; int fd=sys_open("/proc/tasks",O_RDONLY);
+    if(fd<0) return 0;
+    long r=sys_read(fd,buf,sizeof(buf)-1); sys_close(fd);
+    if(r<=0) return 0; buf[r]='\0';
+    long i=0; int line=0;
+    while(i<r){
+        char tok[6][20]; int nt=0;
+        while(i<r && buf[i]!='\n'){
+            while(i<r&&(buf[i]==' '||buf[i]=='\t')) i++;
+            if(i>=r||buf[i]=='\n') break;
+            int tl=0;
+            while(i<r&&buf[i]!=' '&&buf[i]!='\t'&&buf[i]!='\n'){ if(nt<6&&tl<19) tok[nt][tl++]=buf[i]; i++; }
+            if(nt<6){ tok[nt][tl]='\0'; nt++; }
+        }
+        if(i<r) i++;
+        if(line++==0) continue;
+        if(nt>=5 && tok[0][0]=='1' && tok[0][1]=='\0'){    /* pid 1 = idle */
+            unsigned int v=0; for(int k=0;tok[4][k];k++) v=v*10+(unsigned int)(tok[4][k]-'0');
+            return v;
+        }
+    }
+    return 0;
+}
+
 /* Append the named widget's current value to out[]. */
 static void widget(const char *name,char *out,unsigned int *o,unsigned int cap)
 {
@@ -175,8 +203,28 @@ static void widget(const char *name,char *out,unsigned int *o,unsigned int cap)
         return;
     }
 
-    /* rootfs: needs a fs-free-blocks (statvfs-style) syscall the kernel
-     * doesn't expose yet -> render empty for now. */
+    if(s_eq(name,"cpu")){
+        static unsigned int last_idle=0,last_up=0; static int have=0;
+        unsigned int idle=proc_idle_ticks(), up=sys_uptime(), busy=0;
+        if(have && up>last_up){
+            unsigned int dt=up-last_up, di=(idle>=last_idle)?(idle-last_idle):0u;
+            busy=(dt>di)?(dt-di)*100u/dt:0u;
+        }
+        last_idle=idle; last_up=up; have=1;
+        char b[8]; sb_uitoa(busy,b);
+        s_cat(out,o,cap,"CPU "); s_cat(out,o,cap,b); s_cat(out,o,cap,"%");
+        return;
+    }
+
+    if(s_eq(name,"rootfs")){
+        unsigned int t=0,fr=0;
+        if(sys_statfs(&t,&fr)==0 && t){
+            char a[12],b[12]; sb_uitoa((t-fr)/1024u,a); sb_uitoa(t/1024u,b);
+            s_cat(out,o,cap,"ROOT "); s_cat(out,o,cap,a);
+            s_cat(out,o,cap,"/"); s_cat(out,o,cap,b); s_cat(out,o,cap,"M");
+        }
+        return;
+    }
 }
 
 /* ---- ~/.sbrc -> three section widget-lists ------------------------------ */
@@ -189,7 +237,7 @@ static void set_default_layout(void)
     unsigned int o;
     o=0; s_cat(g_left,&o,SEC_MAX,"hostname");
     o=0; s_cat(g_center,&o,SEC_MAX,"tabs");     /* makmux VT tabs */
-    o=0; s_cat(g_right,&o,SEC_MAX,"time");
+    o=0; s_cat(g_right,&o,SEC_MAX,"cpu mem rootfs time");
 }
 
 /* Build "/home/<user>/.sbrc" (root -> /root/.sbrc) into path. */

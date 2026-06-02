@@ -898,6 +898,20 @@ int vfs_rootfs_is_disk(void)
     return 0;
 }
 
+/* Rootfs usage in KiB (total + free).  Accurate for ext2; FAT32 free needs a
+ * FAT scan (not done) and ISO9660 has no free space, so both return -1. */
+int vfs_statfs(uint32_t *total_kb, uint32_t *free_kb)
+{
+    for (int i = 0; i < s_nmounts; i++) {
+        if (s_mounts[i].mountpoint[0] == '/' && s_mounts[i].mountpoint[1] == '\0') {
+            if (s_mounts[i].backend == VFS_BACKEND_EXT2)
+                return ext2_statfs(total_kb, free_kb);
+            return -1;
+        }
+    }
+    return -1;
+}
+
 const char *vfs_hd_fsname(const char *name)
 {
     int mi = name ? mount_find_slot(name) : -1;

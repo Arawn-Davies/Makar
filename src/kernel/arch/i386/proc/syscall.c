@@ -1894,6 +1894,13 @@ void syscall_dispatch(registers_t *regs)
         break;
     }
 
+    case SYS_STATFS: {
+        uint32_t *total = (uint32_t *)(uintptr_t)regs->ebx;
+        uint32_t *freeb = (uint32_t *)(uintptr_t)regs->ecx;
+        regs->eax = (uint32_t)vfs_statfs(total, freeb);
+        break;
+    }
+
     case SYS_VT_GETNAME: {
         int   slot = (int)regs->ebx;
         char *buf  = (char *)regs->ecx;

@@ -701,6 +701,17 @@ void ext2_unmount(void)
 
 int ext2_mounted(void) { return s_mounted; }
 
+/* Filesystem usage in KiB (total + free), from the superblock block counts. */
+int ext2_statfs(uint32_t *total_kb, uint32_t *free_kb)
+{
+    if (!s_mounted) return -1;
+    uint32_t kb_per_blk = s_block_size / 1024u;
+    if (!kb_per_blk) kb_per_blk = 1u;
+    if (total_kb) *total_kb = s_sb.s_blocks_count      * kb_per_blk;
+    if (free_kb)  *free_kb  = s_sb.s_free_blocks_count * kb_per_blk;
+    return 0;
+}
+
 /* ---- read API ----------------------------------------------------------- */
 
 int ext2_file_exists(const char *path)

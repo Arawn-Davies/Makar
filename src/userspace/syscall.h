@@ -95,6 +95,7 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_VT_TAKE_APP   243
 #define SYS_VT_SETNAME    244
 #define SYS_VT_GETNAME    245
+#define SYS_STATFS        246
 #define SYS_SHELL_READY   231
 #define SYS_CURSOR_POS    232
 #define SYS_VT_ENTER      233
@@ -746,6 +747,13 @@ static inline int sys_vt_setname(const char *name)
 static inline int sys_vt_getname(int slot, char *buf, int cap)
 {
     return (int)syscall3(SYS_VT_GETNAME, (long)slot, (long)buf, (long)cap);
+}
+
+/* Rootfs usage in KiB (total + free).  Returns 0 on success, -1 if the rootfs
+ * doesn't report usage (FAT32/ISO9660). */
+static inline int sys_statfs(unsigned int *total_kb, unsigned int *free_kb)
+{
+    return (int)syscall2(SYS_STATFS, (long)total_kb, (long)free_kb);
 }
 
 /* Emit `[shell:ready vt=N]` on COM1 when g_serial_verbose is set.

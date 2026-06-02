@@ -1466,10 +1466,11 @@ void installer_run(void)
                 sb_path[p]='\0';
                 static const char sbrc[] =
                     "# ~/.sbrc -- statusbar layout: <section> <widgets...>\n"
-                    "# widgets: hostname user date time datetime uptime tabs\n"
+                    "# widgets: hostname user date time datetime uptime\n"
+                    "#          cpu mem rootfs command tabs\n"
                     "left hostname\n"
                     "center tabs\n"
-                    "right date time\n";
+                    "right cpu mem rootfs time\n";
                 size_t sb_len = 0;
                 while (sbrc[sb_len]) sb_len++;
                 rfs_write(sb_path, sbrc, (uint32_t)sb_len);

@@ -135,6 +135,8 @@
 #define SYS_VT_GETNAME     245  /* int vt_getname(int slot, char *buf, int cap) -
                                  * copy slot's tab name (empty for unnamed VT
                                  * shells).  Returns strlen.  Used by statusbar. */
+#define SYS_STATFS         246  /* int statfs(uint32_t *total_kb, uint32_t *free_kb)
+                                 * rootfs usage in KiB (ext2 only).  Returns 0/-1. */
 
 /* Back to Linux i386 ABI numbers for the next set. */
 #define SYS_FCNTL      55   /* int fcntl(int fd, int cmd, int arg) - F_GETFL/F_SETFL */
