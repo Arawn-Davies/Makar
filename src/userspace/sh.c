@@ -994,10 +994,53 @@ static int shell_path_dir(int p, char *out, unsigned int outsz)
     }
     return 0;
 }
+/* Fullscreen apps that, while makmux is running, open in their own named tab
+ * instead of taking over the current VT (matches the kernel shell's notion of
+ * "fullscreen" commands). */
+static int is_tab_app(const char *name)
+{
+    static const char *apps[] = { "vix", "maktop", "clock", "cfdisk",
+                                  "basic", "kbtester", 0 };
+    for (int i = 0; apps[i]; i++)
+        if (s_eq(name, apps[i])) return 1;
+    return 0;
+}
+
+/* Resolve a bare command name to a full path via PATH (with .elf fallback). */
+static int resolve_app_path(const char *name, char *out, unsigned int sz)
+{
+    char dir[VFS_PATH_MAX];
+    for (int p = 0; shell_path_dir(p, dir, sizeof(dir)); p++) {
+        unsigned int dl = s_len(dir), nl = s_len(name);
+        if (dl + nl + 5 >= sz) continue;
+        unsigned int i;
+        for (i = 0; i < dl; i++) out[i] = dir[i];
+        for (unsigned int j = 0; j < nl; j++) out[dl + j] = name[j];
+        out[dl + nl] = '\0';
+        if (path_exists(out)) return 1;
+        out[dl+nl]='.'; out[dl+nl+1]='e'; out[dl+nl+2]='l';
+        out[dl+nl+3]='f'; out[dl+nl+4]='\0';
+        if (path_exists(out)) return 1;
+    }
+    return 0;
+}
+
 static int run_external(int argc, char **argv)
 {
     (void)argc;
     int status = 0;
+
+    /* App-tab routing: while makmux is running (any VT child registered),
+     * a fullscreen app opens in its own named tab (switch-if-exists handled
+     * kernel-side) rather than replacing the current VT's shell view. */
+    if (is_tab_app(argv[0]) && (sys_vt_state() & 0xFFFFu)) {
+        char appp[VFS_PATH_MAX];
+        if (resolve_app_path(argv[0], appp, sizeof(appp))) {
+            sys_vt_open_app(appp);
+            return 0;
+        }
+    }
+
     if (looks_like_path(argv[0])) {
         if (try_exec_path(argv[0], argv, &status)) return status;
         put_s("Unknown command '"); put_s(argv[0]); put_s("' - try 'lsman'.\n");

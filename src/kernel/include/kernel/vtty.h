@@ -69,6 +69,18 @@ int vtty_count(void);
 /* Returns a bitmask of currently live TTY slots.  Bit 0 is VT1. */
 unsigned int vtty_live_mask(void);
 
+/* ---- VT tab names + app-tab launch routing --------------------------------
+ * Each slot can carry a short tab name (app-tabs: "maktop"/"vix"/...).
+ * vtty_open_app (SYS_VT_OPEN_APP): if a live tab already has the app's name,
+ * switch to it; else queue the path for makmux to fork+exec into a new slot.
+ * makmux drains the queue with vtty_take_app_request and names the slot via
+ * vtty_set_name (SYS_VT_SETNAME). */
+void         vtty_set_name(int slot, const char *name);
+const char  *vtty_get_name(int slot);
+int          vtty_find_name(const char *name);
+int          vtty_open_app(const char *path);
+int          vtty_take_app_request(char *out, int cap);
+
 /* ------------------------------------------------------------------ */
 /* Per-TTY backing-grid access                                          */
 /* ------------------------------------------------------------------ */

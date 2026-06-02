@@ -69,6 +69,51 @@ static int spawn_child(int idx, int focus)
     return 0;
 }
 
+/* App-tabs: dynamic named tabs (maktop/vix/clock/...) opened in slots beyond
+ * the 4 VT shells.  The kernel queues a launch (vtty_open_app, after a
+ * switch-if-exists check); makmux drains it here and forks a child that takes
+ * a fresh VT slot, names it after the app, and execs it. */
+#define APP_MAX 4
+static int s_app_pids[APP_MAX];
+
+static void child_app(const char *path)
+{
+    int slot = sys_vt_enter(1);          /* focus the new app-tab */
+    if (slot < 0) { put_s("makmux: no VT slot for app-tab\n"); sys_exit(1); }
+
+    /* Tab name = basename(path) without ".elf". */
+    char name[16]; int n = 0;
+    const char *base = path;
+    for (const char *p = path; *p; p++) if (*p == '/') base = p + 1;
+    while (base[n] && n < 15) { name[n] = base[n]; n++; }
+    name[n] = '\0';
+    if (n >= 4 && name[n-4]=='.' && name[n-3]=='e' && name[n-2]=='l' && name[n-1]=='f')
+        name[n-4] = '\0';
+    sys_vt_setname(name);
+
+    char *argv[] = { (char *)path, 0 };
+    sys_execve(path, argv, (char *const *)0);
+    sys_exit(127);
+}
+
+static int spawn_app(const char *path)
+{
+    int idx = -1;
+    for (int i = 0; i < APP_MAX; i++) if (s_app_pids[i] <= 0) { idx = i; break; }
+    if (idx < 0) return -1;
+    int pid = sys_fork();
+    if (pid < 0) return -1;
+    if (pid == 0) child_app(path);
+    s_app_pids[idx] = pid;
+    return 0;
+}
+
+static void note_app_exit(int pid)
+{
+    for (int i = 0; i < APP_MAX; i++)
+        if (s_app_pids[i] == pid) { s_app_pids[i] = 0; return; }
+}
+
 static int live_children(void)
 {
     int n = 0;
@@ -138,13 +183,14 @@ int main(int argc, char **argv)
         int status = 0;
         int pid = sys_wait4(-1, &status, WNOHANG);
         if (pid > 0) {
-            put_s("makmux: child shell exited pid=");
+            put_s("makmux: child exited pid=");
             put_dec(pid);
             put_s(" status=");
             put_dec(status);
             put_s("\n");
-            sys_vt_close(pid);
+            sys_vt_close(pid);          /* frees the slot (shell or app-tab) */
             note_child_exit(pid);
+            note_app_exit(pid);
             if (live_children() == 0)
                 return 0;
         }
@@ -155,6 +201,12 @@ int main(int argc, char **argv)
             if (idx >= 0)
                 spawn_child(idx, 1);
         }
+
+        /* Drain queued app-tab launches (vix/maktop/clock/... opened from a
+         * shell while makmux is running). */
+        char app_path[128];
+        while (sys_vt_take_app(app_path, sizeof(app_path)) > 0)
+            spawn_app(app_path);
 
         sys_yield();
     }

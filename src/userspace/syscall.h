@@ -91,6 +91,9 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_GETHOSTNAME   230
 #define SYS_WHOAMI        240
 #define SYS_STATUSBAR     241
+#define SYS_VT_OPEN_APP   242
+#define SYS_VT_TAKE_APP   243
+#define SYS_VT_SETNAME    244
 #define SYS_SHELL_READY   231
 #define SYS_CURSOR_POS    232
 #define SYS_VT_ENTER      233
@@ -723,6 +726,22 @@ static inline int sys_statusbar(int cmd)
 }
 static inline int sys_statusbar_enabled(void) { return sys_statusbar(-1); }
 static inline int sys_statusbar_set(int on)   { return sys_statusbar(on ? 1 : 0); }
+
+/* App-tab routing.  sys_vt_open_app: open `path` in a named tab (switch if it
+ * exists, else queue for makmux).  sys_vt_take_app: makmux drains one queued
+ * path.  sys_vt_setname: name the calling task's VT tab. */
+static inline int sys_vt_open_app(const char *path)
+{
+    return (int)syscall1(SYS_VT_OPEN_APP, (long)path);
+}
+static inline int sys_vt_take_app(char *buf, int cap)
+{
+    return (int)syscall2(SYS_VT_TAKE_APP, (long)buf, (long)cap);
+}
+static inline int sys_vt_setname(const char *name)
+{
+    return (int)syscall1(SYS_VT_SETNAME, (long)name);
+}
 
 /* Emit `[shell:ready vt=N]` on COM1 when g_serial_verbose is set.
  * Called by /apps/sh.elf before each prompt so ui_test.sh's

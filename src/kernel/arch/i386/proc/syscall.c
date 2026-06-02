@@ -1871,6 +1871,29 @@ void syscall_dispatch(registers_t *regs)
         break;
     }
 
+    case SYS_VT_OPEN_APP: {
+        const char *path = (const char *)(uintptr_t)regs->ebx;
+        regs->eax = (uint32_t)vtty_open_app(path);
+        break;
+    }
+
+    case SYS_VT_TAKE_APP: {
+        char *buf = (char *)regs->ebx;
+        int   cap = (int)regs->ecx;
+        if (!buf || cap <= 0) { regs->eax = 0; break; }
+        regs->eax = (uint32_t)vtty_take_app_request(buf, cap);
+        break;
+    }
+
+    case SYS_VT_SETNAME: {
+        const char *name = (const char *)(uintptr_t)regs->ebx;
+        task_t *me = task_current();
+        if (me && me->tty >= 0)
+            vtty_set_name(me->tty, name);
+        regs->eax = 0;
+        break;
+    }
+
     case SYS_WHOAMI: {
         char *buf = (char *)regs->ebx;
         uint32_t size = regs->ecx;

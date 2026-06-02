@@ -1222,6 +1222,17 @@ void keyboard_test_driver(void)
             Serial_WriteString("KBTEST: alt-tab FAIL\n");
             pass = 0;
         }
+
+        /* 3: app-tab routing.  Type a fullscreen app in a makmux VT shell ->
+         *    it should open in its own named tab (not replace the shell). */
+        keyboard_inject_text("maktop\n");
+        ksleep(300);            /* sh.elf routes -> kernel queue -> makmux spawns */
+        if (vtty_find_name("maktop") >= 0) {
+            Serial_WriteString("KBTEST: app-tab PASS\n");
+        } else {
+            Serial_WriteString("KBTEST: app-tab FAIL\n");
+            pass = 0;
+        }
     } else {
         Serial_WriteString("KBTEST: alt-tab FAIL (makmux spawned no VTs)\n");
         pass = 0;

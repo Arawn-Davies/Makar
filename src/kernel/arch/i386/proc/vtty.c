@@ -24,6 +24,7 @@
 #include <kernel/vesa_tty.h>
 #include <kernel/heap.h>
 #include <kernel/atomic.h>
+#include <string.h>
 
 static int      vtty_nslots  = 0;
 static int      vtty_current = 0;
@@ -31,6 +32,18 @@ static vt_buf_t vtty_bufs[VTTY_MAX];
 static bool     vtty_bufs_ready = false;
 static volatile int vtty_open_requests = 0;
 static volatile int vtty_clock_toggle_requests = 0;
+
+/* Per-slot tab name (app-tabs: "maktop"/"vix"/...; empty = default "VTn"). */
+#define VTTY_NAME_MAX 16
+static char vtty_names[VTTY_MAX][VTTY_NAME_MAX];
+
+/* App-tab launch queue: shell -> kernel (vtty_open_app) -> makmux (drains and
+ * forks a VT child that execs the app).  Small ring of request paths. */
+#define VTTY_APP_PATH 128
+#define VTTY_APP_Q    4
+static char vtty_app_q[VTTY_APP_Q][VTTY_APP_PATH];
+static volatile int vtty_app_head = 0;
+static volatile int vtty_app_tail = 0;
 
 /* Pending repaint target.  vtty_switch runs in the keyboard IRQ; doing a
  * full framebuffer repaint there would block subsequent keyboard IRQs
@@ -176,6 +189,7 @@ int vtty_close_pid(int pid)
             t->tty = TASK_TTY_NONE;
     }
     __atomic_store_n(&vtty_foreground[slot], (task_t *)0, __ATOMIC_RELEASE);
+    vtty_names[slot][0] = '\0';            /* drop the app-tab name */
 
     vt_buf_t *vt = vtty_buf(slot);
     if (vt) vt_clear(vt);
@@ -232,6 +246,83 @@ int vtty_take_clock_toggle_request(void)
 {
     int n = __atomic_exchange_n(&vtty_clock_toggle_requests, 0, __ATOMIC_ACQ_REL);
     return n;
+}
+
+/* ---- VT tab names + app-tab launch routing ----------------------------- */
+
+void vtty_set_name(int slot, const char *name)
+{
+    if (slot < 0 || slot >= VTTY_MAX) return;
+    int i = 0;
+    for (; name && name[i] && i < VTTY_NAME_MAX - 1; i++)
+        vtty_names[slot][i] = name[i];
+    vtty_names[slot][i] = '\0';
+}
+
+const char *vtty_get_name(int slot)
+{
+    if (slot < 0 || slot >= VTTY_MAX) return "";
+    return vtty_names[slot];
+}
+
+/* Slot of a *live* tab whose name matches, or -1. */
+int vtty_find_name(const char *name)
+{
+    if (!name || !*name) return -1;
+    for (int i = 0; i < VTTY_MAX; i++) {
+        if (i == VTTY_ROOT_SLOT) continue;
+        if (vtty_owner(i) && strcmp(vtty_names[i], name) == 0)
+            return i;
+    }
+    return -1;
+}
+
+/* Derive a tab name from an ELF path: basename without ".elf". */
+static void app_name_from_path(const char *path, char *out, int cap)
+{
+    const char *base = path;
+    for (const char *p = path; *p; p++)
+        if (*p == '/') base = p + 1;
+    int n = 0;
+    while (base[n] && n < cap - 1) { out[n] = base[n]; n++; }
+    out[n] = '\0';
+    if (n >= 4 && out[n-4] == '.' && out[n-3] == 'e' &&
+        out[n-2] == 'l' && out[n-1] == 'f')
+        out[n-4] = '\0';
+}
+
+/* Shell entry point (SYS_VT_OPEN_APP): open `path` in a named app-tab.  If a
+ * live tab with that name already exists, just switch to it; otherwise queue
+ * the path for makmux to fork + exec into a fresh slot.  Returns 1 if it was
+ * switched/queued, 0 if the queue was full. */
+int vtty_open_app(const char *path)
+{
+    if (!path || !*path) return 0;
+    char name[VTTY_NAME_MAX];
+    app_name_from_path(path, name, sizeof(name));
+
+    int slot = vtty_find_name(name);
+    if (slot >= 0) { vtty_switch(slot); return 1; }
+
+    int next = (vtty_app_head + 1) % VTTY_APP_Q;
+    if (next == vtty_app_tail) return 0;            /* queue full */
+    int i = 0;
+    for (; path[i] && i < VTTY_APP_PATH - 1; i++) vtty_app_q[vtty_app_head][i] = path[i];
+    vtty_app_q[vtty_app_head][i] = '\0';
+    __atomic_store_n(&vtty_app_head, next, __ATOMIC_RELEASE);
+    return 1;
+}
+
+/* makmux drains one queued app path; returns 1 if one was written to out. */
+int vtty_take_app_request(char *out, int cap)
+{
+    int tail = __atomic_load_n(&vtty_app_tail, __ATOMIC_ACQUIRE);
+    if (tail == __atomic_load_n(&vtty_app_head, __ATOMIC_ACQUIRE)) return 0;
+    int i = 0;
+    for (; vtty_app_q[tail][i] && i < cap - 1; i++) out[i] = vtty_app_q[tail][i];
+    out[i] = '\0';
+    __atomic_store_n(&vtty_app_tail, (tail + 1) % VTTY_APP_Q, __ATOMIC_RELEASE);
+    return 1;
 }
 
 int vtty_active(void)
