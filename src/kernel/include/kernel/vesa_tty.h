@@ -150,6 +150,10 @@ void vesa_tty_paint_status_mask(int active, unsigned int live_mask);
  * background.  Used by shell_run's loading screen and mak.sh0. */
 void vesa_tty_set_status_visible(int v);
 
+/* Returns the current status-bar enabled state (1 = reserved + drawn at the
+ * bottom row, 0 = freed for apps/shells to use the full screen). */
+int vesa_tty_status_enabled(void);
+
 /* Legacy no-op; Alt+F5 is queued for makmux via vtty. */
 void vesa_tty_toggle_clock(void);
 

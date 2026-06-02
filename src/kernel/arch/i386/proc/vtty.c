@@ -186,10 +186,9 @@ int vtty_close_pid(int pid)
     if (vtty_nslots == 0) {
         vtty_current = 0;
         keyboard_set_focus(task_current());
-        /* Erase the stale makmux status bar row now that no VT children
-         * remain; the root slot's vtty_request_repaint (from SYS_WAIT4
-         * when mak.sh0 reaps makmux) will repaint the text area above it. */
-        vesa_tty_set_status_visible(0);
+        /* No VT children left: the status bar stays enabled (statusbar_task
+         * just stops drawing tabs since vtty_count() == 0).  The bar is no
+         * longer tied to makmux's lifetime. */
     } else if (vtty_current == slot || vtty_current >= vtty_nslots) {
         int next = -1;
         for (int i = slot; i < vtty_nslots; i++) {
