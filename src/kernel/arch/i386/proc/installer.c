@@ -1111,6 +1111,8 @@ void installer_run(void)
         size_t shadow_len;
     } w_accts[2];
     int w_naccts = 0;
+    char w_autologin[64];   /* username to auto-log-in, or "" for none */
+    w_autologin[0] = '\0';
 
     static const struct { const char *user; const char *prompt; int required; }
     acct_steps[] = {
@@ -1280,6 +1282,49 @@ void installer_run(void)
     }
 
     /* ------------------------------------------------------------------ */
+    /* Auto-login toggle — offer to skip the password prompt on boot.     */
+    /* ------------------------------------------------------------------ */
+    {
+        /* Prefer the first non-root account; fall back to root. */
+        const char *cand = (const char *)0;
+        for (int i = 0; i < w_naccts; i++) {
+            const char *u = w_accts[i].username;
+            int is_root = (u[0]=='r'&&u[1]=='o'&&u[2]=='o'&&u[3]=='t'&&u[4]=='\0');
+            if (!is_root) { cand = u; break; }
+        }
+        if (!cand && w_naccts > 0) cand = w_accts[0].username;
+
+        if (cand) {
+            char q[96]; size_t qp = 0;
+            const char *pre = "Enable auto-login for '";
+            for (const char *s = pre;  *s && qp < sizeof(q)-1; s++) q[qp++] = *s;
+            for (const char *s = cand; *s && qp < sizeof(q)-1; s++) q[qp++] = *s;
+            const char *suf = "'? [y/N]";
+            for (const char *s = suf;  *s && qp < sizeof(q)-1; s++) q[qp++] = *s;
+            q[qp] = '\0';
+
+            unsigned char ans = 0;
+            if (g_gui) {
+                tui_frame("Auto-login",
+                          "Skip the password prompt and sign in automatically on boot?");
+                uint32_t mid  = g_rows / 2;
+                uint32_t lcol = (g_cols / 2) > 20 ? (g_cols / 2) - 20 : 2;
+                tui_at(lcol, mid - 1, q, C_FG, C_BG);
+                ans = getkey();
+            } else {
+                t_writestring(q); t_writestring(" ");
+                char buf[8]; readline(buf, sizeof(buf));
+                ans = (unsigned char)buf[0];
+            }
+            if (ans == 'y' || ans == 'Y') {
+                size_t i = 0;
+                while (cand[i] && i < sizeof(w_autologin)-1) { w_autologin[i] = cand[i]; i++; }
+                w_autologin[i] = '\0';
+            }
+        }
+    }
+
+    /* ------------------------------------------------------------------ */
     /* Single disk write: hostname + shadow + home dirs                   */
     /* One mount/unmount — no double-remount of the live rootfs.          */
     /* ------------------------------------------------------------------ */
@@ -1305,6 +1350,21 @@ void installer_run(void)
                 Serial_WriteString("\n");
             }
 
+            /* /etc/autologin — written only if the operator opted in. */
+            if (w_autologin[0]) {
+                char albuf[66];
+                size_t al = 0;
+                while (w_autologin[al] && al < sizeof(albuf) - 2) {
+                    albuf[al] = w_autologin[al]; al++;
+                }
+                albuf[al++] = '\n';
+                albuf[al]   = '\0';
+                rfs_write("/etc/autologin", albuf, (uint32_t)al);
+                Serial_WriteString("[install] autologin: ");
+                Serial_WriteString(w_autologin);
+                Serial_WriteString("\n");
+            }
+
             /* /etc/shadow — concatenate all entries */
             if (w_naccts > 0) {
                 static char shadow_buf[512];
@@ -1322,7 +1382,7 @@ void installer_run(void)
                 rfs_write("/etc/shadow", shadow_buf, (uint32_t)spos);
             }
 
-            /* Home directories + default .makrc */
+            /* Home directories + default .makshrc */
             rfs_mkdir("/root");
             rfs_mkdir("/home");
             for (int i = 0; i < w_naccts; i++) {
@@ -1350,28 +1410,70 @@ void installer_run(void)
                 Serial_WriteString(hdir);
                 Serial_WriteString("\n");
 
-                /* Write ~/.makrc with defaults */
+                /* Write ~/.makshrc with defaults */
                 char rc_path[88];
                 p = 0;
-                for (size_t j = 0; hdir[j] && p < sizeof(rc_path)-8; j++)
+                for (size_t j = 0; hdir[j] && p < sizeof(rc_path)-10; j++)
                     rc_path[p++] = hdir[j];
                 rc_path[p++]='/'; rc_path[p++]='.'; rc_path[p++]='m';
-                rc_path[p++]='a'; rc_path[p++]='k'; rc_path[p++]='r';
-                rc_path[p++]='c'; rc_path[p]='\0';
+                rc_path[p++]='a'; rc_path[p++]='k'; rc_path[p++]='s';
+                rc_path[p++]='h'; rc_path[p++]='r'; rc_path[p++]='c';
+                rc_path[p]='\0';
 
-                /* Default .makrc content */
+                /* Default .makshrc content */
                 static const char makrc_root[] =
-                    "# ~/.makrc -- sourced by sh.elf on login\n"
+                    "# ~/.makshrc -- sourced by sh.elf on login\n"
                     "PATH=/apps:/bin\n";
                 static const char makrc_user[] =
-                    "# ~/.makrc -- sourced by sh.elf on login\n"
+                    "# ~/.makshrc -- sourced by sh.elf on login\n"
                     "PATH=/apps:/bin\n";
                 const char *rc_content = is_root ? makrc_root : makrc_user;
                 size_t rc_len = 0;
                 while (rc_content[rc_len]) rc_len++;
                 rfs_write(rc_path, rc_content, (uint32_t)rc_len);
-                Serial_WriteString("[install] makrc: ");
+                Serial_WriteString("[install] makshrc: ");
                 Serial_WriteString(rc_path);
+                Serial_WriteString("\n");
+
+                /* Write ~/.vixrc enabling line numbers by default.  vix
+                 * itself ships with line numbers OFF; this rc opts each
+                 * installed account into them (Ctrl-N toggles at runtime). */
+                char vix_path[88];
+                p = 0;
+                for (size_t j = 0; hdir[j] && p < sizeof(vix_path) - 8; j++)
+                    vix_path[p++] = hdir[j];
+                vix_path[p++]='/'; vix_path[p++]='.'; vix_path[p++]='v';
+                vix_path[p++]='i'; vix_path[p++]='x'; vix_path[p++]='r';
+                vix_path[p++]='c'; vix_path[p]='\0';
+                static const char vixrc[] =
+                    "\" ~/.vixrc -- read by vix on startup\n"
+                    "set linenumbers\n";
+                size_t vix_len = 0;
+                while (vixrc[vix_len]) vix_len++;
+                rfs_write(vix_path, vixrc, (uint32_t)vix_len);
+                Serial_WriteString("[install] vixrc: ");
+                Serial_WriteString(vix_path);
+                Serial_WriteString("\n");
+
+                /* Write ~/.sbrc -- statusbar.elf layout (hostname left,
+                 * date+time right).  Sections: left/center/right + widgets. */
+                char sb_path[88];
+                p = 0;
+                for (size_t j = 0; hdir[j] && p < sizeof(sb_path) - 7; j++)
+                    sb_path[p++] = hdir[j];
+                sb_path[p++]='/'; sb_path[p++]='.'; sb_path[p++]='s';
+                sb_path[p++]='b'; sb_path[p++]='r'; sb_path[p++]='c';
+                sb_path[p]='\0';
+                static const char sbrc[] =
+                    "# ~/.sbrc -- statusbar layout: <section> <widgets...>\n"
+                    "# widgets: hostname user date time datetime uptime\n"
+                    "left hostname\n"
+                    "right date time\n";
+                size_t sb_len = 0;
+                while (sbrc[sb_len]) sb_len++;
+                rfs_write(sb_path, sbrc, (uint32_t)sb_len);
+                Serial_WriteString("[install] sbrc: ");
+                Serial_WriteString(sb_path);
                 Serial_WriteString("\n");
             }
 
