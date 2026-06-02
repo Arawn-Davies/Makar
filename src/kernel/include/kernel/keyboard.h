@@ -125,4 +125,13 @@ uint32_t keyboard_test_mod_state(void);
 uint8_t  keyboard_test_leds(void);
 uint32_t keyboard_test_led_sends(void);
 
+/* Synthetic key injection for the in-guest keyboard test harness (drives the
+ * live shell, not the isolated test ring).  keyboard_inject_key presses one
+ * key with optional modifiers; keyboard_inject_text types a string.
+ * keyboard_test_driver runs the scripted scenarios (spawned when `kbtest` is
+ * on the cmdline). */
+void keyboard_inject_key(uint8_t kc, int shift, int ctrl, int alt);
+void keyboard_inject_text(const char *s);
+void keyboard_test_driver(void);
+
 #endif /* _KERNEL_KEYBOARD_H */

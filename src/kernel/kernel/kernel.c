@@ -300,6 +300,9 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	int test_mode = 0;
 	int live_boot = 0;          /* `live` on cmdline → live CD session,
 	                             * skip login regardless of rootfs type. */
+	int kbtest = 0;             /* `kbtest` → spawn the in-guest keyboard
+	                             * injection test driver against the live
+	                             * shell (deterministic, replaces HMP). */
 	int console_serial = 0;     /* "console=ttyS0" - keep g_serial_verbose
 	                             * on after boot so the shell mirrors to
 	                             * COM1.  Linux-style: dmesg + tty over
@@ -340,6 +343,8 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 						test_mode = 1;
 					if (strstr(cmd->string, "live"))
 						live_boot = 1;
+					if (strstr(cmd->string, "kbtest"))
+						kbtest = 1;
 					if (strstr(cmd->string, "console=ttyS0"))
 						console_serial = 1;
 					const char *rp = strstr(cmd->string, "root=");
@@ -449,6 +454,9 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			/* Userspace status-bar renderer (skipped on the rescue path,
 			 * which wants a single bare in-kernel shell). */
 			task_create("statusbar", statusbar_entry);
+			/* In-guest keyboard injection test driver (cmdline `kbtest`). */
+			if (kbtest)
+				task_create("kbtest", keyboard_test_driver);
 		}
 		task_create("ktest",  ktest_bg_task);
 	}

@@ -120,6 +120,8 @@ case "${1:-}" in
         else
             MODE="ktest"; shift 1
         fi ;;
+    kbtest)
+        MODE="kbtest"; shift 1 ;;
     ui)
         MODE="ui"; shift 1 ;;
     gui)
@@ -800,7 +802,38 @@ _clean() {
 _build_iso() {
     local _flags="${1:-}"
     echo "==> Building ISO${_flags:+ ($_flags)}..."
-    _drun -- "${_flags:+$_flags }bash iso.sh"
+    # Forward KERNEL_ARGS (extra GRUB cmdline, e.g. `kbtest`) into the build
+    # container; iso.sh appends it to the interactive menuentry.
+    local _kenv=()
+    [ -n "${KERNEL_ARGS:-}" ] && _kenv=(--env "KERNEL_ARGS=$KERNEL_ARGS")
+    _drun "${_kenv[@]}" -- "${_flags:+$_flags }bash iso.sh"
+}
+
+# Run the in-guest keyboard-injection test (headless QEMU + serial capture).
+# Boots makar.iso (built with `kbtest` on the cmdline) into the normal shell;
+# the kernel keyboard_test_driver injects keys and emits KBTEST markers.  The
+# driver loops forever, so we poll serial for "KBTEST: done" then stop QEMU.
+_run_kbtest() {
+    echo "==> Running keyboard-injection test (headless QEMU)..."
+    local _qemu; _qemu=$(_host_qemu)
+    if [ -z "$_qemu" ]; then echo "==> kbtest needs host qemu-system-i386"; return 1; fi
+    local _log="$REPO_ROOT/kbtest.log"; rm -f "$_log"
+    local _secs="${KBTEST_TIMEOUT:-90}"
+    "$_qemu" -cdrom "$REPO_ROOT/makar.iso" -m 256 -vga std -display none \
+        -serial "file:$_log" -no-reboot >/dev/null 2>&1 &
+    local _qp=$! _i=0
+    while [ "$_i" -lt "$_secs" ]; do
+        grep -q "KBTEST: done" "$_log" 2>/dev/null && break
+        kill -0 "$_qp" 2>/dev/null || break
+        sleep 1; _i=$((_i + 1))
+    done
+    sleep 1; kill "$_qp" 2>/dev/null
+    echo "--- kbtest serial ---"
+    grep -aE "KBTEST:|KBINJECT_OK|PAGE FAULT|panic\(cpu" "$_log" || true
+    if grep -q "KBINJECT_OK" "$_log" 2>/dev/null && ! grep -q "PAGE FAULT\|panic(cpu" "$_log" 2>/dev/null; then
+        echo "==> kbtest PASS"; return 0
+    fi
+    echo "==> kbtest FAIL (see $_log)"; return 1
 }
 
 _build_kernel() {
@@ -924,6 +957,14 @@ case "$MODE" in
 ktest)
     _build_iso "TEST_CMDLINE='test_mode test=ktest' CFLAGS='-O0 -g3' TEST_ISO=1"
     _run_ktest
+    ;;
+
+# ── kbtest ───────────────────────────────────────────────────────────────────
+# Deterministic in-guest keyboard-injection test: boots the normal shell with
+# `kbtest` on the cmdline (kernel injects keys, no HMP) and asserts on serial.
+"kbtest")
+    KERNEL_ARGS="kbtest${KERNEL_ARGS:+ $KERNEL_ARGS}" _build_iso "CFLAGS='-O0 -g3'"
+    _run_kbtest
     ;;
 
 # ── ktest graphical ──────────────────────────────────────────────────────────
