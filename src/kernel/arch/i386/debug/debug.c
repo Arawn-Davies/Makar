@@ -177,6 +177,24 @@ static void restore_vga_display(void)
     inb(0x3DA); outb(0x3C0, 0x20);
 }
 
+/* Last-ditch, fault-proof panic notice.  Used only when the normal panic
+ * renderer itself faulted (e.g. it wrote into a framebuffer a mid-switch
+ * setmode left unmapped).  Touches nothing but I/O ports and the VGA text
+ * buffer at 0xB8000, which lives in the first 4 MiB large page and is
+ * therefore present in every page directory -- it cannot fault.  Forces the
+ * CRTC back to text scanout so the message is visible even if the hardware
+ * was in a VESA graphics mode. */
+static void panic_textmode_notice(void)
+{
+    restore_vga_display();
+    for (int i = 0; i < VGA_COLS * VGA_ROWS; i++)
+        VGA_BASE[i] = (uint16_t)(0x4F00u | (uint8_t)' ');   /* white on red */
+    vga_center(VGA_ROWS / 2 - 1, "*** MAKAR KERNEL PANIC ***", 0x4Fu);
+    vga_center(VGA_ROWS / 2 + 1,
+               "Please reboot: power-cycle or Ctrl+Alt+Del. Details on serial.",
+               0x4Fu);
+}
+
 static void render_panic_vga(const char *fault_type, const char *msg,
                               const char *file, const char *func, int line,
                               uint32_t fault_addr, int show_addr,
@@ -589,11 +607,33 @@ static void render_panic_vesa(const vesa_fb_t *fb,
  * Main panic dispatcher
  * ============================================================ */
 
+/* Set once we begin painting a panic.  If the graphical renderer itself
+ * faults -- e.g. it writes into a framebuffer region that a mid-switch
+ * setmode left unmapped -- the page-fault handler re-enters kernel_panic;
+ * without this guard that recurses forever (a CPU exception ignores the
+ * `cli` below), which is exactly the panic loop seen switching to 1080p.
+ * On re-entry we skip the renderer (serial already has the first, complete
+ * report) and just stop the CPU. */
+static volatile int s_in_panic = 0;
+
 static void kernel_panic(const char *fault_type, const char *msg,
                           const char *file, const char *func, int line,
                           uint32_t fault_addr, int show_addr,
                           registers_t *r)
 {
+    if (s_in_panic) {
+        s_in_panic++;
+        Serial_WriteString("panic: nested fault while rendering panic; halting\n");
+        /* First nesting only: try the fault-proof text-mode notice so the
+         * user still sees a reboot instruction.  If even that faults
+         * (s_in_panic > 2, which shouldn't be possible), skip straight to
+         * the halt -- never recurse, never loop. */
+        if (s_in_panic == 2)
+            panic_textmode_notice();
+        for (;;) asm volatile("cli; hlt");
+    }
+    s_in_panic = 1;
+
     /* 1. Serial - always written first; always safe */
     Serial_WriteString("\n\n");
     Serial_WriteString("panic(cpu 0): ");

@@ -10,6 +10,21 @@
 /* Returns true if a Bochs-compatible VBE adapter is detected. */
 bool bochs_vbe_available(void);
 
+/* Total video memory in bytes, read from the Bochs DISPI VIDEO_MEMORY_64K
+ * register.  Returns 0 if the adapter doesn't report it. */
+uint32_t bochs_vbe_vram_bytes(void);
+
+/* Maximum mode the adapter advertises via the DISPI GETCAPS protocol.
+ * Any of the out-params may come back 0 if the adapter doesn't report a
+ * given cap. */
+void bochs_vbe_caps(uint32_t *max_w, uint32_t *max_h, uint32_t *max_bpp);
+
+/* True if width×height×bpp is within both the advertised dimension caps
+ * and the available VRAM.  Returns false when no VBE adapter is present.
+ * Used to pick the boot resolution and to gate `setmode` so we never
+ * program a mode the adapter can't scan out (black screen / FB overrun). */
+bool bochs_vbe_mode_supported(uint32_t width, uint32_t height, uint32_t bpp);
+
 /* Switch the linear framebuffer to width×height at bpp bits per pixel.
  * LFB_ENABLED is set so the framebuffer address stays constant.
  * Call vesa_update_geometry() + vesa_tty_init() after this. */

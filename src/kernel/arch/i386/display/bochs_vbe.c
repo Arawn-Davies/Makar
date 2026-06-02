@@ -11,9 +11,11 @@
 #define VBE_IDX_YRES    0x2u
 #define VBE_IDX_BPP     0x3u
 #define VBE_IDX_ENABLE  0x4u
+#define VBE_IDX_VIDEO_MEMORY_64K  0xAu  /* total VRAM, in 64 KiB units */
 
 #define VBE_DISABLED    0x0000u
 #define VBE_ENABLED     0x0001u
+#define VBE_GETCAPS     0x0002u  /* while set, XRES/YRES/BPP reads return maxima */
 #define VBE_LFB         0x0040u
 
 #define VBE_ID_MIN  0xB0C0u
@@ -40,6 +42,73 @@ bool bochs_vbe_available(void)
 {
     uint16_t id = vbe_read(VBE_IDX_ID);
     return (id >= VBE_ID_MIN && id <= VBE_ID_MAX);
+}
+
+/* Adapter capabilities, probed once and cached.  The DISPI GETCAPS toggle
+ * momentarily clears the ENABLED bit, so we read it a single time (at boot,
+ * before our own mode is programmed) rather than on every setmode -- which
+ * would otherwise blink the screen each time the gate is consulted. */
+static int      s_caps_probed = 0;
+static uint32_t s_max_w, s_max_h, s_max_bpp, s_vram_bytes;
+
+static void probe_caps(void)
+{
+    if (s_caps_probed)
+        return;
+    s_caps_probed = 1;
+
+    if (!bochs_vbe_available())
+        return;
+
+    uint16_t saved = vbe_read(VBE_IDX_ENABLE);
+    vbe_write(VBE_IDX_ENABLE, VBE_GETCAPS);
+    s_max_w   = vbe_read(VBE_IDX_XRES);
+    s_max_h   = vbe_read(VBE_IDX_YRES);
+    s_max_bpp = vbe_read(VBE_IDX_BPP);
+    vbe_write(VBE_IDX_ENABLE, saved);            /* restore the live mode */
+
+    /* VIDEO_MEMORY_64K is not gated by GETCAPS; read it directly. */
+    s_vram_bytes = (uint32_t)vbe_read(VBE_IDX_VIDEO_MEMORY_64K) * 65536u;
+}
+
+uint32_t bochs_vbe_vram_bytes(void)
+{
+    probe_caps();
+    return s_vram_bytes;
+}
+
+void bochs_vbe_caps(uint32_t *max_w, uint32_t *max_h, uint32_t *max_bpp)
+{
+    probe_caps();
+    if (max_w)   *max_w   = s_max_w;
+    if (max_h)   *max_h   = s_max_h;
+    if (max_bpp) *max_bpp = s_max_bpp;
+}
+
+bool bochs_vbe_mode_supported(uint32_t width, uint32_t height, uint32_t bpp)
+{
+    if (!bochs_vbe_available())
+        return false;
+
+    probe_caps();
+
+    /* Honour whichever caps the adapter actually reports (0 = unknown). */
+    if (s_max_w   && width  > s_max_w)   return false;
+    if (s_max_h   && height > s_max_h)   return false;
+    if (s_max_bpp && bpp    > s_max_bpp) return false;
+
+    if (s_vram_bytes) {
+        uint64_t need = (uint64_t)width * height * (bpp / 8u);
+        if (need > s_vram_bytes)
+            return false;
+    }
+
+    /* Adapter reported nothing useful: vouch only for a minimal LFB we know
+     * is broadly safe (720p) and refuse anything larger. */
+    if (!s_max_w && !s_max_h && !s_vram_bytes)
+        return (width <= 1280 && height <= 720);
+
+    return true;
 }
 
 void bochs_vbe_set_mode(uint32_t width, uint32_t height, uint8_t bpp)

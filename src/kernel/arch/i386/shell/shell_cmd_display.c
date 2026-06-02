@@ -263,6 +263,25 @@ int admin_setmode(const char *mode)
         uint32_t w = vesa_modes[i].w;
         uint32_t h = vesa_modes[i].h;
 
+        /* Refuse modes the adapter can't scan out (insufficient VRAM or
+         * beyond the advertised maxima).  Bailing here -- before touching
+         * the hardware or geometry -- keeps us in the working mode instead
+         * of half-switching into a framebuffer that overruns VRAM and
+         * faults.  The boot path already mapped the largest *supported*
+         * mode, so any mode that passes this gate is guaranteed mapped in
+         * every task PD. */
+        if (!bochs_vbe_mode_supported(w, h, 32)) {
+            uint32_t mw = 0, mh = 0, mb = 0;
+            bochs_vbe_caps(&mw, &mh, &mb);
+            t_writestring("Error: ");
+            t_dec(w); t_writestring("x"); t_dec(h);
+            t_writestring(" exceeds this adapter (max ");
+            t_dec(mw); t_writestring("x"); t_dec(mh);
+            t_writestring(", VRAM "); t_dec(bochs_vbe_vram_bytes() / 1024u);
+            t_writestring(" KiB)\n");
+            return -2;
+        }
+
         vesa_tty_set_scale(w >= 1280 ? 2 : 1);
         bochs_vbe_set_mode(w, h, 32);
         vesa_update_geometry(w, h, 32);
