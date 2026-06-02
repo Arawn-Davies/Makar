@@ -1894,6 +1894,19 @@ void syscall_dispatch(registers_t *regs)
         break;
     }
 
+    case SYS_VT_GETNAME: {
+        int   slot = (int)regs->ebx;
+        char *buf  = (char *)regs->ecx;
+        int   cap  = (int)regs->edx;
+        if (!buf || cap <= 0) { regs->eax = (uint32_t)-1; break; }
+        const char *nm = vtty_get_name(slot);
+        int i = 0;
+        for (; nm[i] && i < cap - 1; i++) buf[i] = nm[i];
+        buf[i] = '\0';
+        regs->eax = (uint32_t)i;
+        break;
+    }
+
     case SYS_WHOAMI: {
         char *buf = (char *)regs->ebx;
         uint32_t size = regs->ecx;

@@ -22,7 +22,8 @@
 
 #include "syscall.h"
 
-#define SB_CLR      ((VGA_BROWN << 4) | VGA_WHITE)   /* white on brown */
+#define SB_CLR      ((VGA_BROWN << 4) | VGA_WHITE)    /* white on brown */
+#define SB_TAB_ACT  ((VGA_YELLOW << 4) | VGA_BLACK)   /* active VT tab  */
 #define SB_MAXCELLS 256
 #define SEC_MAX     128      /* rendered chars per section */
 #define RC_MAX      512      /* ~/.sbrc bytes */
@@ -103,10 +104,10 @@ static char g_right[SEC_MAX];
 
 static void set_default_layout(void)
 {
-    g_left[0]='h';g_left[1]='o';g_left[2]='s';g_left[3]='t';g_left[4]='n';
-    g_left[5]='a';g_left[6]='m';g_left[7]='e';g_left[8]='\0';
-    g_center[0]='\0';
-    g_right[0]='t';g_right[1]='i';g_right[2]='m';g_right[3]='e';g_right[4]='\0';
+    unsigned int o;
+    o=0; s_cat(g_left,&o,SEC_MAX,"hostname");
+    o=0; s_cat(g_center,&o,SEC_MAX,"tabs");     /* makmux VT tabs */
+    o=0; s_cat(g_right,&o,SEC_MAX,"time");
 }
 
 /* Build "/home/<user>/.sbrc" (root -> /root/.sbrc) into path. */
@@ -176,6 +177,56 @@ static void build_section(const char *list,char *out)
     }
 }
 
+/* True if a section's widget list contains the token `tok`. */
+static int sb_has(const char *list,const char *tok)
+{
+    const char *p=list;
+    while(*p){
+        while(*p==' '||*p=='\t') p++;
+        if(!*p) break;
+        const char *q=tok; const char *s=p;
+        while(*s && *s!=' ' && *s!='\t' && *q && *s==*q){ s++; q++; }
+        if(*q=='\0' && (*s=='\0'||*s==' '||*s=='\t')) return 1;
+        while(*p && *p!=' ' && *p!='\t') p++;
+    }
+    return 0;
+}
+
+/* Render the live VT tabs centred, active highlighted.  Shells (slots 0-3)
+ * show "VTn"; named app-tabs show their name.  No-op if makmux isn't running
+ * (mask == 0).  Returns 1 if it drew tabs. */
+static int render_tabs(tty_cell_t *cells,unsigned int *n,unsigned int row,unsigned int cols)
+{
+    unsigned int state=(unsigned int)sys_vt_state();
+    unsigned int active=(state>>16)&0xFFFFu;
+    unsigned int mask=state&0xFFFFu;
+    if(!mask) return 0;
+
+    char  lab[8][18];
+    int   idx[8], cnt=0;
+    unsigned int total=0;
+    for(int i=0;i<8;i++){
+        if(!(mask&(1u<<i))) continue;
+        char nm[16]; int ln=sys_vt_getname(i,nm,sizeof(nm));
+        char *l=lab[cnt]; unsigned int w=0;
+        l[w++]=' ';
+        if(ln>0){ for(int j=0;nm[j]&&w<16;j++) l[w++]=nm[j]; }
+        else    { l[w++]='V'; l[w++]='T'; l[w++]=(char)('1'+i); }
+        l[w++]=' '; l[w]='\0';
+        idx[cnt]=i; total+=w; cnt++;
+        if(cnt>=8) break;
+    }
+    if(!cnt) return 0;
+
+    unsigned int c=(cols>total)?(cols-total)/2u:0u;
+    for(int k=0;k<cnt;k++){
+        unsigned char clr=(idx[k]==(int)active)?SB_TAB_ACT:SB_CLR;
+        for(unsigned int j=0; lab[k][j] && c<cols; j++)
+            put_cell(cells,n,c++,row,lab[k][j],clr);
+    }
+    return 1;
+}
+
 static void draw(void)
 {
     unsigned int size=(unsigned int)sys_term_size();
@@ -184,9 +235,8 @@ static void draw(void)
     if(cols<12)return;
     if(cols>SB_MAXCELLS) cols=SB_MAXCELLS;
 
-    char left[SEC_MAX],center[SEC_MAX],right[SEC_MAX];
+    char left[SEC_MAX],right[SEC_MAX];
     build_section(g_left,left);
-    build_section(g_center,center);
     build_section(g_right,right);
 
     tty_cell_t cells[SB_MAXCELLS]; unsigned int n=0;
@@ -197,8 +247,15 @@ static void draw(void)
     unsigned int rl=s_len(right);
     if(rl && cols>rl+1) put_str(cells,&n,cols-rl-1,row,right,SB_CLR);
 
-    unsigned int cl=s_len(center);
-    if(cl && cols>cl){ unsigned int cc=(cols-cl)/2u; put_str(cells,&n,cc,row,center,SB_CLR); }
+    /* Center: the live VT tabs when requested (the makmux strip), else a
+     * normal widget string. */
+    if(sb_has(g_center,"tabs")){
+        render_tabs(cells,&n,row,cols);
+    } else {
+        char center[SEC_MAX]; build_section(g_center,center);
+        unsigned int cl=s_len(center);
+        if(cl && cols>cl){ unsigned int cc=(cols-cl)/2u; put_str(cells,&n,cc,row,center,SB_CLR); }
+    }
 
     sys_putch_at(cells,n);
 }

@@ -1466,8 +1466,9 @@ void installer_run(void)
                 sb_path[p]='\0';
                 static const char sbrc[] =
                     "# ~/.sbrc -- statusbar layout: <section> <widgets...>\n"
-                    "# widgets: hostname user date time datetime uptime\n"
+                    "# widgets: hostname user date time datetime uptime tabs\n"
                     "left hostname\n"
+                    "center tabs\n"
                     "right date time\n";
                 size_t sb_len = 0;
                 while (sbrc[sb_len]) sb_len++;

@@ -94,6 +94,7 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_VT_OPEN_APP   242
 #define SYS_VT_TAKE_APP   243
 #define SYS_VT_SETNAME    244
+#define SYS_VT_GETNAME    245
 #define SYS_SHELL_READY   231
 #define SYS_CURSOR_POS    232
 #define SYS_VT_ENTER      233
@@ -741,6 +742,10 @@ static inline int sys_vt_take_app(char *buf, int cap)
 static inline int sys_vt_setname(const char *name)
 {
     return (int)syscall1(SYS_VT_SETNAME, (long)name);
+}
+static inline int sys_vt_getname(int slot, char *buf, int cap)
+{
+    return (int)syscall3(SYS_VT_GETNAME, (long)slot, (long)buf, (long)cap);
 }
 
 /* Emit `[shell:ready vt=N]` on COM1 when g_serial_verbose is set.

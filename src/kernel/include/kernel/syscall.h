@@ -132,6 +132,9 @@
                                  * drains one queued app path.  Returns 1/0. */
 #define SYS_VT_SETNAME     244  /* int vt_setname(const char *name) - name the
                                  * calling task's VT tab (shown in the status bar). */
+#define SYS_VT_GETNAME     245  /* int vt_getname(int slot, char *buf, int cap) -
+                                 * copy slot's tab name (empty for unnamed VT
+                                 * shells).  Returns strlen.  Used by statusbar. */
 
 /* Back to Linux i386 ABI numbers for the next set. */
 #define SYS_FCNTL      55   /* int fcntl(int fd, int cmd, int arg) - F_GETFL/F_SETFL */
