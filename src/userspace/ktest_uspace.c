@@ -72,6 +72,10 @@ static void suite_usr(void)
 
     ASSERT(file_exists("/usr/lib/crt0.o"),      "/usr/lib/crt0.o exists");
     ASSERT(file_exists("/usr/lib/libc.a"),       "/usr/lib/libc.a exists");
+    ASSERT(file_exists("/usr/lib/crt1.o"),       "/usr/lib/crt1.o exists");
+    ASSERT(file_exists("/usr/lib/crti.o"),       "/usr/lib/crti.o exists");
+    ASSERT(file_exists("/usr/lib/crtn.o"),       "/usr/lib/crtn.o exists");
+    ASSERT(file_exists("/usr/lib/tcc/libtcc1.a"), "/usr/lib/tcc/libtcc1.a exists");
     ASSERT(file_exists("/usr/include/stdio.h"),  "/usr/include/stdio.h exists");
     ASSERT(file_exists("/usr/include/string.h"), "/usr/include/string.h exists");
     ASSERT(file_exists("/apps/hello.elf"),       "/apps/hello.elf exists");

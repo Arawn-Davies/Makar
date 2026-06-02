@@ -350,8 +350,12 @@ static void test_usr(void)
     /* The sentinel probe must work via the /usr rewrite. */
     KTEST_ASSERT(vfs_file_exists("/usr/lib/crt0.o") == 1);
 
-    /* libc.a must be reachable via /usr/lib. */
+    /* Runtime libraries and TCC startup objects must be reachable via /usr/lib. */
     KTEST_ASSERT(vfs_file_exists("/usr/lib/libc.a") == 1);
+    KTEST_ASSERT(vfs_file_exists("/usr/lib/crt1.o") == 1);
+    KTEST_ASSERT(vfs_file_exists("/usr/lib/crti.o") == 1);
+    KTEST_ASSERT(vfs_file_exists("/usr/lib/crtn.o") == 1);
+    KTEST_ASSERT(vfs_file_exists("/usr/lib/tcc/libtcc1.a") == 1);
 
     /* Headers must be reachable via /usr/include. */
     KTEST_ASSERT(vfs_file_exists("/usr/include/stdio.h") == 1);
