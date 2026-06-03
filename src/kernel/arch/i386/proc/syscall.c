@@ -1202,6 +1202,28 @@ void syscall_dispatch(registers_t *regs)
     }
 
     /* ------------------------------------------------------------------
+     * musl/Linux process-startup stubs.  Enough for a static-musl binary's
+     * __init_libc to get through start-up; not full implementations.
+     * ------------------------------------------------------------------ */
+    case SYS_EXIT_GROUP: {           /* exit_group == exit for our 1-thread procs */
+        task_t *t = task_current();
+        if (t) t->exit_status = (int)regs->ebx;
+        task_exit();                 /* does not return */
+        break;
+    }
+    case SYS_SET_TID_ADDRESS: {       /* musl stores clear_child_tid; just give a tid */
+        task_t *t = task_current();
+        regs->eax = (uint32_t)(t ? t->pid : 1);
+        break;
+    }
+    case SYS_RT_SIGPROCMASK:          /* no real signal mask plumbing yet */
+        regs->eax = 0;
+        break;
+    case SYS_IOCTL:                   /* isatty() probes this; report not-a-tty */
+        regs->eax = (uint32_t)(-25);  /* -ENOTTY */
+        break;
+
+    /* ------------------------------------------------------------------
      * SYS_YIELD(158): voluntarily give up the CPU.
      * ------------------------------------------------------------------ */
     case SYS_YIELD:

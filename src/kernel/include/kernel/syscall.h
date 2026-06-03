@@ -34,6 +34,13 @@
 #define SYS_BRK        45   /* void *brk(void *addr)                            */
 #define SYS_MUNMAP     91   /* int munmap(void *addr, size_t len)               */
 #define SYS_MMAP2     192   /* void *mmap2(addr,len,prot,flags,fd,pgoff) -- anon only */
+/* musl/Linux process-startup syscalls (hosted toolchain bring-up) */
+#define SYS_IOCTL          54   /* int ioctl(fd, req, ...) -- stub (-ENOTTY)        */
+#define SYS_WRITEV        146   /* ssize_t writev(fd, const struct iovec*, int)     */
+#define SYS_RT_SIGPROCMASK 175  /* int rt_sigprocmask(how, set, oldset, sigsetsize) -- stub */
+#define SYS_SET_THREAD_AREA 243 /* int set_thread_area(struct user_desc*) -- TLS    */
+#define SYS_EXIT_GROUP    252   /* void exit_group(int status) -- == exit           */
+#define SYS_SET_TID_ADDRESS 258 /* int set_tid_address(int *tidptr) -> tid          */
 #define SYS_SIGNAL     48   /* sig_handler_t signal(int signo, sig_handler_t)   */
 #define SYS_STAT      106   /* int stat(const char *path, struct stat *st)      */
 #define SYS_FSTAT     108   /* int fstat(int fd, struct stat *st)               */
