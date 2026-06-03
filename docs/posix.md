@@ -47,6 +47,7 @@ are filled.
 | 78 | `gettimeofday` | `tv_sec` from CMOS RTC; `tv_usec` resolution is 10 ms (PIT 100 Hz modulo) |
 | 265 | `clock_gettime` | `CLOCK_REALTIME` + `CLOCK_MONOTONIC`; same 10 ms resolution |
 | 48 | `signal` | Per-signo handler install, returns prev |
+| 41 | `dup` | Full (single-arg); allocates the lowest free fd, shares `FD_KIND_PIPE` refcount like `dup2` |
 | 55 | `fcntl` | Only `F_GETFL` / `F_SETFL` |
 | 106 | `stat` | `st_mode/st_size/st_nlink/st_blksize/st_ino` only; perms not enforced |
 | 108 | `fstat` | Same shape as `stat` |
@@ -61,7 +62,6 @@ are filled.
 |---|---|---|
 | `pipe` (42) | **Present (PR #181)** -- 4 KiB `pipe_ring_t` shared via refcount, `task_yield()`-blocking | -- |
 | `dup2` (63) | **Present (PR #181)** -- closes newfd if open, shallow-copies the slot, bumps `FD_KIND_PIPE` refcount | -- |
-| `dup` (single-arg) | Not yet present | Use `dup2(fd, fd_alloc())` -- TODO once `SYS_DUP` lands |
 | `mmap` / `munmap` | No anon-mapping ABI, no `PROT_EXEC` | `brk` for heap; ELF loader for code |
 | `ioctl` | No device tree past `/dev` block devices | Makar-ext `SYS_PUTCH_AT` etc. |
 | `select` / `poll` / `epoll` | Kernel has no fd-readiness model | `SYS_GETKEY` blocks on the focused TTY |
@@ -88,18 +88,18 @@ to `/usr/include/`.
 | Header | Coverage | Gaps |
 |---|---|---|
 | `<stdio.h>` | `fopen`/`fread`/`fwrite`/`fclose`/`fputs`/`fputc`/`fgetc`/`fflush`/`printf`/`fprintf`/`sprintf`/`snprintf`/`vsnprintf` (handles `%l`/`%ll`/`%z`/`%t`/`%j`/`%h` length modifiers + `%o`; `%s` brk-aware bad-pointer guard since PR #181) | No `freopen`, `setbuf`, `tmpfile`, `popen` (no in-process pipe API yet -- the kernel has `pipe(2)` but no libc wrapper); no wide-char variants |
-| `<string.h>` | `memcmp`/`memcpy`/`memmove`/`memset`/`strlen`/`strcpy`/`strncpy`/`strcat`/`strcmp`/`strncmp`/`strchr`/`strrchr`/`strstr`/`strdup` | No `strtok_r`, `strerror`, `strxfrm` |
-| `<stdlib.h>` | `malloc`/`free`/`calloc`/`realloc`/`strtol`/`atoi`/`qsort`/`getenv`/`strdup`/`exit`/`abort`/`sscanf` | No `bsearch`, `system`, `mblen`, `wcs*`; no `setenv`/`putenv`/`unsetenv` (env is read-only via `getenv`) |
+| `<string.h>` | `memcmp`/`memcpy`/`memmove`/`memset`/`strlen`/`strcpy`/`strncpy`/`strcat`/`strcmp`/`strncmp`/`strchr`/`strrchr`/`strstr`/`strdup`/`strtok`/`strtok_r`/`strerror` | No `strxfrm`, `strcoll` (C locale only) |
+| `<stdlib.h>` | `malloc`/`free`/`calloc`/`realloc`/`strtol`/`atoi`/`qsort`/`bsearch`/`getenv`/`setenv`/`unsetenv`/`putenv`/`system`/`strdup`/`exit`/`abort`/`sscanf` | `system` runs `/apps/sh.elf -c`; env is process-local (does not cross `execve`, which ignores `envp`); no `mblen`, `wcs*` |
 | `<ctype.h>` | Full ASCII set | No locale awareness (always C locale) |
 | `<setjmp.h>` | `setjmp`/`longjmp` | No `sigsetjmp`/`siglongjmp` |
 | `<errno.h>` | Defines (`EPERM`, `ENOENT`, `EBADF`, ...) shipped; the 30a–30e wrappers set `errno`; legacy syscalls still return `-1` without setting it | Partially POSIX-conformant |
-| `<unistd.h>` | Thin syscall wrappers; `access()`, `getpid()`, `getppid()`, `unlink()`, `rmdir()` present | No `sleep`, `alarm`, `pause`; libc wrappers around `SYS_PIPE`/`SYS_DUP2` not yet exposed (used directly from `sh.elf` via `sys_pipe`/`sys_dup2`) |
+| `<unistd.h>` | `read`/`write`/`close`/`lseek`/`dup`/`dup2`/`pipe`/`chdir`/`getcwd`/`getpid`/`getppid`/`unlink`/`rmdir`/`access`/`sleep`/`usleep`/`_exit` | No `alarm`, `pause`, `fork`/`exec` wrappers (use `sys_fork`/`sys_execve`); `sleep`/`usleep` spin on the 100 Hz tick (10 ms granularity), no `SIGALRM` |
 | `<fcntl.h>` | `O_RDONLY/WRONLY/RDWR/CREAT/TRUNC/APPEND` constants only | No `O_NONBLOCK`, `O_SYNC`; no `creat`, `posix_fadvise` |
 | `<sys/stat.h>` | `struct stat` with limited fields (see syscall table); `mkdir()` wrapper present (mode ignored) | No `chmod`/`umask` enforcement |
 | `<dirent.h>` | Full POSIX shape: `DIR *`, `opendir`/`readdir`/`closedir` over `SYS_READDIR(141)` | -- |
 | `<signal.h>` | `signal()`, `kill()`, sigframe trampoline | No `sigaction`, `sigprocmask`, `sigsuspend`, `pthread_kill` |
 | `<math.h>` | **Absent** | No FPU init in kernel (x87 state not saved across switches) -- fixed-point only |
-| `<time.h>` / `<sys/time.h>` | `time()`, `gettimeofday()`, `clock_gettime()` (REALTIME + MONOTONIC); `struct timeval`/`timespec` | No `struct tm`, `mktime`, `strftime`, `nanosleep` |
+| `<time.h>` / `<sys/time.h>` | `time()`, `gettimeofday()`, `clock_gettime()` (REALTIME + MONOTONIC); `struct timeval`/`timespec`; `struct tm`, `gmtime`/`gmtime_r`, `localtime`/`localtime_r` (== gmtime, UTC), `mktime`, `strftime` (`%Y %y %m %d %H %M %S %j %a %b %p %F %T %%`) | No timezone database (UTC only), no `nanosleep`, `asctime`, `ctime`, `difftime` |
 | `<pthread.h>` | **Absent** | No userspace threads |
 | `<locale.h>` / `<wchar.h>` | **Absent** | C locale assumed; no wide chars |
 
@@ -117,6 +117,13 @@ subset.
 - Builtins: `cd`, `pwd`, `echo`, `exit` (script), `read`, `sleep`, `true`, `false`
 - Comments: `# ...`
 - Statement separation: `;`, newline
+- Quoting: `'...'` and `"..."` group a word (whitespace inside a quote does
+  not split) and the quote characters are removed.  Both the in-kernel
+  tokeniser (`shell_parse`) and `/apps/sh.elf` (`tokenize`) honour this.
+  ($-expansion still runs before tokenisation, so it currently also expands
+  inside single quotes -- a known deviation.)
+- `sh -c "<command>"`: run one command string and exit with its `$?`
+  (`/apps/sh.elf` only; backs libc `system(3)`)
 - `$?` reflects: built-ins (always 0), unknown command (127), `[` test (0/1/2), and -- after recent work -- `exec <elf>` child exit status (low 8 bits)
 
 ### Present in `/apps/sh.elf` only (PR #181, slices A1-A3)
@@ -141,7 +148,6 @@ These work in the **userspace** shell but not the in-kernel sh interpreter:
 | Functions `name() { ... }` | Not parsed |
 | `case ... esac` | Not parsed |
 | `getopts`, `trap`, `eval`, `exec` (re-exec self), `export` | -- |
-| Quote stripping (`"X"` stays literal `"X"`) | Tokenizer bug; use bare words |
 | `IFS`, brace expansion `{a,b}` | -- |
 
 ### Path conventions

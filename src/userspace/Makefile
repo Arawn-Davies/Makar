@@ -22,8 +22,8 @@ PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf lspci.elf kbtester.elf ma
 # setjmp/longjmp + string/memory helpers).  Shipped under /usr/lib on the
 # OS image so tcc(1) can link against it as -lc.  The objects are also
 # linked individually into a few legacy app recipes (alloctest, filetest)
-# below to give the archive passive ui-test coverage.
-LIBC_OBJS=malloc.o stdio.o stdlib.o setjmp.o string.o tcc_compat.o dirent.o
+# below to give the archive passive in-guest-test coverage.
+LIBC_OBJS=malloc.o stdio.o stdlib.o setjmp.o string.o tcc_compat.o dirent.o time.o
 
 # tcc.elf is only built when the vendored snapshot at vendor/tinycc/ is
 # populated (see build-tcc.sh).  The artefact lands here at the top of
@@ -32,7 +32,7 @@ TCC_ELF=$(wildcard tcc.elf)
 
 # Headers shipped to /usr/include on the OS image so userland (and
 # tcc-compiled programs) can resolve `#include <name.h>` directly.
-SYSROOT_HEADERS=malloc.h stdio.h stdlib.h ctype.h setjmp.h string.h syscall.h dirent.h errno.h stdarg.h
+SYSROOT_HEADERS=malloc.h stdio.h stdlib.h ctype.h setjmp.h string.h syscall.h dirent.h errno.h stdarg.h unistd.h time.h
 
 
 all: $(PROGS) libc.a
@@ -151,7 +151,7 @@ install: all
 # `crt0.o` is the C-runtime startup; `libc.a` the freestanding libc shim
 # archive; headers under /usr/include resolve #include <name.h>; and the
 # example sources under /usr/share/examples ship reference programs the
-# ui-test scenarios can compile in-place.
+# in-guest test drivers can compile in-place.
 	mkdir -p $(ISODIR)/usr/lib $(ISODIR)/usr/include $(ISODIR)/usr/share/examples
 	cp crt0.o libc.a $(ISODIR)/usr/lib/
 	cp $(SYSROOT_HEADERS) $(ISODIR)/usr/include/

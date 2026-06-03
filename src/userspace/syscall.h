@@ -15,6 +15,7 @@
 #define SYS_CLOSE      6
 #define SYS_LSEEK      19
 #define SYS_GETPID     20
+#define SYS_DUP        41
 #define SYS_PIPE       42
 #define SYS_DUP2       63
 #define SYS_KILL       37
@@ -485,6 +486,11 @@ static inline int sys_dup2(int oldfd, int newfd)
     return (int)syscall2(SYS_DUP2, (long)oldfd, (long)newfd);
 }
 
+static inline int sys_dup(int oldfd)
+{
+    return (int)syscall1(SYS_DUP, (long)oldfd);
+}
+
 static inline int sys_stat(const char *path, struct stat *st)
 {
     return (int)syscall2(SYS_STAT, (long)path, (long)st);
@@ -757,7 +763,7 @@ static inline int sys_statfs(unsigned int *total_kb, unsigned int *free_kb)
 }
 
 /* Emit `[shell:ready vt=N]` on COM1 when g_serial_verbose is set.
- * Called by /apps/sh.elf before each prompt so ui_test.sh's
+ * Called by /apps/sh.elf before each prompt so the in-guest test drivers'
  * `wait_for_serial` syncpoint works identically for both shells. */
 static inline void sys_shell_ready(void)
 {

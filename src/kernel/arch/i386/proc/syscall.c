@@ -1027,6 +1027,33 @@ void syscall_dispatch(registers_t *regs)
     }
 
     /* ------------------------------------------------------------------
+     * SYS_DUP(41): duplicate oldfd onto the lowest-numbered free fd.
+     * EBX = oldfd
+     * Returns: new fd on success, -1 on error (bad oldfd / table full).
+     *
+     * Same shallow-copy semantics as SYS_DUP2 below (FD_KIND_PIPE shares
+     * the ring via refcount bump; FILE slots alias their buffer pointer).
+     * ------------------------------------------------------------------ */
+    case SYS_DUP: {
+        int oldfd = (int)regs->ebx;
+        task_t *cur = task_current();
+        fd_table_t *tbl = cur ? cur->fd_table : NULL;
+        if (!tbl) { regs->eax = (uint32_t)-1; break; }
+        fd_entry_t *oe = fd_get(tbl, oldfd);
+        if (!oe) { regs->eax = (uint32_t)-1; break; }
+        int newfd = fd_alloc(tbl);
+        if (newfd < 0) { regs->eax = (uint32_t)-1; break; }
+        fd_entry_t *ne = &tbl->slots[newfd];
+        memcpy(ne, oe, sizeof(*ne));
+        if (oe->kind == FD_KIND_PIPE && ne->pipe) {
+            if (ne->pipe_is_writer) ne->pipe->refcount_w++;
+            else                    ne->pipe->refcount_r++;
+        }
+        regs->eax = (uint32_t)newfd;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
      * SYS_DUP2(63): duplicate oldfd onto newfd, closing newfd first.
      * EBX = oldfd, ECX = newfd
      * Returns: newfd on success, -1 on error.
@@ -1789,8 +1816,8 @@ void syscall_dispatch(registers_t *regs)
     case SYS_SHELL_READY: {
         /* Emit the `[shell:ready vt=N]` sync marker on COM1.  Gated on
          * g_serial_verbose so production boots don't pay the cost.
-         * Userspace shell calls this before each prompt so ui_test.sh's
-         * wait_for_serial behaviour is identical to the kernel shell. */
+         * Userspace shell calls this before each prompt so the in-guest test
+         * drivers' serial sync is identical to the kernel shell. */
         if (g_serial_verbose) {
             task_t *t = task_current();
             int vt = (t && t->tty >= 0) ? t->tty : 0;

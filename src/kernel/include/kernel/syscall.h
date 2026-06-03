@@ -23,6 +23,7 @@
 #define SYS_CHDIR      12   /* int chdir(const char *path) -- set calling task's cwd */
 #define SYS_LSEEK      19   /* off_t lseek(int fd, off_t offset, int whence)   */
 #define SYS_GETPID     20   /* pid_t getpid(void)                               */
+#define SYS_DUP        41   /* int dup(int oldfd) -- lowest free fd, Linux i386 */
 #define SYS_PIPE       42   /* int pipe(int pipefd[2]) -- alloc reader+writer  */
 #define SYS_DUP2       63   /* int dup2(int oldfd, int newfd) -- Linux i386 ABI*/
 #define SYS_WAIT4      114  /* pid_t wait4(pid, int *status, int options, void *rusage) */
@@ -99,8 +100,8 @@
                                  * `[shell:ready vt=N]` sync marker on COM1
                                  * if g_serial_verbose; no-op otherwise.
                                  * Userspace shell calls this before each
-                                 * prompt so ui_test.sh's wait_for_serial
-                                 * keeps working unchanged. */
+                                 * prompt so the in-guest test drivers'
+                                 * serial sync keeps working unchanged. */
 #define SYS_CURSOR_POS     232  /* uint32_t cursor_pos(void) -> (col<<16)|row */
 #define SYS_VT_ENTER       233  /* int vt_enter(int focus_new) - attach this task
                                  * as a makmux shell on the next VT slot. */

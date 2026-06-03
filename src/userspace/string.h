@@ -31,4 +31,9 @@ char         *strchr (const char *s, int c);
 char         *strrchr(const char *s, int c);
 char         *strstr (const char *hay, const char *needle);
 
+/* POSIX tokeniser + error-string lookup (hosted libc surface). */
+char         *strtok_r(char *str, const char *delim, char **saveptr);
+char         *strtok  (char *str, const char *delim);
+char         *strerror(int errnum);
+
 #endif /* _USERSPACE_STRING_H */

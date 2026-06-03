@@ -166,6 +166,29 @@ int execvp(const char *file, char *const argv[])
     return -1;
 }
 
+/* system(cmd): fork + exec /apps/sh.elf -c "cmd", then wait.  Returns the
+ * child's exit status (low 8 bits) like a real libc.  A NULL command
+ * probes for a shell -- we always have one, so return non-zero. */
+int system(const char *command)
+{
+    if (!command) return 1;   /* "a command processor is available" */
+
+    int pid = sys_fork();
+    if (pid < 0) { errno = EAGAIN; return -1; }
+    if (pid == 0) {
+        char *argv[4];
+        argv[0] = (char *)"sh";
+        argv[1] = (char *)"-c";
+        argv[2] = (char *)command;
+        argv[3] = 0;
+        sys_execve("/apps/sh.elf", argv, 0);
+        sys_exit(127);   /* exec failed */
+    }
+    int status = 0;
+    sys_wait4(pid, &status, 0);
+    return status & 0xFF;
+}
+
 /* ---- 64-bit strtol/strtoul ------------------------------------------ */
 
 long long strtoll(const char *s, char **endp, int base)
@@ -261,26 +284,9 @@ int vfprintf(FILE *f, const char *fmt, __builtin_va_list ap)
     return n;
 }
 
-/* ---- time / random -------------------------------------------------- */
-
-unsigned int time(unsigned int *t)
-{
-    /* POSIX time(2): seconds since 1970-01-01 UTC, from the CMOS RTC. */
-    struct timeval tv;
-    unsigned int now = 0;
-    if (sys_gettimeofday(&tv) == 0) now = (unsigned int)tv.tv_sec;
-    if (t) *t = now;
-    return now;
-}
-
-struct tm_stub { int a[9]; };
-
-struct tm_stub *localtime(const unsigned int *t)
-{
-    (void)t;
-    static struct tm_stub zero;
-    return &zero;
-}
+/* ---- time ----------------------------------------------------------- *
+ * time(), gmtime(), localtime(), mktime(), strftime() now live in time.c
+ * (real broken-down time).  Only the raw clock syscalls stay here. */
 
 int gettimeofday(void *tv, void *tz)
 {
@@ -297,6 +303,91 @@ int clock_gettime(int clk, struct timespec *ts)
 /* ---- errno ---------------------------------------------------------- */
 
 int errno = 0;
+
+/* ---- environment ---------------------------------------------------- *
+ * Process-local env table.  SYS_EXECVE ignores envp, so these values do
+ * NOT propagate across exec -- a documented limitation (see docs/posix.md).
+ * Within a process they behave like the POSIX get/set/unset/putenv family.
+ */
+#define ENV_MAX    32
+#define ENV_ENTSZ  256                  /* "NAME=value\0" */
+
+static char s_env[ENV_MAX][ENV_ENTSZ];
+static int  s_env_used[ENV_MAX];
+
+static int env_name_match(const char *ent, const char *name, unsigned int nlen)
+{
+    for (unsigned int i = 0; i < nlen; i++)
+        if (ent[i] != name[i]) return 0;
+    return ent[nlen] == '=';
+}
+
+char *getenv(const char *name)
+{
+    if (!name) return 0;
+    unsigned int nlen = 0; while (name[nlen]) nlen++;
+    for (int i = 0; i < ENV_MAX; i++)
+        if (s_env_used[i] && env_name_match(s_env[i], name, nlen))
+            return s_env[i] + nlen + 1;
+    return 0;
+}
+
+int setenv(const char *name, const char *value, int overwrite)
+{
+    if (!name || !*name) { errno = EINVAL; return -1; }
+    for (const char *p = name; *p; p++)
+        if (*p == '=') { errno = EINVAL; return -1; }
+
+    unsigned int nlen = 0; while (name[nlen]) nlen++;
+    unsigned int vlen = 0; while (value && value[vlen]) vlen++;
+    if (nlen + 1u + vlen + 1u > ENV_ENTSZ) { errno = ENOMEM; return -1; }
+
+    int slot = -1;
+    for (int i = 0; i < ENV_MAX; i++)
+        if (s_env_used[i] && env_name_match(s_env[i], name, nlen)) {
+            if (!overwrite) return 0;
+            slot = i; break;
+        }
+    if (slot < 0)
+        for (int i = 0; i < ENV_MAX; i++)
+            if (!s_env_used[i]) { slot = i; break; }
+    if (slot < 0) { errno = ENOMEM; return -1; }
+
+    char *d = s_env[slot];
+    for (unsigned int i = 0; i < nlen; i++) *d++ = name[i];
+    *d++ = '=';
+    for (unsigned int i = 0; i < vlen; i++) *d++ = value[i];
+    *d = '\0';
+    s_env_used[slot] = 1;
+    return 0;
+}
+
+int unsetenv(const char *name)
+{
+    if (!name || !*name) { errno = EINVAL; return -1; }
+    unsigned int nlen = 0; while (name[nlen]) nlen++;
+    for (int i = 0; i < ENV_MAX; i++)
+        if (s_env_used[i] && env_name_match(s_env[i], name, nlen))
+            s_env_used[i] = 0;
+    return 0;
+}
+
+int putenv(char *string)
+{
+    /* "NAME=VALUE": split on '=' and forward to setenv.  Unlike POSIX we
+     * copy the string rather than keeping the caller's pointer live -- the
+     * caller's buffer need not persist, which is the safer default here. */
+    if (!string) { errno = EINVAL; return -1; }
+    const char *eq = string;
+    while (*eq && *eq != '=') eq++;
+    if (*eq != '=') { errno = EINVAL; return -1; }
+    unsigned int nlen = (unsigned int)(eq - string);
+    if (nlen + 1u > ENV_ENTSZ) { errno = ENOMEM; return -1; }
+    char name[ENV_ENTSZ];
+    for (unsigned int i = 0; i < nlen; i++) name[i] = string[i];
+    name[nlen] = '\0';
+    return setenv(name, eq + 1, 1);
+}
 
 /* ---- assert --------------------------------------------------------- */
 

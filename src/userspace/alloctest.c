@@ -1,8 +1,8 @@
 /*
  * alloctest.elf -- exercises the userspace heap (malloc.c) and the new
  * stdlib helpers (strtol/atoi) + ctype classifiers shipped alongside the
- * Phase-1 TCC-port slice.  PASS/FAIL summary goes to COM1 so ui_test
- * scenarios can assert without screendump diffs.
+ * Phase-1 TCC-port slice.  PASS/FAIL summary goes to COM1 and the exit
+ * status gates the incore.sh check -- no host input, no serial grep.
  *
  * Coverage:
  *   1. brk-backed malloc: allocate, write, read-back, free
@@ -12,6 +12,13 @@
  *   5. ctype classifiers behave per POSIX on a spot-check vector
  *   6. strtol parses decimal, hex (0x), octal (0), negative, with endp
  *   7. atoi matches strtol's decimal path
+ *   8-12. realloc/calloc, file I/O, FILE* stdio, readdir, strdup/qsort/sscanf
+ *   13. writable environment: setenv / getenv / unsetenv / putenv
+ *   14. strtok_r (consecutive-delimiter skipping) + strerror table
+ *   15. bsearch over a sorted array
+ *   16. pipe + dup roundtrip (single process)
+ *   17. time.h: gmtime_r / mktime roundtrip / strftime subset
+ *   18. system(): shell availability + exit-status round-trip
  */
 
 #include "syscall.h"
@@ -19,9 +26,13 @@
 #include "stdlib.h"
 #include "setjmp.h"
 #include "stdio.h"
+#include "string.h"
+#include "unistd.h"
+#include "time.h"
+#include "errno.h"
 
 static int my_strlen(const char *s) { int n = 0; while (s[n]) n++; return n; }
-/* Mirror every status line to BOTH serial (for ui_test assertions) and
+/* Mirror every status line to BOTH serial (for the in-guest test drivers) and
  * stdout (so a human running `exec alloctest.elf` interactively sees
  * the progress on screen instead of staring at a blinking cursor). */
 static void srl(const char *s)
@@ -208,6 +219,98 @@ int main(int argc, char **argv, char **envp)
         if (getenv("PATH") != 0) return fail("getenv should miss");
     }
     srl("[alloctest] strdup/qsort/sscanf/getenv ok\n");
+
+    /* ---- 13. writable environment: setenv / getenv / unsetenv / putenv ---- */
+    {
+        if (setenv("alloc_e", "v1", 1) != 0) return fail("setenv");
+        char *g = getenv("alloc_e");
+        if (!g || g[0] != 'v' || g[1] != '1' || g[2] != '\0') return fail("getenv set");
+        /* overwrite=0 keeps the existing value but still returns success. */
+        if (setenv("alloc_e", "v2", 0) != 0) return fail("setenv no-overwrite ret");
+        g = getenv("alloc_e");
+        if (!g || g[1] != '1') return fail("setenv no-overwrite kept old");
+        if (setenv("alloc_e", "v2", 1) != 0) return fail("setenv overwrite");
+        g = getenv("alloc_e");
+        if (!g || g[1] != '2') return fail("setenv overwrite value");
+        unsetenv("alloc_e");
+        if (getenv("alloc_e") != 0) return fail("unsetenv");
+        if (putenv("alloc_p=zz") != 0) return fail("putenv");
+        g = getenv("alloc_p");
+        if (!g || g[0] != 'z' || g[1] != 'z' || g[2] != '\0') return fail("getenv putenv");
+    }
+    srl("[alloctest] setenv/getenv/unsetenv/putenv ok\n");
+
+    /* ---- 14. strtok_r (consecutive delimiters skipped) + strerror ---- */
+    {
+        char s[] = "a,bb,,c";
+        char *sv = 0;
+        char *t1 = strtok_r(s, ",", &sv);
+        char *t2 = strtok_r(0, ",", &sv);
+        char *t3 = strtok_r(0, ",", &sv);
+        char *t4 = strtok_r(0, ",", &sv);
+        if (!t1 || t1[0] != 'a' || t1[1] != '\0') return fail("strtok_r t1");
+        if (!t2 || t2[0] != 'b' || t2[1] != 'b' || t2[2] != '\0') return fail("strtok_r t2");
+        if (!t3 || t3[0] != 'c' || t3[1] != '\0') return fail("strtok_r t3");
+        if (t4 != 0) return fail("strtok_r end");
+
+        if (strerror(0)[0] != 'S') return fail("strerror(0)");        /* "Success" */
+        if (strerror(ENOENT)[0] != 'N') return fail("strerror ENOENT"); /* "No such ..." */
+    }
+    srl("[alloctest] strtok_r/strerror ok\n");
+
+    /* ---- 15. bsearch over a sorted array ---- */
+    {
+        int arr2[] = { 1, 3, 5, 7, 9, 11 };
+        int key = 7;
+        int *r = (int *)bsearch(&key, arr2, 6, sizeof(int), cmp_int);
+        if (!r || *r != 7) return fail("bsearch hit");
+        int key2 = 8;
+        if (bsearch(&key2, arr2, 6, sizeof(int), cmp_int) != 0) return fail("bsearch miss");
+    }
+    srl("[alloctest] bsearch ok\n");
+
+    /* ---- 16. pipe + dup roundtrip (single process) ---- */
+    {
+        int pp[2];
+        if (pipe(pp) != 0) return fail("pipe()");
+        if (write(pp[1], "Zq", 2) != 2) return fail("pipe write");
+        int nd = dup(pp[1]);
+        if (nd < 3) return fail("dup() fd");
+        if (write(nd, "Yx", 2) != 2) return fail("dup write");
+        char rb[5];
+        if (read(pp[0], rb, 4) != 4) return fail("pipe read");
+        if (rb[0] != 'Z' || rb[1] != 'q' || rb[2] != 'Y' || rb[3] != 'x')
+            return fail("pipe/dup content");
+        close(pp[0]); close(pp[1]); close(nd);
+    }
+    srl("[alloctest] pipe/dup ok\n");
+
+    /* ---- 17. time: gmtime_r / mktime roundtrip / strftime ---- *
+     * 1000000000 == 2001-09-09 01:46:40 UTC. */
+    {
+        struct tm tmv;
+        time_t t = 1000000000;
+        gmtime_r(&t, &tmv);
+        if (tmv.tm_year != 101 || tmv.tm_mon != 8 || tmv.tm_mday != 9)
+            return fail("gmtime ymd");
+        if (tmv.tm_hour != 1 || tmv.tm_min != 46 || tmv.tm_sec != 40)
+            return fail("gmtime hms");
+        if (mktime(&tmv) != t) return fail("mktime roundtrip");
+        char buf[32];
+        unsigned int n = strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tmv);
+        if (n != 19) return fail("strftime len");
+        if (buf[0] != '2' || buf[4] != '-' || buf[10] != ' ' || buf[13] != ':')
+            return fail("strftime fmt");
+    }
+    srl("[alloctest] gmtime/mktime/strftime ok\n");
+
+    /* ---- 18. system(): shell available + exit-status round-trip ---- */
+    {
+        if (system((const char *)0) == 0) return fail("system(NULL) should be nonzero");
+        if (system("true")  != 0) return fail("system(\"true\") != 0");
+        if (system("false") == 0) return fail("system(\"false\") == 0");
+    }
+    srl("[alloctest] system ok\n");
 
     srl("[alloctest] PASS\n");
     return 0;

@@ -82,6 +82,10 @@ static const man_entry_t man_table[] = {
       "list kernel tasks",
       "Usage: tasks\n\nLists all tasks in the cooperative scheduler pool with their state.\n"
     },
+    { "ps",
+      "report process status",
+      "Usage: ps\n\nColumnar task listing: PID, PPID, state (R run / r ready / Z zombie),\nRING (3 for ring-3 user processes, 0 for kernel), TTY, and NAME.\nDead/reaped tasks are hidden.  See also `tasks` and `cat /proc/tasks`.\n"
+    },
     { "reboot",
       "reboot the system",
       "Usage: reboot\n\nTriggers a system reboot via the keyboard controller reset line.\n"
