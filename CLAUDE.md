@@ -2,9 +2,13 @@
 
 Guidance for Claude Code working in this repo.
 
-**Keep this file lean.** It's the entry point, not the manual — detailed
-subsystem docs live in `docs/`, `SURVEY.md`, the companions below, and the
-source itself. Point there; don't grow this file.
+> ## ⛔ DO NOT ADD CONTENT TO THIS FILE
+> CLAUDE.md is an **index/router**, not a manual. Its only job is to point you
+> to where the real information lives (`docs/`, `SURVEY.md`, the companions
+> below, and the source). When you learn or change something, **write it in the
+> appropriate doc/companion/source and, if needed, add or update a one-line
+> pointer here** — never paste the detail into this file. If a section here is
+> growing past a few lines, that content belongs somewhere else. Keep it short.
 
 ## What this is
 
