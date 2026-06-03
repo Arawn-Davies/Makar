@@ -16,7 +16,7 @@ C# / Cosmos counterpart. The two share a command vocabulary,
 filesystem layout, and long-term binary-format goals while exploring
 how language choice shapes the implementation.
 
-**Current version:** 0.9.0 (kernel self-host milestone; see
+**Current version:** 0.9.5 (kernel self-host milestone; see
 [`include/kernel/version.h`](https://github.com/Arawn-Davies/makar/blob/main/src/kernel/include/kernel/version.h)
 and [kernel rebuild guide](rebuild-kernel.md)).
 

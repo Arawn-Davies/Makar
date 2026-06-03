@@ -23,7 +23,7 @@
  *                     separately so shell-only changes don't move the
  *                     kernel version and vice versa.
  */
-#define MAKAR_VERSION "0.9.0"
-#define SHELL_VERSION "0.7.0"
+#define MAKAR_VERSION "0.9.5"
+#define SHELL_VERSION "0.8.0"
 
 #endif /* _KERNEL_VERSION_H */
