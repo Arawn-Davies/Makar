@@ -103,9 +103,19 @@ void shell_clear_screen(void)
     task_t *t = task_current();
     if (t) tty = t->tty;   /* pass actual tty; shell_apply_scheme_for_tty
                              * handles VTTY_ROOT_SLOT and out-of-range */
-    shell_apply_scheme_for_tty(tty);
-    if (vesa_tty_is_ready())
-        vesa_tty_clear();
+
+    /* Clear the backing grid always, so the `clear` "takes" and shows on
+     * refocus.  Touch the live display (scheme + wipe) ONLY when this task's
+     * VT is focused -- otherwise a backgrounded shell's `clear` would blank
+     * the visible VT (pixel bleed). */
+    vt_buf_t *vt = vtty_buf_current();
+    if (vt) vt_clear(vt);
+
+    if ((!vt || vtty_is_focused())) {
+        shell_apply_scheme_for_tty(tty);
+        if (vesa_tty_is_ready())
+            vesa_tty_clear();
+    }
 }
 
 static void cmd_clear(int argc, char **argv)

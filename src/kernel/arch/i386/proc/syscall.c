@@ -826,7 +826,12 @@ void syscall_dispatch(registers_t *regs)
     case SYS_CARET_STYLE: {
         if (!vesa_tty_is_ready()) { regs->eax = 0; break; }
         uint32_t prev = vesa_tty_get_caret_style();
-        vesa_tty_set_caret_style(regs->ebx);
+        /* The caret style is a single live-display property; only let the
+         * focused VT's task change it, else a backgrounded app (vix's block
+         * caret) bleeds onto the visible VT.  Still return prev so callers
+         * can save/restore. */
+        if (vtty_is_focused())
+            vesa_tty_set_caret_style(regs->ebx);
         regs->eax = prev;
         break;
     }
