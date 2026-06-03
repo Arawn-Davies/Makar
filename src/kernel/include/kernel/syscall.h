@@ -38,6 +38,7 @@
 #define SYS_IOCTL          54   /* int ioctl(fd, req, ...) -- stub (-ENOTTY)        */
 #define SYS_WRITEV        146   /* ssize_t writev(fd, const struct iovec*, int)     */
 #define SYS_RT_SIGPROCMASK 175  /* int rt_sigprocmask(how, set, oldset, sigsetsize) -- stub */
+#define SYS_FUTEX         240   /* int futex(...) -- no-op (single-threaded) */
 #define SYS_SET_THREAD_AREA 243 /* int set_thread_area(struct user_desc*) -- TLS    */
 #define SYS_EXIT_GROUP    252   /* void exit_group(int status) -- == exit           */
 #define SYS_SET_TID_ADDRESS 258 /* int set_tid_address(int *tidptr) -> tid          */
@@ -127,7 +128,7 @@
                                  * /etc/hostname (or fallback "makar"), copy up
                                  * to size-1 bytes, NUL-terminate.  Returns
                                  * strlen on success, -1 if buf invalid. */
-#define SYS_WHOAMI         240  /* int whoami(char *buf, size_t size) - copy the
+#define SYS_WHOAMI         247  /* int whoami(char *buf, size_t size) - copy the
                                  * current session's username (auth_current_user,
                                  * "user" on live boots) up to size-1 bytes,
                                  * NUL-terminate.  Returns strlen, -1 if invalid. */
@@ -138,7 +139,7 @@
 #define SYS_VT_OPEN_APP    242  /* int vt_open_app(const char *path) - open an app
                                  * in a named tab: switch to it if it exists, else
                                  * queue for makmux to spawn.  Returns 1/0. */
-#define SYS_VT_TAKE_APP    243  /* int vt_take_app(char *buf, int cap) - makmux
+#define SYS_VT_TAKE_APP    248  /* int vt_take_app(char *buf, int cap) - makmux
                                  * drains one queued app path.  Returns 1/0. */
 #define SYS_VT_SETNAME     244  /* int vt_setname(const char *name) - name the
                                  * calling task's VT tab (shown in the status bar). */

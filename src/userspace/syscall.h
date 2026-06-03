@@ -92,10 +92,10 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_SCHED_QUANTUM 228
 #define SYS_VERBOSE       229
 #define SYS_GETHOSTNAME   230
-#define SYS_WHOAMI        240
+#define SYS_WHOAMI        247   /* moved off 240 (Linux futex) */
 #define SYS_STATUSBAR     241
 #define SYS_VT_OPEN_APP   242
-#define SYS_VT_TAKE_APP   243
+#define SYS_VT_TAKE_APP   248   /* moved off 243 (Linux set_thread_area) */
 #define SYS_VT_SETNAME    244
 #define SYS_VT_GETNAME    245
 #define SYS_STATFS        246

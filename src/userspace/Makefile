@@ -135,10 +135,15 @@ libc.a: $(LIBC_OBJS)
 
 
 %.o: %.c
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) -MMD -c -o $@ $<
 
 %.o: %.S
 	$(AS) --32 -o $@ $<
+
+# Header-dependency tracking: -MMD emits a .d per object so a change to a
+# shared header (e.g. syscall.h) recompiles every dependent.  Without this a
+# syscall renumber silently left stale .elf calling the old number.
+-include $(wildcard *.d)
 
 install: all
 	mkdir -p $(ISODIR)/apps

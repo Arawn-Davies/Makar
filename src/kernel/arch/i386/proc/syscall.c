@@ -26,6 +26,7 @@
 #include <kernel/syscall.h>
 #include <kernel/isr.h>
 #include <kernel/task.h>
+#include <kernel/descr_tbl.h>
 #include <kernel/fd.h>
 #include <kernel/signal.h>
 #include <kernel/tty.h>
@@ -1222,6 +1223,47 @@ void syscall_dispatch(registers_t *regs)
     case SYS_IOCTL:                   /* isatty() probes this; report not-a-tty */
         regs->eax = (uint32_t)(-25);  /* -ENOTTY */
         break;
+    case SYS_FUTEX:                   /* single-threaded: locks never contend */
+        regs->eax = 0;
+        break;
+
+    /* ------------------------------------------------------------------
+     * SYS_SET_THREAD_AREA(243): install the calling task's TLS segment.
+     * EBX = struct user_desc* { entry_number, base_addr, limit, flags }.
+     * entry_number == -1 -> use the one TLS GDT slot (index 6) and write the
+     * index back.  Sets task->tls_gs so the scheduler restores it on switch.
+     * ------------------------------------------------------------------ */
+    case SYS_SET_THREAD_AREA: {
+        uint32_t *u = (uint32_t *)(uintptr_t)regs->ebx;
+        task_t   *t = task_current();
+        if (!u || !t) { regs->eax = (uint32_t)-1; break; }
+
+        uint32_t entry = u[0];
+        uint32_t base  = u[1];
+        uint32_t limit = u[2];
+        uint32_t flags = u[3];
+        int limit_in_pages = (int)((flags >> 4) & 1u);
+        int present        = !((flags >> 5) & 1u);   /* seg_not_present inverted */
+
+        if (entry != 0xFFFFFFFFu && entry != (uint32_t)GDT_TLS_INDEX) {
+            regs->eax = (uint32_t)-1; break;          /* only one TLS slot */
+        }
+
+        int idx = gdt_set_tls(base, limit, limit_in_pages, present);
+        u[0] = (uint32_t)idx;                         /* write back entry_number */
+
+        t->tls_base   = base;
+        t->tls_limit  = limit;
+        t->tls_pages  = (uint8_t)limit_in_pages;
+        t->tls_active = 1;
+        t->tls_gs     = ((uint32_t)idx << 3) | 3u;    /* selector 0x33 */
+
+        { uint16_t sel = (uint16_t)t->tls_gs;
+          __asm__ volatile("movw %0, %%gs" :: "r"(sel)); }
+
+        regs->eax = 0;
+        break;
+    }
 
     /* ------------------------------------------------------------------
      * SYS_YIELD(158): voluntarily give up the CPU.
