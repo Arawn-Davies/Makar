@@ -12,7 +12,7 @@
  *     write fault, OR that the page got copied for the child -- either
  *     way the two views diverge as POSIX requires)
  *
- * All output goes to fd 2 (VGA + serial) so ui-test can grep both.
+ * All output goes to fd 2 (VGA + serial) so the in-guest test drivers can grep both.
  * The markers PARENT-PRE / CHILD-SAW / CHILD-WROTE / PARENT-POST and
  * the literal sentinel values are the assertion surface.
  */
@@ -70,7 +70,7 @@ static volatile unsigned int p2[PAGE / sizeof(unsigned int)] __attribute__((alig
 static volatile unsigned int p3[PAGE / sizeof(unsigned int)] __attribute__((aligned(PAGE)));
 static volatile unsigned int p4[PAGE / sizeof(unsigned int)] __attribute__((aligned(PAGE)));
 
-/* Magic exit status -- ui-test asserts on the kernel's `status=42` log
+/* Magic exit status -- the in-guest test drivers assert on the kernel's `status=42` log
  * line to confirm the child's exit code propagated through SYS_EXIT. */
 #define CHILD_EXIT_STATUS 42
 

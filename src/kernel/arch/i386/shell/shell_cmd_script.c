@@ -22,8 +22,8 @@ static void cmd_sh(int argc, char **argv)
     }
     int rc = sh_run_file(argv[1]);
     /* Persist the script's exit code as $? so callers (interactive or
-     * scripted) can branch on it.  Also echo to serial so ui-test
-     * scenarios can scrape the value. */
+     * scripted) can branch on it.  Also echo to serial so the in-guest test
+     * drivers can scrape the value. */
     char buf[16];
     int n = 0, v = rc;
     if (v < 0) { buf[n++] = '-'; v = -v; }

@@ -19,4 +19,4 @@ Context: continuing UX/bugfix work. Nothing committed this session. Build via `.
 ## NOTES
 - Stray headless QEMU probes may be running against `/tmp/hdd-probe.img` (a copy, not `hdd.img`). Kill if found.
 - No AI attribution in commits/PRs (project rule). One commit per work item.
-- To read framebuffer state headlessly: QEMU `-monitor unix:sock` + `screendump x.ppm`; convert PPM→PNG with stdlib `zlib` (no imagemagick on host).
+- Framebuffer pixels are not asserted in tests; coverage is serial-marker based (in-guest script drivers + the key-injection harness). Visual checks are manual via a windowed run (`./run.sh ... gui`).

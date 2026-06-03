@@ -173,7 +173,7 @@ overview here.
   hybrid that nothing else used.  Queue now runs 1..21 cleanly, sub-letters
   reserved for tightly-grouped commit groups (15a-e for fork+COW,
   16a-b for execve+wait4, 20a-f for the staged userland shell).
-- **ui-test `demo-script` timeout** bumped 12 s → 25 s.  The script
+- **`demo-script` driver timeout** bumped 12 s → 25 s.  The script
   legitimately takes ~15 s of sleeps + work; the old budget was tripping
   a cascade into the bughunt scenarios whose windows would then absorb
   demo's leftover output and start on the wrong VT.
@@ -242,7 +242,7 @@ overview here.
       on a spawned victim.
     - `test_preempt` — busy-loop victim + verify its `kticks`
       advanced (proves timer-driven preemption).
-- **ui-test:**
+- **In-guest tests (host-driven harness, since removed):**
     - `ctrlc-kills-child` — exec calc, send Ctrl+C, verify shell
       responsive (proves SIGINT default-terminate end-to-end).
     - `user-sigusr1-handler` — runs `sigtest.elf`; greps for the
@@ -250,7 +250,7 @@ overview here.
     - `no-dead-in-proctasks` — proves the new procfs DEAD filter.
     - `typo-doesnt-clear` — proves line-mode output survives the
       shell's post-exec cleanup (`fb_touched` gate).
-- **`tests/ui_runner.sh` sync primitives** — `wait_for_serial
+- **Test-runner sync primitives (host-driven harness, since removed)** — `wait_for_serial
   <pattern> <start_bytes> [timeout]` and an `it_until` helper.
   The shell emits `[shell:ready vt=N]` to serial on every
   `shell_readline` entry (gated by `g_serial_verbose`), so tests
@@ -297,8 +297,7 @@ overview here.
   wrapper in `src/userspace/syscall.h`.
 - **`task_t.exec_params`** — per-task heap-allocated `exec_params_t`
   pointer set by `shell_exec_elf` and consumed by `exec_task_entry`.
-- **`tests/ui_runner.sh`** — shared test-runner framework split out of
-  `ui_test.sh`.  Provides `start_qemu` / `stop_qemu` / `it` /
+- **Shared test-runner framework** (host-driven harness, since removed).  Provides `start_qemu` / `stop_qemu` / `it` /
   `assert_serial_contains` / `assert_serial_not_contains` /
   `run_test`.  `PAUSE <secs>` directive in `send_script` lets a single
   test script sleep mid-stream so child tasks (calc) are ready before
@@ -312,7 +311,7 @@ overview here.
   lookup; first-token tab completion advertises makbox applets.
 - `ls`/`cat`/`cp` shell builtins removed from `fs_cmds[]`; tidied
   `shell_cmd_fs.c` comments throughout.
-- `tests/ui_test.sh` now reuses one QEMU session across all tests
+- The host-driven test harness (since removed) reused one QEMU session across all tests
   (Ctrl+C / `cd /` reset between scenarios) — ~10× faster than the
   per-scenario boot model.  Headless: **7/7 in ~33 s**.  GUI mode
   preserved.  30 ms per-key pacing under TCG so bursts don't out-run
@@ -369,7 +368,7 @@ release.
 - Single-kernel/two-ISO emit (`makar.iso` interactive, `makar-test.iso`
   CI test_mode).  KERNEL_ARGS injection lands here too.
 - Build-once fan-out CI: 4 parallel jobs (ktest, gdb-iso, gdb-hdd,
-  ui-test).
+  in-guest tests).
 - KVM gated behind `MAKAR_USE_KVM=1`, off by default (CI reproducibility).
 
 [#125](https://github.com/Arawn-Davies/makar/pull/125).

@@ -15,7 +15,8 @@ Three test paths fan out from `./run.sh iso test`:
 | **ktest** | `src/kernel/arch/i386/proc/ktest.c` + `usertest.c` | In-kernel unit suites: PMM/paging invariants, ring-3 lifecycle, keyboard sentinel widths, VFS lookup, etc. Runs under `test_mode` cmdline; exits QEMU via isa-debug-exit. Output: `ktest.log` (with PASS/FAIL per assert). |
 | **GDB ISO** | `tests/gdb_boot_test.py` | Boot-checkpoint + hardware-state probe under the QEMU GDB stub. Verifies Multiboot 2 magic, every `kernel_main` checkpoint, CR0.PG / CR3, PIT ticking, background ktest result, CD-ROM and HDD rootfs content. Output: `gdb-test.log`, `gdb-serial.log`. |
 | **GDB HDD** | `tests/gdb_hdd_test.py` | Same shape as GDB ISO but boots from `makar-hdd-test.img` (no CD-ROM) to prove FAT32-from-MBR boot + auto-mount. |
-| **UI** | `tests/ui_test.sh` | Black-box scenarios driven through QEMU's HMP `sendkey`, asserting on substrings in serial. Scenarios: `glob-proc`, `tab-complete-path`, `cd-root-listing`. CI uploads serial + screendump per scenario. Boot sync on the `kernel: boot complete` serial marker. |
+| **Shell/app** | `src/userspace/{shell-smoke,incore,libc-tcc}.sh` | In-guest sh scripts run by `iso test` Phase 1; each command's `$?` gates a PASS/FAIL line, asserting on serial markers (`SHELL-SMOKE`/`INCORE`/`LIBC-TCC: ALL PASS`). Ring-3 shell behaviour driven via `sh.elf -c`. No host keyboard. |
+| **Keyboard** | `keyboard_test_driver()` (`drivers/keyboard.c`), `./run.sh kbtest` | In-guest key injection (`keyboard_inject_text`/`keyboard_inject_key`) into the live decode→ring→shell pipeline; asserts on in-kernel state + serial `KBTEST:` markers. For paths where the keystroke itself is under test. |
 
 All four phases run in parallel CI jobs (`.github/workflows/build-test.yml`).
 

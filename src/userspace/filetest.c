@@ -10,13 +10,13 @@
  *   5.  256 KiB write past the old SYSCALL_FILE_MAX cap            (growable buffer)
  *   6.  open(O_RDONLY) + close (no writes) leaves file unchanged   (no-flush-on-rdonly)
  *
- * Prints PASS/FAIL lines over COM1 (SYS_WRITE_SERIAL) so the UI-test
- * harness can assert on them without needing screendump diffs.  Final
+ * Prints PASS/FAIL lines over COM1 (SYS_WRITE_SERIAL) and exits non-zero
+ * on the first failure so the in-guest test drivers can gate on $?.  Final
  * status: "[filetest] PASS" on full success, "[filetest] FAIL: <reason>"
- * on the first failure (program exits non-zero).
+ * on the first failure.
  *
  * Argv[1] (optional) selects the writable directory to use.  Default is
- * /mnt/scratch which is what the ui_test scenario mounts.  The big-file path
+ * /mnt/scratch.  The big-file path
  * is "<dir>/filetest.big"; the main scratch is "<dir>/filetest.tmp".
  */
 
@@ -24,7 +24,7 @@
 
 static int my_strlen(const char *s) { int n = 0; while (s[n]) n++; return n; }
 
-/* Mirror every status line to BOTH serial (for ui_test assertions) and
+/* Mirror every status line to BOTH serial (for the in-guest test drivers) and
  * stdout (so a human running the .elf interactively sees the progress). */
 static void srl(const char *s)
 {

@@ -68,10 +68,10 @@ that lives in my head, not in a chat window.
   what goes in vs. what waits for a follow-up, what counts as
   "done enough to merge" — all me.
 - **They are not driving the testing strategy.** The ktest harness,
-  the GDB boot-checkpoint groups, the UI-test shared-VM runner with
-  its `sendkey` pacing, the decision to run `iso-test` + `ui-test`
-  before every PR — designed and tuned by me, based on which
-  classes of regression have actually bitten this project.
+  the GDB boot-checkpoint groups, the in-guest script drivers and the
+  key-injection harness, the decision on what to run before every PR —
+  designed and tuned by me, based on which classes of regression have
+  actually bitten this project.
 - **They are not the source of truth on the codebase.** When I ask
   an LLM about Makar, it's reading my files just like I would.
   When it's wrong, I catch it — because I wrote the thing it's
@@ -88,7 +88,7 @@ that lives in my head, not in a chat window.
 3. It produces a diff. I read every line. If it's wrong, I push
    back; if the design is wrong but the code matches my
    description, that's on me for describing it wrong.
-4. I run `iso-test` and `ui-test`. If something regresses, I
+4. I run `iso-test` and `kbtest`. If something regresses, I
    debug it. Sometimes the LLM helps me think through the trace;
    the diagnosis is still mine to make.
 5. I commit in my own voice, with my own attribution. No

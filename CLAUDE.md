@@ -21,8 +21,8 @@ All build, test, and boot operations go through a single entrypoint:
 ./run.sh hdd test       # clean → build kernel → HDD image → GDB boot test
 ./run.sh hdd release    # HDD image only
 
-./run.sh ui        # black-box UI tests (headless QEMU, sendkey + serial grep)
-./run.sh gui       # same but with visible QEMU window + paced typing (replaces the old "ui graphical" form; arg order no longer matters)
+./run.sh kbtest    # in-guest key-injection test (headless QEMU, serial KBTEST markers)
+./run.sh kbtest gui  # same with a visible window (watch the injection drive the shell)
 
 # CI-style split modes (build once, run many — used by .github/workflows/build-test.yml)
 ./run.sh iso build      # kernel + makar.iso + makar-test.iso, no run
@@ -108,32 +108,24 @@ docker run --rm -it -v "$PWD:/work" -w /work arawn780/gcc-cross-i686-elf:fast \
 **In-kernel test suite (interactive)**: shell command `ktest` runs all suites from the kernel shell.
 At boot (when `test_mode` is *not* in the cmdline), `ktest_bg_task` runs the 20 POST/integrity suites in the background. Each suite emits `[ktest-bg] <suite>: PASS n/n` (or `FAIL`) to serial as it completes, followed by a final `KTEST_BG: PASS` or `KTEST_BG: FAIL`.
 
-**In-kernel UI tests (`src/userspace/incore.sh`)**: a shell-script test driver that runs the non-interactive UI scenarios (hello, forktest, execvetest, alloctest) directly from inside the kernel via the kernel sh interpreter.  Each test invokes its ELF and branches on `$?` (the ELF's own exit status) instead of HMP+serial-grep round-trips; the final marker `INCORE: ALL PASS` (or `INCORE: FAIL`) is what the runner asserts on.  Fronted by the single HMP scenario `test_incore` (`./run.sh ui incore`).  Faster than per-test HMP, no typing races, and the test logic lives in a `.sh` file you can edit without touching the runner.  Tradeoff: loses per-scenario screendump evidence on panic, so only use for tests that don't depend on framebuffer state.  Interactive features (TAB, Ctrl-C, VT switching, sh.elf readline, fullscreen apps) stay in HMP-driven scenarios where the keyboard event itself is under test.
+**User-facing tests are in-guest and headless. No host-driven keyboard or monitor input, no framebuffer scraping — ever.** Two mechanisms, both asserting on COM1 serial markers:
 
-**Black-box UI tests** (`tests/ui_test.sh`, fronted by `./run.sh ui` / `ui-test-gui`): boots `makar.iso`, drives keyboard input through QEMU's **HMP** (Human Monitor Protocol — the text-based control channel exposed by `-monitor unix:...`) via the `sendkey` command, and asserts on substrings in the serial mirror. Covers user-visible flows that `iso-test` doesn't: ELF exec → syscalls → output, shell tab completion, glob expansion, `cd`/`pwd`. **Not wired into CI** (the per-merge job was dropped in `a9b7474` — the framework's reliance on HMP timing made it flaky under the **TCG** (Tiny Code Generator — QEMU's interpreted/JIT CPU emulator, used because KVM is off by default per the note above) emulation that runs in the CI containers). Run locally before opening any PR that touches syscalls, shell, ELF exec, VFS, keyboard, or display:
+**1. Script drivers (no keyboard)** — the primary path, run by `./run.sh iso test` Phase 1 after `ktest_run_all()`. Each is an in-guest sh script where a command's `$?` gates a per-test PASS/FAIL line:
+- `src/userspace/shell-smoke.sh` → shell + VFS + apps: `ls`/`exec`/`cd`/`pwd`, tmpfs roundtrip, quoting, inline `if/else`, and **ring-3 control flow via `sh.elf -c '<payload>'`** (`if`/`for`). Marker `SHELL-SMOKE: ALL PASS`.
+- `src/userspace/incore.sh` → runs each ELF and branches on `$?` (hello, forktest, execvetest, alloctest, ktest_uspace). Marker `INCORE: ALL PASS`.
+- `src/userspace/libc-tcc.sh` → libc surface + in-OS TCC self-rebuild matrix. Marker `LIBC-TCC: ALL PASS`.
+
+  Add coverage by editing the `.sh` file — no runner changes. `sh.elf -c '...'` is the lever for driving the ring-3 shell's parser/control-flow without any keystrokes. Each ELF prints `[name] PASS` / `[name] FAIL: <reason>` and exits `0`/non-zero; the script aggregates. `alloctest.c` is the canonical shape (18 sub-tests).
+
+**2. In-guest key injection (`./run.sh kbtest`)** — for paths where the **keystroke itself** is under test (readline editing, arrow/history nav, Ctrl-C, Tab completion, Alt+Fn / Ctrl+Tab VT switching, fullscreen apps). `keyboard_inject_text()` / `keyboard_inject_key(kc, shift, ctrl, alt)` (`drivers/keyboard.c`) feed scancodes into the **live** decode → ring → shell pipeline at the exact entry the IRQ uses — atomically, full speed, `kb_focused` intact, so keys drive the focused task like real typing. `keyboard_test_driver()` (spawned when `kbtest` is on the multiboot cmdline) scripts the scenarios, asserts on in-kernel state (`vtty_active`, `vtty_find_name`) + serial, and emits `KBTEST: <name> PASS/FAIL` then `KBTEST: ALL PASS` / `KBTEST: done`.
 ```sh
-./run.sh ui                                # headless: all scenarios
-./run.sh ui fast                           # headless: dev inner-loop subset
-./run.sh ui libc                           # headless: TCC self-rebuild scenarios
-./run.sh ui incore                         # headless: in-kernel sh.script driver (hello/forktest/execvetest/alloctest)
-./run.sh ui shell|cd|fs|posix|vt|bughunt   # other named scenario groups
-./run.sh ui exec-hello                     # headless: one scenario
-./run.sh gui                               # visible window + paced typing (watch it run)
-./run.sh gui exec-hello                    # one scenario, visible
-./run.sh gui libc                          # libc group, visible (good for watching TCC compile)
-QEMU_DISPLAY=cocoa ./run.sh gui            # override QEMU display backend (cocoa|gtk|sdl)
-KEY_DELAY=0.3      ./run.sh ui graphical         # slower typing (default 0.15 s/key)
-UI_TEST_LOGDIR=/tmp/uilogs ./run.sh ui     # keep logs (serial + PPM screen dump)
+./run.sh iso test     # the regression gate: ktest + the three script drivers above
+./run.sh kbtest        # headless key-injection scenarios (KBTEST markers)
+./run.sh kbtest gui    # same, visible window (watch the injection drive the shell)
 ```
-The `ui-test-gui` target keeps a paced-typing visible-window mode for debugging; headless `ui-test` is the canonical "did the change regress anything" path and is what runs noise-free. **Shutdown path differs by mode**: headless sends HMP `quit` (instant), while GUI mode types `shutdown<Enter>` into the focused shell so the kernel runs its real ACPI S5 power-off (port `0x604 / 0x2000` — see `acpi_shutdown()`), then QEMU exits naturally; this exercises the shutdown code path on every GUI run *and* gives the watcher a visible "Shutting down..." final frame instead of the window blinking out the instant assertions complete. Both modes fall back to SIGKILL after a bounded wait if the guest is wedged. **PPM** = Portable Pixmap, the screen-snapshot format HMP's `screendump` emits — useful for triaging visual-only regressions (cursor position, gutter rendering) that the serial mirror can't capture. Scenarios live as `scenario_<name>` shell functions in `tests/ui_test.sh`; add a new one alongside any PR that changes a user-facing path.
+Add a keyboard scenario by extending `keyboard_test_driver()` with another `keyboard_inject_*` sequence + a `KBTEST:` marker. Add a non-keyboard scenario by adding a check to the relevant `.sh` driver. (The legacy host-driven test harness has been removed.)
 
-**TODO:** 
-
-Startup ktests: On startup, before we start the shell task we need to run background ktests that test capabilities without affecting the loading screen output. 
-Only once all ktests silently pass may the loading screen progress and we start the shell. 
-Make sure it's a bit of a delay between each test so the startup screen is visible. Print to serial should be remain. 
-- The spinner loop is inside ```if (vesa_tty_is_ready())``` - if VBE isn't active (VGA fallback), the whole block is skipped and we drop straight into the REPL.  
-- The wait must be outside that conditional. 
+**Startup-ktest gating (shipped):** on a normal (non-`test_mode`) boot, `ktest_bg_task` runs the 20 POST/integrity suites *muted* (no VGA output, serial `[ktest-bg]` markers only), pacing ~50 ms between suites. The boot loading screen blocks until they finish: `shell_enter_slot` draws a VESA progress bar/spinner that polls `ktest_bg_completed`/`ktest_bg_done` (inside `if (vesa_tty_is_ready())`), and a belt-and-braces `while (!ktest_bg_done) task_yield();` *outside* that conditional covers the VGA-text fallback path so the REPL never starts before the suites pass. See `ktest_bg_task` (`proc/ktest.c`) and `shell_enter_slot` (`shell/shell.c`).
 
 ## Architecture
 
@@ -220,7 +212,7 @@ Stack: PS/2 IRQ → scancode (set-1 + 0xE0 prefix) → keycode (HID-style abstra
 - `datetime` / `date` / `time` builtins — one-line `YYYY-MM-DD HH:MM:SS` from `/proc/rtc`.  Scriptable; for fullscreen use see `clock.elf`.
 
 ### Shell scripting (sh-flavoured)
-Full reference: **`docs/scripting.md`**.  Implementation: `kernel/sh_script.h`, `arch/i386/shell/sh_script.c`.  Worked example: `src/userspace/demo.sh` (ships as `/apps/demo.sh`).  In-kernel UI-test driver pattern: `src/userspace/incore.sh`.
+Full reference: **`docs/scripting.md`**.  Implementation: `kernel/sh_script.h`, `arch/i386/shell/sh_script.c`.  Worked example: `src/userspace/demo.sh` (ships as `/apps/demo.sh`).  In-guest test driver pattern: `src/userspace/incore.sh`.
 
 ### VMM (per-task page directories)
 - `vmm_create_pd()` - allocates a page directory and mirrors kernel PDEs (indices 0–63)
@@ -299,6 +291,6 @@ If you're an AI agent (Claude, Codex, etc.) picking this up cold:
 3. **For VFS work**: this file's § VFS section explains the mount-table model; `src/kernel/arch/i386/fs/vfs.c` is the source of truth.  Slice 27 (the rootfs+overlay refactor) shipped recently -- no `resolve_rootfs_prefix` or path-rewriting tricks remain.
 4. **For shell work**: there are TWO shells.  The in-kernel `shell.c` (~4.3 KLoc, default on every VT) and the ring-3 `src/userspace/sh.c` (freestanding, opt-in via `exec /apps/sh.elf`).  The userland shell is being lifted into parity over slices 20a–20f; both currently coexist.
 5. **Conventions**: paths follow Linux (`/usr`, `/apps`, `/root`, `/proc`, `/dev`, `/mnt/<name>`, `/mnt/cdrom`).  The legacy `/mnt/hd` and bare `/hd` aliases were retired.  Apps live at `/apps/*.elf`, sources at `/src/`, headers at `/usr/include`, libc at `/usr/lib/libc.a`.
-6. **Testing**: `./run.sh iso test` for kernel-side ktest + GDB checkpoints; `./run.sh ui [scenario]` for headless black-box scenarios; `./run.sh gui [scenario]` for visible-window debugging.  Add a scenario for any user-facing change you ship.
+6. **Testing**: `./run.sh iso test` is the regression gate — kernel ktest + GDB checkpoints + the in-guest script drivers (`shell-smoke.sh` / `incore.sh` / `libc-tcc.sh`). `./run.sh kbtest` for keyboard paths via the in-guest injection harness. **No host-driven keyboard input** — user-facing coverage goes in the `.sh` drivers (`sh.elf -c` for ring-3 shell behaviour) or `keyboard_test_driver()` (keystroke-under-test). Add a check there for any user-facing change you ship.
 7. **Commits**: one commit per discrete work item; no `Co-Authored-By` trailers; no `Generated with Claude Code` footers.  Push to the existing PR branch when iterating.
 8. **Build**: `./run.sh iso build` (Docker-wrapped cross-compile via `i686-elf-gcc`).  Clang diagnostics from your IDE will complain about missing kernel headers -- ignore them; the build uses the right include paths.

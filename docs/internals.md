@@ -738,7 +738,7 @@ TCC via `./build-kernel-tcc.sh` (host-side) or `/apps/rebuild-kernel.sh`
 surface (writable fds, `O_CREAT`/`O_TRUNC`/`O_APPEND`, `SYS_STAT`/`FSTAT`,
 `SYS_READDIR`, 16 MiB file cap) and the freestanding libc shim
 (`malloc`/`stdio`/`setjmp`/`ctype`/`stdlib`/POSIX wrappers), both with
-ktest + ui-test coverage.  The boot banner reports `gcc-host` /
+ktest + in-guest-test coverage.  The boot banner reports `gcc-host` /
 `tcc-host` / `tcc-in-os` based on the build path.  See
 [TCC feasibility](tcc-feasibility.md) for the original spike and
 [rebuilding the kernel](rebuild-kernel.md) for the maintained guide.

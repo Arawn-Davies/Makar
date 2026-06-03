@@ -120,77 +120,57 @@ Runs `ktest_run_all()` and prints pass/fail for each subsystem suite
 
 ---
 
-## Black-box UI tests (`./run.sh ui`)
+## Shell / app / keyboard tests (in-guest, headless)
 
-Drives the running kernel through QEMU's HMP `sendkey` and asserts on
-the COM1 serial slice + PPM screen dump.  Scenarios live in
-`tests/ui_test.sh` as `test_<name>` shell functions; the shared runner
-in `tests/ui_runner.sh` boots one QEMU per invocation and rotates
-through scenarios with `reset_shell` in between.
+All user-facing tests run **inside the guest** and assert on COM1 serial
+markers. There is no host keyboard driving — no monitor input, no
+framebuffer scraping, no typing races. Two complementary mechanisms:
 
-### Synchronisation: marker-based, not sleep-based
+### 1. Script drivers — no keyboard (primary path)
 
-The shell emits `[shell:ready vt=N]` to serial on every
-`shell_readline` entry (gated by `g_serial_verbose`, which
-`start_qemu` flips on as the first action after boot).  Test
-scenarios use this marker as a sync point instead of fixed `sleep N`:
+`./run.sh iso test` Phase 1 boots the test ISO and, after `ktest_run_all()`,
+runs three in-guest sh scripts. Each command's exit status (`$?`) gates a
+per-test PASS/FAIL line; output flows to serial naturally.
 
-| Primitive | What it does |
-|---|---|
-| `it <name> <script> [wait_secs]` | Fixed-sleep style.  Send keys, sleep, snapshot serial slice. |
-| `it_until <name> <script> <regex> [timeout]` | **Sync-on-marker style.**  Send keys, poll the serial log until the regex appears, then snapshot.  Default sync regex is `'\[shell:ready vt=0\]'`. |
-| `wait_for_serial <regex> <start_bytes> [timeout]` | Low-level primitive.  Polls `$SERIAL_LOG` from `<start_bytes>` until `<regex>` matches.  Used by `it_until` and directly by multi-stage scenarios that need to sync between key batches (the `typo-doesnt-clear` scenario is the canonical multi-stage example: type the typo, wait for shell-ready, then type the next command, otherwise the in-flight bytes race the dying exec'd child and get dropped when `keyboard_release_task` reaps its slot). |
+| Driver | Covers | Final marker |
+|---|---|---|
+| `src/userspace/shell-smoke.sh` | shell + VFS + apps: `ls`, `exec`, `cd`/`pwd`, tmpfs roundtrip, quoting, inline `if/else`, and `sh.elf -c` control flow (`if`/`for`) | `SHELL-SMOKE: ALL PASS` |
+| `src/userspace/incore.sh` | runs each ELF and branches on `$?` (hello, forktest, execvetest, alloctest, ktest_uspace) | `INCORE: ALL PASS` |
+| `src/userspace/libc-tcc.sh` | libc surface + in-OS TCC self-rebuild matrix | `LIBC-TCC: ALL PASS` |
 
-This is the expect/pexpect pattern, scaled down.  Why it matters: a
-fixed `sleep 1.2` is a guess that's right under KVM and wrong under
-TCG-on-a-shared-runner.  A marker sync is right in both -- it returns
-the instant the kernel says it's ready and bounds via the timeout.
+To add coverage, edit the `.sh` file — no runner changes. For anything
+expressible as "run a command / script, check status," this is the right
+shape (and `sh.elf -c '<payload>'` lets a script drive the ring-3 shell's
+parser/control-flow headlessly). Each ELF prints `[name] PASS` /
+`[name] FAIL: <reason>` and exits `0` / non-zero; the script aggregates.
+See `alloctest.c` for the canonical shape (18 sub-tests, each a status
+line + `return 0/1`).
 
-### Scenarios currently covered
+### 2. In-guest key injection — for keyboard paths (`./run.sh kbtest`)
 
-| Scenario | Asserts |
-|---|---|
-| `glob-proc` | `cat /proc/*` glob-expands across the synthetic FS |
-| `tab-complete-path` | `cat<TAB> /proc/c<TAB><Enter>` resolves to `cat /proc/cpuinfo` |
-| `exec-hello` | `exec /apps/hello.elf tester` reaches `sys_exit(0)` and prints the expected greeting |
-| `cd-root-listing` | `cd /<TAB><TAB>` lists mounts; subsequent `pwd` confirms cwd |
-| `per-tty-cwd` | Per-task cwd isolation across `Alt+F1`/`Alt+F3` switches |
-| `calc-brackets` | `calc.elf` evaluates parenthesised arithmetic |
-| `ctrlc-kills-child` | Ctrl+C delivers SIGINT to a running ELF, shell recovers |
-| `no-dead-in-proctasks` | `cat /proc/tasks` never lists DEAD slots |
-| `typo-doesnt-clear` | A wrong command falls back to makbox, prints an error, and **does not** wipe the screen (proves the `task_t.fb_touched` gate) |
-| `user-sigusr1-handler` | `sigtest.elf` installs a SIGUSR1 handler, self-sends, the handler runs in ring 3 (proves the sigframe + trampoline + `SYS_SIGRETURN` path) |
-| `makbox-pwd` | `pwd` resolves to the `makbox` applet end-to-end |
+When the **keystroke itself** is under test (readline editing, arrow/history
+nav, Ctrl-C, Tab completion, Alt+Fn / Ctrl+Tab VT switching, fullscreen
+apps), use the in-guest injection harness — never host input:
 
-`./run.sh ui` runs all of them; `./run.sh ui <name>` runs
-one; `./run.sh ui graphical` runs with a visible QEMU window for
-debugging.
+- `keyboard_inject_text("echo hi\n")` and
+  `keyboard_inject_key(kc, shift, ctrl, alt)` (`drivers/keyboard.c`) feed
+  scancodes into the **live** decode → ring → shell pipeline at the same
+  entry the IRQ uses — atomically, at full speed, with `kb_focused`
+  intact, so keys drive the focused task exactly like real typing.
+- `keyboard_test_driver()` is the scripted scenario runner, spawned on a
+  normal boot when `kbtest` is on the multiboot cmdline. It injects keys,
+  asserts on in-kernel state (`vtty_active`, `vtty_find_name`) and serial
+  output, and emits `KBTEST: <name> PASS/FAIL` + a final `KBTEST: ALL PASS`
+  / `KBTEST: done`.
 
-### In-kernel test driver (`incore.sh`)
+```sh
+./run.sh kbtest        # headless: boot with kbtest cmdline, poll serial for KBTEST markers
+./run.sh kbtest gui    # same, visible window (watch the injection drive the shell)
+```
 
-For scenarios that just need to "run a binary, check it exited 0,"
-the per-test HMP round-trip is overhead.  `src/userspace/incore.sh`
-is a kernel-sh script that drives those tests directly inside the
-guest via `exec` + `$?`: each test invokes its ELF and the script
-branches on the child's `SYS_EXIT` value (low 8 bits) surfaced as
-`$?` by `shell_last_exec_status()` in `shell_cmd_apps.c`.  Final
-marker `INCORE: ALL PASS` (or `INCORE: FAIL`) is the one substring
-the runner asserts on.  Fronted by the single HMP scenario
-`test_incore` (`./run.sh ui incore`); see `src/userspace/incore.sh`
-for the current test list (hello, forktest, execvetest, alloctest).
-
-Trade-off vs HMP scenarios: faster (no per-test typing/settle, no
-reset_shell, no reaper-output races), and the test list is editable
-in a `.sh` file without touching the runner -- but no screendump
-evidence on panic, so this is only the right shape for tests that
-don't depend on framebuffer state.  Interactive features (TAB,
-Ctrl-C, VT switching, sh.elf readline, fullscreen apps) stay in
-HMP-driven scenarios where the keyboard event is itself under test.
-
-Each ELF in `incore.sh` is expected to print `[name] PASS` /
-`[name] FAIL: <reason>` on its own and exit `0` / non-zero; the
-script just aggregates.  See `alloctest.c` for the canonical shape
-(12 sub-tests, each emitting a status line, `return 0`/`return 1`).
+Add a keyboard scenario by extending `keyboard_test_driver()` with another
+`keyboard_inject_*` sequence and a `KBTEST:` marker. This is the seed
+harness that replaced the old flaky host-driven UI scenarios.
 
 ---
 

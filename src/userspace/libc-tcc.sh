@@ -1,9 +1,9 @@
 #!/bin/sh
 # libc-tcc.sh -- in-kernel TCC/libc regression driver.
 #
-# This script is intentionally run from /src/userspace, not installed under
-# /apps.  It keeps the HMP/ui runner from typing a long compile matrix while
-# still exercising in-OS TCC, the shipped sysroot, and libc.a.
+# Runs entirely in-guest (driven by the kernel sh during test_mode), so the
+# long compile matrix needs no host input -- it exercises in-OS TCC, the
+# shipped sysroot, and libc.a, gating each step on $? and emitting markers.
 #
 # Marker contract:
 #   LIBC-TCC: BEGIN

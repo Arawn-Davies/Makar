@@ -45,7 +45,7 @@ truth; this table mirrors it.
 |    18 | `ps`-style task listing (covered by `/proc/tasks`)     | ⏭ deferred                  | [#147](https://github.com/Arawn-Davies/makar/issues/147)                          |
 |    19 | VGA-text fallback per-TTY                              | ⏭ queued                    | [#146](https://github.com/Arawn-Davies/makar/issues/146)                          |
 |    20 | Userland shell (`sh.elf`, multi-PR feature, 20a-f)     | 🟢 20a-c shipped, 20g (POSIX A1-A3 pipes/redir/list-ops) shipped via PR #181 | —                                                                                  |
-|    21 | COM2 serial-input mode for ui-test runner              | ⏭ planned                   | —                                                                                  |
+|    21 | ~~COM2 serial-input mode~~ (superseded by in-guest key injection) | ✅ superseded            | `keyboard_inject_text` + `keyboard_test_driver` (`./run.sh kbtest`)                 |
 |    28 | `SYS_PIPE` + `SYS_DUP2` + `FD_KIND_PIPE`               | ✅ shipped ([PR #181](https://github.com/Arawn-Davies/makar/pull/181)) | refcounted `pipe_ring_t`, 4 KiB ring, blocking via `task_yield`. Single-arg `SYS_DUP` + FILE-kind open_file_t refcount still pending. |
 
 ### Bash-flavoured shell scripting
@@ -196,7 +196,7 @@ See [history](history.md) for the changelog.  Highlights:
   backing grids, **makmux** status bar, four independent TTYs with
   Alt+F1–F4.
 - Tooling: single-entrypoint `run.sh`, ccache toolchain image,
-  build-once fan-out CI (4 parallel jobs including a UI-test job).
+  build-once fan-out CI (4 parallel jobs).
 
 ## Tracking conventions
 

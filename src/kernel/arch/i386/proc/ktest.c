@@ -919,7 +919,7 @@ static void test_rtc_unix_time(void)
  * unlink is exercised behaviourally against /tmp (tmpfs supports
  * delete_file).  mkdir/rmdir/rename are validated on the NULL-arg
  * rejection path; behavioural coverage on a writable backend happens
- * via ui-test on the ext2/FAT32 rootfs.
+ * via the in-guest test drivers on the ext2/FAT32 rootfs.
  * ------------------------------------------------------------------------- */
 
 static void test_posix_fs_syscalls(void)

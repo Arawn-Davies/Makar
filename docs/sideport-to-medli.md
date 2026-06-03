@@ -189,7 +189,7 @@ If picking one to start: **wildcard glob + tab completion semantics**
 
 1. Pure logic — no Cosmos plugin needed.
 2. Immediately visible to anyone using either shell.
-3. The Makar test surface (`tests/ui_test.sh` scenarios `glob_proc`,
+3. The Makar test surface (in-guest drivers shell-smoke.sh/incore.sh,
    `tab_complete_path`) is a literal spec — a Medli C# port can mirror
    the same assertions against its own shell harness, giving both
    projects a single behaviour contract that's been wire-tested.

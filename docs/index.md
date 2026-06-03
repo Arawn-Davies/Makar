@@ -24,7 +24,7 @@ and [kernel rebuild guide](rebuild-kernel.md)).
 
 - **[Building & running](building.md)** — toolchain, Docker, QEMU
 - **[Internals](internals.md)** — CPU state at boot, paging, TLBs, per-task PDs, scheduler, syscall ABI, fork+COW, execve, wait4
-- **[Testing](testing.md)** — ktest, GDB checkpoint suite, UI sendkey tests
+- **[Testing](testing.md)** — ktest, GDB checkpoint suite, in-guest script drivers + key-injection tests
 - **[BASIC](basic.md)** — the C64-style integer BASIC interpreter (`basic.elf`)
 - **[Userland libc](userland-libc.md)** — porting roadmap toward musl/dash
 - **[TCC in-OS compiler](tcc-feasibility.md)** — porting TCC to compile C on a running Makar system
@@ -130,7 +130,7 @@ src/kernel/kernel/kernel.c    kernel_main
 src/kernel/include/kernel/    public headers
 src/libc/                     freestanding libc → libk.a
 src/userspace/                ring-3 ELF apps
-tests/                        gdb_boot_test.py, ui_test.sh
+tests/                        gdb_boot_test.py, gdb_hdd_test.py
 ```
 
 ## Acknowledgements

@@ -115,7 +115,7 @@ own ring-3 task (so it shows up in `maktop`).
 | `reboot` | Flush + unmount the FAT32 volume, then ACPI reboot |
 | `panic [msg]` | Trigger kernel panic |
 | `ktest` | Run all in-kernel unit tests interactively |
-| `verbose [on\|off]` | Toggle the `t_putchar` → COM1 mirror at runtime. Equivalent to flipping `console=ttyS0` on the kernel cmdline. Used by `tests/ui_test.sh` to grep shell output from serial. |
+| `verbose [on\|off]` | Toggle the `t_putchar` → COM1 mirror at runtime. Equivalent to flipping `console=ttyS0` on the kernel cmdline. Used by the in-guest test drivers to grep shell output from serial. |
 
 ### Application (`shell_cmd_apps.c`)
 
