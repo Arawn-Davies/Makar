@@ -1129,6 +1129,74 @@ void syscall_dispatch(registers_t *regs)
     }
 
     /* ------------------------------------------------------------------
+     * SYS_MMAP2(192): anonymous mmap only.  Linux i386 ABI; args:
+     *   EBX=addr (hint, ignored unless future MAP_FIXED), ECX=len,
+     *   EDX=prot, ESI=flags, (EDI=fd, EBP=pgoff -- ignored for anon).
+     * Allocates ceil(len/4KiB) zeroed frames into a per-task bump window
+     * [USER_MMAP_BASE, stack) and returns the base.  File-backed mmap and
+     * MAP_FIXED are unsupported -> MAP_FAILED ((void*)-1).  This is what
+     * a hosted malloc (musl mallocng) needs beyond brk.
+     * ------------------------------------------------------------------ */
+    case SYS_MMAP2: {
+        #define USER_MMAP_BASE 0x90000000u
+        #define MMAP_MAP_ANONYMOUS 0x20u
+        #define MMAP_MAP_FIXED     0x10u
+        uint32_t len   = regs->ecx;
+        uint32_t flags = regs->esi;
+        task_t  *t     = task_current();
+
+        if (!t || len == 0 || !(flags & MMAP_MAP_ANONYMOUS) ||
+            (flags & MMAP_MAP_FIXED)) {
+            regs->eax = (uint32_t)-1; break;          /* MAP_FAILED */
+        }
+
+        uint32_t pages = (len + 0xFFFu) >> 12;
+        if (t->mmap_next == 0) t->mmap_next = USER_MMAP_BASE;
+        uint32_t base = t->mmap_next;
+
+        /* Don't collide with the ring-3 stack region. */
+        if (base + (pages << 12) >= 0xBFFF0000u - (8u * 0x1000u)) {
+            regs->eax = (uint32_t)-1; break;
+        }
+
+        for (uint32_t i = 0; i < pages; i++) {
+            uint32_t phys = pmm_alloc_frame();
+            if (phys == PMM_ALLOC_ERROR) {
+                /* Roll back what we mapped so far. */
+                for (uint32_t j = 0; j < i; j++) {
+                    uint32_t va = base + (j << 12);
+                    vmm_unmap_page(t->page_dir, va);
+                }
+                regs->eax = (uint32_t)-1; break;
+            }
+            memset((void *)phys, 0, 0x1000u);
+            vmm_map_page(t->page_dir, base + (i << 12), phys,
+                         VMM_FLAG_USER | VMM_FLAG_WRITABLE);
+        }
+        t->mmap_next = base + (pages << 12);
+        regs->eax = base;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_MUNMAP(91): unmap + free a range previously returned by mmap2.
+     * EBX=addr, ECX=len.  No address reuse (mmap_next never rewinds) --
+     * fine for bring-up.  Returns 0 (we don't validate the range).
+     * ------------------------------------------------------------------ */
+    case SYS_MUNMAP: {
+        uint32_t addr = regs->ebx & ~0xFFFu;
+        uint32_t len  = regs->ecx;
+        task_t  *t    = task_current();
+        if (t && len) {
+            uint32_t pages = (len + 0xFFFu) >> 12;
+            for (uint32_t i = 0; i < pages; i++)
+                vmm_unmap_page(t->page_dir, addr + (i << 12));
+        }
+        regs->eax = 0;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
      * SYS_YIELD(158): voluntarily give up the CPU.
      * ------------------------------------------------------------------ */
     case SYS_YIELD:

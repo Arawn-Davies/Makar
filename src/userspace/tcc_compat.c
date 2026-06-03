@@ -398,17 +398,16 @@ void __assert_fail(const char *expr, const char *file, int line, const char *fun
     sys_exit(134);
 }
 
-/* ---- mmap stub (tccrun.c JIT path; never actually invoked) ---------- */
+/* ---- mmap: anonymous mappings over SYS_MMAP2 (file-backed -> MAP_FAILED) -- */
 
 void *mmap(void *a, unsigned int sz, int prot, int fl, int fd, long off)
 {
-    (void)a; (void)sz; (void)prot; (void)fl; (void)fd; (void)off;
-    return (void *)-1;     /* MAP_FAILED */
+    return sys_mmap(a, sz, prot, fl, fd, off);
 }
 
 int munmap(void *a, unsigned int sz)
 {
-    (void)a; (void)sz; return -1;
+    return sys_munmap(a, sz);
 }
 
 /* ---- math placeholders (unused float-folding paths) ----------------- */

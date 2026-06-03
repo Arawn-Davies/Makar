@@ -32,6 +32,8 @@
 #define SYS_MKDIR      39   /* int mkdir(const char *path, mode_t mode)         */
 #define SYS_RMDIR      40   /* int rmdir(const char *path)                      */
 #define SYS_BRK        45   /* void *brk(void *addr)                            */
+#define SYS_MUNMAP     91   /* int munmap(void *addr, size_t len)               */
+#define SYS_MMAP2     192   /* void *mmap2(addr,len,prot,flags,fd,pgoff) -- anon only */
 #define SYS_SIGNAL     48   /* sig_handler_t signal(int signo, sig_handler_t)   */
 #define SYS_STAT      106   /* int stat(const char *path, struct stat *st)      */
 #define SYS_FSTAT     108   /* int fstat(int fd, struct stat *st)               */

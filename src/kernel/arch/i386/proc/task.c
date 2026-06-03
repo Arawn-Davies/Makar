@@ -234,6 +234,7 @@ task_t *task_create(const char *name, void (*entry)(void))
     t->state       = TASK_READY;
     t->name        = name;
     t->user_brk    = 0;
+    t->mmap_next   = 0;
     t->pid         = next_pid++;
     t->parent_pid  = current_task ? current_task->pid : 0;
     t->exit_status = 0;

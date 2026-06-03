@@ -54,6 +54,7 @@ typedef struct task {
 
     /* --- user memory --- */
     uint32_t      user_brk;  /* current user-space heap break (0 = not a user process) */
+    uint32_t      mmap_next; /* bump pointer for anonymous mmap (0 = lazily init to USER_MMAP_BASE) */
 
     /* --- per-task working directory ---
      * Authoritative storage for the task's cwd.  vfs_getcwd() / vfs_cd()

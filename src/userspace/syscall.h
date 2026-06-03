@@ -24,6 +24,8 @@
 #define SYS_RMDIR      40
 #define SYS_UNLINK     10
 #define SYS_BRK        45
+#define SYS_MUNMAP     91
+#define SYS_MMAP2     192
 #define SYS_SIGNAL     48
 #define SYS_GETPPID    64
 #define SYS_GETTIMEOFDAY 78
@@ -295,6 +297,38 @@ static inline long syscall3(long nr, long a1, long a2, long a3)
     __asm__ volatile ("int $0x80"
         : "=a"(ret) : "0"(nr), "b"(a1), "c"(a2), "d"(a3) : "memory");
     return ret;
+}
+
+static inline long syscall4(long nr, long a1, long a2, long a3, long a4)
+{
+    long ret;
+    __asm__ volatile ("int $0x80"
+        : "=a"(ret) : "0"(nr), "b"(a1), "c"(a2), "d"(a3), "S"(a4) : "memory");
+    return ret;
+}
+
+/* mmap(2) prot/flags (Linux i386).  Only anonymous mappings are supported. */
+#define PROT_NONE      0
+#define PROT_READ      1
+#define PROT_WRITE     2
+#define PROT_EXEC      4
+#define MAP_SHARED     0x01
+#define MAP_PRIVATE    0x02
+#define MAP_FIXED      0x10
+#define MAP_ANONYMOUS  0x20
+#define MAP_ANON       MAP_ANONYMOUS
+#define MAP_FAILED     ((void *)-1)
+
+static inline void *sys_mmap(void *addr, unsigned long len, int prot,
+                             int flags, int fd, long off)
+{
+    (void)fd; (void)off;   /* anonymous only -- fd/off ignored */
+    return (void *)syscall4(SYS_MMAP2, (long)addr, (long)len, (long)prot, (long)flags);
+}
+
+static inline int sys_munmap(void *addr, unsigned long len)
+{
+    return (int)syscall2(SYS_MUNMAP, (long)addr, (long)len);
 }
 
 /* POSIX-compatible wrappers. */

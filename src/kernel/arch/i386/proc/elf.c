@@ -185,6 +185,7 @@ int elf_exec(const char *path, int argc, const char *const *argv)
         if (end > top_vaddr) top_vaddr = end;
     }
     task_current()->user_brk = top_vaddr;
+    task_current()->mmap_next = 0;   /* fresh address space: reset anon-mmap window */
 
     /* 6. Map user stack (USER_STACK_PAGES pages, read-write).  Only the
      * top page is used to write argc/argv; the rest grow downward as

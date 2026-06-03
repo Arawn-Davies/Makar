@@ -19,6 +19,7 @@
  *   16. pipe + dup roundtrip (single process)
  *   17. time.h: gmtime_r / mktime roundtrip / strftime subset
  *   18. system(): shell availability + exit-status round-trip
+ *   19. mmap(MAP_ANONYMOUS) + munmap: zero-fill, write/readback, unmap
  */
 
 #include "syscall.h"
@@ -311,6 +312,21 @@ int main(int argc, char **argv, char **envp)
         if (system("false") == 0) return fail("system(\"false\") == 0");
     }
     srl("[alloctest] system ok\n");
+
+    /* ---- 19. mmap(MAP_ANONYMOUS) + munmap ---- */
+    {
+        unsigned int len = 8192;   /* two pages */
+        char *m = (char *)mmap(0, len, PROT_READ | PROT_WRITE,
+                               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (m == MAP_FAILED) return fail("mmap MAP_FAILED");
+        for (unsigned int i = 0; i < len; i += 512)
+            if (m[i] != 0) return fail("mmap not zero-filled");
+        m[0] = 'A'; m[4096] = 'B'; m[len - 1] = 'Z';   /* span both pages */
+        if (m[0] != 'A' || m[4096] != 'B' || m[len - 1] != 'Z')
+            return fail("mmap write/readback");
+        if (munmap(m, len) != 0) return fail("munmap");
+    }
+    srl("[alloctest] mmap/munmap ok\n");
 
     srl("[alloctest] PASS\n");
     return 0;

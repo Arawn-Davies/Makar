@@ -64,7 +64,7 @@ are filled.
 |---|---|---|
 | `pipe` (42) | **Present (PR #181)** -- 4 KiB `pipe_ring_t` shared via refcount, `task_yield()`-blocking | -- |
 | `dup2` (63) | **Present (PR #181)** -- closes newfd if open, shallow-copies the slot, bumps `FD_KIND_PIPE` refcount | -- |
-| `mmap` / `munmap` | No anon-mapping ABI, no `PROT_EXEC` | `brk` for heap; ELF loader for code |
+| `mmap` / `munmap` | **Anonymous present** (`SYS_MMAP2 192` / `SYS_MUNMAP 91`): zero-filled pages in a per-task bump window. No file-backed mappings, no `MAP_FIXED`, no `PROT_EXEC` | file mmap -> `read`; code -> ELF loader |
 | `ioctl` | No device tree past `/dev` block devices | Makar-ext `SYS_PUTCH_AT` etc. |
 | `select` / `poll` / `epoll` | Kernel has no fd-readiness model | `SYS_GETKEY` blocks on the focused TTY |
 | `getuid` / `setuid` / etc | No user model -- everything runs as the implicit root | -- |
