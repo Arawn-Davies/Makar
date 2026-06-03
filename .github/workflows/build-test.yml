@@ -5,9 +5,9 @@ name: Build & Test
 #   - pull_request open/sync       (covers all feature-branch development)
 #   - workflow_call                (release.yml gates on this passing)
 #
-# Path filter: only fires when something that actually affects test outcomes
-# changed - kernel/userspace source, test harness, build/run scripts, or the
-# toolchain image. Docs-only changes (README.md, CLAUDE.md, docs/**) skip CI.
+# Path filter: only fires for kernel/userspace source changes or run.sh.
+# Everything else - docs, licences, workflow metadata, Docker files, helper
+# scripts, issue templates, and planning notes - is intentionally skipped.
 
 on:
   workflow_call:
@@ -15,19 +15,11 @@ on:
     branches: [main]
     paths:
       - 'src/**'
-      - 'tests/**'
-      - '*.sh'
-      - 'Dockerfile*'
-      - 'docker-compose.yml'
-      - '.github/workflows/build-test.yml'
+      - 'run.sh'
   pull_request:
     paths:
       - 'src/**'
-      - 'tests/**'
-      - '*.sh'
-      - 'Dockerfile*'
-      - 'docker-compose.yml'
-      - '.github/workflows/build-test.yml'
+      - 'run.sh'
 
 # Cancel superseded runs on the same ref so a rebased push doesn't keep CI
 # burning cycles for the older commit.
