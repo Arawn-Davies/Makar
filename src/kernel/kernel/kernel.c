@@ -300,6 +300,7 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	t_writestring("Scanning PCI bus");
 	kprint_ok();
 	pci_init();
+	pci_probe_all();   /* bind registered drivers to scanned devices */
 	KLOG("pci: bus scan complete\n");
 
 	/* Parse Multiboot 2 tags: boot device and kernel command line. */

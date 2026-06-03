@@ -8,6 +8,7 @@
 #include <kernel/ktest.h>
 #include <kernel/acpi.h>
 #include <kernel/partition.h>
+#include <kernel/pci.h>
 #include <kernel/pmm.h>
 #include <kernel/heap.h>
 #include <kernel/vmm.h>
@@ -243,6 +244,43 @@ static void test_partition(void)
  *   - The primary ATA disk (hda) is probed when present (HDD boots, or live
  *     boots with an installed disk attached).
  * ------------------------------------------------------------------------- */
+
+/* ---------------------------------------------------------------------------
+ * Suite: PCI driver binding (pci_driver_t registration + pci_probe_all)
+ * Matches the always-present i440FX host bridge (class 0x06/0x00) with a
+ * dummy class-match driver and proves probe firing, claim, and idempotency.
+ * ------------------------------------------------------------------------- */
+static int test_pci_probe_hits;
+static int test_pci_probe_fn(pci_device_t *dev) { (void)dev; test_pci_probe_hits++; return 0; }
+static const pci_driver_t test_pci_drv = {
+    .name = "ktest-hostbridge", .match_class = 1,
+    .class_code = 0x06, .subclass = 0x00, .probe = test_pci_probe_fn,
+};
+
+static void test_pci_bind(void)
+{
+    ktest_begin("pci_bind", "pci_driver_t registration + pci_probe_all class match");
+
+    KTEST_ASSERT(pci_device_count > 0);          /* QEMU always enumerates devices */
+
+    test_pci_probe_hits = 0;
+    pci_register_driver(&test_pci_drv);
+    int bound = pci_probe_all();
+
+    KTEST_ASSERT(test_pci_probe_hits >= 1);      /* host bridge probed */
+    KTEST_ASSERT(bound >= 1);                    /* and claimed */
+
+    int named = 0;
+    for (int i = 0; i < pci_device_count; i++)
+        if (pci_devices[i].driver &&
+            strcmp(pci_devices[i].driver, "ktest-hostbridge") == 0)
+            named++;
+    KTEST_ASSERT(named >= 1);                     /* dev->driver carries the name */
+
+    KTEST_ASSERT(pci_probe_all() == 0);          /* re-probe skips bound devices */
+
+    ktest_summary();
+}
 
 static void test_devfs(void)
 {
@@ -2460,6 +2498,10 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
+    test_pci_bind();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
     test_devfs();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
@@ -2617,6 +2659,7 @@ void ktest_bg_task(void)
     RUN(test_fpu);
     RUN(test_string);
     RUN(test_partition);
+    RUN(test_pci_bind);
     RUN(test_devfs);
     RUN(test_tmpfs);
     RUN(test_rootfs_mount_layout);
