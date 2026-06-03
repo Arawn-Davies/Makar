@@ -241,7 +241,7 @@ void shell_readline(char *buf, size_t max)
     buf[0]  = '\0';
     work[0] = '\0';
 
-    /* Sync sentinel for ui_runner.sh's `wait_for_serial`: emit a
+    /* Sync sentinel for the in-guest test drivers: emit a
      * structured marker the moment the shell is ready to accept the
      * next line of input.  Lets tests replace fixed `sleep N` with
      * "wait until you see [shell:ready vt=X]", eliminating the
@@ -679,14 +679,19 @@ void shell_readline(char *buf, size_t max)
 /* ---------------------------------------------------------------------------
  * shell_parse – split line in-place into at most max_args tokens.
  *
- * Tokens are separated by spaces.  Returns the number of tokens found.
+ * Tokens are separated by spaces, honouring quotes: '...' and "..." group
+ * a run (a space inside a quote does not split) and the quote characters
+ * are removed.  Variable expansion has already happened upstream, so quotes
+ * here are purely word-splitting + literal removal.  Compaction is in-place
+ * (the write cursor never overtakes the read cursor -- only the two quote
+ * bytes per run are dropped).  Returns the number of tokens found.
  * --------------------------------------------------------------------------- */
 int shell_parse(char *line, char **argv, int max_args)
 {
     int argc = 0;
     char *p = line;
 
-    while (*p && argc < max_args) {
+    while (argc < max_args) {
         /* Skip leading spaces. */
         while (*p == ' ')
             p++;
@@ -696,12 +701,24 @@ int shell_parse(char *line, char **argv, int max_args)
 
         argv[argc++] = p;
 
-        /* Advance to the end of the token. */
-        while (*p && *p != ' ')
-            p++;
+        char *w = p;                 /* compacted write cursor */
+        while (*p && *p != ' ') {
+            if (*p == '\'') {
+                p++;
+                while (*p && *p != '\'') *w++ = *p++;
+                if (*p == '\'') p++;
+            } else if (*p == '"') {
+                p++;
+                while (*p && *p != '"') *w++ = *p++;
+                if (*p == '"') p++;
+            } else {
+                *w++ = *p++;
+            }
+        }
 
-        if (*p)
-            *p++ = '\0';
+        char term = *p;              /* delimiter (space) or NUL */
+        *w = '\0';                   /* terminate compacted token (w <= p) */
+        if (term) p++;               /* step over the delimiter */
     }
 
     return argc;
@@ -1049,7 +1066,7 @@ int shell_enter_slot(int with_loading_screen)
          * whatever pixels happened to be on the framebuffer before. */
         shell_clear_screen();
         /* Do NOT drain the input ring here.  The user may have typed a key
-         * the same instant they hit Alt+Fn (single QEMU sendkey burst or a
+         * the same instant they hit Alt+Fn (an injected key burst or a
          * fast typist on real hardware) - draining would swallow that first
          * keystroke.  shell_readline's KEY_FOCUS_GAIN handler drops the
          * sentinel byte cleanly; any real chars that arrived alongside it

@@ -4,6 +4,7 @@
 #include <kernel/tty.h>
 #include <kernel/vga.h>
 #include <kernel/descr_tbl.h>
+#include <kernel/fpu.h>
 #include <kernel/serial.h>
 #include <kernel/timer.h>
 #include <kernel/system.h>
@@ -156,6 +157,11 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	init_descriptor_tables();
 	KLOG("gdt/idt: descriptor tables loaded\n");
 
+	t_writestring("Initializing x87 FPU");
+	kprint_ok();
+	fpu_init();
+	KLOG("fpu: x87 armed (fninit) + per-task fxsave/fxrstor on context switch\n");
+
 	t_writestring("Installing exception handlers");
 	kprint_ok();
 	init_debug_handlers();
@@ -302,11 +308,11 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	                             * skip login regardless of rootfs type. */
 	int kbtest = 0;             /* `kbtest` → spawn the in-guest keyboard
 	                             * injection test driver against the live
-	                             * shell (deterministic, replaces HMP). */
+	                             * shell (deterministic, no host input). */
 	int console_serial = 0;     /* "console=ttyS0" - keep g_serial_verbose
 	                             * on after boot so the shell mirrors to
 	                             * COM1.  Linux-style: dmesg + tty over
-	                             * serial.  Used by ui_test scenarios. */
+	                             * serial.  Used by the in-guest test drivers. */
 	const char *root_spec = NULL;   /* `root=...` cmdline arg, NULL = auto */
 	static char root_spec_buf[64];  /* copy out of cmdline tag (still alive
 	                                 * for the boot, but we own it) */
@@ -432,7 +438,7 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 		 * driver banners that use Serial_*).  Shell/user TTY output
 		 * goes to the framebuffer only, mirroring dmesg semantics.
 		 * `console=ttyS0` on the kernel cmdline opts back in so the
-		 * shell mirrors to COM1 - used by ui_test scenarios.
+		 * shell mirrors to COM1 - used by the in-guest test drivers.
 		 *
 		 * Emit a final boot marker before the flip so external
 		 * tooling (CI, debugging shells) can detect "boot complete"
@@ -518,9 +524,9 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			Serial_WriteString("LIBC-TCC: finished\n");
 		}
 
-		/* Shell + VFS + apps smoke matrix.  Replaces the HMP
-		 * scenarios whose only job was to type a command and grep
-		 * serial.  Marker SHELL-SMOKE: ALL PASS / SHELL-SMOKE: FAIL. */
+		/* Shell + VFS + apps smoke matrix: an in-guest sh script whose
+		 * per-command $? gates each check.  Marker SHELL-SMOKE: ALL PASS
+		 * / SHELL-SMOKE: FAIL. */
 		if (TEST_WANT("shell-smoke")) {
 			Serial_WriteString("SHELL-SMOKE: starting\n");
 			sh_run_file("/src/userspace/shell-smoke.sh");

@@ -29,7 +29,7 @@ static void idt_set_gate(uint8_t, uint32_t, uint16_t, uint8_t);
 
 /* GDT now has 6 entries: null, kernel code, kernel data,
    user code, user data, TSS. */
-gdt_entry_t	gdt_entries[6];
+gdt_entry_t	gdt_entries[7];   /* +1: TLS slot at index 6 (selector 0x33) */
 gdt_ptr_t	gdt_ptr;
 idt_entry_t	idt_entries[256];
 idt_ptr_t	idt_ptr;
@@ -164,7 +164,7 @@ static void init_idt()
  */
 static void init_gdt()
 {
-	gdt_ptr.limit = (sizeof(gdt_entry_t) * 6) - 1;
+	gdt_ptr.limit = (sizeof(gdt_entry_t) * 7) - 1;
 	gdt_ptr.base = (uint32_t)&gdt_entries;
 
 	gdt_set_gate(0, 0, 0, 0, 0);                       /* Null segment           */
@@ -173,6 +173,7 @@ static void init_gdt()
 	gdt_set_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xCF);        /* User code    (0x18)    */
 	gdt_set_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xCF);        /* User data    (0x20)    */
 	tss_set_gate(5, (uint32_t)&tss, sizeof(tss) - 1);  /* TSS          (0x28)    */
+	gdt_set_gate(6, 0, 0, 0, 0);                       /* TLS (0x33), set via set_thread_area */
 
 	gdt_flush((uint32_t)&gdt_ptr);
 	tss_flush();
@@ -209,6 +210,22 @@ static void gdt_set_gate(int32_t num, uint32_t base, uint32_t limit, uint8_t acc
 
 	gdt_entries[num].granularity	|= gran & 0xF0;
 	gdt_entries[num].access		= access;
+}
+
+/*
+ * gdt_set_tls – program the per-task TLS slot (GDT index 6, selector 0x33).
+ *
+ * Backs the Linux i386 set_thread_area(2) syscall: a ring-3 data segment whose
+ * base is the task's thread-pointer block.  Descriptor changes take effect on
+ * the next %gs load (no lgdt reload needed -- the GDTR already spans the slot).
+ * Returns the GDT entry index so the caller can hand it back to userspace.
+ */
+int gdt_set_tls(uint32_t base, uint32_t limit, int limit_in_pages, int present)
+{
+	uint8_t access = present ? 0xF2 : 0x72;          /* P,DPL3,data,writable */
+	uint8_t gran   = (uint8_t)(limit_in_pages ? 0xC0 : 0x40); /* 32-bit; page vs byte gran */
+	gdt_set_gate(GDT_TLS_INDEX, base, limit, access, gran);
+	return GDT_TLS_INDEX;
 }
 
 /*

@@ -288,6 +288,7 @@ typedef uint8_t kc_t;
 #define KC_F11          0x57
 #define KC_F12          0x58
 #define KC_T            0x14
+#define KC_C            0x2E
 
 #define KC_EXT(b)       ((kc_t)((b) | 0x80))
 #define KC_RCTRL        KC_EXT(0x1D)   /* e0 1d */
@@ -762,7 +763,7 @@ static void kb_sync_leds(void)
     __atomic_add_fetch(&s_leds_send_count, 1, __ATOMIC_RELEASE);
 
     /* Serial log so iso-test can verify the LED update reached the wire,
-     * even without screendump access to the physical LED state. */
+     * even without visibility into the physical LED state. */
     Serial_WriteString("KB_LED: ");
     Serial_WriteHex((uint32_t)bitmap);  /* prints "0xNNNNNNNN" */
     Serial_WriteString("\n");
@@ -1147,9 +1148,9 @@ static void decoder_feed(uint8_t sc)
  * IRQ uses).  Crucially we do NOT call keyboard_test_begin(), so kb_focused
  * is intact and the keys route to the focused task's ring -- i.e. they drive
  * the *live* shell, full decode path and all (modifiers, Alt+Fn / Ctrl+Tab
- * dispatch).  This replaces HMP `sendkey` for automation: keys land in the
- * ring atomically with no QEMU PS/2 timing, so there are no typing races and
- * it runs at full speed headless.
+ * dispatch).  This is how automation types into the guest: keys land in the
+ * ring atomically with no host input and no PS/2 timing, so there are no typing
+ * races and it runs at full speed headless.
  * ======================================================================== */
 void keyboard_inject_key(uint8_t kc, int shift, int ctrl, int alt)
 {
@@ -1186,8 +1187,8 @@ void keyboard_inject_text(const char *s)
 /* keyboard_test_driver -- in-guest scripted keyboard scenarios, spawned on a
  * normal boot when `kbtest` is on the cmdline.  Drives the live shell by
  * injecting keys and emits KBTEST markers to serial; the host asserts on the
- * shell output between markers (deterministic, no HMP).  This is the seed of
- * the harness that replaces the flaky sendkey UI scenarios. */
+ * shell output between markers (deterministic, no host input).  This is the
+ * canonical harness for paths where the keystroke itself is under test. */
 void keyboard_test_driver(void)
 {
     while (!ktest_bg_done)
@@ -1202,6 +1203,19 @@ void keyboard_test_driver(void)
     keyboard_inject_text("verbose on\n");   /* mirror shell output to serial */
     ksleep(80);
     keyboard_inject_text("echo KBINJECT_OK\n");
+    ksleep(150);
+
+    /* 1b: Ctrl-C force-kills a blocking child and the shell recovers.  Start
+     *     `cat` (no args -> reads stdin, blocks), send Ctrl-C to kill it,
+     *     then prove the prompt is alive by running another command.  The
+     *     KBTEST_CTRLC_OK marker only reaches serial if the shell survived
+     *     the Ctrl-C -- the host greps for it (covers the Ctrl-C-kills-child
+     *     and Ctrl-C-recovers paths). */
+    keyboard_inject_text("cat\n");
+    ksleep(150);
+    keyboard_inject_key(KC_C, 0, 1, 0);     /* Ctrl-C -> SIGINT / kill child */
+    ksleep(150);
+    keyboard_inject_text("echo KBTEST_CTRLC_OK\n");
     ksleep(150);
 
     /* 2: makmux + Alt-Tab / Alt-Shift-Tab VT cycling.  Asserts directly on

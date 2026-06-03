@@ -180,7 +180,7 @@ static int cmd_pwd(int argc, char **argv)
         write_fd(1, "pwd: getcwd failed\n");
         return 1;
     }
-    /* Serial-only provenance tag: lets ui_test prove makbox's pwd ran
+    /* Serial-only provenance tag: lets the in-guest test drivers prove makbox's pwd ran
      * (not a stale shell builtin) without changing visible output. */
     sys_write_serial("[makbox:pwd] ", 13);
     sys_write_serial(buf, (unsigned int)n);

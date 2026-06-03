@@ -9,10 +9,10 @@ grand_parent: Reference
 **Header:** `src/kernel/include/kernel/keyboard.h`
 **Source:** `src/kernel/arch/i386/drivers/keyboard.c`
 
-A layered, SMP-ready PS/2 keyboard driver. Handles IRQ 1, decodes scan-code
-set 1 (including `e0`/`e1` prefixes and `make`/`break` separation), tracks
-modifier state, and routes cooked bytes to either a per-task SPSC ring or
-a global fallback ring.
+A layered PS/2 keyboard driver. It handles IRQ 1, decodes scan-code set 1
+(including `e0`/`e1` prefixes and `make`/`break` separation), tracks modifier
+state, delivers cooked bytes to focused tasks, supports raw diagnostic mode,
+and provides deterministic in-kernel injection hooks for `kbtest`.
 
 This document describes the post-rewrite driver landed for slice #5 of the
 `feat/tty-multitasking` follow-up roadmap. It replaces the older single-
@@ -35,9 +35,10 @@ SPSC ring race, and a tearing slot table - see "Why the rewrite" below.
               ▼
          apply_modifier  ──── tracks L/R shift, ctrl, alt; caps-lock toggle
               │
-              ▼ (only on make events; break events stop here)
+              ▼ (mostly make events; break events update state and stop)
             on_make
-              │   (Alt+Fn → vtty_switch; Ctrl-A prefix; Ctrl-C SIGINT)
+              │   (Alt+Fn → vtty_switch; Ctrl-A prefix; Ctrl+C SIGINT;
+              │    raw mode may deliver function/modifier sentinels)
               ▼
         translate_make
               │   (US QWERTY tables; Ctrl+letter → control code;
@@ -71,7 +72,10 @@ modifier state and never reaches the translator.
 | `keyboard_release_task(task)` | Free a task's slot and clear focus/pane bindings on exit. |
 | `keyboard_bind_pane(pane, task)` | Bind a task to `KB_PANE_TOP` / `KB_PANE_BOTTOM` for `Ctrl-A,U` / `Ctrl-A,J`. |
 | `keyboard_focus_pane(pane)` | Move focus to the task bound to `pane`. |
-| `keyboard_sigint_consume()` | Atomic test-and-clear of the SIGINT flag (returns `1` exactly once per `Ctrl+C`). |
+| `keyboard_set_raw(on)` | Enable diagnostic raw mode for focused tools such as `kbtester`. |
+| `keyboard_inject_key(kc, shift, ctrl, alt)` | Test hook: inject one synthetic key into the live input path. |
+| `keyboard_inject_text(text)` | Test hook: type a synthetic string into the live input path. |
+| `keyboard_test_driver()` | Scripted in-guest keyboard/app-tab test driver used by `./run.sh kbtest`. |
 
 The public API still uses `char` so existing consumers (`if (c == KEY_ARROW_UP) ...`)
 continue to compile unchanged. The producer pipeline is `unsigned char` end
@@ -82,9 +86,11 @@ to end - see "Sentinel safety" below.
 | Sentinel | Byte | Notes |
 |---|---|---|
 | `KEY_ARROW_UP/DOWN/LEFT/RIGHT` | 0x80–0x83 | Outside `Ctrl+letter` range (0x01–0x1A) |
-| `KEY_F1..F4` | 0x84–0x87 | Reserved; `Alt+F1..F4` is intercepted before delivery |
+| `KEY_F1..F12` | 0x84–0x90 except 0x88 | Function-key sentinels; cooked mode intercepts Alt+F1–F4 for VT switching |
 | `KEY_FOCUS_GAIN` | 0x88 | Sent by `vtty_switch` to the newly-focused task |
-| `KEY_CTRL_C` | 0x03 | Plain ASCII ETX; delivered alongside `keyboard_sigint_consume` |
+| `KEY_SHIFT_DOWN`, `KEY_CTRL_DOWN`, `KEY_ALT_DOWN`, `KEY_CAPS_TOGGLE`, `KEY_SUPER_DOWN`, `KEY_MENU_DOWN` | 0x91–0x96 | Raw-mode modifier diagnostics |
+| `KEY_PAGE_UP`, `KEY_PAGE_DOWN` | 0x97–0x98 | Extended navigation sentinels |
+| `KEY_CTRL_C` | 0x03 | Plain ASCII ETX; Ctrl+C also sends `SIGINT` to the focused task |
 
 ---
 
@@ -233,6 +239,65 @@ The driver enforces this discipline by:
 3. Documenting the sentinel byte values so consumers can decide whether to
    widen or not.
 
+The public API now returns `unsigned char`, and the sentinel macros are
+explicitly cast to `unsigned char`, which avoids the old failure mode where
+`((char)0x80)` widened to a negative `int` and failed comparisons in users that
+stored input as `unsigned char`.
+
+---
+
+## Ctrl+C and signals
+
+Ctrl+C is no longer a global flag consumed by shell code. On a Ctrl+C make
+event, the keyboard driver:
+
+1. routes the byte value `0x03` (`KEY_CTRL_C`) through the normal input queue;
+2. sends `SIGINT` to the currently focused task with `sig_send()`.
+
+The signal subsystem owns default termination. Shell tasks install `SIG_IGN`
+for their own prompt so Ctrl+C aborts the current line without killing the
+shell. When the shell has launched a ring-3 child, the child is the task that
+receives focus and the kernel default action can terminate it. This avoids the
+old race where `shell_cmd_apps.c` had to poll `keyboard_sigint_consume()` while
+also waiting for child state changes.
+
+User-installed signal handlers are recorded by the signal subsystem, but full
+ring-3 handler invocation still requires a trampoline and `sigreturn`. Until
+that lands, default and ignored dispositions are the reliable behavior.
+
+---
+
+## Raw mode
+
+`keyboard_set_raw(1)` suspends cooked shortcuts for diagnostic tools:
+
+- Alt+F1-F4 stop switching VTs and can be observed as key events;
+- Ctrl+A stops arming the pane-switch prefix;
+- modifier press events are delivered as `KEY_*_DOWN` sentinels;
+- F1-F12 are delivered as function-key sentinels;
+- Ctrl+C still routes `0x03` and sends `SIGINT`, so raw tools can still be
+  exited normally.
+
+`kbtester` uses raw mode to show key activity directly. It disables raw mode in
+its cleanup path so the next focused shell gets cooked behavior again.
+
+---
+
+## Test hooks and kbtest
+
+The driver has two different test interfaces:
+
+| Hook family | Purpose |
+|---|---|
+| `keyboard_test_begin/feed/drain/end/reset` | Isolated decoder/ring tests used by in-kernel `ktest`; focus is temporarily cleared so bytes land in the global fallback ring. |
+| `keyboard_inject_key/text` and `keyboard_test_driver` | Live in-guest scenario tests used by `./run.sh kbtest`; these drive the shell and app focus paths like a user would. |
+
+The live test driver is what makes `kbtest` headless-friendly. Instead of QEMU
+HMP `sendkey` events, the kernel runs scripted scenarios against the real input
+routing path, including app-tab behavior. `./run.sh kbtest gui` keeps the QEMU
+display visible while running the same kernel driver; plain `./run.sh kbtest`
+runs headless.
+
 ---
 
 ## Controller hygiene
@@ -265,9 +330,8 @@ Three classes of latent bug in the previous driver:
 2. **SPSC ring race** - IRQ producer wrote `slot->buf[head]` then incremented
    `head` with no barrier between the two stores. Under `-O2` the compiler
    was free to reorder, and a consumer that observed the new `head` before
-   the new byte landed would read stale ring memory. Most likely cause of
-   the "sporadic single-character noise not correlated to keystrokes" symptom
-   reported on PR #123.
+   the new byte landed would read stale ring memory. This matched observed
+   sporadic single-character noise that was not correlated to real keystrokes.
 
 3. **Slot-table tearing** - `kb_find_or_register()` mutated the slot array
    and `kb_nslots` from task context with no synchronisation. An IRQ1
@@ -286,7 +350,8 @@ Three classes of latent bug in the previous driver:
 | `src/kernel/arch/i386/proc/vtty.c` | Calls `keyboard_set_focus` / `keyboard_send_to` for TTY switching |
 | `src/kernel/arch/i386/shell/shell.c` | Consumes `keyboard_getchar`; observes arrow / focus / Ctrl-C sentinels |
 | `src/kernel/arch/i386/proc/vix.c` | Editor; consumes arrow sentinels |
-| `src/kernel/arch/i386/shell/shell_cmd_apps.c` | Uses `keyboard_sigint_consume` to force-kill children during `exec` |
+| `src/kernel/arch/i386/proc/signal.c` | Receives Ctrl+C as `SIGINT` for the focused task |
+| `src/kernel/arch/i386/shell/shell_cmd_apps.c` | Waits for ring-3 children; child termination is signal-driven |
 
 ---
 
@@ -296,13 +361,9 @@ Three classes of latent bug in the previous driver:
   the modifier state but no key currently distinguishes them from their
   left counterparts at the translator layer. Add when an international
   layout / dead-key support lands.
-- **Home / End / PgUp / PgDn / Insert / Delete sentinels.** The keycodes
-  are decoded but `translate_make` drops them today.
+- **Home / End / Insert / Delete sentinels.** Some extended navigation keys
+  are decoded internally but are not all delivered as public sentinels yet.
 - **NumLock / ScrollLock LEDs.** Requires a controller write path
   (`keyboard_send_command`) and a small command queue.
-- **Proper signal subsystem (slice #8).** Today `kb_sigint` is a single
-  global; once `task->sig_pending` lands, Ctrl-C should target
-  `kb_focused->sig_pending` directly.
-- **Real per-task fd table (slice #7).** Stdin will become a regular fd
-  pointing at the task's keyboard slot, removing the `keyboard_*`
-  references from `syscall.c`'s read path.
+- **Ring-3 signal trampolines.** Ctrl+C already creates `SIGINT`; invoking
+  user-installed handlers still needs a user-mode trampoline and `sigreturn`.

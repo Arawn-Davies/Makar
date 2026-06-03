@@ -13,10 +13,20 @@ were directly informed by a project's source, that is called out below.
 **Licence:** GPLv2  
 **URL:** https://kernel.org
 
-The Linux i386 `int 0x80` syscall ABI is used verbatim: syscall numbers,
-register conventions (EAX=nr, EBX/ECX/EDX=args), and the `iret`-based
-ring-3 entry model are all taken from Linux.  No Linux source code is
-present in this repository.
+Makar intentionally implements a Linux i386-compatible `int 0x80` ABI for
+the subset of syscalls it supports: syscall numbers, register conventions
+(`EAX=nr`, `EBX`/`ECX`/`EDX`/`ESI`/`EDI` arguments), errno values, signal
+numbers, and several userspace-visible structure layouts follow Linux i386
+where that helps hosted C runtimes.
+
+No GPL-covered Linux kernel implementation code is copied into Makar. Linux
+source is used as a behavioral reference for ABI compatibility and operating
+system design, not as incorporated kernel code.
+
+The one Linux-tree-origin item included in this repository is not Linux kernel
+implementation code: `src/kernel/include/kernel/vga_8x16_font.h` contains IBM
+VGA ROM glyph data retyped from Linux's `lib/fonts/font_8x16.c`. That table is
+documented separately below as public-domain font data.
 
 ### ELKS (Embeddable Linux Kernel Subset)
 **Licence:** GPLv2  
@@ -89,11 +99,15 @@ OS projects and considered public domain.  See `LICENSES/vesa-font.md`.
 **URL:** https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/lib/fonts/font_8x16.c
 
 The `FONT8x16` glyph table in `kernel/include/kernel/vga_8x16_font.h` was
-retyped from Linux's `lib/fonts/font_8x16.c`, which is itself a verbatim
-copy of the IBM VGA BIOS character ROM (treated as public domain across
-Linux, the BSDs, FreeDOS, GRUB, etc.).  No Linux source code is linked
-into Makar; only the glyph data is reused.  Gratitude is documented in
-`LICENSES/vga-8x16-font.md`.
+retyped from Linux's `lib/fonts/font_8x16.c`, which is itself a copy of the
+IBM VGA BIOS character ROM glyph data. The glyph data is treated as public
+domain across Linux, the BSDs, FreeDOS, GRUB, and other open-source operating
+systems.
+
+This is the only known verbatim material taken from a Linux source-tree file,
+and it is data, not GPL kernel implementation code. No Linux C or assembly
+implementation code is linked into or compiled into Makar. Gratitude and
+origin details are documented in `LICENSES/vga-8x16-font.md`.
 
 The font is uploaded to VGA plane 2 on every transition out of VESA so
 `setmode 80x25` / `setmode 80x50` come up readable.

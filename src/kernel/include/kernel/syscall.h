@@ -23,6 +23,7 @@
 #define SYS_CHDIR      12   /* int chdir(const char *path) -- set calling task's cwd */
 #define SYS_LSEEK      19   /* off_t lseek(int fd, off_t offset, int whence)   */
 #define SYS_GETPID     20   /* pid_t getpid(void)                               */
+#define SYS_DUP        41   /* int dup(int oldfd) -- lowest free fd, Linux i386 */
 #define SYS_PIPE       42   /* int pipe(int pipefd[2]) -- alloc reader+writer  */
 #define SYS_DUP2       63   /* int dup2(int oldfd, int newfd) -- Linux i386 ABI*/
 #define SYS_WAIT4      114  /* pid_t wait4(pid, int *status, int options, void *rusage) */
@@ -31,6 +32,16 @@
 #define SYS_MKDIR      39   /* int mkdir(const char *path, mode_t mode)         */
 #define SYS_RMDIR      40   /* int rmdir(const char *path)                      */
 #define SYS_BRK        45   /* void *brk(void *addr)                            */
+#define SYS_MUNMAP     91   /* int munmap(void *addr, size_t len)               */
+#define SYS_MMAP2     192   /* void *mmap2(addr,len,prot,flags,fd,pgoff) -- anon only */
+/* musl/Linux process-startup syscalls (hosted toolchain bring-up) */
+#define SYS_IOCTL          54   /* int ioctl(fd, req, ...) -- stub (-ENOTTY)        */
+#define SYS_WRITEV        146   /* ssize_t writev(fd, const struct iovec*, int)     */
+#define SYS_RT_SIGPROCMASK 175  /* int rt_sigprocmask(how, set, oldset, sigsetsize) -- stub */
+#define SYS_FUTEX         240   /* int futex(...) -- no-op (single-threaded) */
+#define SYS_SET_THREAD_AREA 243 /* int set_thread_area(struct user_desc*) -- TLS    */
+#define SYS_EXIT_GROUP    252   /* void exit_group(int status) -- == exit           */
+#define SYS_SET_TID_ADDRESS 258 /* int set_tid_address(int *tidptr) -> tid          */
 #define SYS_SIGNAL     48   /* sig_handler_t signal(int signo, sig_handler_t)   */
 #define SYS_STAT      106   /* int stat(const char *path, struct stat *st)      */
 #define SYS_FSTAT     108   /* int fstat(int fd, struct stat *st)               */
@@ -99,8 +110,8 @@
                                  * `[shell:ready vt=N]` sync marker on COM1
                                  * if g_serial_verbose; no-op otherwise.
                                  * Userspace shell calls this before each
-                                 * prompt so ui_test.sh's wait_for_serial
-                                 * keeps working unchanged. */
+                                 * prompt so the in-guest test drivers'
+                                 * serial sync keeps working unchanged. */
 #define SYS_CURSOR_POS     232  /* uint32_t cursor_pos(void) -> (col<<16)|row */
 #define SYS_VT_ENTER       233  /* int vt_enter(int focus_new) - attach this task
                                  * as a makmux shell on the next VT slot. */
@@ -117,7 +128,7 @@
                                  * /etc/hostname (or fallback "makar"), copy up
                                  * to size-1 bytes, NUL-terminate.  Returns
                                  * strlen on success, -1 if buf invalid. */
-#define SYS_WHOAMI         240  /* int whoami(char *buf, size_t size) - copy the
+#define SYS_WHOAMI         247  /* int whoami(char *buf, size_t size) - copy the
                                  * current session's username (auth_current_user,
                                  * "user" on live boots) up to size-1 bytes,
                                  * NUL-terminate.  Returns strlen, -1 if invalid. */
@@ -128,7 +139,7 @@
 #define SYS_VT_OPEN_APP    242  /* int vt_open_app(const char *path) - open an app
                                  * in a named tab: switch to it if it exists, else
                                  * queue for makmux to spawn.  Returns 1/0. */
-#define SYS_VT_TAKE_APP    243  /* int vt_take_app(char *buf, int cap) - makmux
+#define SYS_VT_TAKE_APP    248  /* int vt_take_app(char *buf, int cap) - makmux
                                  * drains one queued app path.  Returns 1/0. */
 #define SYS_VT_SETNAME     244  /* int vt_setname(const char *name) - name the
                                  * calling task's VT tab (shown in the status bar). */

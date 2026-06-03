@@ -64,7 +64,7 @@ private kernel stack and (for ring-3 programs) its own page directory.
 | **Userspace** | Ring-3 via `iret`. ELF loader with argc/argv. Full POSIX fork + execve + wait4 (COW). Apps: `hello`, `calc`, `vix`, `diskinfo`, `fdisk`, `cfdisk`, `basic`, `clock`, `maktop`, `kbtester`, `makbox` (busybox-style `ls`/`cat`/`cp`/`mv`/`rm`/`rmdir`/`echo`/`pwd`), **`sh.elf`** (ring-3 shell MVP — exec it from any kernel shell prompt), **`tcc.elf`** (in-OS TinyCC). |
 | **Syscalls** | Linux i386 ABI subset over `int 0x80` — `SYS_EXIT`, `SYS_FORK`, `SYS_READ`, `SYS_WRITE`, `SYS_OPEN`, `SYS_CLOSE`, `SYS_EXECVE`, `SYS_CHDIR` (v0.8), `SYS_LSEEK`, `SYS_BRK`, `SYS_WAIT4`, `SYS_STAT`, `SYS_FSTAT`, `SYS_READDIR`, `SYS_KILL`, `SYS_SIGNAL`, plus Makar extensions for terminal/file ops, `SYS_GETCWD`, `SYS_WRITE_SERIAL`. |
 | **Shell** | Inline editing, history (16 entries), **zsh-style tab cycling** (first Tab → longest common prefix; subsequent Tabs cycle matches; any non-Tab key commits), Ctrl+C. Built-ins: `ls`, `cd`, `cat`, `cp`, `mv`, `mkdir`, `rm`, `rmdir`, `mount`, `meminfo`, `uptime`, `lsdisks`, `lspart`, `mkpart`, `readsector`, `exec`, `ktest`, `ring3test`, `vixtest`. `lsman` / `man <cmd>` for help. |
-| **Compiler** | **In-OS TinyCC** (`/apps/tcc.elf`, v0.9.27, cross-built and shipped on every ISO). Sysroot at `/usr/{include,lib}` with `crt0.o` + `libc.a`. `tcc hello.c -o hello.elf` compiles to a Makar-loadable ELF. Verified self-host: `tcc /src/userspace/calc.c -o /tmp/calc.elf` and `tcc /src/userspace/sh.c -o /tmp/sh.elf` rebuild + run correctly via `./run.sh ui libc`. |
+| **Compiler** | **In-OS TinyCC** (`/apps/tcc.elf`, v0.9.27, cross-built and shipped on every ISO). Sysroot at `/usr/{include,lib}` with `crt0.o` + `libc.a`. `tcc hello.c -o hello.elf` compiles to a Makar-loadable ELF. Verified self-host: `tcc /src/userspace/calc.c -o /tmp/calc.elf` and `tcc /src/userspace/sh.c -o /tmp/sh.elf` rebuild + run correctly via `./run.sh iso test`. |
 | **Drivers** | Serial (16550 UART, 38400 baud), PIT, PS/2 keyboard (set 1 + e0 extended), ATA/IDE PIO (28-bit LBA, 4 drives), MBR + GPT partition tables. |
 | **Debug** | INT 1 / INT 3 GDB-friendly handlers, kernel panic screen, ktest harness with VESA + serial output. |
 
@@ -72,14 +72,11 @@ private kernel stack and (for ring-3 programs) its own page directory.
 
 ```sh
 ./run.sh iso boot       # build & run interactively in QEMU (host or Docker)
-./run.sh iso test       # full CI suite: ktest + GDB boot-checkpoint + UI sendkey tests
+./run.sh iso test       # full CI suite: ktest + in-guest script drivers + GDB boot-checkpoint
 ./run.sh hdd boot       # build & run from a 512 MiB FAT32 HDD image
 ./run.sh hdd test       # HDD-only GDB boot test (no CD-ROM)
-./run.sh ui                       # headless UI tests (default: all groups)
-./run.sh ui fast                  # dev inner loop — skips disk + TCC compile tests
-./run.sh ui libc                  # alloctest + TCC scenarios (calc + sh self-rebuild)
-./run.sh ui shell|cd|fs|posix|vt|bughunt   # other named scenario groups
-./run.sh gui [group_or_scenario]  # same UI tests with a visible QEMU window
+./run.sh kbtest                   # in-guest key-injection tests (headless; KBTEST serial markers)
+./run.sh kbtest gui               # same, visible window (watch injection drive the shell)
 ./run.sh clean
 ```
 
@@ -109,7 +106,7 @@ shipping (May 2026):
   inside Makar.  Boot banner reports build origin (`gcc-host` /
   `tcc-host` / `tcc-in-os`).  See `docs/rebuild-kernel.md`.
 - **v0.8 in-OS TCC milestone** ✅ — `tcc.elf` ships on every ISO;
-  `calc.elf` and `sh.elf` self-rebuild via `./run.sh ui libc`.
+  `calc.elf` and `sh.elf` self-rebuild via `./run.sh iso test`.
 - **HDD root layout** ✅ — `/usr`, `/etc`, `/home`, `/boot` resolved via
   rootfs/bootfs prefix probes; `/mnt` only shows manual mounts.
 - **Ring-3 page faults → SIGSEGV** ✅ — userspace bugs no longer panic the

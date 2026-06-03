@@ -96,10 +96,12 @@ float strtof(const char *s, char **endp);
 double strtod(const char *s, char **endp);
 long double strtold(const char *s, char **endp);
 
-/* getenv: Makar has no env layer yet (SYS_EXECVE ignores envp), so every
- * lookup misses.  Provides the symbol TCC + ports want without forcing
- * a kernel slice today. */
-static inline char *getenv(const char *name) { (void)name; return 0; }
+/* Environment: process-local table in tcc_compat.c.  Real get/set/unset/
+ * putenv semantics; values do NOT cross exec (SYS_EXECVE ignores envp). */
+char *getenv(const char *name);
+int   setenv(const char *name, const char *value, int overwrite);
+int   unsetenv(const char *name);
+int   putenv(char *string);
 
 /* strdup: malloc + copy.  Returns NULL on OOM. */
 static inline char *strdup_(const char *s)
@@ -129,6 +131,28 @@ static inline void qsort(void *base, unsigned int nmemb, unsigned int sz,
         }
     }
 }
+
+/* bsearch: binary search over a sorted array (companion to qsort). */
+static inline void *bsearch(const void *key, const void *base,
+                            unsigned int nmemb, unsigned int sz,
+                            int (*cmp)(const void *, const void *))
+{
+    const unsigned char *b = (const unsigned char *)base;
+    unsigned int lo = 0, hi = nmemb;
+    while (lo < hi) {
+        unsigned int mid = lo + (hi - lo) / 2;
+        int c = cmp(key, b + mid * sz);
+        if (c < 0)      hi = mid;
+        else if (c > 0) lo = mid + 1;
+        else            return (void *)(b + mid * sz);
+    }
+    return 0;
+}
+
+/* system: run a command line through /apps/sh.elf -c.  Returns the child
+ * exit status (low 8 bits), or -1 if the shell could not be started.  A
+ * NULL command returns non-zero ("a command processor is available"). */
+int system(const char *command);
 
 /* sscanf: tiny subset -- %d, %u, %x, %s, %c, optional width. */
 int sscanf(const char *s, const char *fmt, ...);

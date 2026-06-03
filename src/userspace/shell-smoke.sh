@@ -1,11 +1,11 @@
 #!/bin/sh
 # shell-smoke.sh -- in-kernel smoke tests for shell + VFS + apps.
 #
-# Replaces the HMP-driven scenarios in tests/ui_test.sh whose only job
-# was to type a command and grep serial.  Each command runs through the
-# kernel sh-script interpreter; the test's exit status ($?) gates a
-# [PASS] / [FAIL] marker, and any output the command emits flows to
-# serial naturally so run.sh's _check_ktest transcript still shows it.
+# In-guest shell/VFS/apps coverage: each command runs through the kernel
+# sh-script interpreter (or /apps/sh.elf -c for ring-3 shell behaviour) and
+# its exit status ($?) gates a [PASS] / [FAIL] marker; any output flows to
+# serial naturally so run.sh's _check_ktest transcript still shows it.  No
+# host input -- keyboard-under-test paths live in keyboard_test_driver().
 #
 # Marker contract:
 #   SHELL-SMOKE: BEGIN
@@ -16,8 +16,9 @@
 #   SHELL-SMOKE: FAIL             -- otherwise
 #
 # Kernel sh limitations: no functions, no command substitution, no
-# pipes, **no double-quote stripping in echo** (use bareword args).
-# Inline `if X; then Y; else Z; fi` supported (slice 0 fix).
+# pipes.  Quote stripping IS supported now (shell_parse is quote-aware:
+# '...'/"..." group a word and the quotes are removed).  Inline
+# `if X; then Y; else Z; fi` supported (slice 0 fix).
 
 echo SHELL-SMOKE: BEGIN
 fail=0
@@ -164,6 +165,88 @@ then
     echo SHELL-SMOKE: [PASS] inline-if-else-else
 else
     echo SHELL-SMOKE: [FAIL] inline-if-else-else
+    fail=1
+fi
+
+# Quote-aware tokeniser: a quoted multi-word string must collapse to ONE
+# argument so the `[ A = B ]` test sees exactly 3 inner tokens and matches.
+# If quotes were kept literal (the old bug), the inner arg count would be
+# wrong and the test would fail.
+# NB: glob expansion is an interactive-shell (shell.c) feature, not part of
+# the kernel sh-script interpreter, so it's exercised via the live prompt
+# (keyboard_test_driver), not here.
+
+echo SHELL-SMOKE: tty-name
+tty
+if [ $? -eq 0 ]
+then
+    echo SHELL-SMOKE: [PASS] tty-name
+else
+    echo SHELL-SMOKE: [FAIL] tty-name
+    fail=1
+fi
+
+echo SHELL-SMOKE: quote-grouping
+if [ "a b" = "a b" ]
+then
+    echo SHELL-SMOKE: [PASS] quote-grouping
+else
+    echo SHELL-SMOKE: [FAIL] quote-grouping
+    fail=1
+fi
+
+# --- /apps/sh.elf (ring-3) control flow + quoting, slice 20d ---
+# Driven headlessly through `sh.elf -c '<payload>'`; the payload's exit
+# status proves which branch ran.  Payloads carry no `$` so this kernel
+# sh's pre-expansion can't touch them (the single quotes are stripped by
+# shell_parse, the inner text reaches sh.elf verbatim).  Covers the ring-3
+# control-flow + quoting paths headlessly (no host input).
+
+echo SHELL-SMOKE: usersh-if-then
+# then-branch runs `false` -> exit 1 (if the else-branch had run it'd be 0).
+exec /apps/sh.elf -c 'if [ 1 -eq 1 ]; then false; else true; fi'
+rc=$?
+if [ $rc -eq 1 ]
+then
+    echo SHELL-SMOKE: [PASS] usersh-if-then
+else
+    echo SHELL-SMOKE: [FAIL] usersh-if-then
+    fail=1
+fi
+
+echo SHELL-SMOKE: usersh-if-else
+# else-branch runs `true` -> exit 0.
+exec /apps/sh.elf -c 'if [ 1 -eq 2 ]; then false; else true; fi'
+rc=$?
+if [ $rc -eq 0 ]
+then
+    echo SHELL-SMOKE: [PASS] usersh-if-else
+else
+    echo SHELL-SMOKE: [FAIL] usersh-if-else
+    fail=1
+fi
+
+echo SHELL-SMOKE: usersh-for-loop
+# loop body runs `false` once -> exit 1 (proves the body executed).
+exec /apps/sh.elf -c 'for i in one; do false; done'
+rc=$?
+if [ $rc -eq 1 ]
+then
+    echo SHELL-SMOKE: [PASS] usersh-for-loop
+else
+    echo SHELL-SMOKE: [FAIL] usersh-for-loop
+    fail=1
+fi
+
+echo SHELL-SMOKE: usersh-quote
+# quotes grouped+removed -> `[ a b = a b ]` (3 inner args) -> true (0).
+exec /apps/sh.elf -c '[ "a b" = "a b" ]'
+rc=$?
+if [ $rc -eq 0 ]
+then
+    echo SHELL-SMOKE: [PASS] usersh-quote
+else
+    echo SHELL-SMOKE: [FAIL] usersh-quote
     fail=1
 fi
 

@@ -1,0 +1,4 @@
+# Build tree + installed toolchain are large + machine-specific; never commit.
+musl-cross-make/
+install/
+*.log

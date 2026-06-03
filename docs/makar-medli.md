@@ -231,7 +231,7 @@ choices rather than any disagreement about UX.
 | Graphics | VESA linear framebuffer (direct pixel writes) | Cosmos `VGAScreen` / bitmap |
 | Build system | Makefile + cross-GCC + Docker | .NET SDK + IL2CPU |
 | Debug tooling | GDB over QEMU stub | Cosmos debugger / serial |
-| Testing | ktest in-kernel + GDB checkpoint suite + headless UI test via QEMU HMP sendkey | (Medli equivalent TBD) |
+| Testing | ktest in-kernel + GDB checkpoint suite + in-guest script drivers + key-injection harness (all headless on serial markers) | (Medli equivalent TBD) |
 | Path separator | `/` | `\` |
 
 These divergences do not affect user-visible behaviour. They are
@@ -252,5 +252,5 @@ implementation details hidden beneath the shared shell, filesystem, and
    command list is in `SURVEY.md`.
 4. **Use serial as the integration bus.** Both OSes write to COM1; a
    simple test harness can grep both serial logs for the same expected
-   output. Makar's UI-test framework (`tests/ui_test.sh`) demonstrates
-   the pattern.
+   output. Makar's in-guest test drivers (`shell-smoke.sh` / `incore.sh`)
+   demonstrate the pattern.

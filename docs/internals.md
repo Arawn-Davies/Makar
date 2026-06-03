@@ -13,7 +13,7 @@ pages (`docs/kernel/*.md`) explain *what* each module does; this one walks the
 machine top-to-bottom — CPU state at boot, paging, TLB management, per-task
 address spaces, the scheduler, ring-3 entry, the syscall ABI — and covers
 how Makar's POSIX surface (`fork`, `execve`, `wait4`, signals) is actually
-implemented today, plus what's still missing for a musl/dash port.
+implemented today, plus what remains for a broader hosted libc environment.
 
 i386 protected mode, 32-bit, single CPU. No SMP. No PAE. No long mode.
 The decisions below are pitched for that target.
@@ -45,12 +45,12 @@ use a TSS, and cannot trust the segment limits — GRUB's segments are flat but
 their privilege levels and types aren't our problem to debug.
 
 The kernel image is linked with `link.ld` to load at **1 MiB** (`0x100000`),
-which puts it above the BIOS legacy area and BDA. No high-half mapping — we
-run identity-mapped in low memory. This is a deliberate simplification: a
-high-half kernel would force every page directory to mirror the high PDEs and
-makes early-boot debugging fiddlier; the cost is that user-space addresses
-above 256 MiB can't be used by ring-3 (we cap user at the kernel identity
-window, see §5).
+which puts it above the BIOS legacy area and BDA. There is no high-half kernel
+mapping; the kernel itself runs in the low identity-mapped region. User page
+directories still map ring-3 code, stack, heap, and anonymous mmap windows at
+their own virtual addresses. The design keeps early boot and kernel debugging
+simple while letting ring-3 programs live in a conventional high userspace
+layout.
 
 ---
 
@@ -58,7 +58,7 @@ window, see §5).
 
 ### GDT
 
-Six entries, all flat (base 0, limit 4 GiB):
+Seven entries:
 
 | Selector | Index | DPL | Type | Use |
 |---|---|---|---|---|
@@ -68,8 +68,9 @@ Six entries, all flat (base 0, limit 4 GiB):
 | `0x18`   | 3 | 3   | code, exec/read | user CS |
 | `0x20`   | 4 | 3   | data, read/write | user DS/ES/FS/GS |
 | `0x28`   | 5 | 0   | TSS (32-bit available) | task-state, see below |
+| `0x33`   | 6 | 3   | TLS data segment | i386 `set_thread_area`, loaded into `%gs` |
 
-Three things matter here:
+Four things matter here:
 
 - **Flat segmentation.** Every selector covers all of 4 GiB. Paging does all
   the protection work. Segmentation is reduced to "what's the CPL of this
@@ -82,13 +83,18 @@ Three things matter here:
   a privilege-level transition (ring-3 → ring-0 via `int 0x80` or an
   interrupt). Updated by `tss_set_kernel_stack` on every context switch into
   a user task.
+- **One TLS slot.** GDT index 6 is the single i386 TLS descriptor used by
+  `SYS_SET_THREAD_AREA`. It is reprogrammed for TLS-active tasks, and `%gs`
+  is the user TLS selector. The kernel deliberately does not use `%gs`.
 
 ### IDT
 
 256 entries, all 32-bit interrupt gates. Generated stubs in `isr_asm.S` push
 a fake error code (where the CPU didn't), push the vector number, and jump to
 `isr_common_stub` which pushes the full register set, calls into C, and
-restores. The interrupt gate type clears IF on entry; we keep it clear for
+restores. The stubs reload DS/ES/FS for kernel C code but intentionally leave
+`%gs` untouched so a ring-3 task's TLS selector survives syscalls and
+interrupts. The interrupt gate type clears IF on entry; we keep it clear for
 the duration of the syscall handler (see §10) — a deliberate simplification
 that means a syscall can't be preempted, only voluntarily yielded.
 
@@ -681,35 +687,33 @@ now shows:
 [forktest] REAPED pid=14 status=42
 ```
 
-### 11.4 What's still missing for musl + dash
+### 11.4 Hosted libc and musl state
 
-The fork/exec/wait triad is in.  The remaining blockers for a static musl
-build of `dash`:
+The fork/exec/wait triad is in, and the branch adds most of the low-level
+pieces a static i386 musl binary expects during process startup:
 
-- **`SYS_READDIR`** (streaming `getdents`).  Today's `SYS_LS_DIR` returns a
-  pre-rendered text blob — fine for the in-kernel shell's `ls`, useless for
-  `opendir`/`readdir` (and for any userland shell's tab complete).
-- **`SYS_PIPE` + `SYS_DUP2`**.  Shipped in PR #181 (numbers 42 / 63,
-  Linux i386 ABI).  `FD_KIND_PIPE` slots point at a shared
-  `pipe_ring_t` (4 KiB ring + reader/writer refcounts); fork bumps
-  the refcount instead of deep-copying, freeing the ring when both
-  ends hit zero.  Read blocks via `task_yield()` on empty (EOF when
-  all writers close); write blocks on full (`-EPIPE` when all readers
-  close).  The FILE-kind path still deep-copies on fork — the
-  `open_file_t` refcount refactor that would unify both kinds is
-  still pending.  Single-arg `dup(fd)` still missing (workaround:
-  `dup2(fd, lowest_free)`).
-- **`SYS_MMAP(MAP_ANONYMOUS)`**.  musl's allocator falls back to mmap for
-  large allocations.  Implementing it as a `vmm_map_page` over an arbitrary
-  range is straightforward; the tricky bit is per-task virtual-address
-  allocation.  A bump allocator from `0xC0000000` downward is the laziest
-  correct option.
-- **TLS (`set_thread_area`)**.  musl wants i386's old per-task GDT slot for
-  FS.  GDT entry 6 written on context switch, ~50 lines.
-- **`fstat` / `stat` / `umask` / `getppid` / `getpid`**.  Mechanical.
+- **ELF auxv.** `elf_exec` writes `AT_PAGESZ`, `AT_RANDOM`, and `AT_NULL`
+  after `envp`. Existing Makar crt0 code ignores this, but musl walks it.
+- **Anonymous mmap.** `SYS_MMAP2` maps zero-filled anonymous pages into a
+  per-task bump window starting at `0x90000000`; `SYS_MUNMAP` unmaps ranges.
+  File-backed mmap, `MAP_FIXED`, address reuse, and `mprotect` are still
+  absent.
+- **TLS.** `SYS_SET_THREAD_AREA` programs GDT slot 6 and loads `%gs = 0x33`.
+  The scheduler stores TLS descriptor fields in `task_t` and restores the
+  shared GDT TLS slot for TLS-active tasks.
+- **FPU state.** The kernel initializes x87/SSE state and saves/restores a
+  512-byte FXSAVE image per task, so hosted floating-point code is no longer
+  a scheduler-corruption hazard.
+- **Startup stubs.** `exit_group`, `set_tid_address`, `rt_sigprocmask`,
+  `ioctl`, and `futex` are present as minimal compatibility paths.
+- **POSIX-shaped fd surface.** `pipe`, `dup`, `dup2`, `stat`, `fstat`,
+  `readdir`, `getpid`, and `getppid` are all exposed.
 
-`getpid` and `getppid` are trivially available — `task_current()->pid` and
-`->parent_pid` — but no syscall exposes them yet.
+The remaining musl work is now empirical rather than architectural: compile a
+static test binary with the toolchain scaffold, run it, and fill the next
+missing syscall or ABI detail it reports. Known likely gaps include `writev`,
+full errno conventions, deeper signal-mask semantics, file-backed mmap, and
+packaging musl itself into the Makar sysroot.
 
 ### 11.5 vfork() and posix_spawn() — no longer needed
 
@@ -738,7 +742,7 @@ TCC via `./build-kernel-tcc.sh` (host-side) or `/apps/rebuild-kernel.sh`
 surface (writable fds, `O_CREAT`/`O_TRUNC`/`O_APPEND`, `SYS_STAT`/`FSTAT`,
 `SYS_READDIR`, 16 MiB file cap) and the freestanding libc shim
 (`malloc`/`stdio`/`setjmp`/`ctype`/`stdlib`/POSIX wrappers), both with
-ktest + ui-test coverage.  The boot banner reports `gcc-host` /
+ktest + in-guest-test coverage.  The boot banner reports `gcc-host` /
 `tcc-host` / `tcc-in-os` based on the build path.  See
 [TCC feasibility](tcc-feasibility.md) for the original spike and
 [rebuilding the kernel](rebuild-kernel.md) for the maintained guide.
@@ -747,10 +751,10 @@ ktest + ui-test coverage.  The boot banner reports `gcc-host` /
 
 ## 12. Things worth knowing that don't fit elsewhere
 
-- **No floating point in the kernel.** `-mno-sse -mgeneral-regs-only` in
-  CFLAGS. Saves us from having to save/restore FPU state on every context
-  switch. User tasks aren't gated from FP (we just haven't set `CR0.MP` or
-  installed an `#NM` handler, so the first user FP instruction faults).
+- **Floating point is initialized, but kernel C still avoids it.** The kernel
+  uses `fpu_init` and per-task FXSAVE/FXRSTOR so ring-3 FP state survives
+  context switches. Kernel code should still avoid C floating-point and keep
+  the freestanding integer-only style unless there is a very explicit reason.
 - **No SMP**, intentionally. The single biggest implementation simplification
   in the whole codebase. Every "lock" we'd need on SMP is a no-op on UP
   with IF discipline.
@@ -760,7 +764,7 @@ ktest + ui-test coverage.  The boot banner reports `gcc-host` /
 - **Per-task fd table lives in the heap**, not in the task struct. This means
   a slot-recycled `task_t` doesn't carry stale fds, but it also means
   `task_create` does an allocation. The allocation is amortised by the
-  fixed-size 8-task pool — we hit `kmalloc` at most 8 times per boot.
+  fixed-size task pool — allocations are bounded and visible.
 - **The `unkillable` flag on shell tasks** is a hack to keep the four shell
   tasks alive across rogue `kill -9` from a misbehaving userland. Linux's
   equivalent is "PID 1 cannot receive SIGKILL except from itself"; Makar's

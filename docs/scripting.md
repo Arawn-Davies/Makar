@@ -6,11 +6,30 @@ nav_order: 2
 
 # Shell scripting
 
-There are now **two** sh-flavoured interpreters in Makar.  This page documents the **in-kernel** scripting layer (`sh_script.c`) used by `sh /path/script.sh` and the test bootstraps (`shell-smoke.sh`, `libc-tcc.sh`, `incore.sh`).  The **userspace** shell (`/apps/sh.elf`, source `src/userspace/sh.c`) is what the operator types into interactively on every VT, and it ships with extras the in-kernel script layer doesn't have — pipes (`\|`), redirection (`< > >> 2> 2>>`), and list operators (`&& \|\| &` + `wait`).  Those landed in PR #181 and live in userspace only.
+Makar currently has two sh-flavoured command layers:
 
-`fork()` / `execve()` / `wait4()` are available kernel-wide.  The in-kernel script layer dispatches via the same `shell_dispatch_argv` path the interactive prompt uses; everything below still runs inside the calling shell task (no subshell).  Per-VT isolation: each shell's variable table hangs off its `task_t`, so `NAME=foo` on VT0 doesn't show up in VT1.
+| Layer | Location | Main role |
+|---|---|---|
+| Userspace shell | `/apps/sh.elf`, source `src/userspace/sh.c` | The default interactive shell on ring-3 VTs. Supports PATH lookup, quoting, `sh -c`, pipes, redirection, `&&`, `||`, background `&`, and `wait`. |
+| Kernel script runner | `arch/i386/shell/sh_script.c` | A compact in-kernel interpreter used by `sh /path/script.sh` and boot/test scripts such as `shell-smoke.sh`, `libc-tcc.sh`, and `incore.sh`. |
 
-Implementation: `kernel/sh_script.h`, `arch/i386/shell/sh_script.c`, `arch/i386/shell/shell_cmd_script.c`.
+This page documents the in-kernel script runner. The userspace shell is more
+POSIX-shaped and is what operators normally interact with. The kernel runner is
+kept deliberately smaller because it dispatches commands inside the calling
+shell task rather than forking a full subshell for every command.
+
+`fork()`, `execve()`, and `wait4()` are available kernel-wide, and `/apps/sh.elf`
+uses them. The in-kernel script layer only uses that machinery when a command it
+dispatches chooses to launch a userspace executable.
+
+Per-VT isolation: each shell's variable table hangs off its `task_t`, so
+`NAME=foo` on one VT does not appear in another VT.
+
+Implementation:
+
+- `src/kernel/include/kernel/sh_script.h`
+- `src/kernel/arch/i386/shell/sh_script.c`
+- `src/kernel/arch/i386/shell/shell_cmd_script.c`
 
 ## Variables
 
@@ -30,6 +49,17 @@ unset NAME [...]     # remove vars
 search its colon-separated directories for `<cmd>[.elf]`. Unset, it defaults to
 `/apps`; set it like any other var to change where the
 shell looks for executables.
+
+Variable expansion is intentionally simple:
+
+- `$NAME` expands until the first non-name character;
+- `${NAME}` is available when a suffix immediately follows;
+- unknown variables expand to an empty string;
+- `$?` expands to the last command status.
+
+The expansion happens before command dispatch. There is no command
+substitution, arithmetic expansion, array syntax, or environment export model
+in the kernel script runner.
 
 ## Tests
 
@@ -69,12 +99,17 @@ done
 
 Multi-statement lines split on `;` are supported (`if [ X ]; then A; elif [ Y ]; then B; else C; fi` works on a single line).  `# ...` comments terminate the line outside quotes.
 
+The parser is line-oriented but can keep enough block state to handle
+multi-line `if`, `while`, and `for` forms. It is designed for deterministic
+boot/test scripts, not for arbitrary POSIX shell compatibility.
+
 ## Running scripts
 
 ```sh
 sh /apps/demo.sh
 ./script.sh               # path ending in .sh goes through the interpreter
 /apps/script.sh           # absolute path, same dispatch
+sh -c 'echo hello'         # supported by userspace sh.elf, not this runner
 ```
 
 The `sh` builtin writes the script's final `$?` to serial as `sh: exit=N` so test runners can scrape the value.
@@ -91,13 +126,36 @@ The `sh` builtin writes the script's final `$?` to serial as `sh: exit=N` so tes
 | `true` / `false` | POSIX status helpers. |
 | `datetime` / `date` / `time` | One-line `YYYY-MM-DD HH:MM:SS` from `/proc/rtc`.  For the fullscreen wall clock, use `clock.elf`. |
 
-## Limitations of this layer (and where to find the missing features)
+## Userspace shell features
 
-- **No command substitution (`$(cmd)`)** — would require capturing a child's stdout into a buffer; needs subshell-equivalent.
-- **No pipes (`\|`), redirection (`< > >> 2> 2>>`), or list operators (`&& \|\| &`) here** — these all exist in `/apps/sh.elf` since PR #181 (kernel-side `SYS_PIPE`/`SYS_DUP2`/`FD_KIND_PIPE` ship in the same PR).  The in-kernel script interpreter (`sh_script.c`) hasn't been rewired to use them; if you need them, drive your workload through `sh.elf` instead.
-- **No `wait` builtin / `&` background here** — present in `sh.elf`; deferred from `sh_script.c` because the in-kernel script layer would need to fork-then-dispatch first (currently it dispatches in-process so backgrounding has no meaning).
-- **`elif` chained but `elif` itself can't appear on the same line as preceding body** — `; elif` is fine; `then A; elif [ Y ]; then B` works; bare `; elif` without preceding `; then BODY` may not parse.
-- **64 KiB scratch buffer for script source** — warns on truncation; chain `sh foo.sh; sh bar.sh` for bigger workloads.
+Use `/apps/sh.elf` when you need the fuller shell surface:
+
+| Feature | Userspace `sh.elf` | Kernel script runner |
+|---|---|---|
+| quote-aware tokenization | yes | limited |
+| `sh -c COMMAND` | yes | no |
+| pipes (`|`) | yes | no |
+| redirection (`<`, `>`, `>>`, `2>`, `2>>`) | yes | no |
+| list operators (`&&`, `||`) | yes | no |
+| background jobs (`&`) | yes | no |
+| `wait` builtin | yes | no |
+| in-process boot/test dispatch | no | yes |
+
+The userspace shell relies on the kernel's `pipe`, `dup`, `dup2`, `fork`,
+`execve`, and `wait4` syscalls. The kernel runner has not been rewired to use
+those operators because its main value is deterministic in-process execution
+during boot and test modes.
+
+## Limitations of the kernel script runner
+
+- **No command substitution (`$(cmd)`).** Capturing command output would require
+  a pipe-backed subshell model.
+- **No pipe/redirection/list/background syntax.** Use `/apps/sh.elf` for that.
+- **No exported environment.** Variables are per-shell task state.
+- **No `wait` builtin or background jobs.** Backgrounding has no meaning while
+  dispatch remains in-process.
+- **64 KiB scratch buffer for script source.** The runner warns on truncation;
+  chain smaller scripts when needed.
 
 ## Worked example
 

@@ -6,210 +6,263 @@ nav_order: 2
 
 # Testing Makar
 
-This guide covers the automated test infrastructure. For build and run
-instructions see [Building & Running](building.md).
+Makar's tests are designed to run deterministically under QEMU and report
+through serial markers. The old host-driven keyboard harness has been removed:
+there is no QEMU monitor `sendkey` suite, no framebuffer screenshot diffing,
+and no `tests/ui_test.sh`.
 
----
+There are now two kinds of coverage:
 
-## CI test suite (`./run.sh iso test`)
+1. **In-guest script and binary tests** for most behavior.
+2. **In-guest keyboard injection** for behavior where the keystroke path itself
+   is under test.
 
-The single command for complete ISO CI validation:
-
-```sh
-./run.sh iso test
-```
-
-Runs two phases; build steps use Docker, QEMU/GDB prefer the host if available:
-
-**Phase 1 - in-kernel ktest suite**
-
-Boots `makar-test.iso` (single grub menuentry with `timeout=0`, `multiboot2 /boot/makar.kernel test_mode`). The kernel parses the multiboot2 cmdline, runs `ktest_run_all()` (all subsystem unit tests including a live ring-3 userspace execution), then exits QEMU cleanly via `isa-debug-exit`. Output: `ktest.log`.
-
-`makar-test.iso` and `makar.iso` are emitted from the **same** kernel binary; there is no test-only build flag.
-
-**Phase 2 - GDB boot-checkpoint tests**
-
-Builds a normal debug ISO. Creates a 32 MiB FAT32 test disk and attaches it
-on IDE:0 alongside the CD-ROM so the kernel can auto-mount it at `/mnt/root`. Launches QEMU
-with the GDB stub and runs `tests/gdb_boot_test.py`. Output: `gdb-test.log`.
-
-Exit code 0 = everything passed; 1 = any failure or timeout.
-
----
-
-## HDD boot test (`./run.sh hdd test`)
-
-Verifies the installed HDD boot path end-to-end - no CD-ROM attached:
+## Quick Commands
 
 ```sh
-./run.sh hdd test
+./run.sh ktest           # headless kernel test suite
+./run.sh kbtest          # headless keyboard/makmux test
+./run.sh kbtest gui      # same test with a visible QEMU window
+./run.sh gui all-tests   # visible ktest + incore + libc + shell smoke
+./run.sh iso test        # CI-style ISO gate
 ```
 
-What it does:
+`./run.sh` with no arguments prints the full usage.
 
-1. **Clean rebuild** - ensures `src/kernel/makar.kernel` (GDB symbol file) matches the binary written into the image.
-2. **Generate `makar-hdd-test.img`** - fresh raw MBR + FAT32 + GRUB 2 image using the interactive kernel so `shell_run` is called and `vfs_auto_mount()` runs. Kept separate from `makar-hdd.img` so interactive and test images never share state.
-3. **GDB boot test** - boots the image with `-boot c` (HDD-only) and runs `tests/gdb_hdd_test.py`.
+## Test Target Matrix
 
-Output files: `hdd-test-gdb.log`, `hdd-test-serial.log`.
+| Command | Display | Guest mode | Pass marker |
+|---|---|---|---|
+| `./run.sh ktest` | headless | `test_mode test=ktest` | `KTEST_RESULT: PASS` |
+| `./run.sh kbtest` | headless | normal boot plus `kbtest` cmdline | `KBTEST: ALL PASS` |
+| `./run.sh kbtest gui` | visible | same as `kbtest` | `KBTEST: ALL PASS` |
+| `./run.sh gui ktest` | visible | `test_mode test=ktest` | `KTEST_RESULT: PASS` |
+| `./run.sh gui incore` | visible | `test_mode test=incore` | `INCORE: ALL PASS` |
+| `./run.sh gui libc` | visible | `test_mode test=libc-tcc` | `LIBC-TCC: ALL PASS` |
+| `./run.sh gui smoke` | visible | `test_mode test=shell-smoke` | `SHELL-SMOKE: ALL PASS` |
+| `./run.sh gui all-tests` | visible | `test_mode test=all` | all four markers |
+| `./run.sh iso test` | headless | build + ktest + GDB checkpoint | command exit 0 |
 
----
+## ktest
 
-## GDB test groups
+`ktest` is the kernel's internal unit/integration suite. It runs during
+`test_mode` before the normal login shell.
 
-Both `gdb_boot_test.py` (ISO boot) and `gdb_hdd_test.py` (HDD boot) run the
-same four groups, providing equivalent external verification regardless of
-boot medium:
+Covered areas include:
 
-| Group | What it verifies |
-|---|---|
-| `boot_checkpoints` | Every major boot function reached in order: `kernel_main` → `terminal_initialize` → … → `shell_run` |
-| `hardware_state` | CR0.PG set (paging enabled), CR3 non-zero (page directory loaded), `timer_callback` fires (PIT ticking) |
-| `vesa` | VESA framebuffer active and TTY initialised (or absent without crashing - graceful headless) |
-| `hdd_mount` | `fat32_mounted()` non-zero - HDD rootfs auto-mounted (single-partition → `/mnt/root`; dual-partition → `/mnt/boot` + `/mnt/root`) after `shell_run` |
-| `root_home` | (HDD only) `vfs_file_exists("/root")` returns 1, confirming `vfs_ensure_root_home()` mkdir'd it on the writable rootfs |
+- ACPI checksum validation
+- x87 FPU bring-up and context-switch save/restore
+- string helpers
+- partition type helpers
+- devfs
+- tmpfs
+- `/usr` sysroot layout
+- rootfs mount layout
+- physical memory manager
+- kernel heap
+- virtual memory and COW behavior
+- task scheduler basics
+- procfs task listing
+- pid syscalls
+- POSIX filesystem syscall aliases
+- RTC/time syscalls
+- syscall dispatcher basics
+- fd tables
+- growable file fds
+- cwd isolation
+- signals
+- preemption
+- GDT/IDT/ring-3 prerequisites
+- ring-3 execution
+- VESA mode and color behavior
+- keyboard decoder layers
 
-The `hdd_mount` check advances execution to `keyboard_getchar` (the shell's
-read-loop entry) before inspecting `fat32_mounted()`, ensuring
-`vfs_auto_mount()` has fully completed.
-
-The ISO GDB test creates the FAT32 test disk using `mkfs.fat --offset`
-(sector-based, no losetup / `--privileged` needed), which works inside the
-GitHub Actions container job.
-
-To add a new group: create `tests/groups/<name>.py` exposing `NAME` and
-`run() → bool`, then import it into **both** `gdb_boot_test.py` and
-`gdb_hdd_test.py`.
-
----
-
-## Interactive GDB debug
+Run it headless:
 
 ```sh
-# Build a debug ISO first
-./run.sh iso boot   # or: CFLAGS='-O0 -g3' ./run.sh iso release
-
-# In one terminal - start QEMU with GDB stub (inside Docker)
-docker run --rm -it -v "$PWD:/work" -w /work arawn780/gcc-cross-i686-elf:fast \
-    bash -lc 'qemu-system-i386 -cdrom makar.iso -s -S -display none -serial stdio'
-
-# In another terminal - attach GDB (inside Docker or native)
-docker run --rm -it -v "$PWD:/work" -w /work arawn780/gcc-cross-i686-elf:fast \
-    gdb-multiarch src/kernel/makar.kernel \
-        -ex "target remote :1234" \
-        -ex "break kernel_main" \
-        -ex "continue"
+./run.sh ktest
 ```
 
-The `-O0 -g3` flags ensure DWARF debug info is accurate. QEMU starts with
-`-S` (freeze at reset), giving you time to set breakpoints before execution
-begins.
+or visibly:
 
----
-
-## In-kernel unit tests (interactive)
-
-From the kernel shell:
-
-```
-ktest
+```sh
+./run.sh gui ktest
 ```
 
-Runs `ktest_run_all()` and prints pass/fail for each subsystem suite
-(PMM, heap, ring-3 execution, etc.) directly to the terminal and serial log.
+## In-Guest Script Drivers
 
----
+The script drivers live in `src/userspace/` and run inside the guest shell.
+They avoid host typing entirely and gate on exit status plus serial markers.
 
-## Black-box UI tests (`./run.sh ui`)
+### `incore.sh`
 
-Drives the running kernel through QEMU's HMP `sendkey` and asserts on
-the COM1 serial slice + PPM screen dump.  Scenarios live in
-`tests/ui_test.sh` as `test_<name>` shell functions; the shared runner
-in `tests/ui_runner.sh` boots one QEMU per invocation and rotates
-through scenarios with `reset_shell` in between.
+Runs core userspace binaries and checks their exit status:
 
-### Synchronisation: marker-based, not sleep-based
+- `hello`
+- `forktest`
+- `execvetest`
+- `sigtest`
+- `alloctest`
+- `ktest_uspace`
 
-The shell emits `[shell:ready vt=N]` to serial on every
-`shell_readline` entry (gated by `g_serial_verbose`, which
-`start_qemu` flips on as the first action after boot).  Test
-scenarios use this marker as a sync point instead of fixed `sleep N`:
+Pass marker:
 
-| Primitive | What it does |
-|---|---|
-| `it <name> <script> [wait_secs]` | Fixed-sleep style.  Send keys, sleep, snapshot serial slice. |
-| `it_until <name> <script> <regex> [timeout]` | **Sync-on-marker style.**  Send keys, poll the serial log until the regex appears, then snapshot.  Default sync regex is `'\[shell:ready vt=0\]'`. |
-| `wait_for_serial <regex> <start_bytes> [timeout]` | Low-level primitive.  Polls `$SERIAL_LOG` from `<start_bytes>` until `<regex>` matches.  Used by `it_until` and directly by multi-stage scenarios that need to sync between key batches (the `typo-doesnt-clear` scenario is the canonical multi-stage example: type the typo, wait for shell-ready, then type the next command, otherwise the in-flight bytes race the dying exec'd child and get dropped when `keyboard_release_task` reaps its slot). |
+```text
+INCORE: ALL PASS
+```
 
-This is the expect/pexpect pattern, scaled down.  Why it matters: a
-fixed `sleep 1.2` is a guess that's right under KVM and wrong under
-TCG-on-a-shared-runner.  A marker sync is right in both -- it returns
-the instant the kernel says it's ready and bounds via the timeout.
+### `libc-tcc.sh`
 
-### Scenarios currently covered
+Runs the in-OS TCC/libc compile matrix. It compiles and, where relevant, runs
+programs such as:
 
-| Scenario | Asserts |
-|---|---|
-| `glob-proc` | `cat /proc/*` glob-expands across the synthetic FS |
-| `tab-complete-path` | `cat<TAB> /proc/c<TAB><Enter>` resolves to `cat /proc/cpuinfo` |
-| `exec-hello` | `exec /apps/hello.elf tester` reaches `sys_exit(0)` and prints the expected greeting |
-| `cd-root-listing` | `cd /<TAB><TAB>` lists mounts; subsequent `pwd` confirms cwd |
-| `per-tty-cwd` | Per-task cwd isolation across `Alt+F1`/`Alt+F3` switches |
-| `calc-brackets` | `calc.elf` evaluates parenthesised arithmetic |
-| `ctrlc-kills-child` | Ctrl+C delivers SIGINT to a running ELF, shell recovers |
-| `no-dead-in-proctasks` | `cat /proc/tasks` never lists DEAD slots |
-| `typo-doesnt-clear` | A wrong command falls back to makbox, prints an error, and **does not** wipe the screen (proves the `task_t.fb_touched` gate) |
-| `user-sigusr1-handler` | `sigtest.elf` installs a SIGUSR1 handler, self-sends, the handler runs in ring 3 (proves the sigframe + trampoline + `SYS_SIGRETURN` path) |
-| `makbox-pwd` | `pwd` resolves to the `makbox` applet end-to-end |
+- `hello`
+- `calc`
+- `sh`
+- `makbox`
+- `makmux`
+- `help`
+- `diskinfo`
+- `sigtest`
+- `forktest`
+- `execvetest`
+- `alloctest`
+- `filetest`
+- `basic`
+- `fdisk`
+- `cfdisk`
+- `maktop`
+- `clock`
+- `lines`
+- `vix`
+- `kbtester`
 
-`./run.sh ui` runs all of them; `./run.sh ui <name>` runs
-one; `./run.sh ui graphical` runs with a visible QEMU window for
-debugging.
+Pass marker:
 
-### In-kernel test driver (`incore.sh`)
+```text
+LIBC-TCC: ALL PASS
+```
 
-For scenarios that just need to "run a binary, check it exited 0,"
-the per-test HMP round-trip is overhead.  `src/userspace/incore.sh`
-is a kernel-sh script that drives those tests directly inside the
-guest via `exec` + `$?`: each test invokes its ELF and the script
-branches on the child's `SYS_EXIT` value (low 8 bits) surfaced as
-`$?` by `shell_last_exec_status()` in `shell_cmd_apps.c`.  Final
-marker `INCORE: ALL PASS` (or `INCORE: FAIL`) is the one substring
-the runner asserts on.  Fronted by the single HMP scenario
-`test_incore` (`./run.sh ui incore`); see `src/userspace/incore.sh`
-for the current test list (hello, forktest, execvetest, alloctest).
+### `shell-smoke.sh`
 
-Trade-off vs HMP scenarios: faster (no per-test typing/settle, no
-reset_shell, no reaper-output races), and the test list is editable
-in a `.sh` file without touching the runner -- but no screendump
-evidence on panic, so this is only the right shape for tests that
-don't depend on framebuffer state.  Interactive features (TAB,
-Ctrl-C, VT switching, sh.elf readline, fullscreen apps) stay in
-HMP-driven scenarios where the keyboard event is itself under test.
+Covers shell, VFS, and app behavior without host keyboard automation. It checks
+commands and branches on `$?`, including:
 
-Each ELF in `incore.sh` is expected to print `[name] PASS` /
-`[name] FAIL: <reason>` on its own and exit `0` / non-zero; the
-script just aggregates.  See `alloctest.c` for the canonical shape
-(12 sub-tests, each emitting a status line, `return 0`/`return 1`).
+- procfs and devfs visibility
+- `exec /apps/hello.elf`
+- `cd`
+- mount listing
+- `makbox`
+- script variables
+- `/tmp` file roundtrip
+- `/usr` sysroot visibility
+- nested parser state
+- inline `if` branches
+- `tty`
+- quote grouping
+- `/apps/sh.elf -c`
+- ring-3 shell `if`, `for`, and quoting
 
----
+Pass marker:
 
-## CI
+```text
+SHELL-SMOKE: ALL PASS
+```
 
-`.github/workflows/build-test.yml` runs a **build-once, fan-out** topology on every push to `main` and every PR. Docs-only changes are skipped via path filter.
+## kbtest
 
-| Job | Runner | What runs |
+`kbtest` is the dedicated keyboard-under-test suite. It boots the normal shell
+with `kbtest` on the kernel command line. The kernel spawns
+`keyboard_test_driver()`, which injects keycodes directly into the live
+keyboard path:
+
+```text
+keyboard_inject_text / keyboard_inject_key
+    -> decoder path
+    -> focus router
+    -> task input ring
+    -> live shell
+```
+
+This is the correct test for anything involving:
+
+- PS/2 decode behavior
+- modifiers
+- Ctrl-C
+- Alt-Tab / VT switching
+- focused task routing
+- `makmux`
+- app tabs
+- shell readiness under real input
+
+Current scenarios:
+
+1. Enable verbose serial mirroring.
+2. Type `echo KBINJECT_OK`.
+3. Start `cat`, send Ctrl-C, and prove the shell recovers with
+   `KBTEST_CTRLC_OK`.
+4. Type `makmux`.
+5. Check `vtty_count()`.
+6. Inject Alt-Tab and Alt-Shift-Tab and assert `vtty_active()` changes and
+   restores.
+7. Type `maktop`.
+8. Assert `vtty_find_name("maktop") >= 0`, proving app-tab routing through
+   makmux.
+9. Quit `maktop`.
+10. Type `exit` across the VT shells.
+11. Assert `vtty_count() == 0`, proving makmux exited and focus restored.
+
+Headless:
+
+```sh
+./run.sh kbtest
+```
+
+Visible:
+
+```sh
+./run.sh kbtest gui
+```
+
+## `iso test`
+
+`./run.sh iso test` is the CI-style ISO gate. It performs:
+
+1. incremental ISO build with test image enabled
+2. headless ktest run
+3. GDB ISO boot checkpoint run
+
+Keyboard-under-test coverage is intentionally separate as `./run.sh kbtest`
+because boot-to-shell under shared CI TCG can be slow.
+
+## Logs
+
+| Log | Produced by | Notes |
 |---|---|---|
-| `build` | `ubuntu-latest` (host, Docker available) | `./run.sh iso build` + `./run.sh hdd build` → uploads `makar.kernel`, `makar.iso`, `makar-test.iso`, `makar-hdd-test.img` as artifact `makar-build` |
-| `ktest` | `ubuntu-latest` + container `arawn780/gcc-cross-i686-elf:fast` | downloads artifact → `./run.sh ktest` |
-| `gdb-iso` | `ubuntu-latest` + container | downloads artifact → `./run.sh gdb iso` |
-| `gdb-hdd` | `ubuntu-latest` + container | downloads artifact → `./run.sh gdb hdd` |
+| `ktest.log` | `ktest`, `iso test`, visible test suites | serial transcript for ktest/script drivers |
+| `kbtest.log` | `kbtest` | serial transcript for keyboard injection |
+| `gdb-iso.log` | GDB ISO checkpoint | host-side GDB output |
+| `*.log` | various targets | ignored by git |
 
-Why this shape:
-- One compile → three parallel test runs. The compile is the expensive step; the test jobs are I/O-bound on QEMU boot.
-- The `build` job runs on the host (not in a container) because `generate-hdd.sh` spawns its own privileged Docker container for loop-device work, which is awkward to nest.
-- The test jobs run inside the toolchain container so they get `qemu-system-i386` and `gdb-multiarch` without further setup.
-- KVM acceleration is deliberately disabled (see `run.sh _qemu_accel`); software breakpoints under the GDB stub never catch on KVM, and ktest hit a path-fault masked by KVM's CPU timing.
-- ccache is cached across runs via `actions/cache@v4` with the cascade `ccache-${{ runner.os }}-${{ github.sha }}` → `ccache-${{ runner.os }}-${{ github.ref_name }}-` → `ccache-${{ runner.os }}-main-` → `ccache-${{ runner.os }}-`. Warm rebuilds hit ~47 % cache.
+When investigating a failure:
 
-The `release.yml` workflow gates artifact publication on `build-test.yml` succeeding via `workflow_call`.
+1. Search for the final suite marker.
+2. Search for `FAIL`, `PAGE FAULT`, and `panic`.
+3. Inspect the 50-100 lines before the first failing marker.
+4. For keyboard/makmux failures, use `kbtest.log`, not `ktest.log`.
+
+## Adding Tests
+
+Choose the lightest test path that covers the behavior:
+
+| Behavior | Preferred test |
+|---|---|
+| pure kernel helper | `ktest` |
+| syscall behavior directly | `ktest` or a small userspace app |
+| userspace app exit behavior | `incore.sh` |
+| libc wrapper behavior | `alloctest.elf` or `libc-tcc.sh` |
+| shell syntax/dispatch | `shell-smoke.sh` |
+| keyboard focus/input/VT behavior | `keyboard_test_driver()` / `kbtest` |
+
+Avoid reintroducing host-driven typing. If input must be tested, inject it from
+inside the guest.

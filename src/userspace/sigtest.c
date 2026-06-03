@@ -8,7 +8,7 @@
  *     sigtest: SIGUSR1 handler ran (count=N)
  *     sigtest: SIGUSR1 handler NEVER ran
  *
- * via SYS_WRITE_SERIAL so ui_test / iso-test can grep it.  Pairs with
+ * via SYS_WRITE_SERIAL so the in-guest test drivers can grep it.  Pairs with
  * the kernel-side sigframe + trampoline + SYS_SIGRETURN landed in this
  * same commit.
  */

@@ -5,9 +5,9 @@ name: Build & Test
 #   - pull_request open/sync       (covers all feature-branch development)
 #   - workflow_call                (release.yml gates on this passing)
 #
-# Path filter: only fires when something that actually affects test outcomes
-# changed - kernel/userspace source, test harness, build/run scripts, or the
-# toolchain image. Docs-only changes (README.md, CLAUDE.md, docs/**) skip CI.
+# Path filter: only fires for kernel/userspace source changes or run.sh.
+# Everything else - docs, licences, workflow metadata, Docker files, helper
+# scripts, issue templates, and planning notes - is intentionally skipped.
 
 on:
   workflow_call:
@@ -15,19 +15,11 @@ on:
     branches: [main]
     paths:
       - 'src/**'
-      - 'tests/**'
-      - '*.sh'
-      - 'Dockerfile*'
-      - 'docker-compose.yml'
-      - '.github/workflows/build-test.yml'
+      - 'run.sh'
   pull_request:
     paths:
       - 'src/**'
-      - 'tests/**'
-      - '*.sh'
-      - 'Dockerfile*'
-      - 'docker-compose.yml'
-      - '.github/workflows/build-test.yml'
+      - 'run.sh'
 
 # Cancel superseded runs on the same ref so a rebased push doesn't keep CI
 # burning cycles for the older commit.
@@ -230,10 +222,9 @@ jobs:
             hdd-test-serial.log
           if-no-files-found: warn
 
-  # NOTE: UI tests (sendkey + serial grep) live in tests/ui_test.sh and
-  # are runnable locally via `./run.sh ui`.  They are intentionally
-  # NOT wired into this CI workflow: under TCG (no KVM in GHA runners)
-  # boot to shell takes 30-60s per scenario, so the suite is slow and
-  # historically prone to hanging when QEMU misbehaves on shared
-  # infrastructure.  Keep them as a local pre-merge check; revisit if
-  # GHA grows KVM support or we move to self-hosted runners.
+  # NOTE: user-facing coverage is in-guest and headless -- the script
+  # drivers (shell-smoke / incore / libc-tcc, run by `./run.sh iso test`
+  # via the ktest job above) and the key-injection harness (`./run.sh
+  # kbtest`).  There is no host-driven keyboard path.  `kbtest` is not in
+  # this workflow only because boot-to-shell under TCG (no KVM on GHA
+  # runners) is slow; it's a local pre-merge check.

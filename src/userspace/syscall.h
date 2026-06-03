@@ -15,6 +15,7 @@
 #define SYS_CLOSE      6
 #define SYS_LSEEK      19
 #define SYS_GETPID     20
+#define SYS_DUP        41
 #define SYS_PIPE       42
 #define SYS_DUP2       63
 #define SYS_KILL       37
@@ -23,6 +24,8 @@
 #define SYS_RMDIR      40
 #define SYS_UNLINK     10
 #define SYS_BRK        45
+#define SYS_MUNMAP     91
+#define SYS_MMAP2     192
 #define SYS_SIGNAL     48
 #define SYS_GETPPID    64
 #define SYS_GETTIMEOFDAY 78
@@ -89,10 +92,10 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_SCHED_QUANTUM 228
 #define SYS_VERBOSE       229
 #define SYS_GETHOSTNAME   230
-#define SYS_WHOAMI        240
+#define SYS_WHOAMI        247   /* moved off 240 (Linux futex) */
 #define SYS_STATUSBAR     241
 #define SYS_VT_OPEN_APP   242
-#define SYS_VT_TAKE_APP   243
+#define SYS_VT_TAKE_APP   248   /* moved off 243 (Linux set_thread_area) */
 #define SYS_VT_SETNAME    244
 #define SYS_VT_GETNAME    245
 #define SYS_STATFS        246
@@ -296,6 +299,38 @@ static inline long syscall3(long nr, long a1, long a2, long a3)
     return ret;
 }
 
+static inline long syscall4(long nr, long a1, long a2, long a3, long a4)
+{
+    long ret;
+    __asm__ volatile ("int $0x80"
+        : "=a"(ret) : "0"(nr), "b"(a1), "c"(a2), "d"(a3), "S"(a4) : "memory");
+    return ret;
+}
+
+/* mmap(2) prot/flags (Linux i386).  Only anonymous mappings are supported. */
+#define PROT_NONE      0
+#define PROT_READ      1
+#define PROT_WRITE     2
+#define PROT_EXEC      4
+#define MAP_SHARED     0x01
+#define MAP_PRIVATE    0x02
+#define MAP_FIXED      0x10
+#define MAP_ANONYMOUS  0x20
+#define MAP_ANON       MAP_ANONYMOUS
+#define MAP_FAILED     ((void *)-1)
+
+static inline void *sys_mmap(void *addr, unsigned long len, int prot,
+                             int flags, int fd, long off)
+{
+    (void)fd; (void)off;   /* anonymous only -- fd/off ignored */
+    return (void *)syscall4(SYS_MMAP2, (long)addr, (long)len, (long)prot, (long)flags);
+}
+
+static inline int sys_munmap(void *addr, unsigned long len)
+{
+    return (int)syscall2(SYS_MUNMAP, (long)addr, (long)len);
+}
+
 /* POSIX-compatible wrappers. */
 
 static inline void sys_exit(int status)
@@ -483,6 +518,11 @@ static inline int sys_pipe(int pipefd[2])
 static inline int sys_dup2(int oldfd, int newfd)
 {
     return (int)syscall2(SYS_DUP2, (long)oldfd, (long)newfd);
+}
+
+static inline int sys_dup(int oldfd)
+{
+    return (int)syscall1(SYS_DUP, (long)oldfd);
 }
 
 static inline int sys_stat(const char *path, struct stat *st)
@@ -757,7 +797,7 @@ static inline int sys_statfs(unsigned int *total_kb, unsigned int *free_kb)
 }
 
 /* Emit `[shell:ready vt=N]` on COM1 when g_serial_verbose is set.
- * Called by /apps/sh.elf before each prompt so ui_test.sh's
+ * Called by /apps/sh.elf before each prompt so the in-guest test drivers'
  * `wait_for_serial` syncpoint works identically for both shells. */
 static inline void sys_shell_ready(void)
 {

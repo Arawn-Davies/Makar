@@ -13,6 +13,7 @@
 #include <kernel/vmm.h>
 #include <kernel/paging.h>
 #include <kernel/descr_tbl.h>
+#include <kernel/fpu.h>
 #include <kernel/task.h>
 #include <kernel/fd.h>
 #include <kernel/signal.h>
@@ -44,7 +45,7 @@ volatile int ktest_bg_done = 0;
  * inside the RUN macro in ktest_bg_task; total is fixed at compile time so
  * the bar length is known the moment shell_run starts. */
 volatile int ktest_bg_completed = 0;
-const    int ktest_bg_total     = 20;   /* keep in sync with RUN() calls below */
+const    int ktest_bg_total     = 21;   /* keep in sync with RUN() calls below */
 
 /* When set, suppress VGA output for pass lines and suite headers. */
 int ktest_muted = 0;
@@ -132,6 +133,35 @@ static void test_acpi_checksum(void)
 /* ---------------------------------------------------------------------------
  * Suite: string helpers (sanity-check the libc stubs used by the kernel)
  * ------------------------------------------------------------------------- */
+
+static void test_fpu(void)
+{
+    ktest_begin("fpu", "x87 FPU armed by fpu_init (fild/fmulp/fsqrt/fistp round-trips)");
+
+    /* Integer round-trips through the x87 stack prove the unit is live and
+     * computing after fpu_init() cleared CR0.EM and ran fninit. */
+    KTEST_ASSERT_EQ(fpu_imul(7, 3), 21);
+    KTEST_ASSERT_EQ(fpu_imul(-6, 5), -30);
+    KTEST_ASSERT_EQ(fpu_imul(0, 1234), 0);
+    KTEST_ASSERT_EQ(fpu_isqrt(144), 12);
+    KTEST_ASSERT_EQ(fpu_isqrt(16), 4);
+    KTEST_ASSERT_EQ(fpu_isqrt(0), 0);
+
+    /* x87 state survives a context switch: push a value onto the x87 stack,
+     * yield (forces a schedule -> fxsave/fxrstor round-trip), read it back.
+     * Also re-checks the unit is coherent after the round-trip. */
+    {
+        volatile int before = 0x1234;
+        int after = 0;
+        __asm__ volatile("fildl %0" :: "m"(before) : "st");
+        task_yield();
+        __asm__ volatile("fistpl %0" : "=m"(after) :: "st");
+        KTEST_ASSERT_EQ(after, 0x1234);
+        KTEST_ASSERT_EQ(fpu_imul(9, 9), 81);
+    }
+
+    ktest_summary();
+}
 
 static void test_string(void)
 {
@@ -919,7 +949,7 @@ static void test_rtc_unix_time(void)
  * unlink is exercised behaviourally against /tmp (tmpfs supports
  * delete_file).  mkdir/rmdir/rename are validated on the NULL-arg
  * rejection path; behavioural coverage on a writable backend happens
- * via ui-test on the ext2/FAT32 rootfs.
+ * via the in-guest test drivers on the ext2/FAT32 rootfs.
  * ------------------------------------------------------------------------- */
 
 static void test_posix_fs_syscalls(void)
@@ -2418,6 +2448,10 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
+    test_fpu();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
     test_string();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
@@ -2580,6 +2614,7 @@ void ktest_bg_task(void)
     /* POST / kernel-integrity suites only.
      * Userspace-visible syscall behaviour lives in ktest_uspace.elf (incore). */
     RUN(test_acpi_checksum);
+    RUN(test_fpu);
     RUN(test_string);
     RUN(test_partition);
     RUN(test_devfs);

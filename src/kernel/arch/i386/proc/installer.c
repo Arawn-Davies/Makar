@@ -991,8 +991,8 @@ static void installer_run_inner(void)
         return;
     }
 
-    /* Confirm destruction.  Emit a serial breadcrumb first so the ui-test
-     * runner can sync on it (the GUI confirm is a framebuffer-only menu with
+    /* Confirm destruction.  Emit a serial breadcrumb first so the test driver
+     * can sync on it (the GUI confirm is a framebuffer-only menu with
      * no serial mirror, so without this marker the test had to blind-pause). */
     Serial_WriteString("INSTALL>confirm\n");
     char w1[80];

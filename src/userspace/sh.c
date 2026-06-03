@@ -577,17 +577,38 @@ static int readline(const char *prompt, char *buf)
 
 /* ---------- tokenizer + glob ---------- */
 
-/* split `line` in-place on whitespace.  argv[0..argc-1] = tokens. */
+/* split `line` in-place on whitespace, honouring quotes.  argv[0..argc-1]
+ * = tokens.  '...' and "..." group runs (whitespace inside a quote does
+ * not split) and the quote characters themselves are removed.  Variable
+ * expansion already happened in run_line, so quotes here are purely about
+ * word-splitting + literal removal.  Compaction is in-place: the write
+ * pointer never overtakes the read pointer because we only ever drop the
+ * two quote bytes per quoted run. */
 static int tokenize(char *line, char **argv)
 {
     int argc = 0;
     char *p = line;
-    while (*p && argc < MAX_ARGS - 1) {
+    while (argc < MAX_ARGS - 1) {
         while (*p == ' ' || *p == '\t') p++;
         if (!*p) break;
         argv[argc++] = p;
-        while (*p && *p != ' ' && *p != '\t') p++;
-        if (*p) { *p = '\0'; p++; }
+        char *w = p;                 /* compacted write cursor */
+        while (*p && *p != ' ' && *p != '\t') {
+            if (*p == '\'') {        /* single quote: copy literally */
+                p++;
+                while (*p && *p != '\'') *w++ = *p++;
+                if (*p == '\'') p++;
+            } else if (*p == '"') {  /* double quote: same (already expanded) */
+                p++;
+                while (*p && *p != '"') *w++ = *p++;
+                if (*p == '"') p++;
+            } else {
+                *w++ = *p++;
+            }
+        }
+        char term = *p;              /* delimiter (space/tab) or NUL */
+        *w = '\0';                   /* terminate compacted token (w <= p) */
+        if (term) p++;               /* step over the delimiter */
     }
     argv[argc] = (char *)0;
     return argc;
@@ -802,7 +823,7 @@ static int run_builtin(int argc, char **argv, int *should_exit, int *exit_status
         if (n < 0) { put_s("pwd: error\n"); g_last_status = 1; }
         else {
             /* Emit the same serial-only marker that /apps/makbox.elf's
-             * pwd applet prints (`[makbox:pwd] `), so ui_test scenarios
+             * pwd applet prints (`[makbox:pwd] `), so the in-guest test drivers
              * that assert on it via `assert_serial_contains` keep working
              * regardless of whether `pwd` is dispatched as a sh.elf
              * builtin or routed through makbox.  Screen output stays
@@ -1795,9 +1816,15 @@ int main(int argc, char **argv, char **envp)
     (void)envp;
 
     const char *script_path = (const char *)0;
+    const char *cmd_string  = (const char *)0;   /* sh -c "<string>" */
     for (int i = 1; i < argc; i++) {
         if (s_eq(argv[i], "--login")) g_login = 1;
         else if (s_eq(argv[i], "--makmux")) g_quiet_start = 1;
+        else if (s_eq(argv[i], "-c")) {
+            /* Consume the next arg as the command string so it isn't
+             * mistaken for a script path below.  Backs libc system(3). */
+            if (i + 1 < argc) cmd_string = argv[++i];
+        }
         else if (s_starts(argv[i], "--user="))
             s_copy(g_username, argv[i] + 7, sizeof(g_username));
         else if (argv[i][0] != '-')   script_path = argv[i];
@@ -1855,6 +1882,11 @@ int main(int argc, char **argv, char **envp)
         }
     }
 
+    /* Non-interactive: `-c "<string>"` runs the string and exits with $?. */
+    if (cmd_string) {
+        return run_script_buf(cmd_string);
+    }
+
     /* Non-interactive: run script and exit. */
     if (script_path) {
         int fd = sys_open(script_path, O_RDONLY);
@@ -1879,7 +1911,7 @@ int main(int argc, char **argv, char **envp)
         if (((pos >> 16) & 0xFFFFu) != 0)
             put_c('\n');
 
-        /* Sync marker for ui_test.sh's wait_for_serial -- the kernel-shell
+        /* Sync marker for the in-guest test drivers -- the kernel-shell
          * REPL emits an identical [shell:ready vt=N] line before each
          * prompt, so existing scenarios work unchanged.  No-op unless
          * g_serial_verbose is on (kernel-side gate). */

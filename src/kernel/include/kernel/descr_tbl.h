@@ -144,4 +144,9 @@ void init_descriptor_tables();
 void tss_set_kernel_stack(uint32_t esp0);
 uint32_t tss_get_esp0(void);
 
+/* TLS GDT slot: index 6, selector (6<<3)|RPL3 = 0x33.  Backs set_thread_area. */
+#define GDT_TLS_INDEX    6
+#define GDT_TLS_SELECTOR 0x33u
+int gdt_set_tls(uint32_t base, uint32_t limit, int limit_in_pages, int present);
+
 #endif // DESCRIPTOR_TABLES_H

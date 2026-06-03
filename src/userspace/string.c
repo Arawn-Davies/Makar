@@ -7,6 +7,7 @@
  * easier to audit and saves <50 LoC of word-alignment dance.
  */
 #include "string.h"
+#include "errno.h"   /* errno code names for strerror() */
 
 void *memcpy(void *dst, const void *src, string_size_t n)
 {
@@ -133,4 +134,71 @@ char *strstr(const char *hay, const char *needle)
         if (!*n) return (char *)hay;
     }
     return 0;
+}
+
+/* ---- POSIX tokeniser ------------------------------------------------- */
+
+static int str_in_set(char c, const char *set)
+{
+    for (; *set; set++) if (*set == c) return 1;
+    return 0;
+}
+
+char *strtok_r(char *str, const char *delim, char **saveptr)
+{
+    char *s = str ? str : *saveptr;
+    if (!s) return 0;
+    /* Skip leading delimiters. */
+    while (*s && str_in_set(*s, delim)) s++;
+    if (!*s) { *saveptr = 0; return 0; }
+    char *tok = s;
+    /* Advance to the next delimiter (or end). */
+    while (*s && !str_in_set(*s, delim)) s++;
+    if (*s) { *s = '\0'; *saveptr = s + 1; }
+    else    { *saveptr = 0; }
+    return tok;
+}
+
+char *strtok(char *str, const char *delim)
+{
+    static char *save;
+    return strtok_r(str, delim, &save);
+}
+
+/* ---- strerror -------------------------------------------------------- *
+ * Maps the errno values Makar's wrappers set (see errno.h) to short
+ * messages.  Unknown codes fall through to a static "Unknown error"
+ * string (non-reentrant tail, matching every real libc's strerror). */
+char *strerror(int errnum)
+{
+    switch (errnum) {
+    case 0:       return "Success";
+    case EPERM:   return "Operation not permitted";
+    case ENOENT:  return "No such file or directory";
+    case ESRCH:   return "No such process";
+    case EINTR:   return "Interrupted system call";
+    case EIO:     return "Input/output error";
+    case ENXIO:   return "No such device or address";
+    case E2BIG:   return "Argument list too long";
+    case ENOEXEC: return "Exec format error";
+    case EBADF:   return "Bad file descriptor";
+    case ECHILD:  return "No child processes";
+    case EAGAIN:  return "Resource temporarily unavailable";
+    case ENOMEM:  return "Cannot allocate memory";
+    case EACCES:  return "Permission denied";
+    case EFAULT:  return "Bad address";
+    case EBUSY:   return "Device or resource busy";
+    case EEXIST:  return "File exists";
+    case ENOTDIR: return "Not a directory";
+    case EISDIR:  return "Is a directory";
+    case EINVAL:  return "Invalid argument";
+    case ENFILE:  return "Too many open files in system";
+    case EMFILE:  return "Too many open files";
+    case ENOTTY:  return "Inappropriate ioctl for device";
+    case EFBIG:   return "File too large";
+    case ENOSPC:  return "No space left on device";
+    case EROFS:   return "Read-only file system";
+    case ENOSYS:  return "Function not implemented";
+    default:      return "Unknown error";
+    }
 }

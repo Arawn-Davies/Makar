@@ -2,7 +2,7 @@
  * hello-tcc.c -- canonical "Hello, TCC" sample, kept self-contained.
  *
  * This source is installed at /usr/share/examples/hello-tcc.c so the
- * ui-test scenario `test_tcc_hello` can compile a known-good source
+ * the in-guest test drivers can compile a known-good source
  * with tcc on a running Makar guest, exec the output, and assert the
  * greeting on serial.  Avoids the libc shim so TCC isn't asked to
  * resolve stdio.h / malloc.h before the bring-up is proven.

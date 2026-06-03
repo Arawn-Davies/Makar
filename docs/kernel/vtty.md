@@ -76,10 +76,9 @@ mak.sh0 (the underlying ring-3 login shell spawned at boot) occupies
 
 Painting the framebuffer from `vtty_switch` directly meant doing thousands
 of pixel writes inside the keyboard IRQ handler. That held the i8042's
-1-byte OBF full long enough that the edge-triggered PIC missed subsequent
-key edges — the same failure shape as PR #127's regression. Recording a
-pending target and letting `keyboard_getchar` drain it in task context
-keeps the IRQ short.
+1-byte OBF full long enough that the edge-triggered PIC could miss subsequent
+key edges. Recording a pending target and letting `keyboard_getchar` drain it
+in task context keeps the IRQ short.
 
 ## Status bar
 

@@ -9,7 +9,7 @@
  *   CWD     - SYS_GETCWD / SYS_CHDIR round-trip
  *
  * Exit 0 = all pass, 1 = any failure.  incore.sh runs this and checks $?.
- * No HMP, no sendkey, no serial grep.
+ * Pure in-guest: exit status only, no host input, no serial grep.
  */
 #include "syscall.h"
 

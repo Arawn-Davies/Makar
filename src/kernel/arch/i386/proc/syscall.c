@@ -26,6 +26,7 @@
 #include <kernel/syscall.h>
 #include <kernel/isr.h>
 #include <kernel/task.h>
+#include <kernel/descr_tbl.h>
 #include <kernel/fd.h>
 #include <kernel/signal.h>
 #include <kernel/tty.h>
@@ -826,7 +827,12 @@ void syscall_dispatch(registers_t *regs)
     case SYS_CARET_STYLE: {
         if (!vesa_tty_is_ready()) { regs->eax = 0; break; }
         uint32_t prev = vesa_tty_get_caret_style();
-        vesa_tty_set_caret_style(regs->ebx);
+        /* The caret style is a single live-display property; only let the
+         * focused VT's task change it, else a backgrounded app (vix's block
+         * caret) bleeds onto the visible VT.  Still return prev so callers
+         * can save/restore. */
+        if (vtty_is_focused())
+            vesa_tty_set_caret_style(regs->ebx);
         regs->eax = prev;
         break;
     }
@@ -1027,6 +1033,33 @@ void syscall_dispatch(registers_t *regs)
     }
 
     /* ------------------------------------------------------------------
+     * SYS_DUP(41): duplicate oldfd onto the lowest-numbered free fd.
+     * EBX = oldfd
+     * Returns: new fd on success, -1 on error (bad oldfd / table full).
+     *
+     * Same shallow-copy semantics as SYS_DUP2 below (FD_KIND_PIPE shares
+     * the ring via refcount bump; FILE slots alias their buffer pointer).
+     * ------------------------------------------------------------------ */
+    case SYS_DUP: {
+        int oldfd = (int)regs->ebx;
+        task_t *cur = task_current();
+        fd_table_t *tbl = cur ? cur->fd_table : NULL;
+        if (!tbl) { regs->eax = (uint32_t)-1; break; }
+        fd_entry_t *oe = fd_get(tbl, oldfd);
+        if (!oe) { regs->eax = (uint32_t)-1; break; }
+        int newfd = fd_alloc(tbl);
+        if (newfd < 0) { regs->eax = (uint32_t)-1; break; }
+        fd_entry_t *ne = &tbl->slots[newfd];
+        memcpy(ne, oe, sizeof(*ne));
+        if (oe->kind == FD_KIND_PIPE && ne->pipe) {
+            if (ne->pipe_is_writer) ne->pipe->refcount_w++;
+            else                    ne->pipe->refcount_r++;
+        }
+        regs->eax = (uint32_t)newfd;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
      * SYS_DUP2(63): duplicate oldfd onto newfd, closing newfd first.
      * EBX = oldfd, ECX = newfd
      * Returns: newfd on success, -1 on error.
@@ -1098,6 +1131,137 @@ void syscall_dispatch(registers_t *regs)
         t->user_brk = new_brk;
         regs->eax   = new_brk;
     brk_done:
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_MMAP2(192): anonymous mmap only.  Linux i386 ABI; args:
+     *   EBX=addr (hint, ignored unless future MAP_FIXED), ECX=len,
+     *   EDX=prot, ESI=flags, (EDI=fd, EBP=pgoff -- ignored for anon).
+     * Allocates ceil(len/4KiB) zeroed frames into a per-task bump window
+     * [USER_MMAP_BASE, stack) and returns the base.  File-backed mmap and
+     * MAP_FIXED are unsupported -> MAP_FAILED ((void*)-1).  This is what
+     * a hosted malloc (musl mallocng) needs beyond brk.
+     * ------------------------------------------------------------------ */
+    case SYS_MMAP2: {
+        #define USER_MMAP_BASE 0x90000000u
+        #define MMAP_MAP_ANONYMOUS 0x20u
+        #define MMAP_MAP_FIXED     0x10u
+        uint32_t len   = regs->ecx;
+        uint32_t flags = regs->esi;
+        task_t  *t     = task_current();
+
+        if (!t || len == 0 || !(flags & MMAP_MAP_ANONYMOUS) ||
+            (flags & MMAP_MAP_FIXED)) {
+            regs->eax = (uint32_t)-1; break;          /* MAP_FAILED */
+        }
+
+        uint32_t pages = (len + 0xFFFu) >> 12;
+        if (t->mmap_next == 0) t->mmap_next = USER_MMAP_BASE;
+        uint32_t base = t->mmap_next;
+
+        /* Don't collide with the ring-3 stack region. */
+        if (base + (pages << 12) >= 0xBFFF0000u - (8u * 0x1000u)) {
+            regs->eax = (uint32_t)-1; break;
+        }
+
+        for (uint32_t i = 0; i < pages; i++) {
+            uint32_t phys = pmm_alloc_frame();
+            if (phys == PMM_ALLOC_ERROR) {
+                /* Roll back what we mapped so far. */
+                for (uint32_t j = 0; j < i; j++) {
+                    uint32_t va = base + (j << 12);
+                    vmm_unmap_page(t->page_dir, va);
+                }
+                regs->eax = (uint32_t)-1; break;
+            }
+            memset((void *)phys, 0, 0x1000u);
+            vmm_map_page(t->page_dir, base + (i << 12), phys,
+                         VMM_FLAG_USER | VMM_FLAG_WRITABLE);
+        }
+        t->mmap_next = base + (pages << 12);
+        regs->eax = base;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_MUNMAP(91): unmap + free a range previously returned by mmap2.
+     * EBX=addr, ECX=len.  No address reuse (mmap_next never rewinds) --
+     * fine for bring-up.  Returns 0 (we don't validate the range).
+     * ------------------------------------------------------------------ */
+    case SYS_MUNMAP: {
+        uint32_t addr = regs->ebx & ~0xFFFu;
+        uint32_t len  = regs->ecx;
+        task_t  *t    = task_current();
+        if (t && len) {
+            uint32_t pages = (len + 0xFFFu) >> 12;
+            for (uint32_t i = 0; i < pages; i++)
+                vmm_unmap_page(t->page_dir, addr + (i << 12));
+        }
+        regs->eax = 0;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * musl/Linux process-startup stubs.  Enough for a static-musl binary's
+     * __init_libc to get through start-up; not full implementations.
+     * ------------------------------------------------------------------ */
+    case SYS_EXIT_GROUP: {           /* exit_group == exit for our 1-thread procs */
+        task_t *t = task_current();
+        if (t) t->exit_status = (int)regs->ebx;
+        task_exit();                 /* does not return */
+        break;
+    }
+    case SYS_SET_TID_ADDRESS: {       /* musl stores clear_child_tid; just give a tid */
+        task_t *t = task_current();
+        regs->eax = (uint32_t)(t ? t->pid : 1);
+        break;
+    }
+    case SYS_RT_SIGPROCMASK:          /* no real signal mask plumbing yet */
+        regs->eax = 0;
+        break;
+    case SYS_IOCTL:                   /* isatty() probes this; report not-a-tty */
+        regs->eax = (uint32_t)(-25);  /* -ENOTTY */
+        break;
+    case SYS_FUTEX:                   /* single-threaded: locks never contend */
+        regs->eax = 0;
+        break;
+
+    /* ------------------------------------------------------------------
+     * SYS_SET_THREAD_AREA(243): install the calling task's TLS segment.
+     * EBX = struct user_desc* { entry_number, base_addr, limit, flags }.
+     * entry_number == -1 -> use the one TLS GDT slot (index 6) and write the
+     * index back.  Sets task->tls_gs so the scheduler restores it on switch.
+     * ------------------------------------------------------------------ */
+    case SYS_SET_THREAD_AREA: {
+        uint32_t *u = (uint32_t *)(uintptr_t)regs->ebx;
+        task_t   *t = task_current();
+        if (!u || !t) { regs->eax = (uint32_t)-1; break; }
+
+        uint32_t entry = u[0];
+        uint32_t base  = u[1];
+        uint32_t limit = u[2];
+        uint32_t flags = u[3];
+        int limit_in_pages = (int)((flags >> 4) & 1u);
+        int present        = !((flags >> 5) & 1u);   /* seg_not_present inverted */
+
+        if (entry != 0xFFFFFFFFu && entry != (uint32_t)GDT_TLS_INDEX) {
+            regs->eax = (uint32_t)-1; break;          /* only one TLS slot */
+        }
+
+        int idx = gdt_set_tls(base, limit, limit_in_pages, present);
+        u[0] = (uint32_t)idx;                         /* write back entry_number */
+
+        t->tls_base   = base;
+        t->tls_limit  = limit;
+        t->tls_pages  = (uint8_t)limit_in_pages;
+        t->tls_active = 1;
+        t->tls_gs     = ((uint32_t)idx << 3) | 3u;    /* selector 0x33 */
+
+        { uint16_t sel = (uint16_t)t->tls_gs;
+          __asm__ volatile("movw %0, %%gs" :: "r"(sel)); }
+
+        regs->eax = 0;
         break;
     }
 
@@ -1789,8 +1953,8 @@ void syscall_dispatch(registers_t *regs)
     case SYS_SHELL_READY: {
         /* Emit the `[shell:ready vt=N]` sync marker on COM1.  Gated on
          * g_serial_verbose so production boots don't pay the cost.
-         * Userspace shell calls this before each prompt so ui_test.sh's
-         * wait_for_serial behaviour is identical to the kernel shell. */
+         * Userspace shell calls this before each prompt so the in-guest test
+         * drivers' serial sync is identical to the kernel shell. */
         if (g_serial_verbose) {
             task_t *t = task_current();
             int vt = (t && t->tty >= 0) ? t->tty : 0;

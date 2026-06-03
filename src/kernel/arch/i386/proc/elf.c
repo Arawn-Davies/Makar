@@ -23,6 +23,7 @@
 #include <kernel/task.h>
 #include <kernel/syscall.h>
 #include <kernel/tty.h>
+#include <kernel/timer.h>
 #include <string.h>
 
 /* User stack top - same convention as usertest.c. */
@@ -185,6 +186,9 @@ int elf_exec(const char *path, int argc, const char *const *argv)
         if (end > top_vaddr) top_vaddr = end;
     }
     task_current()->user_brk = top_vaddr;
+    task_current()->mmap_next = 0;   /* fresh address space: reset anon-mmap window */
+    task_current()->tls_gs = 0x23u;  /* fresh image: drop any prior TLS */
+    task_current()->tls_active = 0;
 
     /* 6. Map user stack (USER_STACK_PAGES pages, read-write).  Only the
      * top page is used to write argc/argv; the rest grow downward as
@@ -246,22 +250,46 @@ int elf_exec(const char *path, int argc, const char *const *argv)
         uargv[i] = stack_virt + off;
     }
 
+    /* 16 bytes of entropy for AT_RANDOM (musl reads it for the stack/TLS
+     * canary).  Packed in the string area above the pointer table. */
+    uint32_t rand_ptr = 0;
+    if (off >= 16u) {
+        off -= 16u;
+        uint32_t seed = timer_get_ticks() ^ 0x9E3779B9u;
+        for (int i = 0; i < 16; i++) {
+            seed = seed * 1103515245u + 12345u;
+            spage[off + i] = (uint8_t)(seed >> 16);
+        }
+        rand_ptr = stack_virt + off;
+    }
+
     /* Align down to 4 bytes before writing pointer-sized values. */
     off &= ~3u;
 
     /*
      * Minimum space required below 'off' for the pointer table + argc:
-     *   1 word  envp[0]=NULL
-     *   1 word  argv[argc]=NULL
+     *   6 words  auxv: AT_PAGESZ, AT_RANDOM, AT_NULL (type+val each)
+     *   1 word   envp[0]=NULL
+     *   1 word   argv[argc]=NULL
      *   argc words  argv[0..argc-1]
-     *   1 word  argc
+     *   1 word   argc
      */
-    uint32_t needed = (uint32_t)(argc + 3) * 4u;
+    uint32_t needed = (uint32_t)(argc + 9) * 4u;
     if (off < needed) {
         /* Pathological case - give up on arguments rather than corrupt memory. */
         argc = 0;
         off  = PAGE_SIZE & ~3u;
     }
+
+    /* auxv (System V i386), highest addr -> lowest: AT_NULL terminator,
+     * AT_RANDOM, AT_PAGESZ.  musl's _start walks this after the envp NULL.
+     * Each entry is {type, val} with type at the lower address. */
+    off -= 4u; *(uint32_t *)(spage + off) = 0u;          /* AT_NULL   val  */
+    off -= 4u; *(uint32_t *)(spage + off) = 0u;          /* AT_NULL   type */
+    off -= 4u; *(uint32_t *)(spage + off) = rand_ptr;    /* AT_RANDOM val  */
+    off -= 4u; *(uint32_t *)(spage + off) = 25u;         /* AT_RANDOM type */
+    off -= 4u; *(uint32_t *)(spage + off) = PAGE_SIZE;   /* AT_PAGESZ val  */
+    off -= 4u; *(uint32_t *)(spage + off) = 6u;          /* AT_PAGESZ type */
 
     /* envp[0] = NULL (empty environment). */
     off -= 4u; *(uint32_t *)(spage + off) = 0u;

@@ -13,10 +13,13 @@ the IBM VGA BIOS, which has been freely distributable since the early
 (Linux, FreeBSD, OpenBSD, FreeDOS, GRUB, etc.) - it is widely treated
 as **public domain**.
 
-This Makar copy was retyped from the Linux `font_8x16.c` table.  No
-Linux kernel source code is statically linked or otherwise included in
-the Makar build; the table is data only, used by Makar's own VGA
-text-mode font upload routine in
+This Makar copy was retyped from the Linux `font_8x16.c` table. It is the only
+known verbatim Linux-tree-origin material in Makar, and it is public-domain
+font data, not GPL-covered Linux implementation code.
+
+No Linux C or assembly implementation code is statically linked, compiled, or
+otherwise included in the Makar build. The table is data only, used by Makar's
+own VGA text-mode font upload routine in
 `src/kernel/arch/i386/display/bochs_vbe.c`.
 
 ## Gratitude

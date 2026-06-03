@@ -54,6 +54,16 @@ typedef struct task {
 
     /* --- user memory --- */
     uint32_t      user_brk;  /* current user-space heap break (0 = not a user process) */
+    uint32_t      mmap_next; /* bump pointer for anonymous mmap (0 = lazily init to USER_MMAP_BASE) */
+    uint8_t       fpu_state[512] __attribute__((aligned(16))); /* x87/SSE fxsave area, saved/restored on context switch */
+    /* Thread-Local Storage (set_thread_area): per-task %gs.  tls_gs defaults
+     * to the user-data selector 0x23; set_thread_area switches it to 0x33 and
+     * fills base/limit so the scheduler reloads the GDT TLS slot on switch. */
+    uint32_t      tls_gs;     /* %gs selector for this task (default 0x23)         */
+    uint32_t      tls_base;   /* TLS segment base (thread-pointer block)           */
+    uint32_t      tls_limit;  /* TLS segment limit                                 */
+    uint8_t       tls_pages;  /* limit granularity: 1 = pages, 0 = bytes           */
+    uint8_t       tls_active; /* 1 once set_thread_area ran                        */
 
     /* --- per-task working directory ---
      * Authoritative storage for the task's cwd.  vfs_getcwd() / vfs_cd()

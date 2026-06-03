@@ -19,6 +19,7 @@
 #include <kernel/installer.h>
 #include <kernel/admin.h>
 #include <kernel/auth.h>
+#include <kernel/vtty.h>
 
 static void cmd_echo(int argc, char **argv)
 {
@@ -89,6 +90,66 @@ static void cmd_tasks(int argc, char **argv)
         t_writestring(state_names[t->state]);
         t_putchar('\n');
     }
+}
+
+/* cmd_ps -- richer columnar task listing than `tasks` / `cat /proc/tasks`.
+ * Columns: PID PPID S RING TTY NAME.  S is the one-letter state (R/r/Z/X);
+ * RING is 3 for ring-3 user processes (user_brk != 0) else 0. */
+static void cmd_ps(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    int n = task_count();
+
+    t_writestring("  PID  PPID S RING TTY NAME\n");
+    for (int i = 0; i < n; i++) {
+        task_t *t = task_get(i);
+        if (!t)
+            continue;
+        if (t->state == TASK_DEAD)   /* reaped/finished one-shots */
+            continue;
+
+        /* PID, right-aligned in a 5-col field (no printf in the kernel). */
+        char s = (t->state == TASK_RUNNING) ? 'R'
+               : (t->state == TASK_READY)   ? 'r'
+               : (t->state == TASK_ZOMBIE)  ? 'Z' : 'X';
+
+        t_writestring("  ");
+        t_dec((uint32_t)t->pid);
+        t_writestring("  ");
+        t_dec((uint32_t)(t->parent_pid < 0 ? 0 : t->parent_pid));
+        t_writestring("   ");
+        t_putchar(s);
+        t_writestring("    ");
+        t_dec(t->user_brk ? 3u : 0u);   /* user_brk != 0 == ring-3 process */
+        t_writestring("  ");
+        if (t->tty < 0) t_putchar('-');
+        else            t_dec((uint32_t)t->tty);
+        t_writestring("  ");
+        t_writestring(t->name ? t->name : "(noname)");
+        t_putchar('\n');
+    }
+}
+
+/* cmd_tty -- print the calling task's terminal, Linux `tty`-style.
+ * Maps task->tty: the hidden root console -> /dev/console, VT slots 0..N ->
+ * /dev/tty1..ttyN (1-based like Linux), unbound tasks -> "not a tty". */
+static void cmd_tty(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    task_t *t = task_current();
+    int slot = t ? t->tty : TASK_TTY_NONE;
+
+    if (slot == TASK_TTY_NONE) {
+        t_writestring("not a tty\n");
+        return;
+    }
+    if (slot == VTTY_ROOT_SLOT) {
+        t_writestring("/dev/console\n");
+        return;
+    }
+    t_writestring("/dev/tty");
+    t_dec((uint32_t)(slot + 1));   /* slot 0 -> tty1 */
+    t_putchar('\n');
 }
 
 /* admin_shutdown / admin_reboot -- called by both the rescue shell and
@@ -209,8 +270,8 @@ static void cmd_sched_quantum(int argc, char **argv)
 /* `verbose [on|off]` - toggle the tty-to-serial mirror.  Linux-equivalent
  * to flipping `console=ttyS0` on the kernel cmdline at runtime.  Without
  * an argument, just reports the current state.  Used both interactively
- * (debugging a remote system over COM1) and by ui_test scenarios that
- * need to grep shell output from the serial log. */
+ * (debugging a remote system over COM1) and by the in-guest test drivers that
+ * grep shell output from the serial log. */
 /* admin_verbose: 1 = on, 0 = off, -1 = query.  Always prints the final
  * state.  Returns the post-call state (0 or 1) or -1 on bad input. */
 int admin_verbose(int onoff)
@@ -321,6 +382,8 @@ const shell_cmd_entry_t system_cmds[] = {
     { "meminfo",  cmd_meminfo  },
     { "uptime",   cmd_uptime   },
     { "tasks",    cmd_tasks    },
+    { "ps",       cmd_ps       },   /* richer columns: PID PPID S RING TTY NAME */
+    { "tty",      cmd_tty      },   /* print controlling terminal (Linux `tty`) */
     { "shutdown", cmd_shutdown },
     { "reboot",   cmd_reboot   },
     { "panic",    cmd_panic    },
