@@ -27,6 +27,7 @@ src/kernel/arch/*/dt_asm
 
 # Userspace build artefacts
 src/userspace/*.o
+src/userspace/*.d
 src/userspace/*.a
 src/userspace/*.elf
 src/userspace/.tcc.stamp

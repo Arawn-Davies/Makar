@@ -9,7 +9,7 @@ OBJCOPY=$(HOST)-objcopy
 
 CFLAGS?=-O2 -g
 CFLAGS:=$(CFLAGS) -std=c11 -ffreestanding -fno-stack-protector \
-        -Wall -Wextra -nostdlib -nostdinc -I.
+        -Wall -Wextra -nostdlib -nostdinc -I. -MMD -MP
 
 LDFLAGS=-T link.ld -nostdlib
 
@@ -171,6 +171,8 @@ endif
 install-headers:
 
 clean:
-	rm -f *.o $(PROGS) *.elf libc.a
+	rm -f *.o *.d $(PROGS) *.elf libc.a
 
 .PHONY: all install install-headers clean
+
+-include $(wildcard *.d)

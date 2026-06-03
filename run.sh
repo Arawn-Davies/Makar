@@ -108,6 +108,10 @@ _usage() {
     exit "${1:-1}"
 }
 
+if [ $# -eq 0 ]; then
+    _usage 0
+fi
+
 case "${1:-}" in
     iso|hdd|gdb)
         if [ -z "${2:-}" ]; then _usage; fi
@@ -141,7 +145,7 @@ case "${1:-}" in
         esac ;;
     clean)
         MODE="clean"; shift 1 ;;
-    -h|--help|help|"")
+    -h|--help|help)
         _usage 0 ;;
     *)
         echo "ERROR: unknown target '$1'" >&2
