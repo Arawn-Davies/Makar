@@ -95,8 +95,9 @@ bring-up stalls.
 
 - [x] toolchain built (`build-musl-cross.sh`) — `i686-linux-musl-gcc` 9.4.0; static i386 musl ELFs verified
 - [x] x87 `fpu_init()` + **per-task `fxsave`/`fxrstor` on context switch** (FPU armed at boot, state survives switches — `test_fpu` ktest, 671 passed)
-- [ ] ELF loader emits auxv
+- [x] ELF loader emits auxv (`AT_PAGESZ`/`AT_RANDOM`/`AT_NULL`; iso test green, no regression)
 - [x] `mmap(MAP_ANONYMOUS)` + `munmap` (`SYS_MMAP2`/`SYS_MUNMAP`; anon-only bump window, validated by alloctest #19)
-- [ ] `set_thread_area` + `%gs` TLS
-- [ ] startup syscall stubs
+- [x] startup syscall stubs: `exit_group`/`set_tid_address`/`rt_sigprocmask`/`ioctl`
+- [ ] **`writev`** (`SYS_WRITEV 146`) — musl's printf output path; needs the write body extracted into a shared helper
+- [ ] **`set_thread_area` + `%gs` TLS** — the long pole: GDT TLS slot, per-task base, `%gs` preserved across `int 0x80`/`iret`. musl can't reach `main` without it.
 - [ ] first static-musl `hello` runs on Makar
