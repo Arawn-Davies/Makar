@@ -57,7 +57,7 @@ Detailed build and test behavior:
 | POSIX compatibility status | [`docs/posix.md`](docs/posix.md) |
 | Syscall ABI and syscall table | [`docs/syscalls.md`](docs/syscalls.md) |
 | Userspace libc and static-musl bring-up | [`docs/userland-libc.md`](docs/userland-libc.md) |
-| In-OS TinyCC status | [`docs/tcc-feasibility.md`](docs/tcc-feasibility.md) |
+| In-OS TinyCC status | [`docs/tcc.md`](docs/tcc.md) |
 | Kernel internals | [`docs/internals.md`](docs/internals.md) |
 | Per-subsystem reference | [`docs/kernel/`](docs/kernel/) |
 | Roadmap | [`docs/roadmap.md`](docs/roadmap.md) |

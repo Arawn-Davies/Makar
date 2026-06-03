@@ -18,7 +18,7 @@ Start here when you need implementation detail rather than a quick run command.
 | [Syscalls](syscalls.md) | The Linux i386-compatible syscall subset plus Makar extension numbers for terminal, framebuffer, keyboard, VFS, admin, and VT operations. |
 | [POSIX compatibility](posix.md) | Current POSIX-shaped behavior and known gaps for process, fd, VFS, memory, signals, time, shell, and libc work. |
 | [Userland libc](userland-libc.md) | The userspace libc shim, installed sysroot, header surface, TCC integration, and static-musl bring-up status. |
-| [TCC feasibility](tcc-feasibility.md) | What works for in-OS TinyCC today, what remains unsupported, and how TCC relates to the hosted-libc roadmap. |
+| [TinyCC in Makar](tcc.md) | Shipped in-OS compiler, sysroot layout, supported workflows, test coverage, and current limits. |
 | [Testing](testing.md) | In-guest test modes, expected serial markers, `run.sh` entry points, and guidance for adding coverage. |
 
 The kernel subsystem pages are intentionally more local and file-oriented. The

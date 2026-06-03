@@ -744,7 +744,7 @@ surface (writable fds, `O_CREAT`/`O_TRUNC`/`O_APPEND`, `SYS_STAT`/`FSTAT`,
 (`malloc`/`stdio`/`setjmp`/`ctype`/`stdlib`/POSIX wrappers), both with
 ktest + in-guest-test coverage.  The boot banner reports `gcc-host` /
 `tcc-host` / `tcc-in-os` based on the build path.  See
-[TCC feasibility](tcc-feasibility.md) for the original spike and
+[TinyCC in Makar](tcc.md) for the shipped compiler reference and
 [rebuilding the kernel](rebuild-kernel.md) for the maintained guide.
 
 ---

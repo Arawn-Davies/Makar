@@ -27,7 +27,7 @@ and [kernel rebuild guide](rebuild-kernel.md)).
 - **[Testing](testing.md)** — ktest, GDB checkpoint suite, in-guest script drivers + key-injection tests
 - **[BASIC](basic.md)** — the C64-style integer BASIC interpreter (`basic.elf`)
 - **[Userland libc](userland-libc.md)** — current userspace libc shim and static-musl bring-up state
-- **[TCC in-OS compiler](tcc-feasibility.md)** — porting TCC to compile C on a running Makar system
+- **[TinyCC in Makar](tcc.md)** — shipped in-OS compiler, sysroot, supported workflows, and limits
 - **[Rebuilding the kernel inside Makar](rebuild-kernel.md)** — `/apps/rebuild-kernel.sh`, build-origin banners, installing the freshly built kernel
 - **[Makar × Medli](makar-medli.md)** — sibling-project co-operation roadmap and VIX→VICS history
 - **[Repo on GitHub](https://github.com/Arawn-Davies/makar)**

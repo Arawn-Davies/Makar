@@ -194,7 +194,7 @@ in-OS asm still parse, without paying for the full rebuild-kernel run.
 ## See also
 
 - `docs/history.md` — shipped v0.9 self-host changes
-- `docs/tcc-feasibility.md` — why TCC, what's covered, what's left
+- `docs/tcc.md` — TinyCC packaging, supported workflows, and limits
 - `docs/userland-libc.md` — the libc side of the same effort
 - `src/userspace/rebuild-kernel.sh` — the generated driver (do not
   edit; edit `build-kernel-tcc.sh` and re-run it)
