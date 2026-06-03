@@ -81,6 +81,14 @@ start on Makar yet. Ordered by what musl touches at process start:
 Recommended order: **x87 init → ELF auxv → mmap(anon) → set_thread_area → the
 syscall stubs → first `hello` runs.** Each is independently testable.
 
+## Full self-hosting (musl + a real toolchain *on* Makar)
+
+Running cross-built musl binaries (above) is different from running the
+*toolchain* in-OS. The latter — porting musl as the system libc, then binutils,
+then GCC — is assessed in **[`self-hosting.md`](self-hosting.md)**: Tier 1 (musl
+libc) is bounded and high-value; GCC-on-Makar is a 64-bit/demand-paged
+long-horizon project. TCC stays the practical in-OS compiler.
+
 ## Lighter alternative: newlib
 
 If musl's TLS/mmap startup cost is too steep to start with, **newlib** is the
