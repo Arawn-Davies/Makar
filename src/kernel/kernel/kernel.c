@@ -160,7 +160,7 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	t_writestring("Initializing x87 FPU");
 	kprint_ok();
 	fpu_init();
-	KLOG("fpu: x87 armed (fninit; per-task save/restore TODO)\n");
+	KLOG("fpu: x87 armed (fninit) + per-task fxsave/fxrstor on context switch\n");
 
 	t_writestring("Installing exception handlers");
 	kprint_ok();

@@ -4,6 +4,10 @@
 #include <kernel/fpu.h>
 #include <stdint.h>
 
+/* Clean default FXSAVE image captured once at fpu_init() (after fninit), then
+ * copied into every fresh task's save area so its first fxrstor is valid. */
+static uint8_t s_clean_state[FPU_STATE_SIZE] __attribute__((aligned(16)));
+
 static inline uint32_t cpuid1_edx(void)
 {
     uint32_t a, b, c, d;
@@ -35,7 +39,27 @@ void fpu_init(void)
         if (edx & (1u << 25))        /* SSE */
             cr4 |= (1u << 10);       /* OSXMMEXCPT */
         __asm__ volatile("mov %0, %%cr4" :: "r"(cr4) : "memory");
+
+        /* Snapshot the clean state for fresh tasks. */
+        __asm__ volatile("fxsave (%0)" :: "r"(s_clean_state) : "memory");
     }
+}
+
+void fpu_save(void *area)
+{
+    __asm__ volatile("fxsave (%0)" :: "r"(area) : "memory");
+}
+
+void fpu_restore(const void *area)
+{
+    __asm__ volatile("fxrstor (%0)" :: "r"(area) : "memory");
+}
+
+void fpu_init_state(void *area)
+{
+    uint8_t *d = (uint8_t *)area;
+    for (int i = 0; i < FPU_STATE_SIZE; i++)
+        d[i] = s_clean_state[i];
 }
 
 int fpu_imul(int a, int b)

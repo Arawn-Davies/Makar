@@ -25,4 +25,14 @@ void fpu_init(void);
 int fpu_imul(int a, int b);   /* round(a * b)   via fild/fmulp/fistp */
 int fpu_isqrt(int x);         /* round(sqrt(x)) via fild/fsqrt/fistp */
 
+/*
+ * Per-task x87/SSE state save+restore across context switches.  Each area is
+ * 512 bytes, 16-byte aligned (FXSAVE/FXRSTOR layout).  fpu_init_state() seeds
+ * a fresh task's area with the clean default captured at fpu_init().
+ */
+#define FPU_STATE_SIZE 512
+void fpu_save(void *area_512);          /* fxsave  */
+void fpu_restore(const void *area_512); /* fxrstor */
+void fpu_init_state(void *area_512);    /* = clean default state */
+
 #endif /* _KERNEL_FPU_H */

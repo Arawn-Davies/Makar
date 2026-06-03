@@ -15,9 +15,9 @@ a UNIX®" disclaimer.
 
 Makar implements a **POSIX-shaped subset** sufficient to host
 freestanding C programs, a self-rebuilding TCC, and a small busybox.
-It is **not** SUS-conformant: the x87 FPU is armed at boot (`fpu_init`) but
-per-task state isn't saved across context switches yet (so FP isn't
-multitask-safe); no terminal driver
+It is **not** SUS-conformant: the x87 FPU is armed at boot (`fpu_init`) and
+its state is saved/restored per task across context switches (FP is
+multitask-safe), but `<math.h>` isn't shipped in libc yet; no terminal driver
 proper, no permission model, no process groups, no networking, no
 pipes/redirects, no threads, no mmap.  The shape is intentionally
 POSIX so libc ports (musl, uClibc-ng) drop in cleanly when those gaps
@@ -100,7 +100,7 @@ to `/usr/include/`.
 | `<sys/stat.h>` | `struct stat` with limited fields (see syscall table); `mkdir()` wrapper present (mode ignored) | No `chmod`/`umask` enforcement |
 | `<dirent.h>` | Full POSIX shape: `DIR *`, `opendir`/`readdir`/`closedir` over `SYS_READDIR(141)` | -- |
 | `<signal.h>` | `signal()`, `kill()`, sigframe trampoline | No `sigaction`, `sigprocmask`, `sigsuspend`, `pthread_kill` |
-| `<math.h>` | **Absent** (libc) | Kernel x87 FPU is now armed (`fpu_init`: CR0.EM=0 + `fninit` + CR4.OSFXSR), so FP instructions execute; but per-task `fxsave`/`fxrstor` across context switches is still pending, so FP isn't safe under preemption yet -- fixed-point recommended until that lands |
+| `<math.h>` | **Absent** (libc) | Kernel x87 FPU is armed (`fpu_init`: CR0.EM=0 + `fninit` + CR4.OSFXSR) and saved/restored per task (`fxsave`/`fxrstor`) on every context switch, so userspace FP is safe under preemption.  Only the libc `<math.h>` functions are still unshipped |
 | `<time.h>` / `<sys/time.h>` | `time()`, `gettimeofday()`, `clock_gettime()` (REALTIME + MONOTONIC); `struct timeval`/`timespec`; `struct tm`, `gmtime`/`gmtime_r`, `localtime`/`localtime_r` (== gmtime, UTC), `mktime`, `strftime` (`%Y %y %m %d %H %M %S %j %a %b %p %F %T %%`) | No timezone database (UTC only), no `nanosleep`, `asctime`, `ctime`, `difftime` |
 | `<pthread.h>` | **Absent** | No userspace threads |
 | `<locale.h>` / `<wchar.h>` | **Absent** | C locale assumed; no wide chars |

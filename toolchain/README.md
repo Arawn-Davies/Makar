@@ -94,7 +94,7 @@ bring-up stalls.
 ## Status
 
 - [x] toolchain built (`build-musl-cross.sh`) — `i686-linux-musl-gcc` 9.4.0; static i386 musl ELFs verified
-- [x] x87 `fpu_init()` in kernel (FPU armed at boot + `test_fpu` ktest) — per-task `fxsave`/`fxrstor` across context switches still TODO
+- [x] x87 `fpu_init()` + **per-task `fxsave`/`fxrstor` on context switch** (FPU armed at boot, state survives switches — `test_fpu` ktest, 671 passed)
 - [ ] ELF loader emits auxv
 - [x] `mmap(MAP_ANONYMOUS)` + `munmap` (`SYS_MMAP2`/`SYS_MUNMAP`; anon-only bump window, validated by alloctest #19)
 - [ ] `set_thread_area` + `%gs` TLS

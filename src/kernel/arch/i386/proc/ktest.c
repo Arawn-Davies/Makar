@@ -147,6 +147,19 @@ static void test_fpu(void)
     KTEST_ASSERT_EQ(fpu_isqrt(16), 4);
     KTEST_ASSERT_EQ(fpu_isqrt(0), 0);
 
+    /* x87 state survives a context switch: push a value onto the x87 stack,
+     * yield (forces a schedule -> fxsave/fxrstor round-trip), read it back.
+     * Also re-checks the unit is coherent after the round-trip. */
+    {
+        volatile int before = 0x1234;
+        int after = 0;
+        __asm__ volatile("fildl %0" :: "m"(before) : "st");
+        task_yield();
+        __asm__ volatile("fistpl %0" : "=m"(after) :: "st");
+        KTEST_ASSERT_EQ(after, 0x1234);
+        KTEST_ASSERT_EQ(fpu_imul(9, 9), 81);
+    }
+
     ktest_summary();
 }
 

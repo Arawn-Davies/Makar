@@ -16,6 +16,7 @@
 #include <kernel/signal.h>
 #include <kernel/heap.h>
 #include <kernel/vmm.h>
+#include <kernel/fpu.h>
 #include <kernel/paging.h>
 #include <kernel/descr_tbl.h>
 #include <kernel/system.h>
@@ -121,6 +122,7 @@ void tasking_init(void)
     idle->next     = idle;               /* circular list of one for now             */
     idle->pid      = 1;
     idle->user_brk = 0;
+    fpu_init_state(idle->fpu_state);
     /* Seed idle->cwd from the boot-time scratch cwd that vfs_init() /
      * vfs_auto_mount() populated (typically "/" after rootfs election).  This
      * is the one-shot handoff: from this point onward vfs_getcwd() routes
@@ -235,6 +237,7 @@ task_t *task_create(const char *name, void (*entry)(void))
     t->name        = name;
     t->user_brk    = 0;
     t->mmap_next   = 0;
+    fpu_init_state(t->fpu_state);
     t->pid         = next_pid++;
     t->parent_pid  = current_task ? current_task->pid : 0;
     t->exit_status = 0;
@@ -358,6 +361,8 @@ task_t *task_fork(registers_t *parent_regs)
     t->state       = TASK_READY;
     t->name        = current_task->name;     /* same image */
     t->user_brk    = current_task->user_brk;
+    t->mmap_next   = current_task->mmap_next;
+    fpu_init_state(t->fpu_state);   /* child starts clean (fork+exec common path) */
     t->pid         = next_pid++;
     t->parent_pid  = current_task->pid;       /* fork: parent is the caller */
     t->exit_status = 0;
@@ -568,6 +573,11 @@ static void schedule(void)
      * resume after task_switch and just restore IF -- the flag is
      * already clear so there's nothing more to do. */
     in_schedule = 0;
+    /* Save the outgoing task's x87/SSE state, restore the incoming task's.
+     * Fresh tasks have a clean fpu_init_state'd area, so their first restore
+     * here is valid. */
+    fpu_save(prev->fpu_state);
+    fpu_restore(current_task->fpu_state);
     task_switch(&prev->esp, current_task->esp);
 
     /* Re-entered task: restore the IF state we had on entry to this
