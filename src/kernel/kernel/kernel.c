@@ -4,6 +4,7 @@
 #include <kernel/tty.h>
 #include <kernel/vga.h>
 #include <kernel/descr_tbl.h>
+#include <kernel/fpu.h>
 #include <kernel/serial.h>
 #include <kernel/timer.h>
 #include <kernel/system.h>
@@ -155,6 +156,11 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	kprint_ok();
 	init_descriptor_tables();
 	KLOG("gdt/idt: descriptor tables loaded\n");
+
+	t_writestring("Initializing x87 FPU");
+	kprint_ok();
+	fpu_init();
+	KLOG("fpu: x87 armed (fninit; per-task save/restore TODO)\n");
 
 	t_writestring("Installing exception handlers");
 	kprint_ok();
