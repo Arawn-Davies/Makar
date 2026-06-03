@@ -86,6 +86,10 @@ static const man_entry_t man_table[] = {
       "report process status",
       "Usage: ps\n\nColumnar task listing: PID, PPID, state (R run / r ready / Z zombie),\nRING (3 for ring-3 user processes, 0 for kernel), TTY, and NAME.\nDead/reaped tasks are hidden.  See also `tasks` and `cat /proc/tasks`.\n"
     },
+    { "tty",
+      "print controlling terminal name",
+      "Usage: tty\n\nPrints the calling shell's terminal: /dev/console (root console),\n/dev/tty1../dev/ttyN (virtual terminals), or 'not a tty'.  Linux-style.\n"
+    },
     { "reboot",
       "reboot the system",
       "Usage: reboot\n\nTriggers a system reboot via the keyboard controller reset line.\n"

@@ -19,6 +19,7 @@
 #include <kernel/installer.h>
 #include <kernel/admin.h>
 #include <kernel/auth.h>
+#include <kernel/vtty.h>
 
 static void cmd_echo(int argc, char **argv)
 {
@@ -127,6 +128,28 @@ static void cmd_ps(int argc, char **argv)
         t_writestring(t->name ? t->name : "(noname)");
         t_putchar('\n');
     }
+}
+
+/* cmd_tty -- print the calling task's terminal, Linux `tty`-style.
+ * Maps task->tty: the hidden root console -> /dev/console, VT slots 0..N ->
+ * /dev/tty1..ttyN (1-based like Linux), unbound tasks -> "not a tty". */
+static void cmd_tty(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    task_t *t = task_current();
+    int slot = t ? t->tty : TASK_TTY_NONE;
+
+    if (slot == TASK_TTY_NONE) {
+        t_writestring("not a tty\n");
+        return;
+    }
+    if (slot == VTTY_ROOT_SLOT) {
+        t_writestring("/dev/console\n");
+        return;
+    }
+    t_writestring("/dev/tty");
+    t_dec((uint32_t)(slot + 1));   /* slot 0 -> tty1 */
+    t_putchar('\n');
 }
 
 /* admin_shutdown / admin_reboot -- called by both the rescue shell and
@@ -360,6 +383,7 @@ const shell_cmd_entry_t system_cmds[] = {
     { "uptime",   cmd_uptime   },
     { "tasks",    cmd_tasks    },
     { "ps",       cmd_ps       },   /* richer columns: PID PPID S RING TTY NAME */
+    { "tty",      cmd_tty      },   /* print controlling terminal (Linux `tty`) */
     { "shutdown", cmd_shutdown },
     { "reboot",   cmd_reboot   },
     { "panic",    cmd_panic    },

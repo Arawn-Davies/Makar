@@ -176,6 +176,16 @@ fi
 # the kernel sh-script interpreter, so it's exercised via the live prompt
 # (keyboard_test_driver), not here.
 
+echo SHELL-SMOKE: tty-name
+tty
+if [ $? -eq 0 ]
+then
+    echo SHELL-SMOKE: [PASS] tty-name
+else
+    echo SHELL-SMOKE: [FAIL] tty-name
+    fail=1
+fi
+
 echo SHELL-SMOKE: quote-grouping
 if [ "a b" = "a b" ]
 then
