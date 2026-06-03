@@ -117,6 +117,26 @@
                                  * /etc/hostname (or fallback "makar"), copy up
                                  * to size-1 bytes, NUL-terminate.  Returns
                                  * strlen on success, -1 if buf invalid. */
+#define SYS_WHOAMI         240  /* int whoami(char *buf, size_t size) - copy the
+                                 * current session's username (auth_current_user,
+                                 * "user" on live boots) up to size-1 bytes,
+                                 * NUL-terminate.  Returns strlen, -1 if invalid. */
+#define SYS_STATUSBAR      241  /* int statusbar(int cmd) - reserve/free the bottom
+                                 * status row (mechanism for userspace statusbar.elf).
+                                 * cmd: 1=enable (reserve), 0=disable (free), <0=query.
+                                 * Returns the resulting enabled state (0/1). */
+#define SYS_VT_OPEN_APP    242  /* int vt_open_app(const char *path) - open an app
+                                 * in a named tab: switch to it if it exists, else
+                                 * queue for makmux to spawn.  Returns 1/0. */
+#define SYS_VT_TAKE_APP    243  /* int vt_take_app(char *buf, int cap) - makmux
+                                 * drains one queued app path.  Returns 1/0. */
+#define SYS_VT_SETNAME     244  /* int vt_setname(const char *name) - name the
+                                 * calling task's VT tab (shown in the status bar). */
+#define SYS_VT_GETNAME     245  /* int vt_getname(int slot, char *buf, int cap) -
+                                 * copy slot's tab name (empty for unnamed VT
+                                 * shells).  Returns strlen.  Used by statusbar. */
+#define SYS_STATFS         246  /* int statfs(uint32_t *total_kb, uint32_t *free_kb)
+                                 * rootfs usage in KiB (ext2 only).  Returns 0/-1. */
 
 /* Back to Linux i386 ABI numbers for the next set. */
 #define SYS_FCNTL      55   /* int fcntl(int fd, int cmd, int arg) - F_GETFL/F_SETFL */

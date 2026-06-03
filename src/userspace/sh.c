@@ -994,10 +994,53 @@ static int shell_path_dir(int p, char *out, unsigned int outsz)
     }
     return 0;
 }
+/* Fullscreen apps that, while makmux is running, open in their own named tab
+ * instead of taking over the current VT (matches the kernel shell's notion of
+ * "fullscreen" commands). */
+static int is_tab_app(const char *name)
+{
+    static const char *apps[] = { "vix", "maktop", "clock", "cfdisk",
+                                  "basic", "kbtester", 0 };
+    for (int i = 0; apps[i]; i++)
+        if (s_eq(name, apps[i])) return 1;
+    return 0;
+}
+
+/* Resolve a bare command name to a full path via PATH (with .elf fallback). */
+static int resolve_app_path(const char *name, char *out, unsigned int sz)
+{
+    char dir[VFS_PATH_MAX];
+    for (int p = 0; shell_path_dir(p, dir, sizeof(dir)); p++) {
+        unsigned int dl = s_len(dir), nl = s_len(name);
+        if (dl + nl + 5 >= sz) continue;
+        unsigned int i;
+        for (i = 0; i < dl; i++) out[i] = dir[i];
+        for (unsigned int j = 0; j < nl; j++) out[dl + j] = name[j];
+        out[dl + nl] = '\0';
+        if (path_exists(out)) return 1;
+        out[dl+nl]='.'; out[dl+nl+1]='e'; out[dl+nl+2]='l';
+        out[dl+nl+3]='f'; out[dl+nl+4]='\0';
+        if (path_exists(out)) return 1;
+    }
+    return 0;
+}
+
 static int run_external(int argc, char **argv)
 {
     (void)argc;
     int status = 0;
+
+    /* App-tab routing: while makmux is running (any VT child registered),
+     * a fullscreen app opens in its own named tab (switch-if-exists handled
+     * kernel-side) rather than replacing the current VT's shell view. */
+    if (is_tab_app(argv[0]) && (sys_vt_state() & 0xFFFFu)) {
+        char appp[VFS_PATH_MAX];
+        if (resolve_app_path(argv[0], appp, sizeof(appp))) {
+            sys_vt_open_app(appp);
+            return 0;
+        }
+    }
+
     if (looks_like_path(argv[0])) {
         if (try_exec_path(argv[0], argv, &status)) return status;
         put_s("Unknown command '"); put_s(argv[0]); put_s("' - try 'lsman'.\n");
@@ -1732,14 +1775,15 @@ static void build_prompt(char *out, unsigned int outsz)
 {
     char cwd[VFS_PATH_MAX];
     if (sys_getcwd(cwd, sizeof(cwd)) < 0) { cwd[0] = '/'; cwd[1] = '\0'; }
-    /* root@host:cwd# */
+    /* user@host:cwd$  (root gets '#', unprivileged users get '$' -- the
+     * usual sh convention so you can tell at a glance whether you're root). */
     unsigned int o = 0;
     for (unsigned int i = 0; g_username[i] && o + 1 < outsz; i++) out[o++] = g_username[i];
     if (o + 1 < outsz) out[o++] = '@';
     for (unsigned int i = 0; g_hostname[i] && o + 1 < outsz; i++) out[o++] = g_hostname[i];
     if (o + 1 < outsz) out[o++] = ':';
     for (unsigned int i = 0; cwd[i] && o + 1 < outsz; i++) out[o++] = cwd[i];
-    if (o + 1 < outsz) out[o++] = '#';
+    if (o + 1 < outsz) out[o++] = s_eq(g_username, "root") ? '#' : '$';
     if (o + 1 < outsz) out[o++] = ' ';
     out[o] = '\0';
 }
@@ -1775,19 +1819,32 @@ int main(int argc, char **argv, char **envp)
             s_copy(home_val + 6, g_username, sizeof(home_val) - 6);
         }
         var_set("HOME", home_val);
+
+        /* A login shell starts in the user's home directory (the cwd we
+         * inherit from the kernel login loop is '/').  Stat first so we
+         * never hand SYS_CHDIR a path that doesn't exist -- the kernel's
+         * vfs_cd prints "cd: directory not found" on a miss, which would
+         * spew on a live session whose read-only rootfs has no
+         * /home/<user>.  If HOME isn't a directory we just stay at '/'. */
+        if (g_login) {
+            struct stat hst;
+            if (sys_stat(home_val, &hst) == 0 && S_ISDIR(hst.st_mode))
+                (void)sys_chdir(home_val);
+        }
     }
 
-    /* Source ~/.makrc on login shells (best-effort; missing file is fine). */
+    /* Source ~/.makshrc on login shells (best-effort; missing file is fine). */
     if (g_login) {
         const char *home = var_get("HOME");
         if (home && *home) {
             static char rc_path[VFS_PATH_MAX];
             unsigned int hl = s_len(home);
             unsigned int i;
-            for (i = 0; i < hl && i < sizeof(rc_path)-8; i++) rc_path[i] = home[i];
+            for (i = 0; i < hl && i < sizeof(rc_path)-10; i++) rc_path[i] = home[i];
             rc_path[i++]='/'; rc_path[i++]='.'; rc_path[i++]='m';
-            rc_path[i++]='a'; rc_path[i++]='k'; rc_path[i++]='r';
-            rc_path[i++]='c'; rc_path[i] = '\0';
+            rc_path[i++]='a'; rc_path[i++]='k'; rc_path[i++]='s';
+            rc_path[i++]='h'; rc_path[i++]='r'; rc_path[i++]='c';
+            rc_path[i] = '\0';
             int rcfd = sys_open(rc_path, O_RDONLY);
             if (rcfd >= 0) {
                 static char rcbuf[4096];

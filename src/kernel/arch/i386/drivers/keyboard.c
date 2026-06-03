@@ -112,6 +112,7 @@
 #include <kernel/timer.h>
 #include <kernel/vesa_tty.h>
 #include <kernel/serial.h>
+#include <kernel/ktest.h>
 
 /* ===========================================================================
  * Memory-ordering primitives
@@ -940,10 +941,10 @@ static void on_make(kc_t kc)
                 default: break;
             }
         }
-        /* Ctrl+Tab: cycle forward through live VT slots.
-         * Ctrl+Shift+Tab: cycle backward.
-         * Useful on Windows hosts where Alt+F4 is pre-mapped. */
-        if (mod_ctrl && kc == KC_TAB) {
+        /* Alt+Tab / Ctrl+Tab: cycle forward through live VT slots.
+         * Alt+Shift+Tab / Ctrl+Shift+Tab: cycle backward.  (Ctrl+Tab kept as
+         * an alias for Windows hosts where Alt+Tab is grabbed by the host WM.) */
+        if ((mod_alt || mod_ctrl) && kc == KC_TAB) {
             int n = vtty_count();
             if (n > 1) {
                 int cur  = vtty_active();
@@ -1137,6 +1138,126 @@ static void decoder_feed(uint8_t sc)
         return;
     }
     }
+}
+
+/* ===========================================================================
+ * Synthetic key injection -- deterministic in-guest test harness.
+ *
+ * Builds on keyboard_test_feed() (locked decoder_feed at the same entry the
+ * IRQ uses).  Crucially we do NOT call keyboard_test_begin(), so kb_focused
+ * is intact and the keys route to the focused task's ring -- i.e. they drive
+ * the *live* shell, full decode path and all (modifiers, Alt+Fn / Ctrl+Tab
+ * dispatch).  This replaces HMP `sendkey` for automation: keys land in the
+ * ring atomically with no QEMU PS/2 timing, so there are no typing races and
+ * it runs at full speed headless.
+ * ======================================================================== */
+void keyboard_inject_key(uint8_t kc, int shift, int ctrl, int alt)
+{
+    uint8_t k = kc & 0x7F;
+    if (ctrl)  keyboard_test_feed(KC_LCTRL);
+    if (alt)   keyboard_test_feed(KC_LALT);
+    if (shift) keyboard_test_feed(KC_LSHIFT);
+    keyboard_test_feed(k);                          /* make  */
+    keyboard_test_feed((uint8_t)(k | 0x80));        /* break */
+    if (shift) keyboard_test_feed((uint8_t)(KC_LSHIFT | 0x80));
+    if (alt)   keyboard_test_feed((uint8_t)(KC_LALT  | 0x80));
+    if (ctrl)  keyboard_test_feed((uint8_t)(KC_LCTRL | 0x80));
+}
+
+/* Printable char -> (keycode, needs-shift) by reversing the ASCII tables. */
+static int char_to_kc(char c, uint8_t *kc, int *shift)
+{
+    for (unsigned i = 0; i < sizeof(kc_ascii_lower); i++)
+        if (kc_ascii_lower[i] == (unsigned char)c) { *kc=(uint8_t)i; *shift=0; return 1; }
+    for (unsigned i = 0; i < sizeof(kc_ascii_upper); i++)
+        if (kc_ascii_upper[i] == (unsigned char)c) { *kc=(uint8_t)i; *shift=1; return 1; }
+    return 0;
+}
+
+void keyboard_inject_text(const char *s)
+{
+    for (; *s; s++) {
+        uint8_t kc; int shift;
+        if (char_to_kc(*s, &kc, &shift))
+            keyboard_inject_key(kc, shift, 0, 0);
+    }
+}
+
+/* keyboard_test_driver -- in-guest scripted keyboard scenarios, spawned on a
+ * normal boot when `kbtest` is on the cmdline.  Drives the live shell by
+ * injecting keys and emits KBTEST markers to serial; the host asserts on the
+ * shell output between markers (deterministic, no HMP).  This is the seed of
+ * the harness that replaces the flaky sendkey UI scenarios. */
+void keyboard_test_driver(void)
+{
+    while (!ktest_bg_done)
+        task_yield();
+    ksleep(80);                 /* let sh.elf reach its first prompt */
+
+    Serial_WriteString("KBTEST: start\n");
+    int pass = 1;
+
+    /* 1: type a command -> shell runs it -> output reaches serial.  Proves
+     *    inject -> decode -> ring -> shell -> exec -> serial end to end. */
+    keyboard_inject_text("verbose on\n");   /* mirror shell output to serial */
+    ksleep(80);
+    keyboard_inject_text("echo KBINJECT_OK\n");
+    ksleep(150);
+
+    /* 2: makmux + Alt-Tab / Alt-Shift-Tab VT cycling.  Asserts directly on
+     *    in-kernel state (vtty_active) -- no serial-scrape needed. */
+    keyboard_inject_text("makmux\n");
+    ksleep(400);                /* let makmux fork mak.sh1-4 + take focus */
+    if (vtty_count() > 1) {
+        int a0 = vtty_active();
+        keyboard_inject_key(KC_TAB, 0, 0, 1);   /* Alt+Tab       -> forward  */
+        ksleep(40);
+        int a1 = vtty_active();
+        keyboard_inject_key(KC_TAB, 1, 0, 1);   /* Alt+Shift+Tab -> backward */
+        ksleep(40);
+        int a2 = vtty_active();
+        if (a1 != a0 && a2 == a0) {
+            Serial_WriteString("KBTEST: alt-tab PASS\n");
+        } else {
+            Serial_WriteString("KBTEST: alt-tab FAIL\n");
+            pass = 0;
+        }
+
+        /* 3: app-tab routing.  Type a fullscreen app in a makmux VT shell ->
+         *    it should open in its own named tab (not replace the shell). */
+        keyboard_inject_text("maktop\n");
+        ksleep(300);            /* sh.elf routes -> kernel queue -> makmux spawns */
+        if (vtty_find_name("maktop") >= 0) {
+            Serial_WriteString("KBTEST: app-tab PASS\n");
+        } else {
+            Serial_WriteString("KBTEST: app-tab FAIL\n");
+            pass = 0;
+        }
+
+        /* 4: close every tab -> makmux exits -> focus + screen return to
+         *    mak.sh0 (the root console).  Asserts vtty_count() drops to 0. */
+        keyboard_inject_text("q");          /* quit maktop (q/Esc/F10) */
+        ksleep(150);
+        for (int e = 0; e < 5; e++) {       /* exit the four VT shells */
+            keyboard_inject_text("exit\n");
+            ksleep(120);
+        }
+        ksleep(150);
+        if (vtty_count() == 0) {
+            Serial_WriteString("KBTEST: exit-restore PASS\n");
+        } else {
+            Serial_WriteString("KBTEST: exit-restore FAIL\n");
+            pass = 0;
+        }
+    } else {
+        Serial_WriteString("KBTEST: alt-tab FAIL (makmux spawned no VTs)\n");
+        pass = 0;
+    }
+
+    Serial_WriteString(pass ? "KBTEST: ALL PASS\n" : "KBTEST: FAIL\n");
+    Serial_WriteString("KBTEST: done\n");
+    for (;;)
+        task_yield();
 }
 
 /*

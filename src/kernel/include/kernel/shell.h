@@ -7,6 +7,10 @@
  * shell_login_loop reads this to skip authentication on live ISO sessions. */
 extern int g_live_boot;
 
+/* `autologin=<user>` from the kernel cmdline (empty = unset).  Passed to
+ * auth_try_autologin by shell_login_loop; overrides /etc/autologin. */
+extern char g_autologin_user[64];
+
 /*
  * Minimal kernel REPL over VGA + PS/2 keyboard.
  *

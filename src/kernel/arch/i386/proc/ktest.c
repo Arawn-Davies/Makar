@@ -203,12 +203,15 @@ static void test_partition(void)
 /* ---------------------------------------------------------------------------
  * Suite: devfs
  *
- * Exercises the /dev synthetic filesystem against the boot CD-ROM, which
- * is always present on an ISO boot (the medium we booted from).  Verifies
- * node lookup, the read-only flag, a real ATAPI sector read through the
- * byte-addressed devfs_pread path, and negative lookups.  Disk-dependent
- * assertions (hda/partitions) are intentionally omitted so the suite is
- * stable on CD-only boots.
+ * Exercises the /dev synthetic filesystem.  Boot-mode aware: the medium we
+ * actually booted from dictates which device gets the read/readonly probes,
+ * so the suite passes identically on ISO and HDD boots.
+ *   - Negative lookups + "root is not a node" run unconditionally.
+ *   - The CD-ROM node carries media only on ISO/live boots; an HDD boot
+ *     still exposes an (empty) ATAPI drive, so the media-dependent asserts
+ *     run only when devfs_node_size(cdrom) > 0.
+ *   - The primary ATA disk (hda) is probed when present (HDD boots, or live
+ *     boots with an installed disk attached).
  * ------------------------------------------------------------------------- */
 
 static void test_devfs(void)
@@ -221,13 +224,15 @@ static void test_devfs(void)
     /* The mount root itself is not a node. */
     KTEST_ASSERT(devfs_lookup("/") < 0);
 
-    /* The CD-ROM we booted from is always registered. */
+    /* CD-ROM node: registered whenever an ATAPI drive exists, but only
+     * carries media on the ISO/live boot path.  An HDD-only boot still
+     * exposes an empty ATAPI drive (devfs_node_size == 0), so gate the
+     * media-dependent checks on real media being present -- the suite must
+     * pass on both ISO and HDD boots. */
     int cd = devfs_lookup("/cdrom");
-    KTEST_ASSERT(cd >= 0);
-    if (cd >= 0) {
+    if (cd >= 0 && devfs_node_size(cd) > 0) {
         KTEST_ASSERT(devfs_file_exists("/cdrom") == 1);
         KTEST_ASSERT(devfs_node_readonly(cd) == 1);
-        KTEST_ASSERT(devfs_node_size(cd) > 0);
 
         /* A byte-addressed read of the first sector must succeed and fill
          * the request (offset 0, a full 2048-byte ATAPI sector). */
@@ -237,6 +242,16 @@ static void test_devfs(void)
 
         /* Writes to a read-only node are rejected. */
         KTEST_ASSERT(devfs_pwrite(cd, sec, sizeof(sec), 0) < 0);
+    }
+
+    /* Primary ATA disk: present on HDD boots (the medium we booted from)
+     * and on live boots with an installed disk attached.  Verify a
+     * byte-addressed 512-byte sector read through devfs_pread when present. */
+    int hd = devfs_lookup("/hda");
+    if (hd >= 0 && devfs_node_size(hd) > 0) {
+        static uint8_t blk[512];
+        long n = devfs_pread(hd, blk, sizeof(blk), 0);
+        KTEST_ASSERT(n == (long)sizeof(blk));
     }
 
     ktest_summary();
@@ -335,8 +350,12 @@ static void test_usr(void)
     /* The sentinel probe must work via the /usr rewrite. */
     KTEST_ASSERT(vfs_file_exists("/usr/lib/crt0.o") == 1);
 
-    /* libc.a must be reachable via /usr/lib. */
+    /* Runtime libraries and TCC startup objects must be reachable via /usr/lib. */
     KTEST_ASSERT(vfs_file_exists("/usr/lib/libc.a") == 1);
+    KTEST_ASSERT(vfs_file_exists("/usr/lib/crt1.o") == 1);
+    KTEST_ASSERT(vfs_file_exists("/usr/lib/crti.o") == 1);
+    KTEST_ASSERT(vfs_file_exists("/usr/lib/crtn.o") == 1);
+    KTEST_ASSERT(vfs_file_exists("/usr/lib/tcc/libtcc1.a") == 1);
 
     /* Headers must be reachable via /usr/include. */
     KTEST_ASSERT(vfs_file_exists("/usr/include/stdio.h") == 1);

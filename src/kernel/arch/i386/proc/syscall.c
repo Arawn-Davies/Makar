@@ -49,6 +49,7 @@
 #include <string.h>
 #include <kernel/ktest.h>
 #include <kernel/admin.h>
+#include <kernel/auth.h>
 
 /* USER_STACK_TOP / USER_STACK_PAGES - matches elf.c; defined locally to
  * avoid pulling that header into syscall.c just for these constants.
@@ -191,15 +192,30 @@ void syscall_dispatch(registers_t *regs)
                                 if (me->tty != VTTY_ROOT_SLOT && pvt) {
                                     /* Normal VT: child wrote into this buffer,
                                      * clear it so the parent's next prompt
-                                     * lands on a blank slate. */
-                                    vt_set_color(pvt,
-                                                 me->disp_fg_saved ? me->disp_fg_saved : pvt->fg,
-                                                 me->disp_bg_saved ? me->disp_bg_saved : pvt->bg);
+                                     * lands on a blank slate.  Restore the VT's
+                                     * scheme straight from the fork snapshot --
+                                     * not `saved ? saved : pvt`, because a real
+                                     * scheme colour can be 0x000000 (black fg on
+                                     * the black-on-white VT) and the falsy-zero
+                                     * fallback would keep vix's clobbered colour. */
+                                    vt_set_color(pvt, me->disp_fg_saved, me->disp_bg_saved);
                                     vt_clear(pvt);
+                                } else if (pvt) {
+                                    /* Root slot (mak.sh0): the fullscreen child
+                                     * ran as TASK_TTY_NONE and drew straight to
+                                     * the framebuffer without ever touching
+                                     * mak.sh0's backing buffer.  Wipe those raw
+                                     * pixels and repaint the console buffer so
+                                     * the hand-back is identical to the other
+                                     * VTs -- vix/maktop/etc. don't leave a frozen
+                                     * frame behind.  makmux also lands here, and
+                                     * its buffer is intact (it only drew status
+                                     * rows + child VTs), so this still restores
+                                     * the pre-makmux screen, just on a clean FB. */
+                                    vesa_tty_setcolor(me->disp_fg_saved, me->disp_bg_saved);
+                                    vesa_tty_clear();
+                                    vesa_tty_paint_buf(pvt);
                                 }
-                                /* Root slot: buffer retains mak.sh0's prior
-                                 * output — repaint as-is to restore the
-                                 * screen the user had before makmux ran. */
                             }
                             vtty_request_repaint(me->tty);
                         } else if (vesa_tty_is_ready()) {
@@ -1368,13 +1384,11 @@ void syscall_dispatch(registers_t *regs)
      * Returns EAX = (cols << 16) | rows.
      * ------------------------------------------------------------------ */
     case SYS_TERM_SIZE: {
-        /* Report the *drawable* area, not the full framebuffer.  The
-         * bottom VESA_TTY_STATUS_ROWS row is reserved for the makmux
-         * status bar -- but only when makmux has registered VT children
-         * (vtty_count() > 0).  Without makmux, fullscreen apps get the
-         * whole screen; with makmux they get (rows-1) so they don't stomp
-         * the bar.  Resolution-aware because vesa_tty_get_rows() and the
-         * constant scale with the chosen mode. */
+        /* Report the *drawable* area (vesa_tty_usable_rows), which excludes
+         * the bottom status row whenever the status bar is enabled (reserved)
+         * -- so shells/apps stay above it and statusbar.elf draws at row =
+         * usable_rows.  When the bar is toggled off (Alt+F5) the row is freed
+         * and apps get the full height.  Resolution-aware. */
         uint32_t cols, rows;
         if (vesa_tty_is_ready()) {
             cols = vesa_tty_get_cols();
@@ -1812,8 +1826,13 @@ void syscall_dispatch(registers_t *regs)
         break;
     }
     case SYS_VT_STATE: {
-        uint32_t active = (uint32_t)(vtty_active() & 0xFFFF);
         uint32_t mask = vtty_live_mask() & 0xFFFFu;
+        /* High 16 bits = focused tty.  With makmux running that's the active
+         * VT slot (0-3); with no VT children the root console (mak.sh0) is
+         * focused, so report VTTY_ROOT_SLOT -- lets the userspace statusbar's
+         * `command` widget find the root shell's foreground task. */
+        uint32_t active = mask ? (uint32_t)(vtty_active() & 0xFFFF)
+                               : (uint32_t)VTTY_ROOT_SLOT;
         regs->eax = (active << 16) | mask;
         break;
     }
@@ -1842,6 +1861,74 @@ void syscall_dispatch(registers_t *regs)
         }
         uint32_t copy = (slen + 1 > size) ? (size - 1) : slen;
         for (uint32_t i = 0; i < copy; i++) buf[i] = src[i];
+        buf[copy] = '\0';
+        regs->eax = (uint32_t)copy;
+        break;
+    }
+
+    case SYS_STATUSBAR: {
+        /* Mechanism for userspace statusbar.elf: reserve/free the bottom row.
+         * The renderer (which widgets, layout, .sbrc) lives in userspace. */
+        int cmd = (int)regs->ebx;
+        if (cmd == 0)      vesa_tty_set_status_visible(0);
+        else if (cmd == 1) vesa_tty_set_status_visible(1);
+        regs->eax = (uint32_t)vesa_tty_status_enabled();
+        break;
+    }
+
+    case SYS_VT_OPEN_APP: {
+        const char *path = (const char *)(uintptr_t)regs->ebx;
+        regs->eax = (uint32_t)vtty_open_app(path);
+        break;
+    }
+
+    case SYS_VT_TAKE_APP: {
+        char *buf = (char *)regs->ebx;
+        int   cap = (int)regs->ecx;
+        if (!buf || cap <= 0) { regs->eax = 0; break; }
+        regs->eax = (uint32_t)vtty_take_app_request(buf, cap);
+        break;
+    }
+
+    case SYS_VT_SETNAME: {
+        const char *name = (const char *)(uintptr_t)regs->ebx;
+        task_t *me = task_current();
+        if (me && me->tty >= 0)
+            vtty_set_name(me->tty, name);
+        regs->eax = 0;
+        break;
+    }
+
+    case SYS_STATFS: {
+        uint32_t *total = (uint32_t *)(uintptr_t)regs->ebx;
+        uint32_t *freeb = (uint32_t *)(uintptr_t)regs->ecx;
+        regs->eax = (uint32_t)vfs_statfs(total, freeb);
+        break;
+    }
+
+    case SYS_VT_GETNAME: {
+        int   slot = (int)regs->ebx;
+        char *buf  = (char *)regs->ecx;
+        int   cap  = (int)regs->edx;
+        if (!buf || cap <= 0) { regs->eax = (uint32_t)-1; break; }
+        const char *nm = vtty_get_name(slot);
+        int i = 0;
+        for (; nm[i] && i < cap - 1; i++) buf[i] = nm[i];
+        buf[i] = '\0';
+        regs->eax = (uint32_t)i;
+        break;
+    }
+
+    case SYS_WHOAMI: {
+        char *buf = (char *)regs->ebx;
+        uint32_t size = regs->ecx;
+        if (!buf || size == 0) { regs->eax = (uint32_t)-1; break; }
+        const char *u = auth_current_user();
+        if (!u) u = "user";
+        uint32_t slen = 0;
+        while (u[slen]) slen++;
+        uint32_t copy = (slen + 1 > size) ? (size - 1) : slen;
+        for (uint32_t i = 0; i < copy; i++) buf[i] = u[i];
         buf[copy] = '\0';
         regs->eax = (uint32_t)copy;
         break;

@@ -54,6 +54,10 @@ void ext2_unmount(void);
 /* Returns 1 if an ext2 volume is currently mounted, 0 otherwise. */
 int ext2_mounted(void);
 
+/* Filesystem usage in KiB (total + free) of the mounted ext2 volume.
+ * Returns 0 on success, -1 if not mounted. */
+int ext2_statfs(uint32_t *total_kb, uint32_t *free_kb);
+
 /* -------------------------------------------------------------------------
  * Directory operations
  * ---------------------------------------------------------------------- */

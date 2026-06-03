@@ -228,6 +228,33 @@ COMMON_DEFS="\
  -DCONFIG_TCCBOOT \
  -DONE_SOURCE=1"
 
+# ── Incremental build guard ──────────────────────────────────────────────────
+# tcc.c is ~big and the compile dominates a warm rebuild (~16 s).  Skip it when
+# nothing that feeds tcc.elf has changed.  A CONTENT hash (not mtimes) is used
+# because config.h + build-stubs/*.h are regenerated on every run, which would
+# churn mtimes and defeat a timestamp test.  Inputs: this script, link.ld, the
+# linked crt0.o/libc.a, and every tinycc *.c/*.h source.
+TCC_STAMP="$USER_DIR/.tcc.stamp"
+tcc_input_hash() {
+    {
+        cat "$REPO_ROOT/build-tcc.sh" "$USER_DIR/link.ld" \
+            "$USER_DIR/crt0.o" "$USER_DIR/libc.a" 2>/dev/null
+        find "$TCC_DIR" \( -name '*.c' -o -name '*.h' \) -type f -print0 \
+            | sort -z | xargs -0 cat 2>/dev/null
+    } | md5sum | cut -d' ' -f1
+}
+TCC_HASH=$(tcc_input_hash)
+TCC_SKIP_BUILD=
+if [ -f "$USER_DIR/tcc.elf" ] && [ -f "$TCC_DIR/lib/libtcc1.a" ] \
+   && [ -f "$TCC_STAMP" ] && [ "$(cat "$TCC_STAMP" 2>/dev/null)" = "$TCC_HASH" ]; then
+    TCC_SKIP_BUILD=1
+fi
+
+if [ -n "$TCC_SKIP_BUILD" ]; then
+    echo "==> tcc.elf up to date (inputs unchanged); skipping recompile."
+    echo "==> tcc.elf: $(ls -lh src/userspace/tcc.elf 2>/dev/null | awk '{print $5}')"
+else
+
 # ── Compile tcc.o ────────────────────────────────────────────────────────────
 echo "==> Compiling tcc.c ..."
 RUN "cd vendor/tinycc && \
@@ -263,6 +290,10 @@ RUN "cd vendor/tinycc/lib && \
         -c alloca86.S -o alloca86.o && \
     i686-elf-ar rcs libtcc1.a libtcc1.o alloca86.o"
 echo "==> libtcc1.a: $(ls -lh vendor/tinycc/lib/libtcc1.a 2>/dev/null | awk '{print $5}')"
+
+    # Record the input hash so the next build can skip when unchanged.
+    echo "$TCC_HASH" > "$TCC_STAMP"
+fi
 
 # ── Build CRT stubs for TCC's default link sequence ─────────────────────────
 # TCC's default link is: crt1.o + crti.o + <user objects> + -lc + crtn.o

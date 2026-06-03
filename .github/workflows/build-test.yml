@@ -69,19 +69,35 @@ jobs:
             ccache-${{ runner.os }}-
 
       - name: Build ISOs (kernel + makar.iso + makar-test.iso)
-        run: ./run.sh iso build
+        run: |
+          mkdir -p ci-logs
+          set -o pipefail
+          ./run.sh iso build 2>&1 | tee ci-logs/iso-build.log
 
       - name: Build HDD test image (kernel cached from ISO build)
-        run: ./run.sh hdd build
+        run: |
+          mkdir -p ci-logs
+          set -o pipefail
+          ./run.sh hdd build 2>&1 | tee ci-logs/hdd-build.log
 
       - name: ccache stats
         if: always()
         continue-on-error: true
         run: |
+          mkdir -p ci-logs
           docker run --rm \
             -v "$PWD:/work" -w /work \
             -e CCACHE_DIR=/work/.ccache \
-            makar-build:local ccache -s || echo "(ccache stats unavailable)"
+            makar-build:local ccache -s 2>&1 | tee ci-logs/ccache-stats.log || echo "(ccache stats unavailable)"
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: ci-logs/
+          retention-days: 7
+          if-no-files-found: warn
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -119,14 +135,20 @@ jobs:
           name: makar-build
 
       - name: Run ktest
-        run: ./run.sh ktest
+        run: |
+          mkdir -p ci-logs
+          set -o pipefail
+          ./run.sh ktest 2>&1 | tee ci-logs/ktest-run.log
 
       - name: Upload ktest log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ktest-log
-          path: ktest.log
+          path: |
+            ci-logs/
+            ktest.log
+          if-no-files-found: warn
 
   # ── GDB ISO boot-checkpoint test ───────────────────────────────────────────
   # Boots makar.iso (interactive grub.cfg, default entry 0) under the QEMU
@@ -152,7 +174,10 @@ jobs:
           name: makar-build
 
       - name: Run GDB ISO boot test
-        run: ./run.sh gdb iso
+        run: |
+          mkdir -p ci-logs
+          set -o pipefail
+          ./run.sh gdb iso 2>&1 | tee ci-logs/gdb-iso-run.log
 
       - name: Upload GDB logs
         if: always()
@@ -160,8 +185,10 @@ jobs:
         with:
           name: gdb-iso-logs
           path: |
+            ci-logs/
             gdb-test.log
             gdb-serial.log
+          if-no-files-found: warn
 
   # ── GDB HDD boot test ──────────────────────────────────────────────────────
   # Boots makar-hdd-test.img (no CD-ROM) and verifies the kernel reaches
@@ -187,7 +214,10 @@ jobs:
           name: makar-build
 
       - name: Run GDB HDD boot test
-        run: ./run.sh gdb hdd
+        run: |
+          mkdir -p ci-logs
+          set -o pipefail
+          ./run.sh gdb hdd 2>&1 | tee ci-logs/gdb-hdd-run.log
 
       - name: Upload GDB logs
         if: always()
@@ -195,8 +225,10 @@ jobs:
         with:
           name: gdb-hdd-logs
           path: |
+            ci-logs/
             hdd-test-gdb.log
             hdd-test-serial.log
+          if-no-files-found: warn
 
   # NOTE: UI tests (sendkey + serial grep) live in tests/ui_test.sh and
   # are runnable locally via `./run.sh ui`.  They are intentionally

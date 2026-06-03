@@ -12,13 +12,16 @@
 #include <kernel/task.h>
 #include <kernel/vt.h>
 
-/* Slots 0..VTTY_MAX-2 are the user-visible VT slots (makmux VT1-4).
+/* Slots 0..VTTY_MAX-2 are the user-visible VT slots: 0-3 are makmux's VT
+ * shells (mak.sh1-4, reached via Alt+F1-F4) and 4-7 are dynamic named
+ * app-tabs (maktop/vix/clock/..., reached via Alt-Tab cycling).
  * Slot VTTY_ROOT_SLOT is the hidden "console" slot for mak.sh0: it has a
  * full backing buffer (so its content is preserved across makmux sessions)
- * but it is excluded from Ctrl+Tab cycling, Alt+Fn switching, and the
- * makmux status bar — exactly like Linux's tty0/console. */
-#define VTTY_MAX      5
-#define VTTY_ROOT_SLOT 4
+ * but it is excluded from Alt-Tab cycling, Alt+Fn switching, and the
+ * status bar — exactly like Linux's tty0/console. */
+#define VTTY_MAX        9
+#define VTTY_SHELL_MAX  4   /* slots 0..3 = the VT shells (Alt+F1-F4) */
+#define VTTY_ROOT_SLOT  8   /* hidden root console = the last slot */
 
 /* Call once before spawning shell tasks.  Allocates per-slot backing
  * grids sized from the active display geometry (VESA cell dims if the
@@ -45,7 +48,8 @@ int vtty_close_pid(int pid);
 void vtty_request_open(void);
 int  vtty_take_open_request(void);
 
-/* Global Alt+F5 request queue consumed by makmux in userspace. */
+/* Global Alt+F5 request queue.  Consumed by userspace statusbar.elf (via
+ * SYS_VT_CLOCK_REQUEST) to toggle the bottom status bar on/off. */
 void vtty_request_clock_toggle(void);
 int  vtty_take_clock_toggle_request(void);
 
@@ -64,6 +68,18 @@ int vtty_count(void);
 
 /* Returns a bitmask of currently live TTY slots.  Bit 0 is VT1. */
 unsigned int vtty_live_mask(void);
+
+/* ---- VT tab names + app-tab launch routing --------------------------------
+ * Each slot can carry a short tab name (app-tabs: "maktop"/"vix"/...).
+ * vtty_open_app (SYS_VT_OPEN_APP): if a live tab already has the app's name,
+ * switch to it; else queue the path for makmux to fork+exec into a new slot.
+ * makmux drains the queue with vtty_take_app_request and names the slot via
+ * vtty_set_name (SYS_VT_SETNAME). */
+void         vtty_set_name(int slot, const char *name);
+const char  *vtty_get_name(int slot);
+int          vtty_find_name(const char *name);
+int          vtty_open_app(const char *path);
+int          vtty_take_app_request(char *out, int cap);
 
 /* ------------------------------------------------------------------ */
 /* Per-TTY backing-grid access                                          */

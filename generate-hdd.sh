@@ -81,8 +81,10 @@ fi
 
 # ---------------------------------------------------------------------------
 # Step 2: create the HDD image inside the compiler container.
-# dosfstools (mkfs.fat), fdisk (sfdisk), grub-pc-bin, and grub-common are
-# all pre-installed in BUILD_IMAGE - no runtime apt-get needed.
+# grub-pc-bin / grub-common and losetup ship in BUILD_IMAGE, but sfdisk
+# (Debian package: fdisk) and mkfs.fat (dosfstools) are NOT guaranteed to
+# be present -- the upstream toolchain image has dropped them.  The inner
+# script installs them on demand (apt-get) when missing.
 # All loop-device work runs as root (--privileged); the final image is
 # chown-ed back to the calling user before the container exits.
 # ---------------------------------------------------------------------------
@@ -104,6 +106,17 @@ set -e
 
 HDD="/work/$HDD_IMG"
 MNT=/mnt/makar-install
+
+# The base toolchain image no longer ships disk tooling; install on demand so
+# `hdd boot` works regardless of which BUILD_IMAGE revision is in use.
+need_pkgs=""
+command -v sfdisk   >/dev/null 2>&1 || need_pkgs="$need_pkgs fdisk"
+command -v mkfs.fat >/dev/null 2>&1 || need_pkgs="$need_pkgs dosfstools"
+if [ -n "$need_pkgs" ]; then
+    echo "==> Installing disk tools:$need_pkgs"
+    apt-get update -qq >/dev/null
+    apt-get install -y --no-install-recommends $need_pkgs >/dev/null
+fi
 
 # Create a blank raw disk image.
 rm -f "$HDD"

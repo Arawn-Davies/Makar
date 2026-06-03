@@ -12,6 +12,7 @@
  */
 
 #include <kernel/auth.h>
+#include <kernel/vfs.h>
 #include <kernel/vesa_tty.h>
 #include <kernel/tty.h>
 #include <kernel/keyboard.h>
@@ -339,4 +340,52 @@ void auth_logout(void)
 {
     Serial_WriteString("[auth] logout\n");
     login_screen();
+}
+
+/* --------------------------------------------------------------------------
+ * auth_try_autologin: resolve an auto-login user (cmdline arg first, then
+ * /etc/autologin) and, if it exists in /etc/shadow, sign in without a
+ * password.  Returns 0 to fall back to the interactive login prompt.
+ * --------------------------------------------------------------------------*/
+int auth_try_autologin(const char *cmdline_user)
+{
+    char namebuf[64];
+    const char *user = NULL;
+
+    if (cmdline_user && *cmdline_user) {
+        user = cmdline_user;
+    } else {
+        /* First whitespace-delimited token of /etc/autologin. */
+        char fbuf[80];
+        uint32_t sz = 0;
+        if (vfs_read_file("/etc/autologin", fbuf, sizeof(fbuf) - 1, &sz) == 0 && sz > 0) {
+            fbuf[sz] = '\0';
+            const char *p = fbuf;
+            while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+            size_t i = 0;
+            while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r' &&
+                   i < sizeof(namebuf) - 1)
+                namebuf[i++] = *p++;
+            namebuf[i] = '\0';
+            if (namebuf[0]) user = namebuf;
+        }
+    }
+
+    if (!user || !*user)
+        return 0;                       /* no autologin configured */
+
+    if (!shadow_user_exists(user)) {
+        Serial_WriteString("[auth] autologin user not found, requiring login: ");
+        Serial_WriteString((char *)user);
+        Serial_WriteString("\n");
+        return 0;                       /* invalid -> fall back to prompt */
+    }
+
+    size_t i = 0;
+    while (user[i] && i < sizeof(s_current_user) - 1) { s_current_user[i] = user[i]; i++; }
+    s_current_user[i] = '\0';
+    Serial_WriteString("[auth] autologin: ");
+    Serial_WriteString(s_current_user);
+    Serial_WriteString("\n");
+    return 1;
 }
