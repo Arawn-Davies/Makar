@@ -99,7 +99,9 @@ isr_common_stub:
     movw %ax, %ds
     movw %ax, %es
     movw %ax, %fs
-    movw %ax, %gs
+    /* %gs is deliberately NOT touched: the kernel never uses it, and a ring-3
+     * task's %gs may hold its TLS selector (set_thread_area) which must survive
+     * the interrupt.  Per-task %gs is restored by the scheduler. */
 
     pushl %esp               /* push pointer to registers_t frame (arg to isr_handler) */
     call isr_handler
@@ -109,7 +111,7 @@ isr_common_stub:
     movw %ax, %ds
     movw %ax, %es
     movw %ax, %fs
-    movw %ax, %gs
+    /* %gs left as-is (see entry) so the task's TLS selector survives. */
 
     popa                         /* Pops edi, esi, ebp... */
     addl $8, %esp                /* Cleans up the pushed error code and pushed ISR number */
@@ -133,7 +135,8 @@ irq_common_stub:
     movw %ax, %ds
     movw %ax, %es
     movw %ax, %fs
-    movw %ax, %gs
+    /* %gs deliberately untouched -- preserve the task's TLS selector (see
+     * isr_common_stub).  The scheduler restores %gs per task on switch. */
 
     pushl %esp               /* push pointer to registers_t frame (arg to irq_handler) */
     call irq_handler
@@ -143,7 +146,7 @@ irq_common_stub:
     movw %bx, %ds
     movw %bx, %es
     movw %bx, %fs
-    movw %bx, %gs
+    /* %gs left as-is (see entry) so the task's TLS selector survives. */
 
     popa                         /* Pops edi, esi, ebp, esp, ebx, edx, ecx, eax */
     addl $8, %esp                /* Cleans up the pushed error code and pushed IRQ number */

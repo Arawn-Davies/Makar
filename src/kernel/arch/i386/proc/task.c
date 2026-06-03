@@ -123,6 +123,7 @@ void tasking_init(void)
     idle->pid      = 1;
     idle->user_brk = 0;
     fpu_init_state(idle->fpu_state);
+    idle->tls_gs = 0x23u; idle->tls_active = 0;
     /* Seed idle->cwd from the boot-time scratch cwd that vfs_init() /
      * vfs_auto_mount() populated (typically "/" after rootfs election).  This
      * is the one-shot handoff: from this point onward vfs_getcwd() routes
@@ -238,6 +239,7 @@ task_t *task_create(const char *name, void (*entry)(void))
     t->user_brk    = 0;
     t->mmap_next   = 0;
     fpu_init_state(t->fpu_state);
+    t->tls_gs = 0x23u; t->tls_active = 0;   /* default %gs = user data; no TLS yet */
     t->pid         = next_pid++;
     t->parent_pid  = current_task ? current_task->pid : 0;
     t->exit_status = 0;
@@ -363,6 +365,7 @@ task_t *task_fork(registers_t *parent_regs)
     t->user_brk    = current_task->user_brk;
     t->mmap_next   = current_task->mmap_next;
     fpu_init_state(t->fpu_state);   /* child starts clean (fork+exec common path) */
+    t->tls_gs = 0x23u; t->tls_active = 0;
     t->pid         = next_pid++;
     t->parent_pid  = current_task->pid;       /* fork: parent is the caller */
     t->exit_status = 0;
@@ -579,6 +582,20 @@ static void schedule(void)
     fpu_save(prev->fpu_state);
     fpu_restore(current_task->fpu_state);
     task_switch(&prev->esp, current_task->esp);
+
+    /* We are now running as current_task.  Restore its TLS: reprogram the
+     * shared GDT TLS slot from this task's base/limit and reload %gs.  The
+     * ISR path no longer touches %gs, so this is what keeps each ring-3
+     * task's thread pointer (set_thread_area) correct across switches.
+     * (Only the re-entered path runs here; fresh tasks set %gs via ring3.S
+     * + their own set_thread_area call.) */
+    if (current_task->tls_active)
+        gdt_set_tls(current_task->tls_base, current_task->tls_limit,
+                    current_task->tls_pages, 1);
+    {
+        uint16_t _sel = (uint16_t)current_task->tls_gs;
+        __asm__ volatile("movw %0, %%gs" :: "r"(_sel));
+    }
 
     /* Re-entered task: restore the IF state we had on entry to this
      * invocation of schedule().  task_switch's popfl already restored
