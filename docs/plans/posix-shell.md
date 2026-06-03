@@ -8,8 +8,29 @@ nav_order: 2
 # Shell follow-ups
 
 `/apps/sh.elf` is already the default interactive shell. Pipes, redirection,
-`&&`, `||`, background `&`, and `wait` shipped in PR #181. This page tracks
-the remaining POSIX-shaped shell work.
+`&&`, `||`, background `&`, and `wait` are present today. This page tracks the
+remaining POSIX-shaped shell work.
+
+The goal is not to clone every feature of `bash`. The target is a small
+portable `/bin/sh`-style environment good enough for configure-like scripts,
+toolchain bootstrapping, and normal OS use inside Makar.
+
+## Current baseline
+
+Already available in `/apps/sh.elf`:
+
+- PATH lookup for executables in `/apps` and other configured directories.
+- Quote-aware command parsing for the supported grammar.
+- `sh -c`.
+- `fork`/`execve`/`wait4`-based command execution.
+- Pipes via `SYS_PIPE`.
+- Redirection via fd duplication and file opens.
+- `&&` and `||` list operators.
+- Background jobs with `&`.
+- `wait` for child completion.
+
+The in-kernel script runner is separate and intentionally smaller; do not use it
+as the compatibility target for POSIX shell work.
 
 ## Parsing and expansion
 

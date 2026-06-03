@@ -4,218 +4,234 @@ parent: Reference
 nav_order: 2
 ---
 
-# POSIX compliance
+# POSIX Compliance
 
-Snapshot of where Makar sits relative to POSIX.1-2017 / SUSv4.  Not
-comprehensive -- focused on what an app port needs to know.  See
-`hello.c`'s opening comment for the official "Makar is not, in fact,
-a UNIX®" disclaimer.
+Makar is not a UNIX system and does not claim SUS/POSIX conformance. It does,
+however, intentionally use a POSIX-shaped userspace model: Linux i386 syscall
+numbers where practical, static ELF programs, file descriptors, fork/exec/wait,
+signals, a small libc, and a shell that can run real scripts.
 
-## Headline
+This page is written for application porters. It answers: what can a small C
+program rely on today, what is only a compatibility stub, and what still needs
+kernel work?
 
-Makar implements a **POSIX-shaped subset** sufficient to host
-freestanding C programs, a self-rebuilding TCC, and a small busybox.
-It is **not** SUS-conformant: the x87 FPU is armed at boot (`fpu_init`) and
-its state is saved/restored per task across context switches (FP is
-multitask-safe), but `<math.h>` isn't shipped in libc yet; no terminal driver
-proper, no permission model, no process groups, no networking, no
-pipes/redirects, no threads, no mmap.  The shape is intentionally
-POSIX so libc ports (musl, uClibc-ng) drop in cleanly when those gaps
-are filled.
+## Current Headline
 
-## Syscall surface (`int 0x80`, Linux i386 ABI)
+Makar currently supports:
 
-### Standard POSIX syscalls present
+- ring-3 ELF programs loaded by `elf_exec`
+- `fork`, `execve`, `wait4`, `getpid`, `getppid`
+- per-task file descriptor tables
+- `open`, `read`, `write`, `close`, `lseek`, `stat`, `fstat`
+- `dup`, `dup2`, `pipe`
+- `brk`, userspace `malloc`, and anonymous `mmap`
+- basic signal delivery and user signal handlers
+- UTC time APIs
+- x87/SSE FPU state saved/restored per task
+- one-slot i386 TLS through `set_thread_area`
+- a userspace shell with pipes, redirection, list operators, background jobs,
+  `wait`, quoting, and `sh -c`
 
-| # | Name | Status |
+It does not currently support:
+
+- users, groups, permissions, or credentials
+- process groups, sessions, or job-control terminal ownership
+- pthreads or clone-style user threads
+- networking or sockets
+- dynamic linking
+- file-backed mmap, `mprotect`, or a supported JIT execution model
+- complete Linux signal-mask semantics
+- `select`, `poll`, or another fd readiness API
+- a termios-compatible terminal interface
+
+## Process Model
+
+| Feature | Status | Notes |
 |---|---|---|
-| 1 | `exit` | Full |
-| 2 | `fork` | Full (COW), see `task_fork` in `task.c` |
-| 3 | `read` | Full |
-| 4 | `write` | Full; fd 1 = VGA, fd 2 = VGA + COM1 (non-POSIX teeing) |
-| 5 | `open` | Flags: `O_RDONLY/WRONLY/RDWR` ∨ `O_CREAT 0100` ∨ `O_TRUNC 01000` ∨ `O_APPEND 02000`; `mode` arg ignored |
-| 6 | `close` | Full; flushes dirty `FD_KIND_FILE` buffer back to disk |
-| 11 | `execve` | Full; `envp` ignored |
-| 12 | `chdir` | Full |
-| 10 | `unlink` | Full (alias of `SYS_DELETE_FILE 208`) |
-| 19 | `lseek` | Full (`SEEK_SET/CUR/END`) |
-| 20 | `getpid` | Full |
-| 37 | `kill` | Full |
-| 38 | `rename` | Full (alias of `SYS_RENAME_FILE 209`) |
-| 39 | `mkdir` | Full; `mode` arg accepted but ignored (no permission model) |
-| 40 | `rmdir` | Full (alias of `SYS_DELETE_DIR 210`) |
-| 45 | `brk` | Full (heap break) |
-| 64 | `getppid` | Full; returns 0 for tasks created by the kernel |
-| 78 | `gettimeofday` | `tv_sec` from CMOS RTC; `tv_usec` resolution is 10 ms (PIT 100 Hz modulo) |
-| 265 | `clock_gettime` | `CLOCK_REALTIME` + `CLOCK_MONOTONIC`; same 10 ms resolution |
-| 48 | `signal` | Per-signo handler install, returns prev |
-| 41 | `dup` | Full (single-arg); allocates the lowest free fd, shares `FD_KIND_PIPE` refcount like `dup2` |
-| 55 | `fcntl` | Only `F_GETFL` / `F_SETFL` |
-| 106 | `stat` | `st_mode/st_size/st_nlink/st_blksize/st_ino` only; perms not enforced |
-| 108 | `fstat` | Same shape as `stat` |
-| 114 | `wait4` | `WNOHANG`; `rusage` ignored |
-| 119 | `sigreturn` | sigframe trampoline; internal |
-| 141 | `readdir` | Makar-shaped: `(path, idx, struct dirent *)`, not POSIX `getdents` |
-| 158 | `sched_yield` | Full |
+| `fork` | Present | Copy-on-write page-directory clone via `task_fork`. |
+| `execve` | Present | Replaces the current image with an ELF. `envp` is accepted but ignored. |
+| `wait4` | Present | Supports `WNOHANG`; `rusage` is ignored. |
+| `exit` | Present | Terminates the current task. |
+| `exit_group` | Stub | Same as `exit`; Makar has one userspace thread per process. |
+| `getpid`, `getppid` | Present | Expose `task_t.pid` and `task_t.parent_pid`. |
+| `set_tid_address` | Stub | Returns the task pid for hosted libc startup. |
+| `vfork`, `posix_spawn` | Absent | Native COW fork exists, so these are not currently needed. |
+| `clone`, pthreads | Absent | No userspace thread groups. |
 
-### Standard POSIX syscalls **missing**
+PIDs are monotonic for the boot session. The idle task is pid 1. Task slots are
+reused internally after a task becomes `TASK_DEAD`, but pid values keep
+advancing.
 
-| Name | Why it's not here | Workaround |
+## File Descriptors and VFS
+
+| Feature | Status | Notes |
 |---|---|---|
-| `pipe` (42) | **Present (PR #181)** -- 4 KiB `pipe_ring_t` shared via refcount, `task_yield()`-blocking | -- |
-| `dup2` (63) | **Present (PR #181)** -- closes newfd if open, shallow-copies the slot, bumps `FD_KIND_PIPE` refcount | -- |
-| `mmap` / `munmap` | **Anonymous present** (`SYS_MMAP2 192` / `SYS_MUNMAP 91`): zero-filled pages in a per-task bump window. No file-backed mappings, no `MAP_FIXED`, no `PROT_EXEC` | file mmap -> `read`; code -> ELF loader |
-| `ioctl` | No device tree past `/dev` block devices | Makar-ext `SYS_PUTCH_AT` etc. |
-| `select` / `poll` / `epoll` | Kernel has no fd-readiness model | `SYS_GETKEY` blocks on the focused TTY |
-| `getuid` / `setuid` / etc | No user model -- everything runs as the implicit root | -- |
-| `pthread_*` | No userspace threading; kernel has tasks but no clone | -- |
+| fd table | Present | Each task has its own fd table. |
+| stdin/stdout/stderr | Present | fd 0 = keyboard/stdin, fd 1 = terminal/stdout, fd 2 = terminal + serial/stderr. |
+| `open` | Present | Supports common read/write/create/truncate/append flags; `mode` is ignored. |
+| `read`, `write` | Present | File, pipe, terminal, and keyboard paths. |
+| `close` | Present | Flushes dirty file buffers. |
+| `lseek` | Present | `SEEK_SET`, `SEEK_CUR`, `SEEK_END`. |
+| `dup` | Present | Allocates the lowest free fd. |
+| `dup2` | Present | Duplicates onto a requested fd, closing it first. |
+| `pipe` | Present | 4 KiB ring with reader/writer refcounts. |
+| `fcntl` | Partial | `F_GETFL` and `F_SETFL`; only documented bits are meaningful. |
+| `stat`, `fstat` | Partial | Linux-shaped `struct stat`, limited fields, no permission enforcement. |
+| `readdir` | Present | Makar-indexed syscall backing libc `DIR *` wrappers. |
 
-### Makar extensions (200+)
+The VFS supports ISO9660, FAT32, ext2, tmpfs, devfs, procfs, and logfs. Not
+every filesystem supports every mutation. `/tmp` is the reliable scratch
+location during live boots.
 
-Documented in [`docs/syscalls.md`](../syscalls.md) and `src/kernel/include/kernel/syscall.h`.  Cover terminal
-control (`PUTCH_AT`, `SET_CURSOR`, `TTY_CLEAR`, `TERM_SIZE`,
-`CARET_STYLE`), framebuffer (`FB_INFO`, `DRAW_LINE`), raw keyboard
-(`GETKEY`, `KEYBOARD_RAW`), serial (`WRITE_SERIAL`), FS shortcuts
-(`WRITE_FILE`, `LS_DIR`, `DELETE_*`, `RENAME_FILE`, `DISK_INFO`),
-shell (`SHELL_CLEAR`, `GETCWD`), and clock (`UPTIME`).  None of these
-are POSIX; they exist because Makar doesn't yet have a `termios` /
-`ioctl` / `clock_gettime` plumbing path.
+## Memory APIs
 
-## Standard libc
-
-Lives in `src/userspace/` as `malloc.c`, `stdio.c`, `setjmp.S`,
-`string.c`, `tcc_compat.c`, archived into `libc.a`.  Headers shipped
-to `/usr/include/`.
-
-| Header | Coverage | Gaps |
+| Feature | Status | Notes |
 |---|---|---|
-| `<stdio.h>` | `fopen`/`fread`/`fwrite`/`fclose`/`fputs`/`fputc`/`fgetc`/`fflush`/`printf`/`fprintf`/`sprintf`/`snprintf`/`vsnprintf` (handles `%l`/`%ll`/`%z`/`%t`/`%j`/`%h` length modifiers + `%o`; `%s` brk-aware bad-pointer guard since PR #181) | No `freopen`, `setbuf`, `tmpfile`, `popen` (no in-process pipe API yet -- the kernel has `pipe(2)` but no libc wrapper); no wide-char variants |
-| `<string.h>` | `memcmp`/`memcpy`/`memmove`/`memset`/`strlen`/`strcpy`/`strncpy`/`strcat`/`strcmp`/`strncmp`/`strchr`/`strrchr`/`strstr`/`strdup`/`strtok`/`strtok_r`/`strerror` | No `strxfrm`, `strcoll` (C locale only) |
-| `<stdlib.h>` | `malloc`/`free`/`calloc`/`realloc`/`strtol`/`atoi`/`qsort`/`bsearch`/`getenv`/`setenv`/`unsetenv`/`putenv`/`system`/`strdup`/`exit`/`abort`/`sscanf` | `system` runs `/apps/sh.elf -c`; env is process-local (does not cross `execve`, which ignores `envp`); no `mblen`, `wcs*` |
-| `<ctype.h>` | Full ASCII set | No locale awareness (always C locale) |
-| `<setjmp.h>` | `setjmp`/`longjmp` | No `sigsetjmp`/`siglongjmp` |
-| `<errno.h>` | Defines (`EPERM`, `ENOENT`, `EBADF`, ...) shipped; the 30a–30e wrappers set `errno`; legacy syscalls still return `-1` without setting it | Partially POSIX-conformant |
-| `<unistd.h>` | `read`/`write`/`close`/`lseek`/`dup`/`dup2`/`pipe`/`chdir`/`getcwd`/`getpid`/`getppid`/`unlink`/`rmdir`/`access`/`sleep`/`usleep`/`_exit` | No `alarm`, `pause`, `fork`/`exec` wrappers (use `sys_fork`/`sys_execve`); `sleep`/`usleep` spin on the 100 Hz tick (10 ms granularity), no `SIGALRM` |
-| `<fcntl.h>` | `O_RDONLY/WRONLY/RDWR/CREAT/TRUNC/APPEND` constants only | No `O_NONBLOCK`, `O_SYNC`; no `creat`, `posix_fadvise` |
-| `<sys/stat.h>` | `struct stat` with limited fields (see syscall table); `mkdir()` wrapper present (mode ignored) | No `chmod`/`umask` enforcement |
-| `<dirent.h>` | Full POSIX shape: `DIR *`, `opendir`/`readdir`/`closedir` over `SYS_READDIR(141)` | -- |
-| `<signal.h>` | `signal()`, `kill()`, sigframe trampoline | No `sigaction`, `sigprocmask`, `sigsuspend`, `pthread_kill` |
-| `<math.h>` | **Absent** (libc) | Kernel x87 FPU is armed (`fpu_init`: CR0.EM=0 + `fninit` + CR4.OSFXSR) and saved/restored per task (`fxsave`/`fxrstor`) on every context switch, so userspace FP is safe under preemption.  Only the libc `<math.h>` functions are still unshipped |
-| `<time.h>` / `<sys/time.h>` | `time()`, `gettimeofday()`, `clock_gettime()` (REALTIME + MONOTONIC); `struct timeval`/`timespec`; `struct tm`, `gmtime`/`gmtime_r`, `localtime`/`localtime_r` (== gmtime, UTC), `mktime`, `strftime` (`%Y %y %m %d %H %M %S %j %a %b %p %F %T %%`) | No timezone database (UTC only), no `nanosleep`, `asctime`, `ctime`, `difftime` |
-| `<pthread.h>` | **Absent** | No userspace threads |
-| `<locale.h>` / `<wchar.h>` | **Absent** | C locale assumed; no wide chars |
+| `brk` | Present | Main heap-growth mechanism for the userspace malloc shim. |
+| `mmap2` | Anonymous only | `MAP_ANONYMOUS` mappings in a per-task bump window starting at `0x90000000`. |
+| `munmap` | Present | Unmaps the range; address reuse is not implemented. |
+| file-backed mmap | Absent | Use `read` into a buffer. |
+| `MAP_FIXED` | Rejected | Returns `MAP_FAILED`. |
+| `mprotect` | Absent | No page-protection changing API yet. |
+| executable mmap/JIT | Unsupported | TCC compiles to files and `exec`s them; `tcc -run` is not the supported model. |
 
-## Shell
+Anonymous `mmap` exists because hosted libc allocators, including musl paths,
+expect it for larger allocations. The implementation is intentionally simple:
+zero-filled frames are mapped into a bump region and are not reused during the
+process lifetime.
 
-`src/kernel/arch/i386/shell/sh_script.c` (in-kernel) and
-`src/userspace/sh.c` (ring-3 `sh.elf`) both implement a POSIX-sh
-subset.
+## Signals
 
-### Present (POSIX-shaped)
+| Feature | Status | Notes |
+|---|---|---|
+| `kill` | Present | Sends a signal to a pid. |
+| `signal` | Present | Installs a simple handler or disposition. |
+| user handlers | Present | Delivered through a userspace sigframe and `sigreturn`. |
+| default termination | Present | Fatal default signals mark the task dead. |
+| `sigreturn` | Present | Internal trampoline syscall. |
+| `rt_sigprocmask` | Stub | Returns success for hosted libc startup; real masking is not complete. |
+| `sigaction` | Absent | Use `signal` for now. |
+| `sigsuspend`, `pause` | Absent | No blocking signal-wait API. |
+| process groups | Absent | No job-control signal model. |
 
-- Variables: `NAME=value`, `$VAR`, `${VAR}`, `$?`, `env`, `unset`
-- Control flow: `if`/`elif`/`else`/`fi`, `while`/`do`/`done`, `for V in WORDS; do ... done`
-- Tests: `[ ... ]` (string `-z`/`-n`/`=`/`!=`, integer `-eq`/`-ne`/`-lt`/`-le`/`-gt`/`-ge`)
-- Builtins: `cd`, `pwd`, `echo`, `exit` (script), `read`, `sleep`, `true`, `false`
-- Comments: `# ...`
-- Statement separation: `;`, newline
-- Quoting: `'...'` and `"..."` group a word (whitespace inside a quote does
-  not split) and the quote characters are removed.  Both the in-kernel
-  tokeniser (`shell_parse`) and `/apps/sh.elf` (`tokenize`) honour this.
-  ($-expansion still runs before tokenisation, so it currently also expands
-  inside single quotes -- a known deviation.)
-- `sh -c "<command>"`: run one command string and exit with its `$?`
-  (`/apps/sh.elf` only; backs libc `system(3)`)
-- `$?` reflects: built-ins (always 0), unknown command (127), `[` test (0/1/2), and -- after recent work -- `exec <elf>` child exit status (low 8 bits)
+Signal support is good enough for current apps and tests (`sigtest.elf`) but
+not yet a complete POSIX signal subsystem.
 
-### Present in `/apps/sh.elf` only (PR #181, slices A1-A3)
+## Time
 
-These work in the **userspace** shell but not the in-kernel sh interpreter:
+| Feature | Status | Notes |
+|---|---|---|
+| `gettimeofday` | Present | Seconds from CMOS RTC; microseconds are PIT-derived at 10 ms resolution. |
+| `clock_gettime` | Present | `CLOCK_REALTIME` and `CLOCK_MONOTONIC`. |
+| `time` | Present | Userspace libc wrapper. |
+| `gmtime`, `gmtime_r` | Present | Integer-only UTC conversion. |
+| `localtime`, `localtime_r` | Present | Alias UTC; no timezone database. |
+| `mktime` | Present | UTC interpretation. |
+| `strftime` | Partial | Common numeric/date specifiers. |
+| `nanosleep` | Absent | `sleep`/`usleep` spin-yield on the 100 Hz tick. |
 
-| Feature | Notes |
-|---|---|
-| Pipes `cmd1 \| cmd2 \| ...` | Up to 8 stages; quote-aware tokenize; per-stage fork + `dup2`(pipefd, 0/1); parent `wait4`s each child; `$?` = last stage's status |
-| Redirection `<`, `>`, `>>`, `2>`, `2>>` | Extracted from argv pre-dispatch; applied via `open`+`dup2` in the forked child; commutes with pipes |
-| `&&` / `\|\|` | Gate next segment on previous segment's `$?` |
-| `&` background + `wait` builtin | 16-slot `jobs[]` table; `wait` (no args) drains all; `wait <pid>` waits on one |
+There is no locale or timezone database. Treat all broken-down time as UTC.
 
-### Absent
+## Floating Point
 
-| Feature | Notes |
-|---|---|
-| Command substitution `$(cmd)` / backticks | Not parsed |
-| Pipes / redirection / list ops **in the in-kernel sh interpreter** | Only `/apps/sh.elf` (ring-3) supports these; kernel `sh_script.c` does not |
-| Subshells `( ... )` | Not parsed |
-| `jobs` / `fg` / `bg` / process groups / `tcsetpgrp` | No real job control (just the `jobs[]` table) |
-| Functions `name() { ... }` | Not parsed |
-| `case ... esac` | Not parsed |
-| `getopts`, `trap`, `eval`, `exec` (re-exec self), `export` | -- |
-| `IFS`, brace expansion `{a,b}` | -- |
+The kernel initializes the x87 FPU and enables FXSAVE/FXRSTOR where available.
+Each task has a 512-byte FPU state area, and the scheduler saves/restores it
+around context switches. Floating-point state is therefore multitask-safe.
 
-### Path conventions
+What is still missing is the userspace libc surface: there is no shipped
+`<math.h>` implementation and no complete floating-point formatting/parsing
+library.
 
-Linux-shaped: `/` rootfs, `/usr`, `/etc`, `/home`, `/apps`, `/root`,
-`/bin`, `/proc`, `/dev`, `/tmp`, `/log`, `/mnt/<name>`,
-`/mnt/cdrom`.  No `/sys`, no `/sbin`, no `/var` (except logically
-`/log` ≈ `/var/log`).  `/log` is read-only from userspace -- write
-via VFS rejects with `"write: read-only filesystem (/log)"`; the
-kernel writes its own dmesg ring through `klog_write` which bypasses
-the VFS.
+## TLS and Hosted libc Startup
 
-## Process / signal model
+Static i386 musl startup needs a small Linux-compatible substrate. Makar now
+provides:
 
-- Tasks: kernel-scheduled, fixed pool (`MAX_TASKS = 32`).  No clone(2),
-  no thread groups.
-- pid space: monotonic from 2 (idle = 1).  No pid recycling concerns
-  within a session.
-- `fork`: COW per-page (`vmm_clone_pd_cow`).
-- `execve`: replaces image; auto-transfers keyboard focus + VT
-  foreground to the new image.
-- `wait4`: blocks, reverse-transfers focus + foreground on reap.
-- Signals: per-task `sig_pending` / `sig_mask` bitmasks; `signal()`
-  installs handler; sigframe trampoline via `SYS_SIGRETURN`.  Default
-  action for unhandled signals: terminate.  SIGSEGV on ring-3 fault
-  delivered via `kill_userspace_fault`.
-- **No** `sigaction`, `sigprocmask`, process groups, sessions,
-  controlling terminal, `tcsetpgrp`, `setsid`, `SIGCHLD` delivery,
-  `SIGSTOP`/`SIGCONT`.
+- ELF auxv entries: `AT_PAGESZ`, `AT_RANDOM`, `AT_NULL`
+- `set_thread_area(243)` using one GDT TLS slot at selector `0x33`
+- `%gs` preservation across interrupts
+- scheduler TLS restore for TLS-active tasks
+- `exit_group`
+- `set_tid_address`
+- `rt_sigprocmask` stub
+- `ioctl` returning `-ENOTTY`
+- `futex` stub for the current single-threaded bring-up assumption
 
-## File system
+These are compatibility pieces, not full Linux implementations. They exist to
+get static hosted binaries through early libc initialization.
 
-- Permission bits in `st_mode` are returned but **not enforced** --
-  every task has implicit root-like access.
-- No uid / gid in `struct stat` (always 0).
-- No timestamps (`st_atime` / `mtime` / `ctime` not implemented).
-- No symlinks, no hard links beyond what FAT32 / ext2 / ISO9660
-  natively expose.
-- `readdir(path, idx, ...)` is iterative-index, not POSIX-shaped
-  opaque `DIR *`.
-- `/tmp` (tmpfs) has wholesale-overwrite semantics on
-  `vfs_write_file` (matches POSIX `O_TRUNC` close-flush expectations).
-- `/log` (logfs) is ring-append; user-write rejected by the VFS.
+## Userspace libc Headers
 
-## What an app porter needs to know
+| Header | Current coverage | Important gaps |
+|---|---|---|
+| `<stdio.h>` | `FILE *` I/O, `printf` family subset, fd-backed reads/writes | no wide char, no `popen`, incomplete buffering controls |
+| `<stdlib.h>` | allocation, conversions, `qsort`, `bsearch`, env table, `system`, `sscanf` | env does not cross `execve`; no locale/multibyte family |
+| `<string.h>` | memory/string basics, `strtok`, `strtok_r`, `strerror` | no collation/locale transforms |
+| `<unistd.h>` | common declarations and thin wrappers: fd I/O, `dup`, `pipe`, pids, cwd, sleep | no `alarm`, `pause`; no POSIX `fork`/`exec` wrappers yet |
+| `<dirent.h>` | `opendir`, `readdir`, `closedir` | backed by indexed syscall rather than Linux `getdents` |
+| `<errno.h>` | common errno constants and global `errno` | not every syscall wrapper sets errno yet |
+| `<time.h>` | UTC broken-down time and `strftime` subset | no timezone, no `ctime`/`asctime`/`difftime` |
+| `<setjmp.h>` | i386 `setjmp`/`longjmp` | no signal-mask variants |
+| `<ctype.h>` | ASCII C-locale classifiers | no locale |
+| `<math.h>` | absent | FPU substrate exists, library does not |
+| `<pthread.h>` | absent | no user threading |
 
-If you're bringing a POSIX-flavoured app over:
+## Shell Compatibility
 
-1. **No floats.**  Use fixed-point or refactor to integer math.
-2. **`pipe` and redirection work in `/apps/sh.elf`** (PR #181): `|`, `<`,
-   `>`, `>>`, `2>`, `&&`, `||`, `&`.  The in-kernel `sh_script.c`
-   interpreter does not support them — use `/apps/sh.elf` for scripts
-   that need pipelines.
-3. **No `mmap`.**  Stick to `brk`-based malloc; the libc shim does
-   this transparently.
-4. **No real `errno`.**  Check syscall return for `-1`; cause-of-failure
-   is in serial log, not user-facing.
-5. **`signal()` works, but no `sigaction`.**  Re-install handler in
-   the handler if you need persistent semantics.
-6. **No threads.**  If the app needs concurrency, `fork`+pipe (after
-   slice 28) is the route -- or restructure to event-driven on
-   `SYS_GETKEY`.
-7. **Use Makar exts for terminal control.**  No `termios` --
-   `SYS_TERM_SIZE`, `SYS_SET_CURSOR`, `SYS_PUTCH_AT`, `SYS_CARET_STYLE`
-   are the surfaces.
-8. **`/log` is RO.**  Write scratch files to `/tmp`.
+The default interactive shell is `/apps/sh.elf`. It supports:
 
-See `src/userspace/alloctest.c` for a near-comprehensive smoke test
-of what works (12 sub-tests across the libc surface).
+- variables and `$?`
+- quoting with quote removal
+- `sh -c`
+- `if`, `while`, `for`
+- `[ ... ]`
+- pipelines
+- redirection
+- `&&`, `||`
+- background `&`
+- `wait`
+
+The in-kernel script interpreter is smaller. It is used for boot/test scripts
+and intentionally does not support pipes, redirection, list operators, or
+background jobs. Use `/apps/sh.elf` for scripts that need those features.
+
+Known shell deviations:
+
+- no command substitution
+- no shell functions
+- no `case`
+- no subshell syntax
+- no true job control
+- `$` expansion currently happens before tokenization, so single quotes do not
+  fully suppress variable expansion
+
+## Terminal Model
+
+Makar does not have a POSIX `termios` layer. Programs use Makar-specific
+syscalls for terminal size, cursor position, drawing, raw keyboard mode, and
+caret style. Virtual terminals and app tabs are managed through Makar VT
+extensions and `makmux`.
+
+The `tty` command prints Linux-shaped names:
+
+- `/dev/console` for the root console
+- `/dev/ttyN` for VT slots
+- `not a tty` for unbound tasks
+
+## App-Porter Checklist
+
+When porting a small C program:
+
+1. Prefer static builds.
+2. Avoid threads.
+3. Avoid file-backed mmap and `mprotect`.
+4. Use `/tmp` for scratch writes during live boots.
+5. Expect all local time to be UTC.
+6. Avoid termios; use Makar terminal syscalls or simple stdio.
+7. Prefer `/apps/sh.elf` if the program shells out through `system`.
+8. Check both return values and `errno`; errno coverage is improving but not
+   universal.
+9. Run `alloctest.elf`, `libc-tcc.sh`, and `shell-smoke.sh` when adding libc
+   surface.
+10. Run `kbtest` when changing keyboard, VT, makmux, shell focus, or app-tab
+    behavior.

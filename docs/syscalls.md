@@ -4,92 +4,213 @@ parent: Reference
 nav_order: 2
 ---
 
-# Syscall ABI (`int 0x80`, Linux i386 convention)
+# Syscall ABI
 
-Makar follows the Linux i386 syscall convention: `int 0x80`, EAX = syscall number, arguments in EBX/ECX/EDX/ESI/EDI, return value in EAX.
+Makar uses the Linux i386 syscall calling convention:
 
-Authoritative number assignments: `src/kernel/include/kernel/syscall.h`.  
-Userspace wrappers (inline stubs): `src/userspace/syscall.h`.
+```text
+int 0x80
+EAX = syscall number
+EBX = arg0
+ECX = arg1
+EDX = arg2
+ESI = arg3
+EDI = arg4
+EAX = return value
+```
 
-## Standard POSIX-shaped syscalls
+The authoritative kernel definitions live in:
 
-| EAX | Name | Args / notes |
-|-----|------|-------------|
-| 1 | `SYS_EXIT` | EBX = status. Sets `task_current()->exit_status` before ZOMBIE/DEAD. |
-| 2 | `SYS_FORK` | COW-clone the calling task; returns child pid in parent, 0 in child, -EAGAIN on failure. |
-| 3 | `SYS_READ` | EBX = fd (0 = stdin keyboard, ≥3 = VFS), ECX = buf, EDX = count. |
-| 4 | `SYS_WRITE` | EBX = fd, ECX = buf, EDX = count. fd 1 = VGA, fd 2 = VGA + COM1, ≥3 = VFS. Dirty `FD_KIND_FILE` buffers flushed on close. |
-| 5 | `SYS_OPEN` | EBX = path, ECX = flags (`O_RDONLY/WRONLY/RDWR` ∣ `O_CREAT 0100` ∣ `O_TRUNC 01000` ∣ `O_APPEND 02000`; Linux i386 values). `/dev` block devices bind as `FD_KIND_BLOCKDEV`; other paths eager-buffer up to 16 MiB. |
-| 6 | `SYS_CLOSE` | EBX = fd. Flushes dirty `FD_KIND_FILE` buffer via `vfs_write_file`; frees buffer regardless. |
-| 10 | `SYS_UNLINK` | EBX = path. POSIX alias of SYS_DELETE_FILE (208). |
-| 11 | `SYS_EXECVE` | EBX = path, ECX = argv (NULL-terminated), EDX = envp (ignored). On success never returns. Transfers keyboard focus + VT foreground to new image. |
-| 12 | `SYS_CHDIR` | EBX = path. Sets calling task's cwd (normalises `../` and `//`). Returns 0/-1. |
-| 19 | `SYS_LSEEK` | EBX = fd, ECX = offset, EDX = whence. Works on `FD_KIND_FILE` and `FD_KIND_BLOCKDEV`. |
-| 20 | `SYS_GETPID` | Returns `task_current()->pid` (idle task = 1). |
-| 37 | `SYS_KILL` | EBX = pid, ECX = signo. |
-| 38 | `SYS_RENAME` | EBX = old, ECX = new. POSIX alias of SYS_RENAME_FILE (209). |
-| 39 | `SYS_MKDIR` | EBX = path, ECX = mode (ignored). Calls `vfs_mkdir`. |
-| 40 | `SYS_RMDIR` | EBX = path. POSIX alias of SYS_DELETE_DIR (210). |
-| 42 | `SYS_PIPE` | EBX = `int pipefd[2]` (out). Allocates two fds backed by a shared 4 KiB `pipe_ring_t`. Returns 0/-1. |
-| 45 | `SYS_BRK` | EBX = new break. Returns current/new break. |
-| 48 | `SYS_SIGNAL` | EBX = signo, ECX = handler. Returns previous handler. |
-| 63 | `SYS_DUP2` | EBX = oldfd, ECX = newfd. Closes newfd if open; for `FD_KIND_PIPE` bumps the correct refcount. Returns newfd/-1. |
-| 64 | `SYS_GETPPID` | Returns `task_current()->parent_pid` (0 = no userspace ancestor). |
-| 78 | `SYS_GETTIMEOFDAY` | EBX = `struct timeval *`, ECX = `struct timezone *` (ignored). `tv_sec` from CMOS RTC; `tv_usec` resolution = 10 ms (PIT tick). |
-| 100 | `SYS_DEBUG` | EBX = uint32 checkpoint. Prints to VGA + serial unconditionally. |
-| 106 | `SYS_STAT` | EBX = path, ECX = `struct stat *`. Populates `st_mode`/`st_size`/`st_nlink`/`st_blksize`/`st_ino` (FNV-1a-32 hash of path). |
-| 108 | `SYS_FSTAT` | EBX = fd, ECX = `struct stat *`. Same shape; for `FD_KIND_FILE`, `st_size` reflects unflushed writes. |
-| 114 | `SYS_WAIT4` | EBX = pid (-1 = any child), ECX = `int *status`, EDX = options (WNOHANG=1), ESI = rusage (ignored). Returns child pid, 0 (WNOHANG/no zombie), or -ECHILD. On reap, keyboard focus + VT foreground return to parent. |
-| 119 | `SYS_SIGRETURN` | Sigframe trampoline — not for direct use. |
-| 158 | `SYS_YIELD` | Voluntary scheduler yield. |
-| 265 | `SYS_CLOCK_GETTIME` | EBX = clockid (`CLOCK_REALTIME=0`, `CLOCK_MONOTONIC=1`), ECX = `struct timespec *`. 10 ms resolution. |
+```text
+src/kernel/include/kernel/syscall.h
+```
 
-## TTY / display syscalls
+The userspace inline wrappers live in:
 
-| EAX | Name | Args / notes |
-|-----|------|-------------|
-| 200 | `SYS_GETKEY` | Raw single-char keyboard read (blocks until key available). |
-| 201 | `SYS_PUTCH_AT` | EBX = `tty_cell_t[]`, ECX = count. Batch cell write for fullscreen apps. Cells at `row >= drawable_rows` target the makmux status bar directly. |
-| 202 | `SYS_SET_CURSOR` | EBX = col, ECX = row. |
-| 203 | `SYS_TTY_CLEAR` | EBX = VGA colour attribute. Clear screen with background fill. |
-| 204 | `SYS_TERM_SIZE` | Returns `(cols << 16) \| rows`. Rows = full screen when no makmux VTs registered; `rows-1` (status bar reserved) when makmux is active. |
-| 211 | `SYS_WRITE_SERIAL` | EBX = buf, ECX = len. COM1 only, no framebuffer. |
-| 212 | `SYS_KEYBOARD_RAW` | EBX = 1 = raw bytes (no sentinel translation), 0 = cooked. |
-| 213 | `SYS_SHELL_CLEAR` | Same as `clear` shell builtin. |
-| 214 | `SYS_UPTIME` | Returns 100 Hz PIT tick counter. |
-| 215 | `SYS_GETCWD` | EBX = char *buf, ECX = size. Returns strlen or -1. |
-| 217 | `SYS_DRAW_LINE` | EBX = (x0<<16)\|y0, ECX = (x1<<16)\|y1, EDX = 24-bit RGB. Clipped to drawable area (excludes status row when makmux active). |
-| 218 | `SYS_CARET_STYLE` | EBX = style (0 = line, 2 = flashing block). Returns previous. No-op in VGA-text mode. |
+```text
+src/userspace/syscall.h
+```
 
-## VFS / disk syscalls
+Keep those files synchronized. Userspace objects now use generated dependency
+files so changes to `syscall.h` rebuild dependent apps.
 
-| EAX | Name | Args / notes |
-|-----|------|-------------|
-| 205 | `SYS_WRITE_FILE` | EBX = path, ECX = buf, EDX = len. |
-| 206 | `SYS_LS_DIR` | EBX = path, ECX = buf, EDX = bufsz. |
-| 207 | `SYS_DISK_INFO` | EBX = buf, ECX = bufsz. |
-| 208 | `SYS_DELETE_FILE` | EBX = path. |
-| 209 | `SYS_RENAME_FILE` | EBX = old, ECX = new. |
-| 210 | `SYS_DELETE_DIR` | EBX = path. |
+## Return Conventions
 
-## VT multiplexer syscalls (makmux)
+Makar mostly follows the Unix pattern:
 
-| EAX | Name | Args / notes |
-|-----|------|-------------|
-| 233 | `SYS_VT_ENTER` | EBX = focus_new. Register calling task as a makmux VT child, name it `mak.shN`. Returns slot index or -1. |
-| 234 | `SYS_VT_CLOSE` | EBX = pid. Unregister a VT child by pid. |
-| 235 | `SYS_VT_OPEN_REQUEST` | Consume pending Alt+T "open new VT" counter. Returns count consumed. |
-| 236 | `SYS_VT_STATE` | Returns `(active_slot << 16) \| live_mask`. |
-| 237 | `SYS_VT_CLOCK_REQUEST` | Consume pending Alt+F5 clock-toggle requests. |
+- non-negative return values indicate success
+- `-1` or negative errno-style values indicate failure depending on the syscall
+- userspace libc wrappers are gradually being moved toward setting `errno`
 
-## Keyboard switching (host-key reference)
+Some older Makar-specific syscalls still return a simple `0`/`1` or `-1`
+without a detailed errno. Check the wrapper before assuming Linux parity.
 
-| Shortcut | Action |
-|----------|--------|
-| Alt+F1..F4 | Switch to VT 1..4 |
-| Ctrl+Tab | Cycle to next VT |
-| Ctrl+Shift+Tab | Cycle to previous VT |
-| Alt+F5 | Toggle clock mode in makmux status bar |
-| Alt+T | Open a new VT (makmux must be running) |
-| Ctrl+A, U/J | Pane switch (legacy in-kernel shortcut) |
-| Ctrl+C | SIGINT to focused task / abort input line |
+## Core Linux-Compatible Syscalls
+
+| Number | Name | Arguments | Status |
+|---:|---|---|---|
+| 1 | `SYS_EXIT` | `status` | terminates current task |
+| 2 | `SYS_FORK` | none | COW fork; parent gets child pid, child gets 0 |
+| 3 | `SYS_READ` | `fd, buf, len` | fd-backed read |
+| 4 | `SYS_WRITE` | `fd, buf, len` | fd-backed write |
+| 5 | `SYS_OPEN` | `path, flags, mode` | mode ignored |
+| 6 | `SYS_CLOSE` | `fd` | closes and flushes |
+| 10 | `SYS_UNLINK` | `path` | delete file |
+| 11 | `SYS_EXECVE` | `path, argv, envp` | envp ignored |
+| 12 | `SYS_CHDIR` | `path` | per-task cwd |
+| 19 | `SYS_LSEEK` | `fd, offset, whence` | `SEEK_SET/CUR/END` |
+| 20 | `SYS_GETPID` | none | current task pid |
+| 37 | `SYS_KILL` | `pid, signo` | signal delivery |
+| 38 | `SYS_RENAME` | `old, new` | VFS rename |
+| 39 | `SYS_MKDIR` | `path, mode` | mode ignored |
+| 40 | `SYS_RMDIR` | `path` | remove empty directory |
+| 41 | `SYS_DUP` | `oldfd` | duplicate to lowest free fd |
+| 42 | `SYS_PIPE` | `int pipefd[2]` | creates read/write fds |
+| 45 | `SYS_BRK` | `addr` | query/grow heap break |
+| 48 | `SYS_SIGNAL` | `signo, handler` | simple signal handler install |
+| 54 | `SYS_IOCTL` | `fd, request, ...` | compatibility stub, returns `-ENOTTY` |
+| 55 | `SYS_FCNTL` | `fd, cmd, arg` | `F_GETFL`, `F_SETFL` |
+| 63 | `SYS_DUP2` | `oldfd, newfd` | duplicate onto requested fd |
+| 64 | `SYS_GETPPID` | none | parent pid |
+| 78 | `SYS_GETTIMEOFDAY` | `timeval *, tz` | tz ignored |
+| 91 | `SYS_MUNMAP` | `addr, len` | unmap anonymous pages |
+| 106 | `SYS_STAT` | `path, stat *` | limited Linux-shaped stat |
+| 108 | `SYS_FSTAT` | `fd, stat *` | limited Linux-shaped stat |
+| 114 | `SYS_WAIT4` | `pid, status *, options, rusage` | supports `WNOHANG`; rusage ignored |
+| 119 | `SYS_SIGRETURN` | internal | signal trampoline return |
+| 141 | `SYS_READDIR` | `path, index, dirent *` | indexed Makar syscall, libc wraps it |
+| 158 | `SYS_YIELD` | none | scheduler yield |
+| 175 | `SYS_RT_SIGPROCMASK` | Linux args | startup compatibility stub |
+| 192 | `SYS_MMAP2` | `addr, len, prot, flags, fd, pgoff` | anonymous only |
+| 240 | `SYS_FUTEX` | Linux args | single-threaded compatibility stub |
+| 243 | `SYS_SET_THREAD_AREA` | `user_desc *` | one-slot i386 TLS |
+| 252 | `SYS_EXIT_GROUP` | `status` | same as exit |
+| 258 | `SYS_SET_TID_ADDRESS` | `int *` | returns pid |
+| 265 | `SYS_CLOCK_GETTIME` | `clockid, timespec *` | realtime and monotonic |
+
+## Makar Extension Ranges
+
+Makar extensions provide functionality that would normally be handled by
+termios, ioctl, framebuffer drivers, devfs, procfs, or shell helpers on a
+larger Unix system.
+
+The exact list is in `src/kernel/include/kernel/syscall.h`; the groups below
+explain the design intent.
+
+### Terminal and Framebuffer
+
+These support text-mode and framebuffer apps without a termios layer:
+
+- put a character/cell at a position
+- move the cursor
+- clear the terminal
+- query terminal size
+- query framebuffer geometry
+- draw framebuffer lines
+- set caret style
+- clear using shell/default colors
+
+Display-mutating syscalls are focus-gated where appropriate so background VTs
+update backing buffers without scribbling on the visible framebuffer.
+
+### Keyboard
+
+Keyboard syscalls expose:
+
+- blocking key reads
+- raw keyboard mode
+- focus-aware routing
+
+Automated keyboard tests do not use a syscall. The kernel test driver injects
+keycodes directly into the live keyboard path when `kbtest` is on the command
+line.
+
+### Filesystem Convenience
+
+Makar provides shortcut syscalls for:
+
+- write an entire file
+- list a directory into a text buffer
+- delete files/directories
+- rename/move paths
+- disk information
+- PCI information
+- statfs-like rootfs usage
+
+These are not POSIX ABI surfaces; they exist for small built-in tools and
+apps.
+
+### Session and Admin
+
+Admin/session helpers include:
+
+- reboot
+- shutdown
+- display mode changes
+- foreground/background color selection
+- mount/umount/mkfs/eject/install helpers
+- scheduler quantum controls
+- serial verbose toggle
+- hostname and username queries
+
+There is no permission model yet, so privilege checks are structural rather
+than user/credential based.
+
+### Virtual Terminals and makmux
+
+VT/app-tab syscalls support the userspace multiplexer:
+
+| Syscall | Purpose |
+|---|---|
+| `SYS_VT_ENTER` | bind a task to a new VT slot |
+| `SYS_VT_CLOSE` | close/free a VT owner pid |
+| `SYS_VT_OPEN_REQUEST` | request another shell VT |
+| `SYS_VT_STATE` | return live VT state |
+| `SYS_VT_OPEN_APP` | queue or switch to a named app tab |
+| `SYS_VT_TAKE_APP` | makmux drains one queued app path |
+| `SYS_VT_SETNAME` | name the current VT/app tab |
+| `SYS_VT_GETNAME` | read a VT/app tab name |
+
+`SYS_VT_TAKE_APP` is currently number 248. It was moved off 243 so Linux i386
+`set_thread_area` could use its standard number.
+
+## TLS Details
+
+`SYS_SET_THREAD_AREA` accepts a Linux-style i386 `struct user_desc` pointer.
+Makar supports one TLS slot:
+
+- GDT index: 6
+- selector: `0x33`
+- writeback entry number: 6
+- segment register: `%gs`
+
+The syscall programs the GDT slot, records the TLS descriptor on the current
+task, and loads `%gs`. ISR and IRQ stubs intentionally leave `%gs` untouched.
+The scheduler restores TLS state for TLS-active tasks.
+
+## mmap Details
+
+`SYS_MMAP2` is intentionally narrow:
+
+- requires `MAP_ANONYMOUS`
+- rejects `MAP_FIXED`
+- ignores file descriptors and offsets
+- maps zero-filled pages
+- uses a per-task bump pointer
+- returns `MAP_FAILED` (`(void *)-1`) on unsupported requests
+
+`SYS_MUNMAP` unmaps pages but does not currently recycle virtual addresses.
+
+## Compatibility Stubs
+
+These exist for hosted libc startup, especially static musl:
+
+| Syscall | Behavior |
+|---|---|
+| `ioctl` | returns `-ENOTTY` |
+| `rt_sigprocmask` | returns success |
+| `futex` | returns success under the current single-threaded assumption |
+| `set_tid_address` | returns pid |
+| `exit_group` | exits current process |
+
+Treat them as bring-up compatibility, not complete Linux behavior.

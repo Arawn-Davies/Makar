@@ -4,192 +4,249 @@ parent: Getting started
 nav_order: 1
 ---
 
-# Building & Running Makar
+# Building and Running Makar
 
-The entire build and test toolchain runs inside Docker - no cross-compiler or
-native GDB is required on the host.  For Windows-specific setup see
-[WSL2 guide](wsl2.md).
+`run.sh` is the single supported entry point for building, booting, and
+testing. It chooses Docker, native tools, or the current container depending on
+what is available.
 
----
+Run it with no arguments to print usage:
+
+```sh
+./run.sh
+```
 
 ## Prerequisites
 
-| Tool | Purpose |
-|---|---|
-| `docker` | Runs the CI image that contains the full cross-toolchain |
-| `qemu-system-i386` (host, optional) | Used by `run.sh` in preference to Docker QEMU for interactive and test modes; falls back to container QEMU if absent |
+| Tool | Required? | Purpose |
+|---|---:|---|
+| Docker | yes for the default path | build container with i686 cross-toolchain, GRUB, xorriso, QEMU, GDB |
+| `qemu-system-i386` | optional | preferred for interactive and visible runs |
+| `gdb-multiarch` or `gdb` | optional | host-side GDB checkpoint runs; Docker fallback exists |
+| display server | optional | needed only for visible `gui` / `kbtest gui` modes |
 
----
+The normal path does not require installing `i686-elf-gcc` on the host.
 
-## Quick start
+## Quick Start
+
+Build and boot an ISO:
 
 ```sh
-# Interactive kernel shell (builds in Docker, QEMU runs on host or in Docker):
 ./run.sh iso boot
+```
 
-# Full CI test suite (ktest + GDB boot tests - works with or without host QEMU):
+Build artifacts without booting:
+
+```sh
+./run.sh iso build
+```
+
+Run the main headless tests:
+
+```sh
+./run.sh ktest
+./run.sh kbtest
 ./run.sh iso test
-
-# Interactive HDD boot:
-./run.sh hdd boot
 ```
 
----
+Watch all in-guest suites in a visible QEMU window:
 
-## run.sh reference
-
-All build, test, and boot operations go through a single script:
-
-```
-./run.sh <mode>
+```sh
+./run.sh gui all-tests
 ```
 
-### Modes
+## Command Grammar
 
-Day-to-day (build + run in one shot):
+Current command forms:
 
-| Mode | Description | Host requirements |
-|---|---|---|
-| `iso-boot` | Clean → debug ISO → interactive QEMU | Docker; host QEMU preferred (Docker fallback) |
-| `iso-test` | Full CI suite: ktest + GDB boot tests | Docker |
-| `iso-ktest-gui` | Test ISO → ktest with display window | Docker, host QEMU + display server |
-| `iso-release` | Optimised release ISO | Docker |
-| `hdd-boot` | Clean → build kernel → HDD image → interactive QEMU | Docker; host QEMU preferred (Docker fallback) |
-| `hdd-test` | Clean → build kernel → HDD image → GDB boot test | Docker |
-| `hdd-release` | HDD image only | Docker |
-| `clean` | Remove all build artefacts | Docker |
+```text
+./run.sh iso   build | boot | test | release
+./run.sh hdd   build | boot | test | release
+./run.sh gdb   iso | hdd
+./run.sh ktest [graphical]
+./run.sh kbtest [gui]
+./run.sh gui   libc | incore | ktest | smoke | all-tests
+./run.sh clean
+```
 
-CI-style split modes (build once, fan out test runs — used by `.github/workflows/build-test.yml`):
+There are no `ui` or `all` modes anymore. The host-driven UI harness was
+removed in favor of in-guest tests.
 
-| Mode | Description |
+## ISO Targets
+
+| Command | What it does |
 |---|---|
-| `iso-build` | Build kernel + `makar.iso` + `makar-test.iso`, no run |
-| `hdd-build` | Build kernel + `makar-hdd-test.img`, no run |
-| `ktest-run` | Run ktest against existing `makar-test.iso` |
-| `gdb-iso-run` | Run GDB ISO boot test against existing `makar.iso` |
-| `gdb-hdd-run` | Run GDB HDD boot test against existing `makar-hdd-test.img` |
+| `./run.sh iso build` | incremental debug build; emits `makar.iso` and `makar-test.iso` |
+| `./run.sh iso boot` | builds debug ISO and boots interactively |
+| `./run.sh iso test` | builds test ISO, runs ktest, then GDB ISO checkpoints |
+| `./run.sh iso release` | optimized release ISO |
 
-### Execution context
+`iso boot` is the normal interactive development boot. `iso test` is the
+CI-style gate. Keyboard/makmux behavior is covered separately by `kbtest`.
 
-`run.sh` picks an execution context automatically, checked in this order:
+## HDD Targets
 
-| Context | Condition | Effect |
-|---|---|---|
-| **container** | `/.dockerenv` present (GitHub Actions `container:` job, or manual `docker run`) | Steps run directly - no inner `docker run` |
-| **docker** | Docker CLI available on the host | Steps are wrapped in `docker run` |
-| **native** | `i686-elf-gcc` on the host PATH | Steps run directly - no Docker |
-| **none** | None of the above | Error with install hints |
-
-### QEMU strategy
-
-| Step type | Strategy |
+| Command | What it does |
 |---|---|
-| Headless test (ktest, GDB) | Host `qemu-system-i386` preferred; falls back to container QEMU |
-| GDB test (needs `gdb-multiarch` too) | Host qemu + gdb-multiarch if both present; otherwise fully in container |
-| Interactive boot (`iso-boot`, `hdd-boot`) | Host QEMU preferred; Docker `-it` fallback |
-| `iso-ktest-gui` | Host QEMU + display required; errors if absent |
+| `./run.sh hdd build` | build kernel and HDD test image artifacts |
+| `./run.sh hdd boot` | boot from an HDD image |
+| `./run.sh hdd test` | run HDD GDB checkpoint test |
+| `./run.sh hdd release` | produce release HDD image |
 
-### Environment variables
+The HDD paths are useful for installer, writable-root, GRUB, FAT32, and ext2
+work. ISO paths are faster for day-to-day kernel/userspace testing.
+
+## GDB Targets
+
+| Command | What it does |
+|---|---|
+| `./run.sh gdb iso` | build and run the ISO GDB checkpoint suite |
+| `./run.sh gdb hdd` | build and run the HDD GDB checkpoint suite |
+
+The GDB suites validate early boot, Multiboot state, kernel checkpoints, and
+mount/boot conditions that are easier to inspect from the host debugger than
+from inside the guest.
+
+## ktest
+
+Headless:
+
+```sh
+./run.sh ktest
+```
+
+Visible:
+
+```sh
+./run.sh ktest graphical
+```
+
+This boots `test_mode test=ktest` and checks the serial marker:
+
+```text
+KTEST_RESULT: PASS
+```
+
+## kbtest
+
+Headless:
+
+```sh
+./run.sh kbtest
+```
+
+Visible:
+
+```sh
+./run.sh kbtest gui
+```
+
+This boots the normal shell with `kbtest` on the kernel command line. The
+kernel injects keys inside the guest and checks serial `KBTEST:` markers. It
+is the dedicated coverage for keyboard routing, Ctrl-C, makmux, VT switching,
+and app tabs.
+
+## Visible In-Guest Suites
+
+```sh
+./run.sh gui ktest
+./run.sh gui incore
+./run.sh gui libc
+./run.sh gui smoke
+./run.sh gui all-tests
+```
+
+These use test-mode boot arguments and a visible QEMU display. They do not
+type through the host. The guest runs scripts and emits serial markers.
+
+Suites:
+
+| Suite | Guest test |
+|---|---|
+| `ktest` | kernel suite |
+| `incore` | userspace binary exit-status checks |
+| `libc` | in-OS TCC/libc compile matrix (`libc-tcc`) |
+| `smoke` | shell/VFS/app smoke tests |
+| `all-tests` | all of the above |
+
+## Execution Context Selection
+
+For build steps, `run.sh` checks:
+
+1. running inside a container with `i686-elf-gcc`
+2. Docker CLI available
+3. native `i686-elf-gcc` available
+4. otherwise error with install hints
+
+For QEMU/GDB steps, host tools are preferred where they make sense. Docker is
+used as a fallback for headless paths. Visible GUI paths require host QEMU with
+a display backend.
+
+## Important Environment Variables
 
 | Variable | Default | Effect |
 |---|---|---|
-| `CFLAGS` | *(Makefile default)* | Compiler flags forwarded to the build step |
-| `CPPFLAGS` | *(empty)* | Preprocessor flags forwarded to the build step |
-| `CCACHE` | `1` | Set to `0` to disable the ccache wrapper around `i686-elf-gcc` |
-| `CCACHE_DIR` | `/work/.ccache` | ccache object cache directory (inside the container) |
-| `CCACHE_MAXSIZE` | `500M` | ccache eviction threshold |
-| `DOCKER_BIN` | `docker` | Docker CLI binary |
-| `DOCKER_IMAGE` | `makar-build:local` | Build container image (auto-built from `Dockerfile`, layers ccache on the upstream toolchain) |
-| `DOCKER_UPSTREAM_IMAGE` | `arawn780/gcc-cross-i686-elf:fast` | Base image used by `Dockerfile` and pulled directly inside CI test jobs |
-| `DOCKER_PLATFORM` | `linux/amd64` | `--platform` flag passed to `docker run` |
-| `HDD_IMG` | `makar-hdd.img` | Output filename for interactive HDD builds |
-| `HDD_TEST_IMG` | `makar-hdd-test.img` | Output filename for CI HDD test builds |
-| `HDD_SIZE_MB` | `512` (interactive) / unset (test default) | Size of the generated HDD image; CI uses 64 MiB for faster artifact upload |
-| `TEST_ISO` | unset (1 in `iso-build`) | When set, `iso.sh` also emits `makar-test.iso` (auto-boots `test_mode`) alongside `makar.iso` |
-| `MAKAR_USE_KVM` | unset | Set to `1` to opt in to QEMU KVM acceleration; off by default (GDB stub + ktest reliability issues under KVM) |
-| `QEMU_DISPLAY` | *(empty)* | Passed to `-display` for `iso-ktest-gui` |
+| `DOCKER_IMAGE` | `makar-build:local` | local build image layered with ccache |
+| `DOCKER_UPSTREAM_IMAGE` | `arawn780/gcc-cross-i686-elf:fast` | upstream toolchain base |
+| `DOCKER_BIN` | `docker` | Docker CLI |
+| `DOCKER_PLATFORM` | `linux/amd64` | platform passed to Docker |
+| `HDD_IMG` | `makar-hdd.img` | interactive HDD image path |
+| `HDD_TEST_IMG` | `makar-hdd-test.img` | CI/test HDD image path |
+| `MAKAR_HDD_SIZE_MB` | `96` | interactive HDD image size |
+| `MAKAR_HDD_TEST_SIZE_MB` | `96` | test HDD image size |
+| `MAKAR_USE_KVM` | `0` | opt into KVM if `/dev/kvm` is usable |
+| `QEMU_DISPLAY` | unset | display backend for visible runs |
+| `KERNEL_ARGS` | unset | extra kernel command-line args for supported paths |
 
----
+KVM is disabled by default because deterministic TCG behavior is more useful
+for CI and GDB checkpoint tests.
 
-## Internal build scripts
+## Build Products
 
-These run inside the container and are called by `run.sh` - do not invoke directly.
-
-| Script | What it does |
+| File/directory | Purpose |
 |---|---|
-| `build.sh` | Compiles the kernel and libc into `sysroot/` (parallel via `-j$(nproc)`, ccache-wrapped) |
-| `iso.sh` | Calls `build.sh`, then packages `makar.iso` via `grub-mkrescue`; with `TEST_ISO=1` also emits `makar-test.iso` (single menuentry, `timeout=0`, `multiboot2 /boot/makar.kernel test_mode`) |
-| `clean.sh` | Removes `sysroot/`, `isodir/`, and all build artefacts |
-| `generate-hdd.sh` | Creates a raw MBR + FAT32 + GRUB 2 HDD image; called by `hdd-boot` / `hdd-test` / `hdd-release` |
+| `makar.iso` | interactive ISO |
+| `makar-test.iso` | test-mode ISO |
+| `src/kernel/makar.kernel` | kernel ELF |
+| `sysroot/` | staged kernel/sysroot artifacts |
+| `isodir/` | staged ISO tree |
+| `src/userspace/*.elf` | userspace app binaries |
+| `src/userspace/*.d` | generated dependency files, ignored |
 
-The legacy per-task `scripts/docker-*.sh` wrappers were removed in PR #125 — `run.sh` is the single entrypoint.
-
----
-
-## Docker Compose
-
-`docker-compose.yml` is available for workflows that prefer Compose.
-Prefer `run.sh` for day-to-day use.
-
-| Service | Command |
-|---|---|
-| `build` | `bash iso.sh` (release ISO) |
-| `build-debug` | `bash iso.sh` with `CFLAGS=-O0 -g3` |
-| `test` | `bash run.sh iso test` (full suite) |
+Use:
 
 ```sh
-docker compose run --rm build          # release ISO
-docker compose run --rm build-debug    # debug ISO
-docker compose run --rm test           # full iso-test suite
+./run.sh clean
 ```
 
----
+to remove build artifacts.
 
-## What the Docker images provide
+## Toolchain Images
 
-Two related images are used:
+The default Docker path uses:
 
-- **`arawn780/gcc-cross-i686-elf:fast`** — upstream toolchain image (built from `Dockerfile.compiler` and pushed manually). Used directly inside the GitHub Actions `container:` test jobs.
-- **`makar-build:local`** — local image built on first use from the in-repo `Dockerfile`. Layers `ccache` on top of the upstream image and sets `CCACHE_DIR=/work/.ccache`. Auto-built by `run.sh` when needed.
+- `arawn780/gcc-cross-i686-elf:fast` as the upstream toolchain image
+- `makar-build:local` as a local ccache-enabled layer
 
-The upstream image ships everything needed for building, testing, and HDD image creation:
+The image provides:
 
-| Tool / package | Purpose |
-|---|---|
-| `i686-elf-gcc` / `i686-elf-binutils` | Bare-metal cross-compiler (GCC 13.2, Binutils 2.41) |
-| `grub-mkimage`, `grub-file`, `grub-pc-bin` | ISO and HDD GRUB image creation |
-| `xorriso`, `mtools` | `grub-mkrescue` ISO packaging |
-| `dosfstools` | `mkfs.fat` for FAT32 partition creation |
-| `fdisk` / `sfdisk` | MBR partition table writing |
-| `qemu-system-i386` | Headless boot testing inside Docker |
-| `gdb-multiarch` | GDB with i386 target for boot-checkpoint tests |
-| `make`, `build-essential`, `nasm` | Host build tools |
+- `i686-elf-gcc`
+- binutils
+- GRUB tools
+- xorriso/mtools
+- QEMU i386
+- GDB multiarch
+- filesystem tools for FAT32/ext2 image work
 
-To rebuild and push after adding packages:
-```sh
-docker buildx build --platform linux/amd64 \
-    -t arawn780/gcc-cross-i686-elf:fast \
-    -f Dockerfile.compiler --push .
-```
+The separate `toolchain/` directory is for static i386 musl experiments, not
+for building the kernel itself.
 
----
+## Troubleshooting
 
-## QEMU drive layout
-
-`run.sh iso boot` launches QEMU with two IDE drives:
-
-| IDE slot | Purpose |
-|---|---|
-| index 0 | Hard disk - 512 MiB raw image (`hdd.img`, auto-created blank) |
-| index 2 | Live CD - `makar.iso`, GRUB boots from here (`-boot order=d`) |
-
-`run.sh hdd boot` attaches only the HDD (`-boot c`, no CD-ROM).
-
-The ISO GDB test (`iso-test` phase 2) adds a 32 MiB FAT32 test disk on index 0 alongside the CD-ROM so the kernel can auto-mount it at `/mnt/root` and the `hdd_mount` GDB group can be verified on the ISO boot path.
-
----
-
-## Testing & debugging
-
-See [Testing](testing.md) for the ktest suite, GDB boot-checkpoint tests,
-and interactive GDB debugging.
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Docker permission denied | user cannot access Docker socket | start Docker or add user to Docker group |
+| visible GUI fails | host QEMU/display missing | use headless command or install display-capable QEMU |
+| stale userspace behavior after header edits | old object did not rebuild | dependency tracking should now handle this; try `./run.sh clean` if in doubt |
+| GDB checkpoint flaky under KVM | KVM timing/debug behavior | leave `MAKAR_USE_KVM=0` |
+| writes fail on live ISO paths | ISO9660 is read-only | write to `/tmp` or an installed writable root |

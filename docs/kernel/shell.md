@@ -4,40 +4,50 @@ parent: Kernel subsystems
 grand_parent: Reference
 ---
 
-# shell - Interactive kernel command shell
+# shell - Kernel command shell and script dispatcher
 
 **Header:** `kernel/include/kernel/shell.h`  
 **Sources:** `kernel/arch/i386/shell/shell.c`, `shell_cmd_*.c`, `shell_help.c`
 
-Provides an interactive read-eval-print loop (REPL) running as a cooperative
-kernel task (`shell_run`).  Four independent shell instances run concurrently
-on TTYs 1–4 (Alt+F1–F4 switches focus).
+Provides the kernel-side command dispatcher, readline implementation, builtin
+command table, and compact script runner used during boot and test modes.
+
+Historically this was the main interactive shell. In the current system,
+operators normally use `/apps/sh.elf`, a ring-3 shell with pipes, redirection,
+list operators, background jobs, and `wait`. The kernel shell still matters
+because it owns low-level builtins, early boot/test scripts, and several
+diagnostic commands that are easier to keep in kernel space.
 
 ---
 
 ## How it works
 
-`shell_run` loops forever, printing a prompt, reading a line of input,
-splitting it into tokens, and dispatching to a command handler.
+`shell_run` loops forever, printing a prompt, reading a line of input, splitting
+it into tokens, and dispatching to a command handler. It can run as a normal
+kernel task and can also be reached indirectly by the in-kernel script runner.
 
 ### Input (`shell_readline`)
 
 Handles inline editing: cursor movement, insert-at-point, Backspace, Enter,
-Ctrl+C (aborts line, prints `^C`), history navigation (↑/↓ up to 16 entries),
-and Tab completion. First token completes against the union of built-in
-command names and `*.elf` basenames found in `s_app_path`. Subsequent
-tokens complete VFS paths via `vfs_complete()` - cross-filesystem, so
-`cd /<TAB>` enumerates the root (`mnt`, `proc`, `dev`, `usr`, `apps`,
-`root`, ...), `cd /mnt/<TAB>` lists the live disk mounts (`boot`, `root`,
-`cdrom`), `cat /proc/c<TAB>` matches `cpuinfo`, and `ls /apps/<TAB>` walks
-the rootfs apps directory. Globbing
-(`*`, `?`) on argv is expanded via `shell_glob.c`
-before dispatch using the same `vfs_complete()` enumerator.
+Ctrl+C (aborts line, prints `^C`), history navigation (up/down arrows, up to 16
+entries), and Tab completion.
+
+First-token completion checks both builtin command names and executables found
+through the shell PATH. Subsequent tokens complete VFS paths via
+`vfs_complete()`, so `cd /<TAB>` enumerates the root (`mnt`, `proc`, `dev`,
+`usr`, `apps`, `root`, ...), `cd /mnt/<TAB>` lists live disk mounts, and
+`cat /proc/c<TAB>` matches procfs entries such as `cpuinfo`.
+
+Globbing (`*`, `?`) on argv is expanded via `shell_glob.c` before dispatch
+using the same `vfs_complete()` enumerator.
 
 ### Parsing
 
-Splits the input in-place on spaces into up to 8 `argv`-style tokens.  Empty
-lines are skipped.
+The kernel dispatcher uses a compact parser: it splits input into an argv-style
+vector, expands shell variables, skips empty lines, and hands the result to the
+builtin/app dispatch path. It is intentionally smaller than `/apps/sh.elf`;
+quote-heavy command lines, pipes, redirection, and job control belong to the
+userspace shell.
 
 ### Dispatch
 
@@ -59,16 +69,19 @@ plus the status bar. That puts the shell's history back without
 waiting for the next keystroke and removes the need for each
 "fullscreen" command to clean up after itself.
 
-If no built-in matches, the shell tries `try_exec_path()` on the
-literal argv[0] (if it's a path-style `/abs` or `./rel`), then walks
-the **PATH** directories appending `[.elf]`. PATH is the per-task
-`PATH` shell variable (settable like any var) and falls back to the
-built-in default `/apps`; both command dispatch
-and first-token tab completion iterate it via `shell_path_dir()`.
-Successful ELF execution is also followed by `shell_restore_screen()` -
-any ring-3 binary is treated as potentially-fullscreen. `vix` is no
-longer a builtin: it resolves through PATH to `vix.elf` and runs as its
-own ring-3 task (so it shows up in `maktop`).
+If no builtin matches, the shell tries `try_exec_path()` on the literal
+`argv[0]` when it looks like a path (`/abs` or `./rel`), then walks the `PATH`
+directories appending `.elf` where needed. PATH is a per-task shell variable
+and falls back to `/apps`.
+
+Successful ELF execution is followed by `shell_restore_screen()` because any
+ring-3 binary may have used fullscreen terminal/framebuffer syscalls. `vix`, for
+example, resolves through PATH to `vix.elf` and runs as its own ring-3 task, so
+it appears in process listings.
+
+The kernel shell does not implement the userspace shell's pipe/redirection/job
+syntax. When those features are needed, run `/apps/sh.elf` or use `sh -c` from
+that shell.
 
 ---
 
@@ -114,14 +127,14 @@ own ring-3 task (so it shows up in `maktop`).
 | `shutdown` | Flush + unmount the FAT32 volume, then ACPI S5 power-off |
 | `reboot` | Flush + unmount the FAT32 volume, then ACPI reboot |
 | `panic [msg]` | Trigger kernel panic |
-| `ktest` | Run all in-kernel unit tests interactively |
+| `ktest` | Run all in-kernel unit tests interactively. Automated runs use `./run.sh ktest`. |
 | `verbose [on\|off]` | Toggle the `t_putchar` → COM1 mirror at runtime. Equivalent to flipping `console=ttyS0` on the kernel cmdline. Used by the in-guest test drivers to grep shell output from serial. |
 
 ### Application (`shell_cmd_apps.c`)
 
 | Command | Description |
 |---|---|
-| `exec <path>` | Load and run a userspace ELF (Ctrl+C kills it) |
+| `exec <path>` | Load and run a userspace ELF. Ctrl+C is delivered as SIGINT to the focused child. |
 | `install` | Run OS installer from CD-ROM to HDD |
 | `eject` | Eject HDD or CD-ROM |
 | `ring3test` | Ring-3 test harness |
@@ -162,3 +175,20 @@ void shell_readline(char *buf, size_t size);
 
 Read one line of input into `buf` with full inline editing, history, and Tab
 completion.  Used by both the shell REPL and `SYS_READ` for stdin.
+
+## Relationship to `/apps/sh.elf`
+
+Use the kernel shell for:
+
+- early boot scripts;
+- in-guest test bootstraps;
+- kernel-only diagnostic commands;
+- filesystem and disk commands that are still implemented as kernel builtins.
+
+Use `/apps/sh.elf` for normal interactive work and POSIX-style shell behavior:
+
+- quote-aware command lines;
+- pipes and redirection;
+- `&&`, `||`, background `&`, and `wait`;
+- running `sh -c` one-liners;
+- exercising fork/exec/wait and fd-table behavior from ring 3.

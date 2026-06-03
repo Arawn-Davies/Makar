@@ -26,7 +26,7 @@ and [kernel rebuild guide](rebuild-kernel.md)).
 - **[Internals](internals.md)** — CPU state at boot, paging, TLBs, per-task PDs, scheduler, syscall ABI, fork+COW, execve, wait4
 - **[Testing](testing.md)** — ktest, GDB checkpoint suite, in-guest script drivers + key-injection tests
 - **[BASIC](basic.md)** — the C64-style integer BASIC interpreter (`basic.elf`)
-- **[Userland libc](userland-libc.md)** — porting roadmap toward musl/dash
+- **[Userland libc](userland-libc.md)** — current userspace libc shim and static-musl bring-up state
 - **[TCC in-OS compiler](tcc-feasibility.md)** — porting TCC to compile C on a running Makar system
 - **[Rebuilding the kernel inside Makar](rebuild-kernel.md)** — `/apps/rebuild-kernel.sh`, build-origin banners, installing the freshly built kernel
 - **[Makar × Medli](makar-medli.md)** — sibling-project co-operation roadmap and VIX→VICS history
@@ -43,14 +43,15 @@ and [kernel rebuild guide](rebuild-kernel.md)).
 | **Storage** | FAT32 + **ext2** (HDD/USB) + ISO 9660 (CD-ROM) over IDE PIO, routed via a real VFS mount table (`s_mounts[]` in `vfs.c`; longest-prefix-match dispatch). Rootfs election (`vfs_mount_root`) honours `root=/dev/hdaN` Multiboot2 cmdline first, else auto-detects (ext2 → FAT32 → CD-ROM emergency) by probing each candidate for `/usr/lib/crt0.o`. Single-partition disks auto-mount at `/mnt/root`; dual-partition installer layouts bind partition 0 at `/mnt/boot` (also mirrored at `/boot`) and partition 1 at `/mnt/root`; CD-ROM at `/mnt/cdrom`. Synthetic overlays (`/dev` `/proc` `/tmp` `/log`) are first-class mount-table entries. `mount /dev/hdaN /mnt/<name>` auto-detects the backend (ext2 superblock else FAT32). FAT32 and ext2 mount **simultaneously** at separate mountpoints (one of each — the drivers are single-volume). Read + write + delete + rename + mkdir on both; `mkfs.fat32` / `mkfs.ext2` to format; flush + unmount on shutdown/reboot. `/root` mkdir'd best-effort on writable rootfs boots. |
 | **`/dev`** | Synthetic block-device tree: `/dev/hda[N]` (ATA disks + partitions), `/dev/cdrom` (ATAPI). Byte-addressed read/write over native sector I/O; backs `fdisk.elf` / `cfdisk.elf` and `mount`. |
 | **`/proc`** | Synthetic filesystem with `cpuinfo`, `meminfo`, `tasks`, `uname`, `rtc` — content generated on each read. `meminfo` MemUsed folds in heap; `tasks` has a per-task `MEMKB` column. |
-| **Memory** | PMM bitmap allocator, paging (256 MiB identity + per-task 4 KiB user pages), kernel heap. |
-| **Tasking** | Preemptive round-robin scheduler. PIT 100 Hz, `SCHED_QUANTUM = 4` ticks (40 ms slice). Per-task `pid`, `parent_pid`, `cwd`, `tty`, real `fd_table_t`, signal bitmasks, `exit_status`. User PD reaped on task exit. Lifecycle: `READY → RUNNING → ZOMBIE → DEAD`. |
+| **Memory** | PMM bitmap allocator, paging (low identity map + per-task 4 KiB user pages), kernel heap, COW user pages, anonymous mmap window at `0x90000000`, per-task `brk`. |
+| **FPU/TLS** | x87/SSE initialized at boot; every task has a 512-byte FXSAVE area saved/restored across context switches. i386 TLS uses GDT slot 6 (`%gs = 0x33`) via `set_thread_area`; ISR/IRQ stubs preserve `%gs`. |
+| **Tasking** | Preemptive round-robin scheduler. PIT 100 Hz, `SCHED_QUANTUM = 4` ticks (40 ms slice). Per-task `pid`, `parent_pid`, `cwd`, `tty`, `fd_table_t`, signal bitmasks, FPU state, TLS fields, `exit_status`. Lifecycle: `READY -> RUNNING -> ZOMBIE -> DEAD`. |
 | **Processes** | Full POSIX **fork + execve + wait4**: copy-on-write page-table clone (per-frame refcounts + `VMM_PTE_COW` software bit + COW `#PF` handler with `CR0.WP` enforced), execve replaces caller's address space with a new ELF, wait4 reaps zombies and round-trips the child's `exit_status`. |
-| **Userspace** | Ring-3 via `iret`. ELF loader (`elf_exec`) with argc/argv. Apps: `hello`, `calc`, `vix`, `diskinfo`, `fdisk`, `cfdisk` (full-screen cfdisk-style MBR editor), `basic` (C64-style integer BASIC w/ graphics), `kbtester`, `makbox` (multicall: `ls`/`cat`/`cp`/`mv`/`rm`/`rmdir`/`echo`/`pwd`), `clock`, `lines`, `maktop`, `sigtest`, `forktest` + `execvetest`. |
-| **Syscalls** | Linux i386 ABI subset over `int 0x80` (1 exit, 2 fork, 11 execve, 19 lseek, 37 kill, 45 brk, 48 signal, 114 wait4, 119 sigreturn, 158 yield, ...) + Makar extensions (200–218; 218 = `SYS_CARET_STYLE`). `/dev` nodes open as `FD_KIND_BLOCKDEV` so read/write/lseek do sector I/O. |
-| **Shell** | Inline editing, 16-entry history, cross-FS tab completion, glob expansion, Ctrl+C sigint, `lsman`/`man <cmd>`, settable `PATH` variable. Fullscreen-command dispatch with auto FB restore. |
+| **Userspace** | Ring-3 via `iret`. ELF loader (`elf_exec`) with argc/argv/envp terminator and auxv. Apps: `hello`, `calc`, `sh.elf`, `vix`, `diskinfo`, `fdisk`, `cfdisk`, `basic`, `kbtester`, `makbox`, `clock`, `lines`, `maktop`, `sigtest`, `forktest`, `execvetest`, `alloctest`, `filetest`, `tcc.elf`, and more. |
+| **Syscalls** | Linux i386 ABI subset over `int 0x80`: process, file, fd, pipe, signal, time, mmap, TLS, and hosted-libc startup stubs. Makar extensions cover terminal, framebuffer, keyboard, VFS shortcuts, admin, and virtual terminals. `/dev` nodes open as `FD_KIND_BLOCKDEV` so read/write/lseek do sector I/O. |
+| **Shell** | `/apps/sh.elf` is the default interactive shell: inline editing, history, PATH lookup, quote-aware tokenization, `sh -c`, pipes, redirection, `&&`/`||`, background `&`, and `wait`. Kernel script layer remains smaller for boot/test scripts. |
 | **Drivers** | 16550 UART, PIT, layered PS/2 keyboard (full set-1 + e0 with per-task SPSC rings), ATA/IDE PIO 28-bit LBA, MBR + GPT partition tables. |
-| **Debug** | INT 1 / INT 3 GDB-friendly handlers, kernel panic screen, ktest harness with per-suite descriptions and VGA + serial output. |
+| **Debug/Test** | INT 1 / INT 3 GDB-friendly handlers, kernel panic screen, ktest harness, in-guest script drivers, and `kbtest` key injection for keyboard/VT/makmux paths. |
 | **Serial** | Linux-style: dmesg + explicit diagnostics by default. `console=ttyS0` cmdline or `verbose [on\|off]` shell builtin opts into TTY-mirroring. |
 
 ## Minimum system requirements
