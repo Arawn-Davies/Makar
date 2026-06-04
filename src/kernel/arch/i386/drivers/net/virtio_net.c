@@ -1,4 +1,5 @@
 #include <kernel/virtio_net.h>
+#include <kernel/netdev.h>
 #include <kernel/pci.h>
 #include <kernel/pmm.h>
 #include <kernel/asm.h>
@@ -96,6 +97,14 @@ typedef struct {
 } virtio_net_dev_t;
 
 static virtio_net_dev_t s_vnet;
+
+static const netdev_ops_t virtio_net_ops = {
+    .name = "virtio-net",
+    .present = virtio_net_present,
+    .mac = virtio_net_mac,
+    .send = virtio_net_send,
+    .rx_poll = virtio_net_rx_poll,
+};
 
 static inline void vq_barrier(void)
 {
@@ -309,6 +318,7 @@ static int virtio_net_probe(pci_device_t *dev)
 
     add_status(VIRTIO_STATUS_DRIVER_OK);
     s_vnet.up = 1;
+    netdev_register(&virtio_net_ops);
     /* Post RX buffers only after DRIVER_OK so the notify is valid per spec. */
     rx_refill_all();
 

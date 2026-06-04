@@ -9,7 +9,7 @@
 #include <kernel/acpi.h>
 #include <kernel/partition.h>
 #include <kernel/pci.h>
-#include <kernel/virtio_net.h>
+#include <kernel/netdev.h>
 #include <kernel/pmm.h>
 #include <kernel/heap.h>
 #include <kernel/vmm.h>
@@ -310,17 +310,19 @@ static uint32_t rd_be32(const uint8_t *p)
 
 static void test_virtio_net(void)
 {
-    ktest_begin("virtio_net", "legacy virtio-net TX ARP request + polled RX reply from QEMU slirp");
+    ktest_begin("netdev", "active Ethernet netdev TX ARP request + polled RX reply from QEMU slirp");
 
-    if (!virtio_net_present()) {
-        Serial_WriteString("[ktest] virtio_net: no device, skipping\n");
+    if (!netdev_present()) {
+        Serial_WriteString("[ktest] netdev: no device, skipping\n");
         KTEST_ASSERT(1);
         ktest_summary();
         return;
     }
 
-    const uint8_t *mac = virtio_net_mac();
-    Serial_WriteString("[ktest] virtio_net: device up, mac=");
+    const uint8_t *mac = netdev_mac();
+    Serial_WriteString("[ktest] netdev: device=");
+    Serial_WriteString((char *)(netdev_name() ? netdev_name() : "unknown"));
+    Serial_WriteString(" mac=");
     for (int i = 0; i < 6; i++) {
         if (i) Serial_WriteString(":");
         Serial_WriteHex(mac[i]);
@@ -342,9 +344,9 @@ static void test_virtio_net(void)
     be32(arp + 28, 0x0a00020f);   /* 10.0.2.15 */
     be32(arp + 38, 0x0a000202);   /* 10.0.2.2 */
 
-    Serial_WriteString("[ktest] virtio_net: TX ARP who-has 10.0.2.2\n");
-    int tx_rc = virtio_net_send(arp, sizeof(arp));
-    Serial_WriteString("[ktest] virtio_net: TX rc=");
+    Serial_WriteString("[ktest] netdev: TX ARP who-has 10.0.2.2\n");
+    int tx_rc = netdev_send(arp, sizeof(arp));
+    Serial_WriteString("[ktest] netdev: TX rc=");
     Serial_WriteDec((uint32_t)tx_rc);
     Serial_WriteString("\n");
     KTEST_ASSERT(tx_rc == 0);
@@ -357,10 +359,10 @@ static void test_virtio_net(void)
     int rx_frames = 0;
     uint32_t t0 = timer_get_ticks();
     while (timer_get_ticks() - t0 < 300) {
-        int n = virtio_net_rx_poll(rx, sizeof(rx));
+        int n = netdev_rx_poll(rx, sizeof(rx));
         if (n > 0) {
             rx_frames++;
-            Serial_WriteString("[ktest] virtio_net: RX frame len=");
+            Serial_WriteString("[ktest] netdev: RX frame len=");
             Serial_WriteDec((uint32_t)n);
             Serial_WriteString(" ethertype=");
             Serial_WriteHex(rd_be16(rx + 12));
@@ -378,7 +380,7 @@ static void test_virtio_net(void)
         task_yield();
     }
 
-    Serial_WriteString("[ktest] virtio_net: rx_frames=");
+    Serial_WriteString("[ktest] netdev: rx_frames=");
     Serial_WriteDec((uint32_t)rx_frames);
     Serial_WriteString(got_reply ? " ARP reply received\n" : " TIMEOUT (no ARP reply)\n");
     KTEST_ASSERT(got_reply);
