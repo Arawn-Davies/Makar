@@ -548,6 +548,80 @@ static void test_pmm(void)
 }
 
 /* ---------------------------------------------------------------------------
+ * Suite: buddy allocator
+ *
+ * Exercises the multi-order page allocator beneath pmm_alloc_frame: contiguous
+ * power-of-two blocks, natural alignment (what DMA rings need), real writable
+ * backing RAM, exact free-frame accounting, and coalescing on free.
+ * ------------------------------------------------------------------------- */
+
+static void test_buddy(void)
+{
+    ktest_begin("buddy", "buddy allocator: contiguous alloc, alignment, RAM, coalescing, accounting");
+
+    uint32_t free0 = pmm_free_count();
+
+    /* Order-0 path == legacy pmm_alloc_frame. */
+    uint32_t a = pmm_alloc_pages(0);
+    KTEST_ASSERT(a != PMM_ALLOC_ERROR);
+    KTEST_ASSERT((a & (PMM_FRAME_SIZE - 1)) == 0);
+    KTEST_ASSERT(pmm_free_count() == free0 - 1);
+    pmm_free_pages(a, 0);
+    KTEST_ASSERT(pmm_free_count() == free0);
+
+    /* Order-3: 8 contiguous frames, naturally aligned to 8*4 KiB = 32 KiB. */
+    uint32_t blk = pmm_alloc_pages(3);
+    KTEST_ASSERT(blk != PMM_ALLOC_ERROR);
+    KTEST_ASSERT((blk & ((8u * PMM_FRAME_SIZE) - 1)) == 0);
+    KTEST_ASSERT(pmm_free_count() == free0 - 8);
+
+    /* The block is real, writable RAM (identity-mapped below 256 MiB):
+     * stamp one word per frame and read it back. */
+    volatile uint32_t *p = (volatile uint32_t *)blk;
+    for (int i = 0; i < 8; i++)
+        p[i * (PMM_FRAME_SIZE / 4)] = 0xB0B00000u + (uint32_t)i;
+    int ram_ok = 1;
+    for (int i = 0; i < 8; i++)
+        if (p[i * (PMM_FRAME_SIZE / 4)] != 0xB0B00000u + (uint32_t)i)
+            ram_ok = 0;
+    KTEST_ASSERT(ram_ok);
+
+    pmm_free_pages(blk, 3);
+    KTEST_ASSERT(pmm_free_count() == free0);
+
+    /* Order-5: 128 KiB-aligned. */
+    uint32_t big = pmm_alloc_pages(5);
+    KTEST_ASSERT(big != PMM_ALLOC_ERROR);
+    KTEST_ASSERT((big & ((32u * PMM_FRAME_SIZE) - 1)) == 0);
+    pmm_free_pages(big, 5);
+    KTEST_ASSERT(pmm_free_count() == free0);
+
+    /* Coalescing: an order-4 alloc splits a larger block into buddies; freeing
+     * it must merge them back so the *same* block is handed out next time. */
+    uint32_t c1 = pmm_alloc_pages(4);
+    KTEST_ASSERT(c1 != PMM_ALLOC_ERROR);
+    pmm_free_pages(c1, 4);
+    uint32_t c2 = pmm_alloc_pages(4);
+    KTEST_ASSERT(c2 == c1);                 /* coalesced, not left fragmented */
+    pmm_free_pages(c2, 4);
+
+    /* A mixed alloc/free storm must not leak or double-count frames. */
+    for (int it = 0; it < 64; it++) {
+        unsigned ord = (unsigned)(it % 6);          /* orders 0..5 */
+        uint32_t x = pmm_alloc_pages(ord);
+        KTEST_ASSERT(x != PMM_ALLOC_ERROR);
+        KTEST_ASSERT((x & (((1u << ord) * PMM_FRAME_SIZE) - 1)) == 0);
+        pmm_free_pages(x, ord);
+    }
+    KTEST_ASSERT(pmm_free_count() == free0);
+
+    /* Over-large order is rejected, not serviced. */
+    KTEST_ASSERT(pmm_alloc_pages(PMM_MAX_ORDER) == PMM_ALLOC_ERROR);
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
  * Suite: heap
  *
  * Tests the kmalloc/kfree/krealloc first-fit allocator.
@@ -2522,6 +2596,10 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
+    test_buddy();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
     test_heap();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
@@ -2664,6 +2742,7 @@ void ktest_bg_task(void)
     RUN(test_tmpfs);
     RUN(test_rootfs_mount_layout);
     RUN(test_pmm);
+    RUN(test_buddy);
     RUN(test_heap);
     RUN(test_vmm);
     RUN(test_task);
