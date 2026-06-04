@@ -329,6 +329,8 @@ _run_ktest() {
             -display none \
             -no-reboot \
             -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+            -netdev user,id=n0 \
+            -device virtio-net-pci,netdev=n0,disable-modern=on,disable-legacy=off,vectors=0 \
             $_accel \
             2>/dev/null </dev/null | tee "$REPO_ROOT/ktest.log" || true
     else
@@ -340,6 +342,8 @@ _run_ktest() {
                  -display none \
                  -no-reboot \
                  -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+                 -netdev user,id=n0 \
+                 -device virtio-net-pci,netdev=n0,disable-modern=on,disable-legacy=off,vectors=0 \
                  $QEMU_ACCEL \
                  2>/dev/null </dev/null | tee /work/ktest.log || true'
     fi
@@ -765,6 +769,8 @@ ktest)
         -serial "file:$REPO_ROOT/ktest.log" \
         ${QEMU_DISPLAY:+-display "$QEMU_DISPLAY"} \
         -no-reboot \
+        -netdev user,id=n0 \
+        -device virtio-net-pci,netdev=n0,disable-modern=on,disable-legacy=off,vectors=0 \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 || true
     _check_ktest
     ;;
@@ -786,6 +792,8 @@ ktest)
         -serial "file:$REPO_ROOT/ktest.log" \
         ${QEMU_DISPLAY:+-display "$QEMU_DISPLAY"} \
         -no-reboot \
+        -netdev user,id=n0 \
+        -device virtio-net-pci,netdev=n0,disable-modern=on,disable-legacy=off,vectors=0 \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 &
     QPID=$!
     ( sleep 60 && kill "$QPID" 2>/dev/null ) &

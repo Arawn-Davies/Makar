@@ -9,6 +9,7 @@
 #include <kernel/acpi.h>
 #include <kernel/partition.h>
 #include <kernel/pci.h>
+#include <kernel/virtio_net.h>
 #include <kernel/pmm.h>
 #include <kernel/heap.h>
 #include <kernel/vmm.h>
@@ -279,6 +280,108 @@ static void test_pci_bind(void)
 
     KTEST_ASSERT(pci_probe_all() == 0);          /* re-probe skips bound devices */
 
+    ktest_summary();
+}
+
+static void be16(uint8_t *p, uint16_t v)
+{
+    p[0] = (uint8_t)(v >> 8);
+    p[1] = (uint8_t)v;
+}
+
+static void be32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v >> 24);
+    p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)v;
+}
+
+static uint16_t rd_be16(const uint8_t *p)
+{
+    return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
+}
+
+static uint32_t rd_be32(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) | p[3];
+}
+
+static void test_virtio_net(void)
+{
+    ktest_begin("virtio_net", "legacy virtio-net TX ARP request + polled RX reply from QEMU slirp");
+
+    if (!virtio_net_present()) {
+        Serial_WriteString("[ktest] virtio_net: no device, skipping\n");
+        KTEST_ASSERT(1);
+        ktest_summary();
+        return;
+    }
+
+    const uint8_t *mac = virtio_net_mac();
+    Serial_WriteString("[ktest] virtio_net: device up, mac=");
+    for (int i = 0; i < 6; i++) {
+        if (i) Serial_WriteString(":");
+        Serial_WriteHex(mac[i]);
+    }
+    Serial_WriteString("\n");
+
+    uint8_t arp[42];
+    memset(arp, 0, sizeof(arp));
+    for (int i = 0; i < 6; i++)
+        arp[i] = 0xff;
+    memcpy(arp + 6, mac, 6);
+    be16(arp + 12, 0x0806);       /* Ethernet type: ARP */
+    be16(arp + 14, 0x0001);       /* Ethernet hardware */
+    be16(arp + 16, 0x0800);       /* IPv4 protocol */
+    arp[18] = 6;                  /* hardware length */
+    arp[19] = 4;                  /* protocol length */
+    be16(arp + 20, 0x0001);       /* request */
+    memcpy(arp + 22, mac, 6);
+    be32(arp + 28, 0x0a00020f);   /* 10.0.2.15 */
+    be32(arp + 38, 0x0a000202);   /* 10.0.2.2 */
+
+    Serial_WriteString("[ktest] virtio_net: TX ARP who-has 10.0.2.2\n");
+    int tx_rc = virtio_net_send(arp, sizeof(arp));
+    Serial_WriteString("[ktest] virtio_net: TX rc=");
+    Serial_WriteDec((uint32_t)tx_rc);
+    Serial_WriteString("\n");
+    KTEST_ASSERT(tx_rc == 0);
+
+    /* Poll RX, yielding each iteration: under QEMU/TCG the guest must yield
+     * the CPU so the device's TX/RX backend and slirp's ARP responder get to
+     * run.  ~3 s wall-clock budget at 100 Hz. */
+    uint8_t rx[1600];
+    int got_reply = 0;
+    int rx_frames = 0;
+    uint32_t t0 = timer_get_ticks();
+    while (timer_get_ticks() - t0 < 300) {
+        int n = virtio_net_rx_poll(rx, sizeof(rx));
+        if (n > 0) {
+            rx_frames++;
+            Serial_WriteString("[ktest] virtio_net: RX frame len=");
+            Serial_WriteDec((uint32_t)n);
+            Serial_WriteString(" ethertype=");
+            Serial_WriteHex(rd_be16(rx + 12));
+            Serial_WriteString("\n");
+        }
+        if (n >= 42 &&
+            rd_be16(rx + 12) == 0x0806 &&      /* ARP                     */
+            rd_be16(rx + 20) == 0x0002 &&      /* reply                   */
+            rd_be32(rx + 28) == 0x0a000202 &&  /* sender 10.0.2.2 (slirp) */
+            rd_be32(rx + 38) == 0x0a00020f &&  /* target 10.0.2.15 (us)   */
+            memcmp(rx + 32, mac, 6) == 0) {    /* target MAC = ours       */
+            got_reply = 1;
+            break;
+        }
+        task_yield();
+    }
+
+    Serial_WriteString("[ktest] virtio_net: rx_frames=");
+    Serial_WriteDec((uint32_t)rx_frames);
+    Serial_WriteString(got_reply ? " ARP reply received\n" : " TIMEOUT (no ARP reply)\n");
+    KTEST_ASSERT(got_reply);
     ktest_summary();
 }
 
@@ -2659,6 +2762,10 @@ int ktest_run_all(void)
     total_fail += ktest_fail_count;
 
     test_pci_bind();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_virtio_net();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
