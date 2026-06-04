@@ -47,6 +47,7 @@
 #include <kernel/pci.h>
 #include <kernel/netdev.h>
 #include <kernel/net_lwip.h>
+#include <kernel/wget.h>
 #include <kernel/timer.h>
 #include <kernel/rtc.h>
 #include <string.h>
@@ -1709,6 +1710,32 @@ void syscall_dispatch(registers_t *regs)
      * ------------------------------------------------------------------ */
     case SYS_NET_CTL: {
         regs->eax = (uint32_t)net_lwip_control((int)regs->ebx);
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_WGET(255): fetch an http:// URL and write the body to a VFS path.
+     * EBX = url, ECX = outpath (user pointers; same direct-use convention as
+     * SYS_OPEN).  Returns bytes saved (>=0), or negative: -1 fetch/parse
+     * error, -2 write error, -(status) for a non-2xx HTTP status.
+     * ------------------------------------------------------------------ */
+    case SYS_WGET: {
+        const char *url = (const char *)(uintptr_t)regs->ebx;
+        const char *outpath = (const char *)(uintptr_t)regs->ecx;
+        if (!url || !outpath) { regs->eax = (uint32_t)-1; break; }
+        uint8_t *body = 0;
+        uint32_t len = 0;
+        int status = 0;
+        int rc = wget_fetch(url, &body, &len, &status);
+        if (rc != 0) { regs->eax = (uint32_t)-1; break; }
+        if (status < 200 || status >= 300) {
+            kfree(body);
+            regs->eax = (uint32_t)(-status);
+            break;
+        }
+        int wr = vfs_write_file(outpath, body, len);
+        kfree(body);
+        regs->eax = (wr == 0) ? len : (uint32_t)-2;
         break;
     }
 

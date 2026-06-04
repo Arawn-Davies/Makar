@@ -112,6 +112,7 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_READDIR     141
 #define SYS_NET_INFO    253
 #define SYS_NET_CTL     254
+#define SYS_WGET        255
 
 #define NET_CTL_DHCP_RELEASE 1
 #define NET_CTL_DHCP_RENEW   2
@@ -640,6 +641,13 @@ static inline int sys_net_info(char *buf, unsigned int bufsz)
 static inline int sys_net_ctl(int cmd)
 {
     return (int)syscall1(SYS_NET_CTL, (long)cmd);
+}
+
+/* Fetch an http:// URL and write the body to outpath.  Returns the number of
+ * bytes saved (>=0), or negative on error (-(status) for a non-2xx reply). */
+static inline int sys_wget(const char *url, const char *outpath)
+{
+    return (int)syscall2(SYS_WGET, (long)url, (long)outpath);
 }
 
 /* Delete a file. Returns 0 on success, -1 on error. */

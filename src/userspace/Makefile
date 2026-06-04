@@ -16,7 +16,7 @@ LDFLAGS=-T link.ld -nostdlib
 DESTDIR?=
 ISODIR?=$(CURDIR)/../../isodir
 
-PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf lspci.elf maknetcfg.elf kbtester.elf makbox.elf makmux.elf statusbar.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf fdisk.elf cfdisk.elf basic.elf filetest.elf alloctest.elf sh.elf ar.elf microhash.elf sha256.elf md5.elf ktest_uspace.elf
+PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf lspci.elf maknetcfg.elf kbtester.elf makbox.elf makmux.elf statusbar.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf fdisk.elf cfdisk.elf basic.elf filetest.elf alloctest.elf sh.elf ar.elf microhash.elf sha256.elf md5.elf wget.elf ktest_uspace.elf
 
 # libc.a -- single archive of the userspace shim (malloc + FILE* stdio +
 # setjmp/longjmp + string/memory helpers).  Shipped under /usr/lib on the
@@ -56,6 +56,9 @@ sha256.elf: crt0.o sha256.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 md5.elf: crt0.o md5.o
+	$(LD) $(LDFLAGS) -o $@ $^
+
+wget.elf: crt0.o wget.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 ktest_uspace.elf: crt0.o ktest_uspace.o

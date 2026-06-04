@@ -156,6 +156,8 @@
 #define SYS_IPC_SENDREC    251  /* int ipc_sendrec(int dst, ipc_msg_t *)           */
 #define SYS_NET_INFO       253  /* int net_info(char *buf, uint32_t bufsz)         */
 #define SYS_NET_CTL        254  /* int net_ctl(int cmd)                            */
+#define SYS_WGET           255  /* int wget(const char *url, const char *outpath)
+                                 * -> bytes saved, or negative on error           */
 
 /* Back to Linux i386 ABI numbers for the next set. */
 #define SYS_FCNTL      55   /* int fcntl(int fd, int cmd, int arg) - F_GETFL/F_SETFL */
