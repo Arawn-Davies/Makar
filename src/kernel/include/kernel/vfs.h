@@ -50,11 +50,13 @@ void vfs_set_boot_drive(uint32_t biosdev);
  * Must be called after vfs_init() and ide_init(), before vfs_auto_mount().
  *
  *   spec  -- value of the Multiboot2 `root=` cmdline arg (or NULL/"auto"
- *            for auto-detect; "none" to skip election entirely).
+ *            for auto-detect; "none" to skip election entirely; "cdrom" to
+ *            force the ISO9660 CD-ROM root when present).
  *
- * Election order: explicit /dev/hdaN spec → ext2/FAT32 auto-detect
- * (first ATA partition whose /usr/lib/crt0.o exists) → ISO9660 CD-ROM
- * fallback (live boot) → no rootfs (overlays-only / dev-friendly boot).
+ * Election order: explicit "cdrom" or /dev/hdaN spec → ext2/FAT32
+ * auto-detect (first ATA partition whose /usr/lib/crt0.o exists) →
+ * ISO9660 CD-ROM fallback (live boot) → no rootfs (overlays-only /
+ * dev-friendly boot).
  */
 void vfs_mount_root(const char *spec);
 
@@ -153,7 +155,9 @@ int vfs_mkdir(const char *path);
 
 /*
  * vfs_read_file  – read a file into a caller-supplied buffer.
- * vfs_write_file – create or overwrite a file (FAT32 only).
+ * vfs_write_file – create or overwrite a file on a writable backend
+ *                  (FAT32, ext2, or tmpfs).  ISO9660 and /log are read-only
+ *                  and reject writes.
  *
  * Return 0 on success, negative on error.
  */

@@ -18,6 +18,8 @@
 #include <kernel/ide.h>
 #include <kernel/devfs.h>
 #include <kernel/admin.h>
+#include <kernel/unzip.h>
+#include <kernel/heap.h>
 #include <string.h>
 
 static disk_parts_t s_cmd_parts;
@@ -428,6 +430,57 @@ static void cmd_touch(int argc, char **argv)
     }
 }
 
+static void cmd_unzip(int argc, char **argv)
+{
+    if (argc < 2) {
+        t_writestring("usage: unzip <archive.zip> [destdir]\n");
+        return;
+    }
+    const char *zippath = argv[1];
+    const char *destdir = (argc >= 3) ? argv[2] : vfs_getcwd();
+
+    vfs_stat_info_t st;
+    if (vfs_stat(zippath, &st) != 0 || st.kind != VFS_STAT_FILE) {
+        t_writestring("unzip: cannot stat archive\n");
+        return;
+    }
+    if (st.size == 0) {
+        t_writestring("unzip: empty archive\n");
+        return;
+    }
+
+    uint8_t *buf = (uint8_t *)kmalloc(st.size);
+    if (!buf) {
+        t_writestring("unzip: out of memory\n");
+        return;
+    }
+    uint32_t got = 0;
+    if (vfs_read_file(zippath, buf, st.size, &got) != 0 || got != st.size) {
+        t_writestring("unzip: read failed\n");
+        kfree(buf);
+        return;
+    }
+
+    int failed = 0;
+    int n = unzip_archive(buf, got, destdir, &failed);
+    kfree(buf);
+
+    if (n < 0) {
+        t_writestring("unzip: not a valid zip archive\n");
+        return;
+    }
+    t_writestring("Extracted ");
+    t_dec((uint32_t)n);
+    t_writestring(" file(s) to ");
+    t_writestring(destdir);
+    if (failed) {
+        t_writestring(" (");
+        t_dec((uint32_t)failed);
+        t_writestring(" failed/skipped)");
+    }
+    t_writestring("\n");
+}
+
 const shell_cmd_entry_t fs_cmds[] = {
     { "mount",  cmd_mount  },
     { "umount", cmd_umount },
@@ -439,5 +492,6 @@ const shell_cmd_entry_t fs_cmds[] = {
     { "isols",  cmd_isols  },
     { "write",  cmd_write  },
     { "touch",  cmd_touch  },
+    { "unzip",  cmd_unzip  },
     { NULL, NULL }
 };

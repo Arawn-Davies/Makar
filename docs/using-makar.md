@@ -13,6 +13,7 @@ the BASIC interpreter, and the in-OS kernel rebuild workflow.
 |---|---|
 | [Shell scripting](scripting.md) | The split between `/apps/sh.elf` and the in-kernel script runner, including variables, tests, control flow, userspace shell features, and limitations. |
 | [BASIC](basic.md) | The `basic.elf` interpreter, REPL commands, line-numbered programs, integer expressions, graphics statements, and bundled samples. |
+| [Networking](networking.md) | Viewing `eth0` state with `maknetcfg.elf`, DHCP release/renew, DNS cache flushing, and current networking limits. |
 | [Rebuild kernel](rebuild-kernel.md) | Building the kernel from inside Makar, including prerequisites and workflow notes. |
 
 For host-side build, boot, and test commands, use

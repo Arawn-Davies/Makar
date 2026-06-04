@@ -614,6 +614,19 @@ void vfs_mount_root(const char *spec)
         return;
     }
 
+    /* Explicit live CD root.  Useful when an installed HDD image is also
+     * attached but the booted ISO should provide the active / tree. */
+    if (spec && strcmp(spec, "cdrom") == 0) {
+        if (s_cdrom_drive >= 0 &&
+            iso9660_file_exists((uint8_t)s_cdrom_drive, ROOTFS_SENTINEL) &&
+            mount_add("/", VFS_BACKEND_ISO9660,
+                      (uint8_t)s_cdrom_drive, 0, "") >= 0) {
+            t_writestring("Rootfs: ISO9660 CD-ROM at / (live boot)\n");
+            return;
+        }
+        t_writestring("Rootfs: root=cdrom -- mount failed, falling back to auto-detect\n");
+    }
+
     /* 2. Explicit /dev/hdaN spec. */
     if (spec && spec[0] == '/' && strncmp(spec, "/dev/", 5) == 0) {
         uint8_t  drive;

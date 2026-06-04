@@ -80,8 +80,8 @@ and a full fd table are in place.  No musl source is present yet.
 **Licence:** BSD 3-Clause  
 **URL:** https://savannah.nongnu.org/projects/lwip/
 
-Identified as the preferred TCP/IP stack for future Makar networking.
-No lwIP source is present yet.
+Vendored as Makar's current TCP/IP stack for the monolithic `netdev` bring-up.
+Used for IPv4, ARP, ICMP, TCP, UDP, DHCP, and DNS plumbing.
 
 ---
 

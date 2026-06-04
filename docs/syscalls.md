@@ -140,6 +140,28 @@ Makar provides shortcut syscalls for:
 These are not POSIX ABI surfaces; they exist for small built-in tools and
 apps.
 
+### Networking
+
+Networking currently uses a monolithic lwIP integration over the kernel
+`netdev` layer. The public userspace surface is intentionally small:
+
+| Syscall | Number | Purpose |
+|---|---:|---|
+| `SYS_NET_INFO` | 253 | render active Ethernet/lwIP state into a caller buffer |
+| `SYS_NET_CTL` | 254 | run a network control command |
+| `SYS_WGET` | 255 | fetch an `http://` URL (EBX) and write the body to a VFS path (ECX); returns bytes saved, or negative on error (`-(status)` for a non-2xx reply) |
+
+`SYS_NET_CTL` accepts these command values from `src/userspace/syscall.h`:
+
+| Command | Value | Behavior |
+|---|---:|---|
+| `NET_CTL_DHCP_RELEASE` | 1 | release/stop DHCP and restore static QEMU slirp fallback addressing |
+| `NET_CTL_DHCP_RENEW` | 2 | restart DHCP, then fall back static if no lease arrives quickly |
+| `NET_CTL_DNS_FLUSH` | 3 | clear lwIP DNS cache and pending resolver requests |
+
+The user-facing tool is `/apps/maknetcfg.elf`; see
+[Networking](networking.md).
+
 ### Session and Admin
 
 Admin/session helpers include:

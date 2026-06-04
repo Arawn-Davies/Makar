@@ -741,6 +741,7 @@ static const shell_cmd_entry_t * const cmd_modules[] = {
     fs_cmds,
     apps_cmds,
     script_cmds,
+    net_cmds,
     NULL,
 };
 

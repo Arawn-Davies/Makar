@@ -10,6 +10,7 @@
 #include <kernel/partition.h>
 #include <kernel/pci.h>
 #include <kernel/netdev.h>
+#include <kernel/net_lwip.h>
 #include <kernel/pmm.h>
 #include <kernel/heap.h>
 #include <kernel/vmm.h>
@@ -34,6 +35,16 @@
 #include <kernel/tmpfs.h>
 #include <kernel/asm.h>
 #include <kernel/keyboard.h>
+#include <lwip/ip_addr.h>
+#include <lwip/pbuf.h>
+#include <lwip/tcp.h>
+#include <lwip/raw.h>
+#include <lwip/inet_chksum.h>
+#include <lwip/prot/icmp.h>
+#include <lwip/prot/ip.h>
+#include <kernel/wget.h>
+#include <kernel/heap.h>
+#include <kernel/unzip.h>
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
@@ -421,6 +432,373 @@ static void test_virtio_net(void)
     Serial_WriteDec((uint32_t)rx_frames);
     Serial_WriteString(got_reply ? " ARP reply received\n" : " TIMEOUT (no ARP reply)\n");
     KTEST_ASSERT(got_reply);
+    ktest_summary();
+}
+
+typedef struct lwip_tcp_test_state {
+    int connected;
+    int received;
+    int errored;
+} lwip_tcp_test_state_t;
+
+static err_t lwip_tcp_test_recv(void *arg, struct tcp_pcb *pcb,
+                                struct pbuf *p, err_t err)
+{
+    lwip_tcp_test_state_t *st = (lwip_tcp_test_state_t *)arg;
+    if (err != ERR_OK) {
+        st->errored = 1;
+        if (p) pbuf_free(p);
+        return ERR_OK;
+    }
+    if (!p)
+        return ERR_OK;
+    if (p->tot_len > 0) {
+        st->received = 1;
+        tcp_recved(pcb, p->tot_len);
+    }
+    pbuf_free(p);
+    tcp_close(pcb);
+    return ERR_OK;
+}
+
+static err_t lwip_tcp_test_connected(void *arg, struct tcp_pcb *pcb, err_t err)
+{
+    lwip_tcp_test_state_t *st = (lwip_tcp_test_state_t *)arg;
+    if (err != ERR_OK) {
+        st->errored = 1;
+        return ERR_OK;
+    }
+    st->connected = 1;
+    tcp_recv(pcb, lwip_tcp_test_recv);
+    return ERR_OK;
+}
+
+static void lwip_tcp_test_err(void *arg, err_t err)
+{
+    (void)err;
+    lwip_tcp_test_state_t *st = (lwip_tcp_test_state_t *)arg;
+    if (st)
+        st->errored = 1;
+}
+
+static void test_lwip_tcp(void)
+{
+    ktest_begin("lwip_tcp", "lwIP over netdev: TCP connect + receive via QEMU slirp guestfwd");
+
+    if (!netdev_present()) {
+        Serial_WriteString("[ktest] lwip_tcp: no netdev, skipping\n");
+        KTEST_ASSERT(1);
+        ktest_summary();
+        return;
+    }
+
+    KTEST_ASSERT(net_lwip_init() == 0);
+    if (!net_lwip_ready()) {
+        ktest_summary();
+        return;
+    }
+
+    lwip_tcp_test_state_t st;
+    memset(&st, 0, sizeof st);
+
+    struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
+    KTEST_ASSERT(pcb != NULL);
+    if (!pcb) {
+        ktest_summary();
+        return;
+    }
+
+    /* The guestfwd endpoint lives at host .100 of the netif's subnet; derive
+     * it from the live gateway rather than assuming a subnet. */
+    uint8_t gw[4];
+    KTEST_ASSERT(net_lwip_gateway(gw) == 0);
+    ip_addr_t dst;
+    IP_ADDR4(&dst, gw[0], gw[1], gw[2], 100);
+    tcp_arg(pcb, &st);
+    tcp_err(pcb, lwip_tcp_test_err);
+
+    Serial_WriteString("[ktest] lwip_tcp: connect to guestfwd ");
+    Serial_WriteDec(gw[0]); Serial_WriteString(".");
+    Serial_WriteDec(gw[1]); Serial_WriteString(".");
+    Serial_WriteDec(gw[2]); Serial_WriteString(".100:1234\n");
+    err_t rc = tcp_connect(pcb, &dst, 1234, lwip_tcp_test_connected);
+    KTEST_ASSERT(rc == ERR_OK);
+    if (rc != ERR_OK) {
+        tcp_abort(pcb);
+        ktest_summary();
+        return;
+    }
+
+    uint32_t t0 = timer_get_ticks();
+    while (timer_get_ticks() - t0 < 600 && !st.errored && !st.received) {
+        net_lwip_poll();
+        task_yield();
+    }
+
+    Serial_WriteString("[ktest] lwip_tcp: connected=");
+    Serial_WriteDec((uint32_t)st.connected);
+    Serial_WriteString(" received=");
+    Serial_WriteDec((uint32_t)st.received);
+    Serial_WriteString(" errored=");
+    Serial_WriteDec((uint32_t)st.errored);
+    Serial_WriteString("\n");
+
+    KTEST_ASSERT(st.connected);
+    KTEST_ASSERT(st.received);
+    KTEST_ASSERT(!st.errored);
+    ktest_summary();
+}
+
+/* ---- ICMP echo (ping) over lwIP raw API ------------------------------------
+ *
+ * Asserts a reply from the slirp gateway (deterministic) and additionally
+ * attempts an external echo to 1.1.1.1, which is logged but NOT asserted:
+ * QEMU slirp only forwards ICMP to real hosts when the host grants the
+ * capability (net.ipv4.ping_group_range / raw sockets), so external
+ * reachability is environment-dependent and must not gate the suite. */
+/* Format ip[4] as "a.b.c.d" into dst (needs <= 16 bytes).  Returns length. */
+static uint32_t ip4_to_str(char *dst, const uint8_t ip[4])
+{
+    uint32_t o = 0;
+    for (int i = 0; i < 4; i++) {
+        if (i) dst[o++] = '.';
+        uint8_t v = ip[i];
+        if (v >= 100) dst[o++] = (char)('0' + v / 100);
+        if (v >= 10)  dst[o++] = (char)('0' + (v / 10) % 10);
+        dst[o++] = (char)('0' + v % 10);
+    }
+    dst[o] = '\0';
+    return o;
+}
+
+#define PING_ID         0xAFAFu
+#define PING_DATA_SIZE  32u
+
+typedef struct {
+    uint16_t seqno;
+    int got;
+} ping_state_t;
+
+static u8_t lwip_ping_recv(void *arg, struct raw_pcb *pcb, struct pbuf *p,
+                           const ip_addr_t *addr)
+{
+    ping_state_t *st = (ping_state_t *)arg;
+    (void)pcb; (void)addr;
+    if (!p)
+        return 0;
+    if (p->tot_len < (u16_t)(PBUF_IP_HLEN + sizeof(struct icmp_echo_hdr)))
+        return 0;
+    if (pbuf_remove_header(p, PBUF_IP_HLEN) != 0)
+        return 0;
+    struct icmp_echo_hdr *iecho = (struct icmp_echo_hdr *)p->payload;
+    if (ICMPH_TYPE(iecho) == ICMP_ER && iecho->id == PING_ID &&
+        iecho->seqno == lwip_htons(st->seqno)) {
+        st->got = 1;
+        pbuf_free(p);
+        return 1;                       /* consumed */
+    }
+    pbuf_add_header(p, PBUF_IP_HLEN);
+    return 0;                           /* not ours */
+}
+
+/* Returns 1 on echo reply, 0 on timeout, -1 on allocation failure. */
+static int lwip_ping_once(const ip_addr_t *dst, uint16_t seqno,
+                          uint32_t timeout_ticks)
+{
+    struct raw_pcb *pcb = raw_new(IP_PROTO_ICMP);
+    if (!pcb)
+        return -1;
+
+    ping_state_t st = { seqno, 0 };
+    raw_recv(pcb, lwip_ping_recv, &st);
+    raw_bind(pcb, IP_ADDR_ANY);
+
+    uint16_t ping_size = (uint16_t)(sizeof(struct icmp_echo_hdr) + PING_DATA_SIZE);
+    struct pbuf *p = pbuf_alloc(PBUF_IP, ping_size, PBUF_RAM);
+    if (!p) {
+        raw_remove(pcb);
+        return -1;
+    }
+    struct icmp_echo_hdr *iecho = (struct icmp_echo_hdr *)p->payload;
+    ICMPH_TYPE_SET(iecho, ICMP_ECHO);
+    ICMPH_CODE_SET(iecho, 0);
+    iecho->chksum = 0;
+    iecho->id = PING_ID;
+    iecho->seqno = lwip_htons(seqno);
+    for (uint16_t i = 0; i < PING_DATA_SIZE; i++)
+        ((char *)iecho)[sizeof(struct icmp_echo_hdr) + i] = (char)i;
+    iecho->chksum = inet_chksum(iecho, ping_size);
+
+    raw_sendto(pcb, p, dst);
+    pbuf_free(p);
+
+    uint32_t t0 = timer_get_ticks();
+    while (timer_get_ticks() - t0 < timeout_ticks && !st.got) {
+        net_lwip_poll();
+        task_yield();
+    }
+    raw_remove(pcb);
+    return st.got ? 1 : 0;
+}
+
+static void test_lwip_ping(void)
+{
+    ktest_begin("lwip_ping", "lwIP ICMP echo: gateway reply (asserted) + 1.1.1.1 (informational)");
+
+    if (!netdev_present()) {
+        Serial_WriteString("[ktest] lwip_ping: no netdev, skipping\n");
+        KTEST_ASSERT(1);
+        ktest_summary();
+        return;
+    }
+    KTEST_ASSERT(net_lwip_init() == 0);
+    if (!net_lwip_ready()) {
+        ktest_summary();
+        return;
+    }
+
+    uint8_t gwip[4];
+    KTEST_ASSERT(net_lwip_gateway(gwip) == 0);
+    ip_addr_t gw;
+    IP_ADDR4(&gw, gwip[0], gwip[1], gwip[2], gwip[3]);
+    int gw_ok = lwip_ping_once(&gw, 1, 300);
+    Serial_WriteString("[ktest] lwip_ping: gateway ");
+    Serial_WriteDec(gwip[0]); Serial_WriteString(".");
+    Serial_WriteDec(gwip[1]); Serial_WriteString(".");
+    Serial_WriteDec(gwip[2]); Serial_WriteString(".");
+    Serial_WriteDec(gwip[3]); Serial_WriteString(" reply=");
+    Serial_WriteDec((uint32_t)(gw_ok == 1));
+    Serial_WriteString("\n");
+    KTEST_ASSERT(gw_ok == 1);
+
+    ip_addr_t ext;
+    IP_ADDR4(&ext, 1, 1, 1, 1);
+    int ext_ok = lwip_ping_once(&ext, 2, 300);
+    Serial_WriteString("[ktest] lwip_ping: 1.1.1.1 reply=");
+    Serial_WriteDec((uint32_t)(ext_ok == 1));
+    Serial_WriteString(ext_ok == 1 ? " (external ICMP reachable)\n"
+                                    : " (no external ICMP; informational, not gating)\n");
+    KTEST_ASSERT(1);                    /* external result never fails the gate */
+
+    ktest_summary();
+}
+
+static void test_lwip_dns(void)
+{
+    ktest_begin("lwip_dns", "lwIP DNS resolver: dotted-quad (asserted) + real name (informational)");
+
+    if (!netdev_present()) {
+        Serial_WriteString("[ktest] lwip_dns: no netdev, skipping\n");
+        KTEST_ASSERT(1);
+        ktest_summary();
+        return;
+    }
+    KTEST_ASSERT(net_lwip_init() == 0);
+    if (!net_lwip_ready()) {
+        ktest_summary();
+        return;
+    }
+
+    /* Dotted-quad literals resolve synchronously without a server, so this is
+     * a deterministic check of the resolver plumbing. */
+    uint8_t ip[4] = { 0, 0, 0, 0 };
+    int lit = net_lwip_resolve("1.1.1.1", ip, 50);
+    KTEST_ASSERT(lit == 0);
+    KTEST_ASSERT(ip[0] == 1 && ip[1] == 1 && ip[2] == 1 && ip[3] == 1);
+
+    /* A real lookup depends on slirp's DNS reaching the host resolver, so it
+     * is logged but never gates the suite (like the external ping). */
+    uint8_t rip[4] = { 0, 0, 0, 0 };
+    int real = net_lwip_resolve("example.com", rip, 300);
+    Serial_WriteString("[ktest] lwip_dns: example.com -> ");
+    if (real == 0) {
+        Serial_WriteDec(rip[0]); Serial_WriteString(".");
+        Serial_WriteDec(rip[1]); Serial_WriteString(".");
+        Serial_WriteDec(rip[2]); Serial_WriteString(".");
+        Serial_WriteDec(rip[3]); Serial_WriteString("\n");
+    } else {
+        Serial_WriteString("(no DNS reply; informational, not gating)\n");
+    }
+    KTEST_ASSERT(1);
+
+    ktest_summary();
+}
+
+static void test_wget(void)
+{
+    ktest_begin("wget", "HTTP GET over lwIP TCP via slirp guestfwd HTTP fixture");
+
+    if (!netdev_present()) {
+        Serial_WriteString("[ktest] wget: no netdev, skipping\n");
+        KTEST_ASSERT(1);
+        ktest_summary();
+        return;
+    }
+    KTEST_ASSERT(net_lwip_init() == 0);
+    if (!net_lwip_ready()) {
+        ktest_summary();
+        return;
+    }
+
+    /* tests/http_fixture.sh is wired to a slirp guestfwd at host .100 of the
+     * netif's subnet, port 8080, and always replies "200 OK" + body
+     * "MAKAR-WGET-OK" -- deterministic, no real internet.  Derive the target
+     * from the live gateway so we don't bake in a specific subnet. */
+    uint8_t gw[4];
+    KTEST_ASSERT(net_lwip_gateway(gw) == 0);
+    uint8_t fixture[4] = { gw[0], gw[1], gw[2], 100 };
+
+    char url[64];
+    uint32_t uo = 0;
+    const char *pre = "http://";
+    while (*pre) url[uo++] = *pre++;
+    uo += ip4_to_str(url + uo, fixture);
+    const char *suf = ":8080/wgettest";
+    const char *sp = suf;
+    while (*sp) url[uo++] = *sp++;
+    url[uo] = '\0';
+
+    uint8_t *body = NULL;
+    uint32_t len = 0;
+    int status = 0;
+    int rc = wget_fetch(url, &body, &len, &status);
+    Serial_WriteString("[ktest] wget: rc=");
+    Serial_WriteDec((uint32_t)(rc == 0));
+    Serial_WriteString(" status=");
+    Serial_WriteDec((uint32_t)status);
+    Serial_WriteString(" len=");
+    Serial_WriteDec(len);
+    Serial_WriteString("\n");
+
+    KTEST_ASSERT(rc == 0);
+    KTEST_ASSERT(status == 200);
+    KTEST_ASSERT(body != NULL);
+    KTEST_ASSERT(len == 13);
+    if (body && len == 13)
+        KTEST_ASSERT(memcmp(body, "MAKAR-WGET-OK", 13) == 0);
+    else
+        KTEST_ASSERT(0);
+    kfree(body);
+
+    ktest_summary();
+}
+
+
+static void test_lwip_net_info(void)
+{
+    ktest_begin("lwip_net_info", "SYS_NET_INFO backing text reports lwIP interface state");
+
+    char info[512];
+    int n = net_lwip_info(info, sizeof(info));
+    KTEST_ASSERT(n > 0);
+    KTEST_ASSERT(strstr(info, "Ethernet adapter eth0:") != NULL);
+    KTEST_ASSERT(strstr(info, "DHCP State") != NULL);
+    KTEST_ASSERT(strstr(info, "IPv4 Address") != NULL);
+    KTEST_ASSERT(strstr(info, "Default Gateway") != NULL);
+    KTEST_ASSERT(strstr(info, "DNS Servers") != NULL);
+    KTEST_ASSERT(net_lwip_control(NET_CTL_DNS_FLUSH) == 0);
+    KTEST_ASSERT(net_lwip_control(NET_CTL_DHCP_RELEASE) == 0);
+    KTEST_ASSERT(net_lwip_control(NET_CTL_DHCP_RENEW) == 0);
     ktest_summary();
 }
 
@@ -2779,6 +3157,44 @@ static void test_keyboard(void)
     ktest_summary();
 }
 
+/* A real ZIP (python zipfile, deflate) holding hello.txt = "MAKAR-UNZIP-OK\n"
+ * and dir/inner.txt = "makar " x64.  Exercises inflate + central-dir parsing
+ * + nested-dir creation, entirely offline. */
+static const uint8_t uzfix_zip[248] = {
+80,75,3,4,20,0,0,0,8,0,40,148,196,92,189,17,150,31,17,0,0,0,15,0,0,0,9,0,0,0,104,101,108,108,111,46,116,120,116,243,117,244,118,12,210,13,245,139,242,12,208,245,247,230,2,0,80,75,3,4,20,0,0,0,8,0,40,148,196,92,114,12,255,60,13,0,0,0,128,1,0,0,13,0,0,0,100,105,114,47,105,110,110,101,114,46,116,120,116,203,77,204,78,44,82,200,29,37,7,136,4,0,80,75,1,2,20,3,20,0,0,0,8,0,40,148,196,92,189,17,150,31,17,0,0,0,15,0,0,0,9,0,0,0,0,0,0,0,0,0,0,0,128,1,0,0,0,0,104,101,108,108,111,46,116,120,116,80,75,1,2,20,3,20,0,0,0,8,0,40,148,196,92,114,12,255,60,13,0,0,0,128,1,0,0,13,0,0,0,0,0,0,0,0,0,0,0,128,1,56,0,0,0,100,105,114,47,105,110,110,101,114,46,116,120,116,80,75,5,6,0,0,0,0,2,0,2,0,114,0,0,0,112,0,0,0,0,0
+};
+
+static void test_unzip(void)
+{
+    ktest_begin("unzip", "ZIP extract: inflate (deflate) + central dir + nested dirs");
+
+    int failed = 0;
+    int n = unzip_archive(uzfix_zip, sizeof(uzfix_zip), "/tmp/uztest", &failed);
+    Serial_WriteString("[ktest] unzip: extracted=");
+    Serial_WriteDec((uint32_t)(n < 0 ? 0 : n));
+    Serial_WriteString(" failed=");
+    Serial_WriteDec((uint32_t)failed);
+    Serial_WriteString("\n");
+    KTEST_ASSERT(n == 2);
+    KTEST_ASSERT(failed == 0);
+
+    char buf[512];
+    uint32_t got = 0;
+
+    /* hello.txt -- a tiny deflated entry. */
+    KTEST_ASSERT(vfs_read_file("/tmp/uztest/hello.txt", buf, sizeof(buf), &got) == 0);
+    KTEST_ASSERT(got == 15);
+    KTEST_ASSERT(memcmp(buf, "MAKAR-UNZIP-OK\n", 15) == 0);
+
+    /* dir/inner.txt -- nested path + back-reference-heavy deflate stream. */
+    got = 0;
+    KTEST_ASSERT(vfs_read_file("/tmp/uztest/dir/inner.txt", buf, sizeof(buf), &got) == 0);
+    KTEST_ASSERT(got == 384);
+    KTEST_ASSERT(memcmp(buf, "makar makar ", 12) == 0);
+
+    ktest_summary();
+}
+
 int ktest_run_all(void)
 {
     int total_pass = 0;
@@ -2808,15 +3224,20 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
-    test_virtio_net();
-    total_pass += ktest_pass_count;
-    total_fail += ktest_fail_count;
+    /* Networking suites are NOT run here: they require QEMU slirp + guestfwd
+     * and a specific NIC -device, and are parameterised by NET_DEVICE.  They
+     * live in their own section, ktest_run_net(), dispatched by the
+     * "nettest" test_mode selector.  See ktest_run_net() below. */
 
     test_devfs();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
     test_tmpfs();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_unzip();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
@@ -2929,6 +3350,53 @@ int ktest_run_all(void)
     total_fail += ktest_fail_count;
 
     t_writestring("\n[ktest] TOTAL: ");
+    t_dec((uint32_t)total_pass);
+    t_writestring(" passed, ");
+    t_dec((uint32_t)total_fail);
+    t_writestring(" failed\n");
+    return total_fail;
+}
+
+/*
+ * ktest_run_net - networking test section.
+ *
+ * Kept separate from ktest_run_all() because these suites depend on QEMU
+ * user networking (slirp + guestfwd) and bind to whichever NIC the harness
+ * attached (NET_DEVICE=virtio|rtl8139|e1000|pcnet).  The active-NIC path is
+ * exercised the same way regardless of which driver bound, so this one
+ * section validates every backend by re-running it with a different
+ * NET_DEVICE.  Returns the total number of failed assertions.
+ */
+int ktest_run_net(void)
+{
+    int total_pass = 0;
+    int total_fail = 0;
+
+    test_virtio_net();              /* active netdev TX ARP + polled RX */
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_lwip_tcp();                /* lwIP over netdev: TCP connect + recv */
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_lwip_ping();               /* ICMP echo: gateway asserted, 1.1.1.1 soft */
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_lwip_dns();                /* DNS resolver: numeric asserted, real soft */
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_wget();                    /* HTTP GET via slirp guestfwd fixture */
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_lwip_net_info();           /* SYS_NET_INFO text + DHCP/DNS controls */
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    t_writestring("\n[ktest] NET TOTAL: ");
     t_dec((uint32_t)total_pass);
     t_writestring(" passed, ");
     t_dec((uint32_t)total_fail);
