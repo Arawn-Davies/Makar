@@ -411,6 +411,8 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	}
 
 	vfs_init();
+	if (live_boot && !root_spec)
+		root_spec = "cdrom";
 	vfs_mount_root(root_spec);
 	vfs_auto_mount();
 	vfs_ensure_root_home();

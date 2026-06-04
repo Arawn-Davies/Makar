@@ -624,6 +624,8 @@ case "$MODE" in
     _run_qemu_interactive \
         "-drive file=/work/hdd.img,format=raw,if=ide,index=0 \
          -drive file=/work/makar.iso,if=ide,index=2,media=cdrom \
+         -netdev user,id=n0 \
+         -device virtio-net-pci,netdev=n0,disable-modern=on,disable-legacy=off,vectors=0 \
          -boot order=d -serial stdio"
     ;;
 
