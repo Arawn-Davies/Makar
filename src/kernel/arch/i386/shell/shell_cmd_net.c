@@ -36,6 +36,7 @@ typedef struct {
     int connected;
     int done;       /* remote closed cleanly */
     int err;
+    int aborted;    /* tcp_err fired -> lwIP already freed the pcb */
 } wget_state_t;
 
 static int wget_sink(wget_state_t *s, const uint8_t *data, uint32_t n)
@@ -90,7 +91,9 @@ static void wget_err_cb(void *arg, err_t err)
 {
     (void)err;
     wget_state_t *s = (wget_state_t *)arg;
-    if (s) s->err = 1;
+    /* lwIP has already freed the pcb by the time this fires; mark it so the
+     * caller never touches the dangling pointer (tcp_abort/tcp_close = UAF). */
+    if (s) { s->err = 1; s->aborted = 1; }
 }
 
 /* Parse "http://host[:port][/path]" into pieces.  Returns 0 on success,
@@ -221,7 +224,7 @@ int wget_fetch(const char *url, uint8_t **out_body, uint32_t *out_len,
         task_yield();
     }
     if (!st.connected || st.err) {
-        tcp_abort(pcb);
+        if (!st.aborted) tcp_abort(pcb);   /* skip if lwIP already freed it */
         kfree(st.buf);
         return -1;
     }
@@ -237,7 +240,7 @@ int wget_fetch(const char *url, uint8_t **out_body, uint32_t *out_len,
     }
     if (tcp_write(pcb, req, (u16_t)rl, TCP_WRITE_FLAG_COPY) != ERR_OK ||
         tcp_output(pcb) != ERR_OK) {
-        tcp_abort(pcb);
+        if (!st.aborted) tcp_abort(pcb);
         kfree(st.buf);
         return -1;
     }
@@ -250,8 +253,13 @@ int wget_fetch(const char *url, uint8_t **out_body, uint32_t *out_len,
         if (st.len != last_len) { last_len = st.len; last_progress = timer_get_ticks(); }
         else if (timer_get_ticks() - last_progress > WGET_IDLE_TMO) break;
     }
-    tcp_recv(pcb, NULL);
-    tcp_close(pcb);
+    /* Only touch the pcb if lwIP hasn't already freed it via tcp_err.  If
+     * tcp_close can't proceed (out of memory), fall back to abort. */
+    if (!st.aborted) {
+        tcp_recv(pcb, NULL);
+        if (tcp_close(pcb) != ERR_OK)
+            tcp_abort(pcb);
+    }
 
     if (st.len == 0) { kfree(st.buf); return -1; }
 
