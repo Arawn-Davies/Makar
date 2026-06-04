@@ -71,7 +71,9 @@ static void cmd_uptime(int argc, char **argv)
 static void cmd_tasks(int argc, char **argv)
 {
     (void)argc; (void)argv;
-    static const char * const state_names[] = { "ready", "running", "dead" };
+    static const char * const state_names[] = {
+        "ready", "running", "dead", "zombie", "blocked"
+    };
     int n = task_count();
 
     t_writestring("Tasks (");
@@ -87,7 +89,9 @@ static void cmd_tasks(int argc, char **argv)
         t_writestring("] ");
         t_writestring(t->name ? t->name : "(unnamed)");
         t_writestring(" - ");
-        t_writestring(state_names[t->state]);
+        t_writestring((unsigned)t->state <
+                          sizeof(state_names) / sizeof(state_names[0])
+                      ? state_names[t->state] : "?");
         t_putchar('\n');
     }
 }

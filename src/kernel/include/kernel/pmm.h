@@ -12,10 +12,32 @@
    the null page and all kernel frames as used. */
 void     pmm_init(uint32_t magic, multiboot2_info_t *mbi);
 
+/* Number of buddy orders.  Orders 0..PMM_MAX_ORDER-1; the largest block is
+   2^(PMM_MAX_ORDER-1) frames = 4 MiB (matches Linux's default MAX_ORDER). */
+#define PMM_MAX_ORDER 11
+
 /* Allocate one physical frame.  Returns the physical address of the
    frame (always a multiple of PMM_FRAME_SIZE), or PMM_ALLOC_ERROR if
-   no free frame is available. */
+   no free frame is available.  Equivalent to pmm_alloc_pages(0). */
 uint32_t pmm_alloc_frame(void);
+
+/* Allocate 2^order physically-contiguous frames via the buddy allocator.
+   The returned physical address is naturally aligned to the block size
+   (2^order * PMM_FRAME_SIZE), which is what DMA ring buffers and page-table
+   pools need.  Returns PMM_ALLOC_ERROR if no block of that order is free.
+   order must be < PMM_MAX_ORDER. */
+uint32_t pmm_alloc_pages(unsigned order);
+
+/* Free a block previously returned by pmm_alloc_pages(order).  Drops one
+   reference on the head frame and, when it reaches zero, returns the block
+   to the buddy pool (coalescing with a free buddy where possible).  The
+   order must match the original allocation. */
+void     pmm_free_pages(uint32_t addr, unsigned order);
+
+/* Diagnostic: the highest order whose free list is non-empty, or
+   PMM_MAX_ORDER if the pool is entirely empty.  Lets ktests observe
+   coalescing. */
+unsigned pmm_largest_free_order(void);
 
 /* Drop one reference to the physical frame at addr.
    When the refcount hits zero the frame is returned to the free pool.

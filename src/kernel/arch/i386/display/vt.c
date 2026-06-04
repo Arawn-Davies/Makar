@@ -3,7 +3,7 @@
  */
 
 #include <kernel/vt.h>
-#include <stdlib.h>
+#include <kernel/heap.h>
 #include <string.h>
 
 static void vt_fill_cell(vt_cell_t *c, uint8_t ch, uint32_t fg, uint32_t bg)
@@ -19,13 +19,14 @@ bool vt_init(vt_buf_t *vt, uint32_t cols, uint32_t rows,
 {
     vt->cols    = cols;
     vt->rows    = rows;
+    vt->usable_rows = rows;
     vt->cur_col = 0;
     vt->cur_row = 0;
     vt->fg      = default_fg;
     vt->bg      = default_bg;
 
     size_t n = (size_t)cols * (size_t)rows;
-    vt->cells = (vt_cell_t *)malloc(n * sizeof(vt_cell_t));
+    vt->cells = (vt_cell_t *)kmalloc(n * sizeof(vt_cell_t));
     if (!vt->cells) return false;
 
     for (size_t i = 0; i < n; i++)
@@ -39,11 +40,32 @@ void vt_set_color(vt_buf_t *vt, uint32_t fg, uint32_t bg)
     vt->bg = bg;
 }
 
+static uint32_t vt_limit_rows(const vt_buf_t *vt)
+{
+    if (!vt || vt->rows == 0) return 0;
+    if (vt->usable_rows == 0 || vt->usable_rows > vt->rows)
+        return vt->rows;
+    return vt->usable_rows;
+}
+
+void vt_set_usable_rows(vt_buf_t *vt, uint32_t rows)
+{
+    if (!vt || vt->rows == 0) return;
+    if (rows == 0 || rows > vt->rows)
+        rows = vt->rows;
+    vt->usable_rows = rows;
+    if (vt->cur_row >= rows)
+        vt->cur_row = rows - 1;
+    if (vt->cur_col >= vt->cols && vt->cols > 0)
+        vt->cur_col = vt->cols - 1;
+}
+
 void vt_set_cursor(vt_buf_t *vt, uint32_t col, uint32_t row)
 {
-    if (vt->cols == 0 || vt->rows == 0) return;
+    uint32_t rows = vt_limit_rows(vt);
+    if (vt->cols == 0 || rows == 0) return;
     if (col >= vt->cols) col = vt->cols - 1;
-    if (row >= vt->rows) row = vt->rows - 1;
+    if (row >= rows) row = rows - 1;
     vt->cur_col = col;
     vt->cur_row = row;
 }
@@ -53,20 +75,21 @@ void vt_clear(vt_buf_t *vt)
     vt->cur_col = 0;
     vt->cur_row = 0;
     if (!vt->cells) return;
-    size_t n = (size_t)vt->cols * (size_t)vt->rows;
+    size_t n = (size_t)vt->cols * (size_t)vt_limit_rows(vt);
     for (size_t i = 0; i < n; i++)
         vt_fill_cell(&vt->cells[i], ' ', vt->fg, vt->bg);
 }
 
 static void vt_scroll_up(vt_buf_t *vt)
 {
-    if (vt->rows <= 1) {
+    uint32_t rows = vt_limit_rows(vt);
+    if (rows <= 1) {
         vt_clear(vt);
         return;
     }
     size_t row_bytes = (size_t)vt->cols * sizeof(vt_cell_t);
-    memmove(vt->cells, vt->cells + vt->cols, (size_t)(vt->rows - 1) * row_bytes);
-    vt_cell_t *last = vt->cells + (size_t)(vt->rows - 1) * vt->cols;
+    memmove(vt->cells, vt->cells + vt->cols, (size_t)(rows - 1) * row_bytes);
+    vt_cell_t *last = vt->cells + (size_t)(rows - 1) * vt->cols;
     for (uint32_t c = 0; c < vt->cols; c++)
         vt_fill_cell(&last[c], ' ', vt->fg, vt->bg);
 }
@@ -82,29 +105,30 @@ void vt_put_at(vt_buf_t *vt, char c, uint32_t col, uint32_t row)
 vt_dirty_t vt_putchar(vt_buf_t *vt, char c)
 {
     vt_dirty_t d = { 0, 0, 0, 0 };
-    if (!vt->cells || vt->cols == 0 || vt->rows == 0) return d;
+    uint32_t rows = vt_limit_rows(vt);
+    if (!vt->cells || vt->cols == 0 || rows == 0) return d;
 
     /* Clamp transient out-of-range cursor (preemption between increment
      * and bounds check elsewhere). */
     if (vt->cur_col >= vt->cols) {
         vt->cur_col = 0;
-        if (++vt->cur_row >= vt->rows) {
+        if (++vt->cur_row >= rows) {
             vt_scroll_up(vt);
-            vt->cur_row = vt->rows - 1;
+            vt->cur_row = rows - 1;
             d.scrolled = 1;
         }
     }
-    if (vt->cur_row >= vt->rows) {
+    if (vt->cur_row >= rows) {
         vt_scroll_up(vt);
-        vt->cur_row = vt->rows - 1;
+        vt->cur_row = rows - 1;
         d.scrolled = 1;
     }
 
     if (c == '\n') {
         vt->cur_col = 0;
-        if (++vt->cur_row >= vt->rows) {
+        if (++vt->cur_row >= rows) {
             vt_scroll_up(vt);
-            vt->cur_row = vt->rows - 1;
+            vt->cur_row = rows - 1;
             d.scrolled = 1;
         }
         return d;
@@ -136,9 +160,9 @@ vt_dirty_t vt_putchar(vt_buf_t *vt, char c)
 
     if (++vt->cur_col >= vt->cols) {
         vt->cur_col = 0;
-        if (++vt->cur_row >= vt->rows) {
+        if (++vt->cur_row >= rows) {
             vt_scroll_up(vt);
-            vt->cur_row = vt->rows - 1;
+            vt->cur_row = rows - 1;
             d.scrolled = 1;
         }
     }

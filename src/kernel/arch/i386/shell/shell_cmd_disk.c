@@ -419,6 +419,9 @@ static void cmd_lspci(int argc, char **argv)
         if (d->irq_line && d->irq_line != 0xFF) {
             t_writestring("  IRQ="); t_dec((uint32_t)d->irq_line);
         }
+        if (d->driver) {
+            t_writestring("  driver="); t_writestring(d->driver);
+        }
         t_putchar('\n');
     }
 }

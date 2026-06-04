@@ -6,6 +6,7 @@
 #include <kernel/vfs.h>      /* VFS_PATH_MAX */
 #include <kernel/fd.h>       /* fd_table_t, TASK_MAX_FDS */
 #include <kernel/isr.h>      /* registers_t for task_fork */
+#include <kernel/ipc.h>      /* ipc_msg_t + IPC_STATE_* for the IPC fields */
 
 /* Size of the private kernel stack allocated for each task. */
 #define TASK_STACK_SIZE  8192
@@ -30,6 +31,11 @@ typedef enum {
      * from DEAD so task_create's reclaim path won't reuse the slot
      * before the parent reads the status. */
     TASK_ZOMBIE  = 3,
+    /* TASK_BLOCKED -- parked in a synchronous IPC rendezvous (send waiting
+     * for a receiver, or recv waiting for a sender).  The scheduler only
+     * runs TASK_READY tasks, so a blocked task is simply skipped; its
+     * rendezvous partner flips it back to TASK_READY on wake.  See ipc.c. */
+    TASK_BLOCKED = 4,
 } task_state_t;
 
 typedef struct task {
@@ -140,6 +146,25 @@ typedef struct task {
      * Allocated lazily on first assignment by sh_vars_set().  See
      * src/kernel/arch/i386/shell/sh_vars.c. */
     void         *script_vars;
+
+    /* --- IPC (microkernel synchronous message passing) ---
+     * ipc_buf:       kernel-resident staging buffer for the in-flight message
+     *                (decouples sender/receiver address spaces).
+     * ipc_state:     IPC_STATE_IDLE / SENDING / RECVING.
+     * ipc_partner:   dest pid while SENDING, or src filter (pid / IPC_ANY)
+     *                while RECVING.
+     * ipc_rc:        result handed back to this task when it is woken from a
+     *                blocked send/recv (0, or -ESRCH if the partner died).
+     * ipc_sender_q:  head of the list of tasks blocked SENDING to this task.
+     * ipc_sq_next:   this task's link while queued in some receiver's
+     *                ipc_sender_q.
+     * See arch/i386/proc/ipc.c. */
+    ipc_msg_t     ipc_buf;
+    int           ipc_state;
+    int           ipc_partner;
+    int           ipc_rc;
+    struct task  *ipc_sender_q;
+    struct task  *ipc_sq_next;
 } task_t;
 
 /*

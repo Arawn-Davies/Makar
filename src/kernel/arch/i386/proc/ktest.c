@@ -8,6 +8,8 @@
 #include <kernel/ktest.h>
 #include <kernel/acpi.h>
 #include <kernel/partition.h>
+#include <kernel/pci.h>
+#include <kernel/netdev.h>
 #include <kernel/pmm.h>
 #include <kernel/heap.h>
 #include <kernel/vmm.h>
@@ -20,6 +22,7 @@
 #include <kernel/syscall.h>
 #include <kernel/serial.h>
 #include <kernel/tty.h>
+#include <kernel/vt.h>
 #include <kernel/vesa.h>
 #include <kernel/vesa_tty.h>
 #include <kernel/bochs_vbe.h>
@@ -187,6 +190,42 @@ static void test_string(void)
     ktest_summary();
 }
 
+static void test_vt_status_scroll(void)
+{
+    ktest_begin("vt_status_scroll", "VT scroll region reserves status row");
+
+    vt_buf_t vt;
+    memset(&vt, 0, sizeof vt);
+    KTEST_ASSERT(vt_init(&vt, 4, 4, 0x00FFFFFFu, 0x00000000u));
+    if (!vt.cells) {
+        ktest_summary();
+        return;
+    }
+
+    vt_set_usable_rows(&vt, 3);
+    vt_put_at(&vt, 'A', 0, 0);
+    vt_put_at(&vt, 'B', 0, 1);
+    vt_put_at(&vt, 'C', 0, 2);
+    vt_put_at(&vt, 'S', 0, 3);
+
+    vt_set_cursor(&vt, 0, 2);
+    vt_putchar(&vt, '\n');
+
+    KTEST_ASSERT(vt.cur_row == 2);
+    KTEST_ASSERT(vt_get_cell(&vt, 0, 0).ch == 'B');
+    KTEST_ASSERT(vt_get_cell(&vt, 0, 1).ch == 'C');
+    KTEST_ASSERT(vt_get_cell(&vt, 0, 2).ch == ' ');
+    KTEST_ASSERT(vt_get_cell(&vt, 0, 3).ch == 'S');
+
+    vt_set_usable_rows(&vt, 4);
+    vt_set_cursor(&vt, 0, 3);
+    vt_putchar(&vt, 'Z');
+    KTEST_ASSERT(vt_get_cell(&vt, 0, 3).ch == 'Z');
+
+    kfree(vt.cells);
+    ktest_summary();
+}
+
 /* ---------------------------------------------------------------------------
  * Suite: partition helpers
  *
@@ -243,6 +282,147 @@ static void test_partition(void)
  *   - The primary ATA disk (hda) is probed when present (HDD boots, or live
  *     boots with an installed disk attached).
  * ------------------------------------------------------------------------- */
+
+/* ---------------------------------------------------------------------------
+ * Suite: PCI driver binding (pci_driver_t registration + pci_probe_all)
+ * Matches the always-present i440FX host bridge (class 0x06/0x00) with a
+ * dummy class-match driver and proves probe firing, claim, and idempotency.
+ * ------------------------------------------------------------------------- */
+static int test_pci_probe_hits;
+static int test_pci_probe_fn(pci_device_t *dev) { (void)dev; test_pci_probe_hits++; return 0; }
+static const pci_driver_t test_pci_drv = {
+    .name = "ktest-hostbridge", .match_class = 1,
+    .class_code = 0x06, .subclass = 0x00, .probe = test_pci_probe_fn,
+};
+
+static void test_pci_bind(void)
+{
+    ktest_begin("pci_bind", "pci_driver_t registration + pci_probe_all class match");
+
+    KTEST_ASSERT(pci_device_count > 0);          /* QEMU always enumerates devices */
+
+    test_pci_probe_hits = 0;
+    pci_register_driver(&test_pci_drv);
+    int bound = pci_probe_all();
+
+    KTEST_ASSERT(test_pci_probe_hits >= 1);      /* host bridge probed */
+    KTEST_ASSERT(bound >= 1);                    /* and claimed */
+
+    int named = 0;
+    for (int i = 0; i < pci_device_count; i++)
+        if (pci_devices[i].driver &&
+            strcmp(pci_devices[i].driver, "ktest-hostbridge") == 0)
+            named++;
+    KTEST_ASSERT(named >= 1);                     /* dev->driver carries the name */
+
+    KTEST_ASSERT(pci_probe_all() == 0);          /* re-probe skips bound devices */
+
+    ktest_summary();
+}
+
+static void be16(uint8_t *p, uint16_t v)
+{
+    p[0] = (uint8_t)(v >> 8);
+    p[1] = (uint8_t)v;
+}
+
+static void be32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v >> 24);
+    p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)v;
+}
+
+static uint16_t rd_be16(const uint8_t *p)
+{
+    return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
+}
+
+static uint32_t rd_be32(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) | p[3];
+}
+
+static void test_virtio_net(void)
+{
+    ktest_begin("netdev", "active Ethernet netdev TX ARP request + polled RX reply from QEMU slirp");
+
+    if (!netdev_present()) {
+        Serial_WriteString("[ktest] netdev: no device, skipping\n");
+        KTEST_ASSERT(1);
+        ktest_summary();
+        return;
+    }
+
+    const uint8_t *mac = netdev_mac();
+    Serial_WriteString("[ktest] netdev: device=");
+    Serial_WriteString((char *)(netdev_name() ? netdev_name() : "unknown"));
+    Serial_WriteString(" mac=");
+    for (int i = 0; i < 6; i++) {
+        if (i) Serial_WriteString(":");
+        Serial_WriteHex(mac[i]);
+    }
+    Serial_WriteString("\n");
+
+    uint8_t arp[42];
+    memset(arp, 0, sizeof(arp));
+    for (int i = 0; i < 6; i++)
+        arp[i] = 0xff;
+    memcpy(arp + 6, mac, 6);
+    be16(arp + 12, 0x0806);       /* Ethernet type: ARP */
+    be16(arp + 14, 0x0001);       /* Ethernet hardware */
+    be16(arp + 16, 0x0800);       /* IPv4 protocol */
+    arp[18] = 6;                  /* hardware length */
+    arp[19] = 4;                  /* protocol length */
+    be16(arp + 20, 0x0001);       /* request */
+    memcpy(arp + 22, mac, 6);
+    be32(arp + 28, 0x0a00020f);   /* 10.0.2.15 */
+    be32(arp + 38, 0x0a000202);   /* 10.0.2.2 */
+
+    Serial_WriteString("[ktest] netdev: TX ARP who-has 10.0.2.2\n");
+    int tx_rc = netdev_send(arp, sizeof(arp));
+    Serial_WriteString("[ktest] netdev: TX rc=");
+    Serial_WriteDec((uint32_t)tx_rc);
+    Serial_WriteString("\n");
+    KTEST_ASSERT(tx_rc == 0);
+
+    /* Poll RX, yielding each iteration: under QEMU/TCG the guest must yield
+     * the CPU so the device's TX/RX backend and slirp's ARP responder get to
+     * run.  ~3 s wall-clock budget at 100 Hz. */
+    uint8_t rx[1600];
+    int got_reply = 0;
+    int rx_frames = 0;
+    uint32_t t0 = timer_get_ticks();
+    while (timer_get_ticks() - t0 < 300) {
+        int n = netdev_rx_poll(rx, sizeof(rx));
+        if (n > 0) {
+            rx_frames++;
+            Serial_WriteString("[ktest] netdev: RX frame len=");
+            Serial_WriteDec((uint32_t)n);
+            Serial_WriteString(" ethertype=");
+            Serial_WriteHex(rd_be16(rx + 12));
+            Serial_WriteString("\n");
+        }
+        if (n >= 42 &&
+            rd_be16(rx + 12) == 0x0806 &&      /* ARP                     */
+            rd_be16(rx + 20) == 0x0002 &&      /* reply                   */
+            rd_be32(rx + 28) == 0x0a000202 &&  /* sender 10.0.2.2 (slirp) */
+            rd_be32(rx + 38) == 0x0a00020f &&  /* target 10.0.2.15 (us)   */
+            memcmp(rx + 32, mac, 6) == 0) {    /* target MAC = ours       */
+            got_reply = 1;
+            break;
+        }
+        task_yield();
+    }
+
+    Serial_WriteString("[ktest] netdev: rx_frames=");
+    Serial_WriteDec((uint32_t)rx_frames);
+    Serial_WriteString(got_reply ? " ARP reply received\n" : " TIMEOUT (no ARP reply)\n");
+    KTEST_ASSERT(got_reply);
+    ktest_summary();
+}
 
 static void test_devfs(void)
 {
@@ -505,6 +685,80 @@ static void test_pmm(void)
     uint32_t rf2 = pmm_alloc_frame();
     KTEST_ASSERT(rf2 == rf);
     pmm_free_frame(rf2);
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
+ * Suite: buddy allocator
+ *
+ * Exercises the multi-order page allocator beneath pmm_alloc_frame: contiguous
+ * power-of-two blocks, natural alignment (what DMA rings need), real writable
+ * backing RAM, exact free-frame accounting, and coalescing on free.
+ * ------------------------------------------------------------------------- */
+
+static void test_buddy(void)
+{
+    ktest_begin("buddy", "buddy allocator: contiguous alloc, alignment, RAM, coalescing, accounting");
+
+    uint32_t free0 = pmm_free_count();
+
+    /* Order-0 path == legacy pmm_alloc_frame. */
+    uint32_t a = pmm_alloc_pages(0);
+    KTEST_ASSERT(a != PMM_ALLOC_ERROR);
+    KTEST_ASSERT((a & (PMM_FRAME_SIZE - 1)) == 0);
+    KTEST_ASSERT(pmm_free_count() == free0 - 1);
+    pmm_free_pages(a, 0);
+    KTEST_ASSERT(pmm_free_count() == free0);
+
+    /* Order-3: 8 contiguous frames, naturally aligned to 8*4 KiB = 32 KiB. */
+    uint32_t blk = pmm_alloc_pages(3);
+    KTEST_ASSERT(blk != PMM_ALLOC_ERROR);
+    KTEST_ASSERT((blk & ((8u * PMM_FRAME_SIZE) - 1)) == 0);
+    KTEST_ASSERT(pmm_free_count() == free0 - 8);
+
+    /* The block is real, writable RAM (identity-mapped below 256 MiB):
+     * stamp one word per frame and read it back. */
+    volatile uint32_t *p = (volatile uint32_t *)blk;
+    for (int i = 0; i < 8; i++)
+        p[i * (PMM_FRAME_SIZE / 4)] = 0xB0B00000u + (uint32_t)i;
+    int ram_ok = 1;
+    for (int i = 0; i < 8; i++)
+        if (p[i * (PMM_FRAME_SIZE / 4)] != 0xB0B00000u + (uint32_t)i)
+            ram_ok = 0;
+    KTEST_ASSERT(ram_ok);
+
+    pmm_free_pages(blk, 3);
+    KTEST_ASSERT(pmm_free_count() == free0);
+
+    /* Order-5: 128 KiB-aligned. */
+    uint32_t big = pmm_alloc_pages(5);
+    KTEST_ASSERT(big != PMM_ALLOC_ERROR);
+    KTEST_ASSERT((big & ((32u * PMM_FRAME_SIZE) - 1)) == 0);
+    pmm_free_pages(big, 5);
+    KTEST_ASSERT(pmm_free_count() == free0);
+
+    /* Coalescing: an order-4 alloc splits a larger block into buddies; freeing
+     * it must merge them back so the *same* block is handed out next time. */
+    uint32_t c1 = pmm_alloc_pages(4);
+    KTEST_ASSERT(c1 != PMM_ALLOC_ERROR);
+    pmm_free_pages(c1, 4);
+    uint32_t c2 = pmm_alloc_pages(4);
+    KTEST_ASSERT(c2 == c1);                 /* coalesced, not left fragmented */
+    pmm_free_pages(c2, 4);
+
+    /* A mixed alloc/free storm must not leak or double-count frames. */
+    for (int it = 0; it < 64; it++) {
+        unsigned ord = (unsigned)(it % 6);          /* orders 0..5 */
+        uint32_t x = pmm_alloc_pages(ord);
+        KTEST_ASSERT(x != PMM_ALLOC_ERROR);
+        KTEST_ASSERT((x & (((1u << ord) * PMM_FRAME_SIZE) - 1)) == 0);
+        pmm_free_pages(x, ord);
+    }
+    KTEST_ASSERT(pmm_free_count() == free0);
+
+    /* Over-large order is rejected, not serviced. */
+    KTEST_ASSERT(pmm_alloc_pages(PMM_MAX_ORDER) == PMM_ALLOC_ERROR);
 
     ktest_summary();
 }
@@ -807,6 +1061,92 @@ static void test_task(void)
         task_yield();
     KTEST_ASSERT(noop_ran);
     KTEST_ASSERT(t1->state == TASK_DEAD || t2->state == TASK_DEAD);
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
+ * Suite: IPC (microkernel synchronous message passing)
+ *
+ * Spawns a server task that loops on ipc_recv(IPC_ANY) and replies, then
+ * drives it as an RPC client via ipc_sendrec.  Exercises both rendezvous
+ * orderings (sender-blocks-first and receiver-blocks-first), the sender
+ * queue, message integrity, src stamping, and clean teardown via a QUIT
+ * message.  Proves the blocking primitive the whole microkernel direction
+ * rests on.
+ * ------------------------------------------------------------------------- */
+
+#define TEST_IPC_REQ    1
+#define TEST_IPC_QUIT   2
+#define TEST_IPC_REPLY  100
+
+static int s_ipc_server_pid;
+
+static void test_ipc_server(void)
+{
+    for (;;) {
+        ipc_msg_t m;
+        if (ipc_recv(IPC_ANY, &m) != 0)
+            break;                       /* partner gone -- bail */
+        if (m.type == TEST_IPC_QUIT)
+            break;
+        if (m.type == TEST_IPC_REQ) {
+            ipc_msg_t r;
+            r.type    = TEST_IPC_REPLY;
+            r.data[0] = m.data[0] + 1;   /* server transforms the payload */
+            ipc_send(m.src, &r);         /* reply to whoever asked */
+        }
+    }
+    task_exit();
+}
+
+static void test_ipc(void)
+{
+    ktest_begin("ipc",
+                "MINIX-style synchronous IPC: sendrec RPC to a server task, "
+                "blocking rendezvous + sender queue + teardown");
+
+    task_t *srv = task_create("ipc_server", test_ipc_server);
+    KTEST_ASSERT(srv != NULL);
+    if (!srv) { ktest_summary(); return; }
+    s_ipc_server_pid = srv->pid;
+
+    /* First request: the server hasn't run yet, so our send blocks and
+     * enqueues -- exercises the sender-blocks-first path.  Later iterations
+     * find the server already waiting in recv -- the fast path. */
+    int all_ok = 1;
+    for (int i = 0; i < 8; i++) {
+        ipc_msg_t m;
+        memset(&m, 0, sizeof(m));
+        m.type    = TEST_IPC_REQ;
+        m.data[0] = (uint32_t)(i * 10);
+
+        int rc = ipc_sendrec(srv->pid, &m);
+        if (rc != 0)                              { all_ok = 0; break; }
+        if (m.type != TEST_IPC_REPLY)             { all_ok = 0; break; }
+        if (m.data[0] != (uint32_t)(i * 10 + 1))  { all_ok = 0; break; }
+        if (m.src != srv->pid)                    { all_ok = 0; break; }
+    }
+    KTEST_ASSERT(all_ok);
+
+    /* Self-send is rejected. */
+    {
+        ipc_msg_t m; memset(&m, 0, sizeof(m));
+        KTEST_ASSERT(ipc_send(task_current()->pid, &m) != 0);
+    }
+
+    /* Send to a non-existent endpoint fails with an error, not a hang. */
+    {
+        ipc_msg_t m; memset(&m, 0, sizeof(m)); m.type = TEST_IPC_REQ;
+        KTEST_ASSERT(ipc_send(0x7fffffff, &m) != 0);
+    }
+
+    /* Tell the server to quit, then join. */
+    ipc_msg_t q; memset(&q, 0, sizeof(q)); q.type = TEST_IPC_QUIT;
+    ipc_send(srv->pid, &q);
+    for (int i = 0; i < 256 && srv->state != TASK_DEAD; i++)
+        task_yield();
+    KTEST_ASSERT(srv->state == TASK_DEAD);
 
     ktest_summary();
 }
@@ -2456,7 +2796,19 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
+    test_vt_status_scroll();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
     test_partition();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_pci_bind();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_virtio_net();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
@@ -2480,6 +2832,10 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
+    test_buddy();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
     test_heap();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
@@ -2489,6 +2845,10 @@ int ktest_run_all(void)
     total_fail += ktest_fail_count;
 
     test_task();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_ipc();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
@@ -2617,13 +2977,16 @@ void ktest_bg_task(void)
     RUN(test_fpu);
     RUN(test_string);
     RUN(test_partition);
+    RUN(test_pci_bind);
     RUN(test_devfs);
     RUN(test_tmpfs);
     RUN(test_rootfs_mount_layout);
     RUN(test_pmm);
+    RUN(test_buddy);
     RUN(test_heap);
     RUN(test_vmm);
     RUN(test_task);
+    RUN(test_ipc);
     RUN(test_procfs_tasks);
     RUN(test_getpid);
     RUN(test_rtc_unix_time);

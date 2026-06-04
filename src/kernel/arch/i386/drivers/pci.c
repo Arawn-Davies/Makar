@@ -184,6 +184,72 @@ const char *pci_class_name(uint8_t cls, uint8_t sub)
 }
 
 /* --------------------------------------------------------------------------
+ * Driver binding
+ * -------------------------------------------------------------------------- */
+
+#define PCI_MAX_DRIVERS 16
+static const pci_driver_t *pci_drivers[PCI_MAX_DRIVERS];
+static int                 pci_driver_count = 0;
+
+void pci_register_driver(const pci_driver_t *drv)
+{
+    if (!drv || pci_driver_count >= PCI_MAX_DRIVERS) return;
+    pci_drivers[pci_driver_count++] = drv;
+}
+
+static int driver_matches(const pci_driver_t *drv, const pci_device_t *d)
+{
+    if (drv->match_class)
+        return drv->class_code == d->class_code && drv->subclass == d->subclass;
+    if (drv->vendor != d->vendor_id) return 0;
+    return drv->device == PCI_MATCH_ANY || drv->device == d->device_id;
+}
+
+int pci_probe_all(void)
+{
+    int bound = 0;
+    for (int i = 0; i < pci_device_count; i++) {
+        pci_device_t *d = &pci_devices[i];
+        if (d->driver) continue;                 /* already claimed */
+        for (int j = 0; j < pci_driver_count; j++) {
+            const pci_driver_t *drv = pci_drivers[j];
+            if (!driver_matches(drv, d)) continue;
+            if (drv->probe && drv->probe(d) != 0) continue;
+            d->driver = drv->name;
+            bound++;
+            Serial_WriteString("pci: bound ");
+            Serial_WriteString(drv->name);
+            Serial_WriteString(" -> ");
+            Serial_WriteHex(d->vendor_id);
+            Serial_WriteString(":");
+            Serial_WriteHex(d->device_id);
+            Serial_WriteString("\n");
+            break;                               /* one driver per device */
+        }
+    }
+    return bound;
+}
+
+void pci_enable_bus_master(pci_device_t *d)
+{
+    uint32_t cmd = pci_read32(d->bus, d->dev, d->func, 0x04);
+    cmd |= (1u << 0) | (1u << 1) | (1u << 2);    /* I/O space, MMIO, bus master */
+    pci_write32(d->bus, d->dev, d->func, 0x04, cmd);
+}
+
+uint32_t pci_bar_io(const pci_device_t *d, int idx)
+{
+    if (idx < 0 || idx > 5) return 0;
+    return d->bar[idx] & ~0x3u;
+}
+
+uint32_t pci_bar_mem(const pci_device_t *d, int idx)
+{
+    if (idx < 0 || idx > 5) return 0;
+    return d->bar[idx] & ~0xFu;
+}
+
+/* --------------------------------------------------------------------------
  * Enumeration
  * -------------------------------------------------------------------------- */
 
@@ -194,6 +260,7 @@ static void scan_function(uint8_t bus, uint8_t dev, uint8_t func)
     if (pci_device_count >= PCI_MAX_DEVICES) return;
 
     pci_device_t *d = &pci_devices[pci_device_count++];
+    d->driver = NULL;
     d->bus  = bus;
     d->dev  = dev;
     d->func = func;

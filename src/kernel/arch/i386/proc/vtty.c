@@ -79,14 +79,9 @@ void vtty_init(void)
     vtty_current = 0;
 
     uint32_t cols = 0, rows = 0;
-    bool reserve_status = false;
     if (vesa_tty_is_ready()) {
         cols = vesa_tty_get_cols();
         rows = vesa_tty_get_rows();
-        if (rows > VESA_TTY_STATUS_ROWS) {
-            rows -= VESA_TTY_STATUS_ROWS;
-            reserve_status = true;
-        }
     }
     if (cols == 0 || rows == 0) {
         cols = 80;
@@ -105,19 +100,20 @@ void vtty_init(void)
 
     vtty_bufs_ready = true;
     for (int i = 0; i < VTTY_MAX; i++) {
-        /* Root slot (mak.sh0) gets full tty height so text and scrolling
-         * can reach the bottom row when no status bar is visible.
-         * Makmux slots 0-3 use the status-bar-reserved height. */
-        uint32_t slot_rows = (i == VTTY_ROOT_SLOT) ? vesa_tty_get_rows() : rows;
-        if (!vt_init(&vtty_bufs[i], cols, slot_rows,
+        /* Allocate every VT at physical height, then let vt->usable_rows
+         * define the active console scroll region.  That mirrors Linux's
+         * split between screen capacity and the current visible/scroll area:
+         * enabling the status bar reserves the last row, disabling it gives
+         * that row back without reallocating each VT buffer. */
+        if (!vt_init(&vtty_bufs[i], cols, rows,
                      VTTY_DEFAULT_FG, VTTY_DEFAULT_BG)) {
             /* Allocation failed: leave cells == NULL so vt_putchar
              * becomes a no-op for that slot.  Better than panic at boot. */
             vtty_bufs[i].cells = NULL;
+        } else if (vesa_tty_is_ready()) {
+            vt_set_usable_rows(&vtty_bufs[i], vesa_tty_usable_rows());
         }
     }
-
-    (void)reserve_status;
 }
 
 /*

@@ -25,6 +25,7 @@
 #include <kernel/syscall.h>
 #include <kernel/acpi.h>
 #include <kernel/pci.h>
+#include <kernel/virtio_net.h>
 #include <kernel/ktest.h>
 #include <kernel/vtty.h>
 #include <kernel/sh_script.h>
@@ -299,7 +300,9 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 
 	t_writestring("Scanning PCI bus");
 	kprint_ok();
+	virtio_net_register();
 	pci_init();
+	pci_probe_all();   /* bind registered drivers to scanned devices */
 	KLOG("pci: bus scan complete\n");
 
 	/* Parse Multiboot 2 tags: boot device and kernel command line. */

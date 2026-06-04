@@ -149,6 +149,13 @@
 #define SYS_STATFS         246  /* int statfs(uint32_t *total_kb, uint32_t *free_kb)
                                  * rootfs usage in KiB (ext2 only).  Returns 0/-1. */
 
+/* Microkernel IPC (MINIX-style synchronous message passing).  ebx = endpoint
+ * pid (or IPC_ANY for recv), ecx = ipc_msg_t*.  See kernel/ipc.h. */
+#define SYS_IPC_SEND       249  /* int ipc_send(int dst, const ipc_msg_t *)        */
+#define SYS_IPC_RECV       250  /* int ipc_recv(int from, ipc_msg_t *)             */
+#define SYS_IPC_SENDREC    251  /* int ipc_sendrec(int dst, ipc_msg_t *)           */
+#define SYS_NET_INFO       253  /* int net_info(char *buf, uint32_t bufsz)         */
+
 /* Back to Linux i386 ABI numbers for the next set. */
 #define SYS_FCNTL      55   /* int fcntl(int fd, int cmd, int arg) - F_GETFL/F_SETFL */
 #define SYS_GETPPID    64   /* pid_t getppid(void)                              */

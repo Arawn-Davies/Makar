@@ -45,6 +45,7 @@
 #include <kernel/vt.h>
 #include <kernel/ide.h>
 #include <kernel/pci.h>
+#include <kernel/netdev.h>
 #include <kernel/timer.h>
 #include <kernel/rtc.h>
 #include <string.h>
@@ -1691,6 +1692,59 @@ void syscall_dispatch(registers_t *regs)
     }
 
     /* ------------------------------------------------------------------
+     * SYS_NET_INFO(253): render active Ethernet netdev state as text.
+     * EBX = buf, ECX = bufsz.  Returns bytes written.
+     * ------------------------------------------------------------------ */
+    case SYS_NET_INFO: {
+        char    *buf = (char *)(uintptr_t)regs->ebx;
+        uint32_t cap = regs->ecx;
+        if (!buf || cap == 0) { regs->eax = 0; break; }
+        uint32_t off = 0;
+
+#define NET_APPEND(s) do { for (const char *_p = (s); *_p && off < cap - 2; _p++) buf[off++] = *_p; } while(0)
+#define NET_BYTE_HEX(v) do { \
+    static const char _h[] = "0123456789abcdef"; \
+    uint8_t _v = (uint8_t)(v); \
+    if (off + 2 < cap) { buf[off++] = _h[(_v >> 4) & 0xF]; buf[off++] = _h[_v & 0xF]; } \
+} while(0)
+
+        NET_APPEND("Makar Network Configuration\n\n");
+
+        if (!netdev_present()) {
+            NET_APPEND("Ethernet adapters: none\n");
+        } else {
+            const char *name = netdev_name();
+            const uint8_t *mac = netdev_mac();
+            NET_APPEND("Ethernet adapter eth0:\n");
+            NET_APPEND("   Driver . . . . . . . . . . : ");
+            NET_APPEND(name ? name : "unknown");
+            NET_APPEND("\n");
+            NET_APPEND("   Link State . . . . . . . . : up\n");
+            NET_APPEND("   Physical Address. . . . . . : ");
+            if (mac) {
+                for (int i = 0; i < 6; i++) {
+                    if (i && off < cap - 2) buf[off++] = '-';
+                    NET_BYTE_HEX(mac[i]);
+                }
+                if (off < cap - 2) buf[off++] = '\n';
+            } else {
+                NET_APPEND("unknown\n");
+            }
+            NET_APPEND("   DHCP Enabled. . . . . . . . : no\n");
+            NET_APPEND("   IPv4 Address. . . . . . . . : 10.0.2.15\n");
+            NET_APPEND("   Subnet Mask . . . . . . . . : 255.255.255.0\n");
+            NET_APPEND("   Default Gateway . . . . . . : 10.0.2.2\n");
+            NET_APPEND("   DNS Servers . . . . . . . . : 10.0.2.3\n");
+        }
+
+#undef NET_APPEND
+#undef NET_BYTE_HEX
+        buf[off] = '\0';
+        regs->eax = off;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
      * SYS_DELETE_FILE(208) / SYS_UNLINK(10): delete a VFS file.
      * EBX = path.  POSIX unlink() is aliased onto the same handler.
      * Returns 0 on success, (uint32_t)-1 on error.
@@ -2097,6 +2151,21 @@ void syscall_dispatch(registers_t *regs)
         regs->eax = (uint32_t)copy;
         break;
     }
+
+    case SYS_IPC_SEND:
+        regs->eax = (uint32_t)ipc_send((int)regs->ebx,
+                                       (const ipc_msg_t *)(uintptr_t)regs->ecx);
+        break;
+
+    case SYS_IPC_RECV:
+        regs->eax = (uint32_t)ipc_recv((int)regs->ebx,
+                                       (ipc_msg_t *)(uintptr_t)regs->ecx);
+        break;
+
+    case SYS_IPC_SENDREC:
+        regs->eax = (uint32_t)ipc_sendrec((int)regs->ebx,
+                                          (ipc_msg_t *)(uintptr_t)regs->ecx);
+        break;
 
     default:
         /* Unknown syscall - return -ENOSYS. */
