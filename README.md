@@ -23,15 +23,46 @@ ELF userspace, a userspace shell, a small hosted libc, an in-OS TinyCC, FAT32
 and ext2 storage, copy-on-write `fork`, `execve`, `wait4`, pipes, signals,
 anonymous `mmap`, i386 TLS, and x87/SSE task-state handling.
 
+Networking is in: an in-kernel lwIP stack over a NIC-agnostic `netdev` layer with
+four polled PCI drivers (virtio-net, RTL8139, Intel E1000, AMD PCNet), DHCP with a
+static slirp fallback, and a small client toolset — DNS resolution, ICMP ping, an
+HTTP `wget` (kernel builtin and `wget.elf`), and `unzip` (from-scratch DEFLATE).
+`maknetcfg` reports/controls interface state. No TLS yet (`https://` unsupported).
+
 For the authoritative current-state summary, read
 [`docs/index.md`](docs/index.md).
+
+## System Requirements
+
+Makar targets 32-bit x86 and is developed and tested against QEMU
+(`qemu-system-i386`, TCG by default). It should also run on real 32-bit-capable
+PCs that meet the CPU/firmware needs below.
+
+| Resource | Minimum | Notes |
+|---|---|---|
+| CPU | 32-bit x86, i686-class (Pentium II era or newer) | runs in protected mode; uses 4 MiB pages (`CR4.PSE`), the x87 FPU, and `FXSAVE`/SSE for per-task FP state |
+| Firmware / boot | Legacy BIOS + GRUB (Multiboot 2) | the ISO is a BIOS / El-Torito hybrid image; there is no UEFI boot path yet |
+| RAM | 32 MiB | the default `./run.sh` QEMU config boots with `-m 32`; more is fine |
+| Storage | ~30 MiB for `makar.iso` | optional FAT32/ext2 HDD image (default 96 MiB) for persistence |
+| Display | VBE-capable adapter | Bochs VBE / VESA linear framebuffer; falls back to VGA 80×50 text |
+
+### Supported devices / drivers
+
+- **Display:** VESA/VBE linear framebuffer (Bochs VBE, up to 720p), VGA text fallback
+- **Storage:** IDE/ATA (PIO); filesystems ext2, FAT32, ISO9660, plus `/dev` `/proc` `/tmp` `/log` overlays
+- **Input:** PS/2 keyboard
+- **Timer / clock:** PIT (100 Hz), RTC
+- **Bus / power:** PCI, ACPI (RSDP + table discovery)
+- **Serial:** 16550 UART (COM1)
+- **Network (PCI):** virtio-net, RTL8139, Intel E1000, AMD PCNet — over QEMU user-mode (slirp); no TLS
 
 ## Quick Start
 
 ```sh
 ./run.sh iso build
-./run.sh iso boot
+./run.sh iso boot              # add a NIC for networking: iso boot e1000
 ./run.sh ktest
+./run.sh nettest e1000         # networking suite against a chosen NIC
 ./run.sh kbtest
 ./run.sh kbtest gui
 ./run.sh gui all-tests
@@ -56,6 +87,7 @@ Detailed build and test behavior:
 | Test matrix and expected markers | [`docs/testing.md`](docs/testing.md) |
 | POSIX compatibility status | [`docs/posix.md`](docs/posix.md) |
 | Syscall ABI and syscall table | [`docs/syscalls.md`](docs/syscalls.md) |
+| Networking, NIC drivers, wget/unzip | [`docs/networking.md`](docs/networking.md) |
 | Userspace libc and static-musl bring-up | [`docs/userland-libc.md`](docs/userland-libc.md) |
 | In-OS TinyCC status | [`docs/tcc.md`](docs/tcc.md) |
 | Kernel internals | [`docs/internals.md`](docs/internals.md) |

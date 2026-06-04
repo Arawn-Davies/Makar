@@ -24,8 +24,25 @@ Run it with no arguments to print usage:
 | `qemu-system-i386` | optional | preferred for interactive and visible runs |
 | `gdb-multiarch` or `gdb` | optional | host-side GDB checkpoint runs; Docker fallback exists |
 | display server | optional | needed only for visible `gui` / `kbtest gui` modes |
+| host network access | optional | for guest networking (`wget`, DNS, ping) reaching a LAN/internet host |
 
 The normal path does not require installing `i686-elf-gcc` on the host.
+
+### Networking requirements
+
+Guest networking uses QEMU **user-mode (slirp)** — no bridge, TAP, or elevated
+privileges required, so `iso boot [nic]` / `nettest` work out of the box. The
+guest reaches the host at the slirp gateway `10.0.2.2` and any host/LAN/internet
+endpoint via NAT; DNS is provided by slirp at `10.0.2.3`.
+
+Two optional extras:
+
+- **External ICMP** (e.g. the guest pinging `1.1.1.1`) needs the host to permit
+  unprivileged ICMP sockets. On Linux/WSL2:
+  `sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"`. TCP/UDP (so `wget`
+  and DNS) work without it. WSL2 does not persist this across `wsl --shutdown`.
+- **TLS / HTTPS** is **not** supported in-guest. To fetch from an `https://`
+  origin, terminate TLS on the host and serve the file over plain HTTP.
 
 ## Quick Start
 

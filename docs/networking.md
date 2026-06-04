@@ -28,6 +28,14 @@ Each backend is a small polled driver feeding the same `netdev` contract:
 `send`, `rx_poll`, and `mac`. Interrupt-driven RX/TX can come later without
 changing lwIP's current attachment point.
 
+For an interactive session, pass the same NIC name to the boot targets to
+attach that device with slirp user networking:
+
+```text
+./run.sh iso boot [virtio|rtl8139|e1000|pcnet]    # default virtio
+./run.sh hdd boot [virtio|rtl8139|e1000|pcnet]
+```
+
 ## Networking test section
 
 The networking suites (`netdev` ARP, `lwip_tcp`, `lwip_net_info`) live in their
@@ -97,7 +105,11 @@ exec /apps/maknetcfg.elf
 exec /apps/maknetcfg.elf release
 exec /apps/maknetcfg.elf renew
 exec /apps/maknetcfg.elf flush-dns
+exec /apps/maknetcfg.elf help        # also -h / --help
 ```
+
+`maknetcfg help` (or `-h`/`--help`) prints the command summary and exits 0;
+an unrecognised argument prints the same summary and exits 1.
 
 Without arguments it prints an `ipconfig`-style summary:
 
@@ -110,18 +122,21 @@ Without arguments it prints an `ipconfig`-style summary:
 - default gateway
 - DNS server
 
-`release` stops the lwIP DHCP client and returns `eth0` to Makar's static QEMU
-slirp fallback address:
+`release` stops the lwIP DHCP client and **deconfigures** `eth0`: the IPv4
+address, gateway, and DNS server are all cleared, so `maknetcfg` then reports
+DHCP state `released` with no assigned address (`0.0.0.0`) until a renew —
+matching the normal DHCP-release model.
+
+`renew` clears the released state and restarts DHCP with a fresh DISCOVER,
+waiting briefly for a lease. If none arrives, Makar drops `eth0` onto its static
+QEMU slirp fallback so the interface is usable again in the default virtualized
+setup:
 
 ```text
 IPv4: 10.0.2.15/24
 Gateway: 10.0.2.2
 DNS: 10.0.2.3
 ```
-
-`renew` restarts DHCP and waits briefly for a lease. If no lease arrives, Makar
-keeps the same static slirp fallback so the interface remains usable in the
-default virtualized setup.
 
 `flush-dns` clears lwIP's DNS cache and pending resolver requests while keeping
 the configured DNS server.
