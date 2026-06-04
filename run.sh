@@ -95,8 +95,9 @@ _timeout() {
 _usage() {
     echo "Usage: $0 <target> <verb> [args...]"
     echo ""
-    echo "  iso   build | boot | test | release"
-    echo "  hdd   build | boot | test | release"
+    echo "  iso   build | boot [nic] | test | release"
+    echo "  hdd   build | boot [nic] | test | release"
+    echo "        boot nic (slirp networking): virtio | rtl8139 | e1000 | pcnet (default virtio)"
     echo "  gdb   iso | hdd"
     echo "  ktest [graphical]"
     echo "  nettest [nic]                   -- networking section only; nic: virtio | rtl8139 | e1000 | pcnet (default virtio)"
@@ -117,7 +118,17 @@ fi
 case "${1:-}" in
     iso|hdd|gdb)
         if [ -z "${2:-}" ]; then _usage; fi
-        MODE="$1 $2"; shift 2 ;;
+        MODE="$1 $2"
+        # `iso boot [nic]` / `hdd boot [nic]`: optional NIC selector (same set
+        # as nettest) attaches that device with slirp user networking.
+        if [ "$2" = "boot" ] && [ -n "${3:-}" ]; then
+            case "$3" in
+                virtio|virtio-net|rtl8139|e1000|pcnet) NET_DEVICE="$3"; shift 3 ;;
+                *) echo "ERROR: boot NIC must be virtio | rtl8139 | e1000 | pcnet" >&2; _usage ;;
+            esac
+        else
+            shift 2
+        fi ;;
     ktest)
         if [ "${2:-}" = "graphical" ]; then
             MODE="ktest graphical"; shift 2
@@ -292,6 +303,17 @@ _drun() {
 # Run an interactive QEMU boot (serial stdio).
 # Pass QEMU args using /work/ as the path prefix for image files.
 # Prefers host QEMU; falls back to Docker (-it) or direct execution.
+# Map ${NET_DEVICE:-virtio} to a QEMU -device flag bound to netdev id n0.
+# Shared by the interactive boot modes; NET_DEVICE is validated at arg-parse.
+_net_device_flag() {
+    case "${NET_DEVICE:-virtio}" in
+        rtl8139) printf -- '-device rtl8139,netdev=n0' ;;
+        e1000)   printf -- '-device e1000,netdev=n0' ;;
+        pcnet)   printf -- '-device pcnet,netdev=n0' ;;
+        *)       printf -- '-device virtio-net-pci,netdev=n0,disable-modern=on,disable-legacy=off,vectors=0' ;;
+    esac
+}
+
 _run_qemu_interactive() {
     local _args="$1"
     local _qemu
@@ -674,8 +696,7 @@ case "$MODE" in
     _run_qemu_interactive \
         "-drive file=/work/hdd.img,format=raw,if=ide,index=0 \
          -drive file=/work/makar.iso,if=ide,index=2,media=cdrom \
-         -netdev user,id=n0 \
-         -device virtio-net-pci,netdev=n0,disable-modern=on,disable-legacy=off,vectors=0 \
+         -netdev user,id=n0 $(_net_device_flag) \
          -boot order=d -serial stdio"
     ;;
 
@@ -715,6 +736,7 @@ case "$MODE" in
         "$REPO_ROOT/generate-hdd.sh"
     _run_qemu_interactive \
         "-drive file=/work/$HDD_IMG,format=raw,if=ide,index=0 \
+         -netdev user,id=n0 $(_net_device_flag) \
          -boot c -serial stdio"
     ;;
 
