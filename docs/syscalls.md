@@ -149,6 +149,7 @@ Networking currently uses a monolithic lwIP integration over the kernel
 |---|---:|---|
 | `SYS_NET_INFO` | 253 | render active Ethernet/lwIP state into a caller buffer |
 | `SYS_NET_CTL` | 254 | run a network control command |
+| `SYS_WGET` | 255 | fetch an `http://` URL (EBX) and write the body to a VFS path (ECX); returns bytes saved, or negative on error (`-(status)` for a non-2xx reply) |
 
 `SYS_NET_CTL` accepts these command values from `src/userspace/syscall.h`:
 

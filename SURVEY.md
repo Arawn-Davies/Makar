@@ -139,6 +139,12 @@ All apps in `/Users/arawn/Makar/src/userspace/` compile to `.elf` files and are 
 - Exit: hold ESC for 4 s, or Ctrl+C (shell observes sigint and force-kills the child)
 - Used by the keyboard-rewrite verification work (PR #124, slice 5b)
 
+### **wget.elf** (wget.c)
+- Ring-3 HTTP downloader; thin wrapper over the `SYS_WGET` syscall (255)
+- `wget <http://host[:port]/path> [outfile]`; outfile defaults to `/tmp/<basename>`
+- Plain HTTP only (no TLS). Also available as an in-kernel shell builtin (`shell_cmd_net.c`)
+- Pairs with the `unzip` shell command (`fs/unzip.c` + `fs/inflate.c`) to fetch + extract archives
+
 ## Userspace Syscall API (`src/userspace/syscall.h`)
 
 ### POSIX-Compatible I/O
