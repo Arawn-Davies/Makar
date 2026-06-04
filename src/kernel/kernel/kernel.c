@@ -26,6 +26,7 @@
 #include <kernel/acpi.h>
 #include <kernel/pci.h>
 #include <kernel/virtio_net.h>
+#include <kernel/net_lwip.h>
 #include <kernel/ktest.h>
 #include <kernel/vtty.h>
 #include <kernel/sh_script.h>
@@ -459,6 +460,7 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 		if (shell_rescue) {
 			task_create("rescu.sh", shell_run);
 		} else {
+			task_create("net", net_lwip_task);
 			task_create("mak.sh0", user_shell_slot_entry);
 			/* Userspace status-bar renderer (skipped on the rescue path,
 			 * which wants a single bare in-kernel shell). */

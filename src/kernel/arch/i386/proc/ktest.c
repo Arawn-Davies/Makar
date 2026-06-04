@@ -10,6 +10,7 @@
 #include <kernel/partition.h>
 #include <kernel/pci.h>
 #include <kernel/netdev.h>
+#include <kernel/net_lwip.h>
 #include <kernel/pmm.h>
 #include <kernel/heap.h>
 #include <kernel/vmm.h>
@@ -34,6 +35,9 @@
 #include <kernel/tmpfs.h>
 #include <kernel/asm.h>
 #include <kernel/keyboard.h>
+#include <lwip/ip_addr.h>
+#include <lwip/pbuf.h>
+#include <lwip/tcp.h>
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
@@ -421,6 +425,113 @@ static void test_virtio_net(void)
     Serial_WriteDec((uint32_t)rx_frames);
     Serial_WriteString(got_reply ? " ARP reply received\n" : " TIMEOUT (no ARP reply)\n");
     KTEST_ASSERT(got_reply);
+    ktest_summary();
+}
+
+typedef struct lwip_tcp_test_state {
+    int connected;
+    int received;
+    int errored;
+} lwip_tcp_test_state_t;
+
+static err_t lwip_tcp_test_recv(void *arg, struct tcp_pcb *pcb,
+                                struct pbuf *p, err_t err)
+{
+    lwip_tcp_test_state_t *st = (lwip_tcp_test_state_t *)arg;
+    if (err != ERR_OK) {
+        st->errored = 1;
+        if (p) pbuf_free(p);
+        return ERR_OK;
+    }
+    if (!p)
+        return ERR_OK;
+    if (p->tot_len > 0) {
+        st->received = 1;
+        tcp_recved(pcb, p->tot_len);
+    }
+    pbuf_free(p);
+    tcp_close(pcb);
+    return ERR_OK;
+}
+
+static err_t lwip_tcp_test_connected(void *arg, struct tcp_pcb *pcb, err_t err)
+{
+    lwip_tcp_test_state_t *st = (lwip_tcp_test_state_t *)arg;
+    if (err != ERR_OK) {
+        st->errored = 1;
+        return ERR_OK;
+    }
+    st->connected = 1;
+    tcp_recv(pcb, lwip_tcp_test_recv);
+    return ERR_OK;
+}
+
+static void lwip_tcp_test_err(void *arg, err_t err)
+{
+    (void)err;
+    lwip_tcp_test_state_t *st = (lwip_tcp_test_state_t *)arg;
+    if (st)
+        st->errored = 1;
+}
+
+static void test_lwip_tcp(void)
+{
+    ktest_begin("lwip_tcp", "lwIP over netdev: TCP connect + receive via QEMU slirp guestfwd");
+
+    if (!netdev_present()) {
+        Serial_WriteString("[ktest] lwip_tcp: no netdev, skipping\n");
+        KTEST_ASSERT(1);
+        ktest_summary();
+        return;
+    }
+
+    KTEST_ASSERT(net_lwip_init() == 0);
+    if (!net_lwip_ready()) {
+        ktest_summary();
+        return;
+    }
+
+    lwip_tcp_test_state_t st;
+    memset(&st, 0, sizeof st);
+
+    struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
+    KTEST_ASSERT(pcb != NULL);
+    if (!pcb) {
+        ktest_summary();
+        return;
+    }
+
+    ip_addr_t dst;
+    IP_ADDR4(&dst, 10, 0, 2, 100);
+    tcp_arg(pcb, &st);
+    tcp_err(pcb, lwip_tcp_test_err);
+
+    Serial_WriteString("[ktest] lwip_tcp: connect 10.0.2.100:1234\n");
+    err_t rc = tcp_connect(pcb, &dst, 1234, lwip_tcp_test_connected);
+    KTEST_ASSERT(rc == ERR_OK);
+    if (rc != ERR_OK) {
+        tcp_abort(pcb);
+        ktest_summary();
+        return;
+    }
+
+    uint32_t t0 = timer_get_ticks();
+    while (timer_get_ticks() - t0 < 600 && !st.errored && !st.received) {
+        net_lwip_poll();
+        task_yield();
+    }
+
+    Serial_WriteString("[ktest] lwip_tcp: connected=");
+    Serial_WriteDec((uint32_t)st.connected);
+    Serial_WriteString(" received=");
+    Serial_WriteDec((uint32_t)st.received);
+    Serial_WriteString(" errored=");
+    Serial_WriteDec((uint32_t)st.errored);
+    Serial_WriteString("\n");
+
+    KTEST_ASSERT(st.connected);
+    KTEST_ASSERT(st.received);
+    KTEST_ASSERT(!st.errored);
     ktest_summary();
 }
 
@@ -2809,6 +2920,10 @@ int ktest_run_all(void)
     total_fail += ktest_fail_count;
 
     test_virtio_net();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_lwip_tcp();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
