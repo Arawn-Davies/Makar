@@ -535,6 +535,24 @@ static void test_lwip_tcp(void)
     ktest_summary();
 }
 
+static void test_lwip_net_info(void)
+{
+    ktest_begin("lwip_net_info", "SYS_NET_INFO backing text reports lwIP interface state");
+
+    char info[512];
+    int n = net_lwip_info(info, sizeof(info));
+    KTEST_ASSERT(n > 0);
+    KTEST_ASSERT(strstr(info, "Ethernet adapter eth0:") != NULL);
+    KTEST_ASSERT(strstr(info, "DHCP State") != NULL);
+    KTEST_ASSERT(strstr(info, "IPv4 Address") != NULL);
+    KTEST_ASSERT(strstr(info, "Default Gateway") != NULL);
+    KTEST_ASSERT(strstr(info, "DNS Servers") != NULL);
+    KTEST_ASSERT(net_lwip_control(NET_CTL_DNS_FLUSH) == 0);
+    KTEST_ASSERT(net_lwip_control(NET_CTL_DHCP_RELEASE) == 0);
+    KTEST_ASSERT(net_lwip_control(NET_CTL_DHCP_RENEW) == 0);
+    ktest_summary();
+}
+
 static void test_devfs(void)
 {
     ktest_begin("devfs", "/dev block-device nodes: lookup, readonly, pread");
@@ -2924,6 +2942,10 @@ int ktest_run_all(void)
     total_fail += ktest_fail_count;
 
     test_lwip_tcp();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_lwip_net_info();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 

@@ -20,6 +20,7 @@ src/userspace/
   calc.c          # bc-style expression calculator
   clock.c         # Fullscreen RTC wall-clock
   maktop.c        # Task monitor (ps/top style)
+  maknetcfg.c     # Network interface state and DHCP/DNS controls
   fdisk.c         # MBR partition editor (line-driven)
   cfdisk.c        # Full-screen cfdisk-style MBR editor
   kbtester.c      # Keyboard diagnostic — logs events to serial

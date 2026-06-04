@@ -164,13 +164,17 @@ TinyCC works. The next work is polish:
 
 ### Networking
 
-Networking is still open. A likely path is:
+Networking now has a first monolithic lwIP path over `netdev` with virtio-net
+working in the default QEMU slirp setup. `maknetcfg.elf` can show `eth0`, run
+DHCP release/renew, and flush lwIP DNS cache state.
 
-1. choose a simple emulated NIC target
-2. bring up packet RX/TX
-3. integrate a small TCP/IP stack
-4. add DHCP/DNS
-5. build tiny clients/servers
+The likely next path is:
+
+1. expose enough lwIP raw/socket-shaped helpers for small userspace tools
+2. add `ping`
+3. add DNS lookup plumbing for user commands
+4. build `wget-lite`
+5. add more virtual NIC backends such as RTL8139, e1000, and PCNet
 
 This should come after the hosted userspace and filesystem paths are less
 volatile.

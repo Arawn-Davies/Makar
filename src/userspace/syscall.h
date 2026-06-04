@@ -111,6 +111,11 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_FSTAT       108
 #define SYS_READDIR     141
 #define SYS_NET_INFO    253
+#define SYS_NET_CTL     254
+
+#define NET_CTL_DHCP_RELEASE 1
+#define NET_CTL_DHCP_RENEW   2
+#define NET_CTL_DNS_FLUSH    3
 
 /* dirent shape -- must match kernel struct dirent in kernel/syscall.h. */
 #define DIRENT_NAME_MAX 256
@@ -629,6 +634,12 @@ static inline int sys_pci_info(char *buf, unsigned int bufsz)
 static inline int sys_net_info(char *buf, unsigned int bufsz)
 {
     return (int)syscall2(SYS_NET_INFO, (long)buf, (long)bufsz);
+}
+
+/* Control the active lwIP-backed Ethernet interface. */
+static inline int sys_net_ctl(int cmd)
+{
+    return (int)syscall1(SYS_NET_CTL, (long)cmd);
 }
 
 /* Delete a file. Returns 0 on success, -1 on error. */

@@ -388,6 +388,16 @@ dns_getserver(u8_t numdns)
 }
 
 /**
+ * Clear all cached and in-flight DNS lookups while preserving DNS servers.
+ */
+void
+dns_clear_cache(void)
+{
+  memset(dns_table, 0, sizeof(dns_table));
+  memset(dns_requests, 0, sizeof(dns_requests));
+}
+
+/**
  * The DNS resolver client timer - handle retries and timeouts and should
  * be called every DNS_TMR_INTERVAL milliseconds (every second by default).
  */
