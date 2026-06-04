@@ -20,6 +20,7 @@ static int s_dhcp_attempted;
 static int s_dhcp_enabled;
 static int s_dhcp_bound;
 static int s_static_fallback;
+static int s_released;       /* DHCP released: interface deconfigured, no IP */
 
 static void net_lwip_note_dhcp_off(void)
 {
@@ -38,6 +39,17 @@ static void net_lwip_set_static_slirp(void)
 
     netif_set_addr(&s_netif, &ip, &mask, &gw);
     dns_setserver(0, (const ip_addr_t *)&dns0);
+    s_released = 0;
+}
+
+/* Tear down all addressing: a real DHCP release leaves the interface with no
+ * IPv4 address, gateway, or DNS server until the next renew/static config. */
+static void net_lwip_clear_config(void)
+{
+    ip4_addr_t any;
+    IP4_ADDR(&any, 0, 0, 0, 0);
+    netif_set_addr(&s_netif, &any, &any, &any);
+    dns_setserver(0, (const ip_addr_t *)&any);
 }
 
 static void net_lwip_poll_ready(void)
@@ -53,6 +65,7 @@ static int net_lwip_try_dhcp(uint32_t wait_ticks, int log_result)
     s_dhcp_attempted = 1;
     s_dhcp_bound = 0;
     s_static_fallback = 0;
+    s_released = 0;
 
     if (dhcp_start(&s_netif) != ERR_OK) {
         net_lwip_note_dhcp_off();
@@ -210,9 +223,12 @@ int net_lwip_control(int cmd)
     case NET_CTL_DHCP_RELEASE:
         dhcp_release_and_stop(&s_netif);
         s_dhcp_attempted = 1;
-        net_lwip_note_dhcp_off();
-        net_lwip_set_static_slirp();
-        Serial_WriteString("lwip: DHCP released, using static fallback\n");
+        s_dhcp_enabled = 0;
+        s_dhcp_bound = 0;
+        s_static_fallback = 0;
+        s_released = 1;
+        net_lwip_clear_config();
+        Serial_WriteString("lwip: DHCP released, eth0 deconfigured (no address)\n");
         return 0;
     case NET_CTL_DHCP_RENEW:
         dhcp_release_and_stop(&s_netif);
@@ -306,7 +322,9 @@ int net_lwip_info(char *buf, uint32_t cap)
     info_append(buf, cap, &off, "   DHCP Enabled. . . . . . . . : ");
     info_append(buf, cap, &off, s_dhcp_attempted ? "yes\n" : "no\n");
     info_append(buf, cap, &off, "   DHCP State. . . . . . . . . : ");
-    if (s_dhcp_bound)
+    if (s_released)
+        info_append(buf, cap, &off, "released\n");
+    else if (s_dhcp_bound)
         info_append(buf, cap, &off, "bound\n");
     else if (s_static_fallback)
         info_append(buf, cap, &off, "fallback-static\n");
