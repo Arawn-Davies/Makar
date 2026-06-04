@@ -924,6 +924,92 @@ static void test_task(void)
 }
 
 /* ---------------------------------------------------------------------------
+ * Suite: IPC (microkernel synchronous message passing)
+ *
+ * Spawns a server task that loops on ipc_recv(IPC_ANY) and replies, then
+ * drives it as an RPC client via ipc_sendrec.  Exercises both rendezvous
+ * orderings (sender-blocks-first and receiver-blocks-first), the sender
+ * queue, message integrity, src stamping, and clean teardown via a QUIT
+ * message.  Proves the blocking primitive the whole microkernel direction
+ * rests on.
+ * ------------------------------------------------------------------------- */
+
+#define TEST_IPC_REQ    1
+#define TEST_IPC_QUIT   2
+#define TEST_IPC_REPLY  100
+
+static int s_ipc_server_pid;
+
+static void test_ipc_server(void)
+{
+    for (;;) {
+        ipc_msg_t m;
+        if (ipc_recv(IPC_ANY, &m) != 0)
+            break;                       /* partner gone -- bail */
+        if (m.type == TEST_IPC_QUIT)
+            break;
+        if (m.type == TEST_IPC_REQ) {
+            ipc_msg_t r;
+            r.type    = TEST_IPC_REPLY;
+            r.data[0] = m.data[0] + 1;   /* server transforms the payload */
+            ipc_send(m.src, &r);         /* reply to whoever asked */
+        }
+    }
+    task_exit();
+}
+
+static void test_ipc(void)
+{
+    ktest_begin("ipc",
+                "MINIX-style synchronous IPC: sendrec RPC to a server task, "
+                "blocking rendezvous + sender queue + teardown");
+
+    task_t *srv = task_create("ipc_server", test_ipc_server);
+    KTEST_ASSERT(srv != NULL);
+    if (!srv) { ktest_summary(); return; }
+    s_ipc_server_pid = srv->pid;
+
+    /* First request: the server hasn't run yet, so our send blocks and
+     * enqueues -- exercises the sender-blocks-first path.  Later iterations
+     * find the server already waiting in recv -- the fast path. */
+    int all_ok = 1;
+    for (int i = 0; i < 8; i++) {
+        ipc_msg_t m;
+        memset(&m, 0, sizeof(m));
+        m.type    = TEST_IPC_REQ;
+        m.data[0] = (uint32_t)(i * 10);
+
+        int rc = ipc_sendrec(srv->pid, &m);
+        if (rc != 0)                              { all_ok = 0; break; }
+        if (m.type != TEST_IPC_REPLY)             { all_ok = 0; break; }
+        if (m.data[0] != (uint32_t)(i * 10 + 1))  { all_ok = 0; break; }
+        if (m.src != srv->pid)                    { all_ok = 0; break; }
+    }
+    KTEST_ASSERT(all_ok);
+
+    /* Self-send is rejected. */
+    {
+        ipc_msg_t m; memset(&m, 0, sizeof(m));
+        KTEST_ASSERT(ipc_send(task_current()->pid, &m) != 0);
+    }
+
+    /* Send to a non-existent endpoint fails with an error, not a hang. */
+    {
+        ipc_msg_t m; memset(&m, 0, sizeof(m)); m.type = TEST_IPC_REQ;
+        KTEST_ASSERT(ipc_send(0x7fffffff, &m) != 0);
+    }
+
+    /* Tell the server to quit, then join. */
+    ipc_msg_t q; memset(&q, 0, sizeof(q)); q.type = TEST_IPC_QUIT;
+    ipc_send(srv->pid, &q);
+    for (int i = 0; i < 256 && srv->state != TASK_DEAD; i++)
+        task_yield();
+    KTEST_ASSERT(srv->state == TASK_DEAD);
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
  * Suite: procfs task listing
  *
  * /proc/tasks is bulk kernel behavior, not a keyboard/UI behavior.  Dead task
@@ -2612,6 +2698,10 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
+    test_ipc();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
     test_procfs_tasks();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
@@ -2746,6 +2836,7 @@ void ktest_bg_task(void)
     RUN(test_heap);
     RUN(test_vmm);
     RUN(test_task);
+    RUN(test_ipc);
     RUN(test_procfs_tasks);
     RUN(test_getpid);
     RUN(test_rtc_unix_time);

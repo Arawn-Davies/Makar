@@ -243,6 +243,7 @@ task_t *task_create(const char *name, void (*entry)(void))
     t->pid         = next_pid++;
     t->parent_pid  = current_task ? current_task->pid : 0;
     t->exit_status = 0;
+    ipc_task_init(t);   /* reset IPC state (covers reused slots too) */
     t->kticks      = 0;
     t->unkillable  = 0;     /* default: ordinary task, no protection   */
     t->fb_touched  = 0;     /* clean slate even when reclaiming a DEAD slot
@@ -615,6 +616,11 @@ void task_terminate(task_t *t, int status)
 {
     if (!t)
         return;
+
+    /* Detach from the IPC graph before the slot can be reused: wake any
+     * senders blocked on us and unlink us from a receiver's queue. */
+    ipc_task_cleanup(t);
+
     t->exit_status = status;
 
     /* Decide whether to leave a zombie behind for wait4.  Only makes

@@ -2098,6 +2098,21 @@ void syscall_dispatch(registers_t *regs)
         break;
     }
 
+    case SYS_IPC_SEND:
+        regs->eax = (uint32_t)ipc_send((int)regs->ebx,
+                                       (const ipc_msg_t *)(uintptr_t)regs->ecx);
+        break;
+
+    case SYS_IPC_RECV:
+        regs->eax = (uint32_t)ipc_recv((int)regs->ebx,
+                                       (ipc_msg_t *)(uintptr_t)regs->ecx);
+        break;
+
+    case SYS_IPC_SENDREC:
+        regs->eax = (uint32_t)ipc_sendrec((int)regs->ebx,
+                                          (ipc_msg_t *)(uintptr_t)regs->ecx);
+        break;
+
     default:
         /* Unknown syscall - return -ENOSYS. */
         regs->eax = (uint32_t)-38;   /* -ENOSYS */

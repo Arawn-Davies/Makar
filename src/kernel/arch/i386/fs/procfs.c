@@ -244,6 +244,8 @@ static const char *state_name(int s)
     case 0: return "READY";
     case 1: return "RUN";
     case 2: return "DEAD";
+    case 3: return "ZOMB";
+    case 4: return "BLOK";
     default: return "?";
     }
 }
