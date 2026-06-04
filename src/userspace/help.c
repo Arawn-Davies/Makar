@@ -66,6 +66,7 @@ int main(int argc, char **argv)
     PUTS("  echo.elf [args..]            echo arguments\n");
     PUTS("  hello.elf                    hello world\n");
     PUTS("  help.elf                     this help text\n");
+    PUTS("  maknetcfg.elf                show network interface state\n");
 
     return 0;
 }

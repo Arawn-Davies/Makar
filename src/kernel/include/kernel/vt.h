@@ -29,6 +29,7 @@ typedef struct vt_cell {
 typedef struct vt_buf {
     uint32_t   cols;
     uint32_t   rows;
+    uint32_t   usable_rows;
     uint32_t   cur_col;
     uint32_t   cur_row;
     uint32_t   fg;        /* current attribute applied to incoming chars */
@@ -69,6 +70,11 @@ void vt_put_at(vt_buf_t *vt, char c, uint32_t col, uint32_t row);
 /* Set the current attribute applied to subsequent vt_putchar / vt_put_at
  * calls.  Does not repaint existing cells. */
 void vt_set_color(vt_buf_t *vt, uint32_t fg, uint32_t bg);
+
+/* Set the number of rows used for cursor movement, clearing, and scrolling.
+ * The backing allocation remains vt->rows rows deep so the full screen can be
+ * restored when a reserved status row is released. */
+void vt_set_usable_rows(vt_buf_t *vt, uint32_t rows);
 
 /* Move the cursor.  Coordinates are clamped to the grid. */
 void vt_set_cursor(vt_buf_t *vt, uint32_t col, uint32_t row);

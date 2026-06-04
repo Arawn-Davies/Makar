@@ -110,6 +110,7 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_STAT        106
 #define SYS_FSTAT       108
 #define SYS_READDIR     141
+#define SYS_NET_INFO    253
 
 /* dirent shape -- must match kernel struct dirent in kernel/syscall.h. */
 #define DIRENT_NAME_MAX 256
@@ -622,6 +623,12 @@ static inline int sys_disk_info(char *buf, unsigned int bufsz)
 static inline int sys_pci_info(char *buf, unsigned int bufsz)
 {
     return (int)syscall2(SYS_PCI_INFO, (long)buf, (long)bufsz);
+}
+
+/* Get active Ethernet netdev info as text. Returns bytes written. */
+static inline int sys_net_info(char *buf, unsigned int bufsz)
+{
+    return (int)syscall2(SYS_NET_INFO, (long)buf, (long)bufsz);
 }
 
 /* Delete a file. Returns 0 on success, -1 on error. */

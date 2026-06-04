@@ -474,6 +474,34 @@ void vesa_tty_paint_string_at(uint32_t col, uint32_t row, const char *s,
  * vesa_tty.h. */
 static int s_status_visible = 1;
 
+static uint32_t status_usable_rows(void)
+{
+	if (s_status_visible && tty_rows > VESA_TTY_STATUS_ROWS)
+		return tty_rows - VESA_TTY_STATUS_ROWS;
+	return tty_rows;
+}
+
+static void sync_vt_usable_rows(void)
+{
+	uint32_t rows = status_usable_rows();
+	for (int i = 0; i < VTTY_MAX; i++) {
+		vt_buf_t *vt = vtty_buf(i);
+		if (vt)
+			vt_set_usable_rows(vt, rows);
+	}
+}
+
+static void clear_physical_status_rows(void)
+{
+	if (!tty_ready || tty_rows <= VESA_TTY_STATUS_ROWS)
+		return;
+	uint32_t first = tty_rows - VESA_TTY_STATUS_ROWS;
+	for (uint32_t r = first; r < tty_rows; r++) {
+		for (uint32_t c = 0; c < tty_cols; c++)
+			paint_cell(' ', default_pane.fg, default_pane.bg, c, r);
+	}
+}
+
 void vesa_tty_set_status_visible(int v)
 {
 	s_status_visible = v ? 1 : 0;
@@ -482,23 +510,19 @@ void vesa_tty_set_status_visible(int v)
 	 * pane-scroll fallback match the actual usable area.  With makmux
 	 * running (v=1) the bottom row is the status bar; without it (v=0)
 	 * mak.sh0 gets the full screen including that row. */
-	default_pane.rows = s_status_visible
-	    ? (tty_rows > VESA_TTY_STATUS_ROWS
-	           ? tty_rows - VESA_TTY_STATUS_ROWS : tty_rows)
-	    : tty_rows;
-	if (!v) {
-		uint32_t row = tty_rows - 1;
-		for (uint32_t c = 0; c < tty_cols; c++)
-			paint_cell(' ', compose_rgb(0x000000),
-			           compose_rgb(0x000000), c, row);
-	}
+	default_pane.rows = status_usable_rows();
+	sync_vt_usable_rows();
+	if (default_pane.cur_row >= default_pane.rows)
+		default_pane.cur_row = default_pane.rows - 1;
+	if (s_status_visible)
+		clear_physical_status_rows();
+	else
+		clear_physical_status_rows();
 }
 
 uint32_t vesa_tty_usable_rows(void)
 {
-    if (s_status_visible && tty_rows > VESA_TTY_STATUS_ROWS)
-        return tty_rows - VESA_TTY_STATUS_ROWS;
-    return tty_rows;
+    return status_usable_rows();
 }
 
 int vesa_tty_status_enabled(void)
@@ -540,7 +564,8 @@ void vesa_tty_paint_buf(const vt_buf_t *vt)
 	/* Hide the caret first - the strip stash holds pixels from the OLD VT;
 	 * those would smear back over the new VT's content on the next move. */
 	caret_drawn = false;
-	for (uint32_t r = 0; r < vt->rows && r < tty_rows; r++) {
+	uint32_t rows = vesa_tty_usable_rows();
+	for (uint32_t r = 0; r < vt->rows && r < rows; r++) {
 		for (uint32_t c = 0; c < vt->cols && c < tty_cols; c++) {
 			vt_cell_t cell = vt->cells[r * vt->cols + c];
 			paint_cell((char)cell.ch, cell.fg, cell.bg, c, r);
@@ -655,7 +680,7 @@ void vesa_tty_clear(void)
 	}
 
 	/* Focused-buffer (or no-task) clear: paint the framebuffer too. */
-	vesa_clear(default_pane.bg);
+	vesa_tty_pane_clear(&default_pane);
 	default_pane.cur_col = 0;
 	default_pane.cur_row = 0;
 	/* The full-framebuffer paint also wiped any caret strip we'd drawn

@@ -22,6 +22,7 @@
 #include <kernel/syscall.h>
 #include <kernel/serial.h>
 #include <kernel/tty.h>
+#include <kernel/vt.h>
 #include <kernel/vesa.h>
 #include <kernel/vesa_tty.h>
 #include <kernel/bochs_vbe.h>
@@ -186,6 +187,42 @@ static void test_string(void)
     memcpy(buf, "hello", 6);
     KTEST_ASSERT(strcmp(buf, "hello") == 0);
 
+    ktest_summary();
+}
+
+static void test_vt_status_scroll(void)
+{
+    ktest_begin("vt_status_scroll", "VT scroll region reserves status row");
+
+    vt_buf_t vt;
+    memset(&vt, 0, sizeof vt);
+    KTEST_ASSERT(vt_init(&vt, 4, 4, 0x00FFFFFFu, 0x00000000u));
+    if (!vt.cells) {
+        ktest_summary();
+        return;
+    }
+
+    vt_set_usable_rows(&vt, 3);
+    vt_put_at(&vt, 'A', 0, 0);
+    vt_put_at(&vt, 'B', 0, 1);
+    vt_put_at(&vt, 'C', 0, 2);
+    vt_put_at(&vt, 'S', 0, 3);
+
+    vt_set_cursor(&vt, 0, 2);
+    vt_putchar(&vt, '\n');
+
+    KTEST_ASSERT(vt.cur_row == 2);
+    KTEST_ASSERT(vt_get_cell(&vt, 0, 0).ch == 'B');
+    KTEST_ASSERT(vt_get_cell(&vt, 0, 1).ch == 'C');
+    KTEST_ASSERT(vt_get_cell(&vt, 0, 2).ch == ' ');
+    KTEST_ASSERT(vt_get_cell(&vt, 0, 3).ch == 'S');
+
+    vt_set_usable_rows(&vt, 4);
+    vt_set_cursor(&vt, 0, 3);
+    vt_putchar(&vt, 'Z');
+    KTEST_ASSERT(vt_get_cell(&vt, 0, 3).ch == 'Z');
+
+    kfree(vt.cells);
     ktest_summary();
 }
 
@@ -2756,6 +2793,10 @@ int ktest_run_all(void)
     total_fail += ktest_fail_count;
 
     test_string();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_vt_status_scroll();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 

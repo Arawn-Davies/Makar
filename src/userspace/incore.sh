@@ -35,4 +35,8 @@ echo INCORE: RUN ktest_uspace
 exec /apps/ktest_uspace.elf
 if [ $? -eq 0 ]; then echo INCORE: PASS ktest_uspace; else echo INCORE: FAIL ktest_uspace; fail=1; fi
 
+echo INCORE: RUN maknetcfg
+exec /apps/maknetcfg.elf
+if [ $? -eq 0 ]; then echo INCORE: PASS maknetcfg; else echo INCORE: FAIL maknetcfg; fail=1; fi
+
 if [ $fail -eq 0 ]; then echo INCORE: ALL PASS; else echo INCORE: FAIL; fi

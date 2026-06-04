@@ -61,6 +61,8 @@ void t_setcolor(uint8_t color)
 
 void t_putentryat(char c, uint8_t color, size_t x, size_t y)
 {
+	if (x >= VGA_WIDTH || y >= t_height)
+		return;
 	const size_t index = y * VGA_WIDTH + x;
 	t_buffer[index] = make_vgaentry(c, color);
 }
@@ -168,7 +170,7 @@ void t_dec(uint32_t num)
 int t_get_rows(void)
 {
 	if (vesa_tty_is_ready())
-		return (int)vesa_tty_get_rows();
+		return (int)vesa_tty_usable_rows();
 	return (int)t_height;
 }
 
