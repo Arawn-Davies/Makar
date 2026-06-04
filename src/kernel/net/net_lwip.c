@@ -126,6 +126,81 @@ int net_lwip_ready(void)
     return s_ready;
 }
 
+typedef struct {
+    ip_addr_t addr;
+    int state;          /* 0 = pending, 1 = resolved, -1 = failed */
+} net_resolve_t;
+
+static void net_lwip_dns_found(const char *name, const ip_addr_t *ipaddr,
+                               void *arg)
+{
+    (void)name;
+    net_resolve_t *r = (net_resolve_t *)arg;
+    if (ipaddr) {
+        r->addr = *ipaddr;
+        r->state = 1;
+    } else {
+        r->state = -1;          /* NXDOMAIN / lookup failed */
+    }
+}
+
+int net_lwip_resolve(const char *host, uint8_t ip_out[4], uint32_t timeout_ticks)
+{
+    if (!s_ready || !host || !ip_out)
+        return -1;
+
+    net_resolve_t r;
+    r.state = 0;
+    ip_addr_t immediate;
+
+    err_t rc = dns_gethostbyname(host, &immediate, net_lwip_dns_found, &r);
+    if (rc == ERR_OK) {
+        /* Dotted-quad literal or already cached: answer is in `immediate`. */
+        r.addr = immediate;
+        r.state = 1;
+    } else if (rc == ERR_INPROGRESS) {
+        uint32_t deadline = timer_get_ticks() + timeout_ticks;
+        while (timer_get_ticks() < deadline && r.state == 0) {
+            net_lwip_poll_ready();
+            task_yield();
+        }
+    } else {
+        return -1;
+    }
+
+    if (r.state != 1)
+        return -1;
+
+    const ip4_addr_t *v4 = ip_2_ip4(&r.addr);
+    ip_out[0] = ip4_addr1(v4);
+    ip_out[1] = ip4_addr2(v4);
+    ip_out[2] = ip4_addr3(v4);
+    ip_out[3] = ip4_addr4(v4);
+    return 0;
+}
+
+static void net_lwip_copy_ip4(const ip4_addr_t *src, uint8_t out[4])
+{
+    out[0] = ip4_addr1(src);
+    out[1] = ip4_addr2(src);
+    out[2] = ip4_addr3(src);
+    out[3] = ip4_addr4(src);
+}
+
+int net_lwip_local_ip(uint8_t out[4])
+{
+    if (!s_ready || !out) return -1;
+    net_lwip_copy_ip4(netif_ip4_addr(&s_netif), out);
+    return 0;
+}
+
+int net_lwip_gateway(uint8_t out[4])
+{
+    if (!s_ready || !out) return -1;
+    net_lwip_copy_ip4(netif_ip4_gw(&s_netif), out);
+    return 0;
+}
+
 int net_lwip_control(int cmd)
 {
     if (!s_ready)

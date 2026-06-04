@@ -7,7 +7,6 @@
 #define RTL8139_VENDOR  0x10EC
 #define RTL8139_DEVICE  0x8139
 
-/* TODO: init, tx, rx, irq handler */
-int  rtl8139_probe(const pci_device_t *dev);
+void rtl8139_register(void);
 
 #endif

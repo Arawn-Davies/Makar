@@ -89,7 +89,8 @@ _timeout() {
 #   hdd release
 #   gdb iso                      gdb hdd
 #   ktest                        ktest graphical
-#   kbtest [gui]                 gui <suite>
+#   nettest [nic]                kbtest [gui]
+#   gui <suite>
 #   clean
 _usage() {
     echo "Usage: $0 <target> <verb> [args...]"
@@ -98,6 +99,7 @@ _usage() {
     echo "  hdd   build | boot | test | release"
     echo "  gdb   iso | hdd"
     echo "  ktest [graphical]"
+    echo "  nettest [nic]                   -- networking section only; nic: virtio | rtl8139 | e1000 | pcnet (default virtio)"
     echo "  kbtest [gui]                    -- in-guest key-injection test (serial KBTEST markers)"
     echo "  gui   <suite>                   -- boot an in-guest suite in a window"
     echo "        suites: libc | incore | ktest | smoke | all-tests"
@@ -122,6 +124,20 @@ case "${1:-}" in
         else
             MODE="ktest"; shift 1
         fi ;;
+    nettest)
+        # `nettest [nic]` runs only the networking test section against the
+        # chosen virtual NIC.  The NIC is a positional arg (no envvar needed);
+        # NET_DEVICE in the environment is the fallback when none is given.
+        MODE="nettest"
+        case "${2:-}" in
+            virtio|virtio-net|rtl8139|e1000|pcnet)
+                NET_DEVICE="$2"; shift 2 ;;
+            "")
+                shift 1 ;;
+            *)
+                echo "ERROR: nettest NIC must be virtio | rtl8139 | e1000 | pcnet" >&2
+                _usage ;;
+        esac ;;
     kbtest)
         if [ "${2:-}" = "gui" ] || [ "${2:-}" = "graphical" ]; then
             MODE="kbtest gui"; shift 2
@@ -306,6 +322,25 @@ _run_ktest() {
     local _qemu _iso
     _qemu=$(_host_qemu)
     _iso="${KTEST_ISO:-makar-test.iso}"
+    local _net_device
+    case "${NET_DEVICE:-virtio}" in
+        virtio|virtio-net)
+            _net_device="-device virtio-net-pci,netdev=n0,disable-modern=on,disable-legacy=off,vectors=0"
+            ;;
+        rtl8139)
+            _net_device="-device rtl8139,netdev=n0"
+            ;;
+        e1000)
+            _net_device="-device e1000,netdev=n0"
+            ;;
+        pcnet)
+            _net_device="-device pcnet,netdev=n0"
+            ;;
+        *)
+            echo "ERROR: NET_DEVICE must be virtio, rtl8139, e1000, or pcnet" >&2
+            return 1
+            ;;
+    esac
 
     local _accel _tmo
     _accel=$(_qemu_accel)
@@ -329,12 +364,12 @@ _run_ktest() {
             -display none \
             -no-reboot \
             -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-            -netdev user,id=n0,guestfwd=tcp:10.0.2.100:1234-cmd:$REPO_ROOT/tests/lwip_guestfwd.sh \
-            -device virtio-net-pci,netdev=n0,disable-modern=on,disable-legacy=off,vectors=0 \
+            -netdev user,id=n0,guestfwd=tcp:10.0.2.100:1234-cmd:$REPO_ROOT/tests/lwip_guestfwd.sh,guestfwd=tcp:10.0.2.100:8080-cmd:$REPO_ROOT/tests/http_fixture.sh \
+            $_net_device \
             $_accel \
             2>/dev/null </dev/null | tee "$REPO_ROOT/ktest.log" || true
     else
-        _drun --as-root --env "QEMU_ACCEL=$_accel" --env "KTEST_ISO_NAME=$_iso" --env "KTEST_TIMEOUT=$_ktest_secs" -- \
+        _drun --as-root --env "QEMU_ACCEL=$_accel" --env "KTEST_ISO_NAME=$_iso" --env "KTEST_TIMEOUT=$_ktest_secs" --env "NET_DEVICE=${NET_DEVICE:-virtio}" -- \
             'timeout "$KTEST_TIMEOUT" qemu-system-i386 \
                  -cdrom /work/$KTEST_ISO_NAME \
                  -m 32 \
@@ -342,8 +377,14 @@ _run_ktest() {
                  -display none \
                  -no-reboot \
                  -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-                 -netdev user,id=n0,guestfwd=tcp:10.0.2.100:1234-cmd:/work/tests/lwip_guestfwd.sh \
-                 -device virtio-net-pci,netdev=n0,disable-modern=on,disable-legacy=off,vectors=0 \
+                 -netdev user,id=n0,guestfwd=tcp:10.0.2.100:1234-cmd:/work/tests/lwip_guestfwd.sh,guestfwd=tcp:10.0.2.100:8080-cmd:/work/tests/http_fixture.sh \
+                 $(case "$NET_DEVICE" in \
+                     virtio|virtio-net) echo "-device virtio-net-pci,netdev=n0,disable-modern=on,disable-legacy=off,vectors=0" ;; \
+                     rtl8139) echo "-device rtl8139,netdev=n0" ;; \
+                     e1000) echo "-device e1000,netdev=n0" ;; \
+                     pcnet) echo "-device pcnet,netdev=n0" ;; \
+                     *) echo "-device virtio-net-pci,netdev=n0,disable-modern=on,disable-legacy=off,vectors=0" ;; \
+                   esac) \
                  $QEMU_ACCEL \
                  2>/dev/null </dev/null | tee /work/ktest.log || true'
     fi
@@ -367,7 +408,7 @@ _check_ktest() {
     # Plus any kernel panic / KPANIC line if a test corrupted state.
     # Serial output already streamed live; echo verdict lines so they're
     # visible at the top of the CI step summary too.
-    grep -E "^(KTEST_RESULT|KTEST_BG:|INCORE:|LIBC-TCC:|SHELL-SMOKE:|KPANIC|kpanic)" \
+    grep -E "^(KTEST_RESULT|KTEST_NET_RESULT|KTEST_BG:|INCORE:|LIBC-TCC:|SHELL-SMOKE:|KPANIC|kpanic)" \
         "$REPO_ROOT/ktest.log" || true
 
     local ktest_status=unknown
@@ -375,6 +416,15 @@ _check_ktest() {
         ktest_status=pass
     elif grep -q "KTEST_RESULT: FAIL" "$REPO_ROOT/ktest.log"; then
         ktest_status=fail
+    fi
+
+    # KTEST_NET_RESULT: networking section (`./run.sh nettest <nic>`).
+    # Emitted by kernel_main's "nettest" dispatch; absent on a plain ktest run.
+    local net_status=unknown
+    if grep -q "KTEST_NET_RESULT: PASS" "$REPO_ROOT/ktest.log"; then
+        net_status=pass
+    elif grep -q "KTEST_NET_RESULT: FAIL" "$REPO_ROOT/ktest.log"; then
+        net_status=fail
     fi
 
     local incore_status=unknown
@@ -407,13 +457,13 @@ _check_ktest() {
     # `gui smoke` runs don't trip the "ktest TIMEOUT" branch.  Only
     # the all-unknown case is treated as a real failure (no marker on
     # serial usually means kernel hung or QEMU never booted).
-    case "$ktest_status:$incore_status:$libc_status:$smoke_status" in
+    case "$ktest_status:$incore_status:$libc_status:$smoke_status:$net_status" in
         *fail*)
-            echo "==> FAILED ktest=$ktest_status incore=$incore_status libc=$libc_status smoke=$smoke_status -- see ktest.log"; exit 1 ;;
-        unknown:unknown:unknown:unknown)
+            echo "==> FAILED ktest=$ktest_status incore=$incore_status libc=$libc_status smoke=$smoke_status net=$net_status -- see ktest.log"; exit 1 ;;
+        unknown:unknown:unknown:unknown:unknown)
             echo "==> ktest: TIMEOUT or no result on serial - see ktest.log"; exit 1 ;;
         *)
-            echo "==> PASSED ktest=$ktest_status incore=$incore_status libc=$libc_status smoke=$smoke_status" ;;
+            echo "==> PASSED ktest=$ktest_status incore=$incore_status libc=$libc_status smoke=$smoke_status net=$net_status" ;;
     esac
 }
 
@@ -719,6 +769,15 @@ case "$MODE" in
 # Incremental build of makar-test.iso (ktest suite only), then run headless.
 ktest)
     _build_iso "TEST_CMDLINE='test_mode test=ktest' CFLAGS='-O0 -g3' TEST_ISO=1"
+    _run_ktest
+    ;;
+
+# Networking test section only, run headless against the selected NIC.
+# Pick the NIC positionally: `./run.sh nettest e1000` (default virtio).
+# Kept out of `ktest` so the default gate stays NIC-agnostic; this re-runs
+# the same net suites per backend by swapping the QEMU -device.
+nettest)
+    _build_iso "TEST_CMDLINE='test_mode test=nettest' CFLAGS='-O0 -g3' TEST_ISO=1"
     _run_ktest
     ;;
 

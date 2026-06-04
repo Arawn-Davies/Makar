@@ -52,6 +52,15 @@ void ktest_assert(int cond, const char *expr, const char *file, uint32_t line);
 int ktest_run_all(void);
 
 /*
+ * ktest_run_net – run the networking test section and print a summary.
+ * Returns the total number of failed assertions (0 = all passed).
+ * Dispatched separately from ktest_run_all() by the "nettest" test_mode
+ * selector: these suites need QEMU slirp + guestfwd and bind to whichever
+ * NIC the harness attached (NET_DEVICE=virtio|rtl8139|e1000|pcnet).
+ */
+int ktest_run_net(void);
+
+/*
  * ktest_bg_task – task entry for silent background ktest at boot.
  * Suppresses per-assertion VGA output; prints only on failure.
  * Sets ktest_bg_done = 1 when finished.

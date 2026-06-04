@@ -25,7 +25,7 @@
 #include <kernel/syscall.h>
 #include <kernel/acpi.h>
 #include <kernel/pci.h>
-#include <kernel/virtio_net.h>
+#include <kernel/net_drivers.h>
 #include <kernel/net_lwip.h>
 #include <kernel/ktest.h>
 #include <kernel/vtty.h>
@@ -302,6 +302,9 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	t_writestring("Scanning PCI bus");
 	kprint_ok();
 	virtio_net_register();
+	rtl8139_register();
+	e1000_register();
+	pcnet_register();
 	pci_init();
 	pci_probe_all();   /* bind registered drivers to scanned devices */
 	KLOG("pci: bus scan complete\n");
@@ -512,6 +515,16 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			fails = ktest_run_all();
 			Serial_WriteString(fails ? "KTEST_RESULT: FAIL\n"
 			                         : "KTEST_RESULT: PASS\n");
+		}
+
+		/* Networking section.  Opt-in (explicit) so the default
+		 * `test=ktest` gate stays NIC-agnostic: the net suites need
+		 * QEMU slirp + guestfwd and a specific NIC -device.  Run via
+		 * `./run.sh nettest [virtio|rtl8139|e1000|pcnet]`. */
+		if (TEST_WANT_EXPLICIT("nettest")) {
+			int net_fails = ktest_run_net();
+			Serial_WriteString(net_fails ? "KTEST_NET_RESULT: FAIL\n"
+			                             : "KTEST_NET_RESULT: PASS\n");
 		}
 
 		/* Phase 2: in-kernel UI test driver.  incore.sh exercises

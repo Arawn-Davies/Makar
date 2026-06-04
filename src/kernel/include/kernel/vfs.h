@@ -155,7 +155,9 @@ int vfs_mkdir(const char *path);
 
 /*
  * vfs_read_file  – read a file into a caller-supplied buffer.
- * vfs_write_file – create or overwrite a file (FAT32 only).
+ * vfs_write_file – create or overwrite a file on a writable backend
+ *                  (FAT32, ext2, or tmpfs).  ISO9660 and /log are read-only
+ *                  and reject writes.
  *
  * Return 0 on success, negative on error.
  */
