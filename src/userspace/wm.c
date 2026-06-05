@@ -7,7 +7,7 @@
  *
  * PoC scope (see docs/plans/gui-wm.md + HANDOFF.md):
  *   - mouse cursor + drag the window by its title bar
- *   - close box / ESC to exit
+ *   - close box for the terminal window; Exit GUI icon for the WM
  *   - the window body is a local text area that echoes typed keys (stand-in
  *     terminal; hosting the real sh.elf needs non-blocking pipe I/O -- deferred)
  *
@@ -112,20 +112,20 @@ static int win_x = 220, win_y = 140, win_w = 480, win_h = 300;
 
 static char term[TROWS][TCOLS];
 static int  t_cols, t_rows, t_cr, t_cc;
+static int  term_pid = -1, term_in = -1, term_out = -1;
+
+static void term_clear(void)
+{
+    for (int r = 0; r < TROWS; r++)
+        for (int c = 0; c < TCOLS; c++) term[r][c] = ' ';
+    t_cr = t_cc = 0;
+}
 
 static void term_init(void)
 {
     t_cols = (win_w - 2 * PAD) / 8; if (t_cols > TCOLS) t_cols = TCOLS;
     t_rows = (win_h - TH - 2 * PAD) / 8; if (t_rows > TROWS) t_rows = TROWS;
-    for (int r = 0; r < TROWS; r++)
-        for (int c = 0; c < TCOLS; c++) term[r][c] = ' ';
-    t_cr = t_cc = 0;
-    const char *banner = "Makar Terminal";
-    for (int i = 0; banner[i] && i < TCOLS; i++) term[0][i] = banner[i];
-    t_cr = 1;
-    const char *prompt = "makar:~$ ";
-    for (int i = 0; prompt[i] && i < TCOLS; i++) term[t_cr][i] = prompt[i];
-    t_cc = 9;   /* len("makar:~$ ") */
+    term_clear();
 }
 
 static void term_newline(void)
@@ -141,7 +141,8 @@ static void term_newline(void)
 
 static void term_putc(char ch)
 {
-    if (ch == '\n' || ch == '\r') { term_newline(); return; }
+    if (ch == '\n') { term_newline(); return; }
+    if (ch == '\r') { t_cc = 0; return; }
     if (ch == 8 || ch == 127) {             /* backspace */
         if (t_cc > 0) { t_cc--; term[t_cr][t_cc] = ' '; }
         return;
@@ -149,6 +150,95 @@ static void term_putc(char ch)
     if (ch < 32) return;
     if (t_cc >= t_cols) term_newline();
     term[t_cr][t_cc++] = ch;
+}
+
+static void term_write_key(int c)
+{
+    if (term_in < 0) return;
+    unsigned char b = (unsigned char)c;
+    if (b == '\r') b = '\n';
+    (void)sys_write(term_in, &b, 1);
+}
+
+static void term_spawn_shell(void)
+{
+    if (term_pid > 0) return;
+    int inpipe[2], outpipe[2];
+    if (sys_pipe(inpipe) < 0 || sys_pipe(outpipe) < 0) {
+        const char *m = "terminal: pipe failed\n";
+        for (int i = 0; m[i]; i++) term_putc(m[i]);
+        return;
+    }
+
+    int pid = sys_fork();
+    if (pid < 0) {
+        const char *m = "terminal: fork failed\n";
+        for (int i = 0; m[i]; i++) term_putc(m[i]);
+        return;
+    }
+    if (pid == 0) {
+        sys_close(inpipe[1]);
+        sys_close(outpipe[0]);
+        sys_dup2(inpipe[0], 0);
+        sys_dup2(outpipe[1], 1);
+        sys_dup2(outpipe[1], 2);
+        sys_close(inpipe[0]);
+        sys_close(outpipe[1]);
+
+        char user[48];
+        char user_arg[64];
+        char *av[4];
+        av[0] = "sh.elf";
+        av[1] = 0;
+        av[2] = 0;
+        av[3] = 0;
+        if (sys_whoami(user, sizeof(user)) > 0) {
+            const char *p = "--user=";
+            int o = 0;
+            for (int i = 0; p[i]; i++) user_arg[o++] = p[i];
+            for (int i = 0; user[i] && o < (int)sizeof(user_arg) - 1; i++)
+                user_arg[o++] = user[i];
+            user_arg[o] = 0;
+            av[1] = user_arg;
+        }
+        sys_execve("/apps/sh.elf", av, (char *const *)0);
+        sys_exit(127);
+    }
+
+    term_pid = pid;
+    term_in = inpipe[1];
+    term_out = outpipe[0];
+    sys_close(inpipe[0]);
+    sys_close(outpipe[1]);
+    sys_fcntl(term_out, F_SETFL, O_NONBLOCK);
+    sys_fcntl(term_in, F_SETFL, O_NONBLOCK);
+}
+
+static void term_kill_shell(void)
+{
+    if (term_pid > 0) {
+        sys_kill(term_pid, SIGKILL);
+        int st = 0;
+        sys_wait4(term_pid, &st, 0);     /* reap so it can't linger/hold state */
+    }
+    if (term_in  >= 0) sys_close(term_in);
+    if (term_out >= 0) sys_close(term_out);
+    term_pid = -1; term_in = -1; term_out = -1;
+}
+
+static int term_pump_output(void)
+{
+    if (term_out < 0) return 0;
+    unsigned char buf[128];
+    int dirty = 0;
+    for (;;) {
+        long n = sys_read(term_out, buf, sizeof(buf));
+        if (n <= 0) break;
+        for (long i = 0; i < n; i++) term_putc((char)buf[i]);
+        dirty = 1;
+        if (n < (long)sizeof(buf)) break;
+    }
+    return dirty;
 }
 
 static void draw_window(void)
@@ -351,18 +441,21 @@ static void draw_dock(void)
 static int win_open    = 1;     /* terminal window visible?           */
 static int saved_status = 1;    /* shell status-bar state before gui  */
 
-enum { ACT_TERM, ACT_FILES, ACT_EDITOR, ACT_DOOM };
+#define ICON_COUNT 6
+enum { ACT_TERM, ACT_FILES, ACT_EDITOR, ACT_DOOM, ACT_EXIT_GUI, ACT_LOGOUT };
 typedef struct { int x, y, w, h; const char *label; int action; uint32_t tint; } icon_t;
-static icon_t icons[4] = {
-    { 24,  40, 96, 70, "Terminal", ACT_TERM,   RGB(0x4c,0x8d,0xff) },
-    { 24, 124, 96, 70, "Files",    ACT_FILES,  RGB(0xf0,0xa8,0x30) },
-    { 24, 208, 96, 70, "Editor",   ACT_EDITOR, RGB(0x35,0xc7,0x59) },
-    { 24, 292, 96, 70, "Doom",     ACT_DOOM,   RGB(0xc0,0x40,0x40) },
+static icon_t icons[ICON_COUNT] = {
+    { 24,   40, 96, 70, "Terminal", ACT_TERM,     RGB(0x4c,0x8d,0xff) },
+    { 136,  40, 96, 70, "Files",    ACT_FILES,    RGB(0xf0,0xa8,0x30) },
+    { 24,  124, 96, 70, "Editor",   ACT_EDITOR,   RGB(0x35,0xc7,0x59) },
+    { 136, 124, 96, 70, "Doom",     ACT_DOOM,     RGB(0xc0,0x40,0x40) },
+    { 24,  208, 96, 70, "Exit GUI", ACT_EXIT_GUI, RGB(0x88,0x70,0xd8) },
+    { 136, 208, 96, 70, "Logout",   ACT_LOGOUT,   RGB(0x80,0x88,0x98) },
 };
 
 static void draw_icons(void)
 {
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < ICON_COUNT; i++) {
         icon_t *ic = &icons[i];
         fill_round(ic->x, ic->y, ic->w, ic->h, RGB(0x2a,0x38,0x50));
         fill_round(ic->x + ic->w / 2 - 16, ic->y + 10, 32, 30, ic->tint);
@@ -373,7 +466,7 @@ static void draw_icons(void)
 
 static int icon_hit(int x, int y)
 {
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < ICON_COUNT; i++) {
         icon_t *ic = &icons[i];
         if (x >= ic->x && x < ic->x + ic->w && y >= ic->y && y < ic->y + ic->h)
             return ic->action;
@@ -400,8 +493,8 @@ static void launch_fullscreen(const char *path)
 static void compose(int cx, int cy)
 {
     fill_rect(0, 0, (int)W, (int)H, COL_DESK);
-    draw_str(8, 8, "Makar desktop -- click an icon; drag the title bar; "
-                   "Ctrl-C closes the window; ESC quits", RGB(0x90,0xa0,0xb5));
+    draw_str(8, 8, "Makar desktop -- click an icon; drag the title bar",
+             RGB(0x90,0xa0,0xb5));
     draw_icons();
     if (win_open) draw_window();
     draw_dock();                /* drawn every frame, on top -- never flickers */
@@ -411,7 +504,7 @@ static void compose(int cx, int cy)
 
 /* ---- corner-click smoke test ('gui test') ------------------------------- */
 /* Draws a 48x48 square in each screen corner; click each (turns green).
- * Emits "GUI-MOUSE-TEST: PASS" on serial when all four are hit.  ESC quits. */
+ * Emits "GUI-MOUSE-TEST: PASS" on serial when all four are hit. */
 static int corner_test(void)
 {
     const int S = 48;
@@ -437,12 +530,11 @@ static int corner_test(void)
             prev_left = left;
             dirty = 1;
         }
-        int c;
-        while ((c = read_key_nb()) >= 0) if (c == 27) goto done;
+        while (read_key_nb() >= 0) {}
 
         if (dirty) {
             fill_rect(0, 0, (int)W, (int)H, COL_DESK);
-            draw_str(8, (int)H / 2, "Click the square in each corner. ESC to quit.",
+            draw_str(8, (int)H / 2, "Click the square in each corner.",
                      RGB(0x90,0xa0,0xb5));
             int all = 1;
             for (int i = 0; i < 4; i++) {
@@ -494,8 +586,8 @@ int main(int argc, char **argv, char **envp)
      * remember its prior state so we restore the shell's choice on exit. */
     saved_status = sys_statusbar_enabled();
     sys_statusbar_set(0);
-    /* Don't let Ctrl-C terminate the whole gui -- it closes the focused
-     * window instead (we read the 0x03 byte below). */
+    /* Don't let Ctrl-C terminate the whole gui.  It is ordinary terminal
+     * input for the hosted shell, not a WM close shortcut. */
     sys_signal(SIGINT, SIG_IGN);
 
     if (argc > 1 && argv[1][0] == 't') {       /* gui test */
@@ -506,6 +598,7 @@ int main(int argc, char **argv, char **envp)
     }
 
     term_init();
+    term_spawn_shell();
     refresh_stats();
     stat_next = sys_uptime() + 100u;
 
@@ -521,6 +614,19 @@ int main(int argc, char **argv, char **envp)
             refresh_stats();
             stat_next = now + 100u;
             dirty = 1;
+        }
+        if (term_pump_output()) dirty = 1;
+        if (term_pid > 0) {
+            int st = 0;
+            int r = sys_wait4(term_pid, &st, WNOHANG);
+            if (r == term_pid) {
+                term_pid = -1;
+                term_in = -1;
+                term_out = -1;
+                const char *m = "\n[terminal exited]\n";
+                for (int i = 0; m[i]; i++) term_putc(m[i]);
+                dirty = 1;
+            }
         }
 
         /* drain mouse */
@@ -541,9 +647,11 @@ int main(int argc, char **argv, char **envp)
                 if (act == ACT_DOOM)        launch_fullscreen("/apps/doom.elf");
                 else if (act == ACT_EDITOR) launch_fullscreen("/apps/vix.elf");
                 else if (act == ACT_FILES)  launch_fullscreen("/apps/files.elf");
-                else if (act == ACT_TERM) { win_open = 1; term_init(); }
+                else if (act == ACT_TERM) { win_open = 1; term_spawn_shell(); }
+                else if (act == ACT_EXIT_GUI) { sys_gui_close(); goto done; }
+                else if (act == ACT_LOGOUT) { sys_logout(); goto done; }
                 else if (win_open && in_closebox(cx, cy)) {
-                    win_open = 0;                     /* close window, not the gui */
+                    win_open = 0; term_kill_shell();  /* close window, not the gui */
                 } else if (win_open && in_titlebar(cx, cy)) {
                     dragging = 1; drag_dx = cx - win_x; drag_dy = cy - win_y;
                 }
@@ -561,12 +669,13 @@ int main(int argc, char **argv, char **envp)
             dirty = 1;
         }
 
-        /* drain keyboard */
+        /* drain keyboard.  WWLD: Ctrl-C (0x03) is ordinary terminal input --
+         * forward it to the shell (aborts the current line / interrupts a
+         * running command); it does NOT close the window.  The window closes
+         * via the [x] box or Exit GUI, which kill the hosted shell (SIGHUP-like). */
         int c;
         while ((c = read_key_nb()) >= 0) {
-            if (c == 27) goto done;                   /* ESC quits the gui   */
-            if (c == 3) { win_open = 0; dirty = 1; continue; }  /* Ctrl-C: close window */
-            if (win_open) term_putc((char)c);
+            if (win_open) term_write_key(c);
             dirty = 1;
         }
 
@@ -575,8 +684,8 @@ int main(int argc, char **argv, char **envp)
     }
 
 done:
+    term_kill_shell();                 /* don't orphan the hosted shell */
     sys_fcntl(0, F_SETFL, 0);
     sys_statusbar_set(saved_status);   /* restore the shell's status-bar choice */
-    sys_shell_clear();
     return 0;
 }

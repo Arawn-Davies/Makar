@@ -130,20 +130,25 @@ static void sb_put(sb_t *s, char c)
 static void sb_str(sb_t *s, const char *p) { while (*p) sb_put(s, *p++); }
 
 static void sb_num(sb_t *s, unsigned long v, unsigned int base,
-                   int upper, int sign_neg, int width, char pad)
+                   int upper, int sign_neg, int width, char pad,
+                   int precision)
 {
     char tmp[32]; int ti = 0;
-    if (v == 0) tmp[ti++] = '0';
+    if (v == 0 && precision != 0) tmp[ti++] = '0';
     while (v) {
         unsigned int d = v % base;
         tmp[ti++] = (char)(d < 10 ? '0' + d
                                   : (upper ? 'A' : 'a') + (d - 10));
         v /= base;
     }
-    int len = ti + (sign_neg ? 1 : 0);
+    int digits = ti;
+    if (precision > digits) digits = precision;
+    int len = digits + (sign_neg ? 1 : 0);
+    if (precision >= 0) pad = ' ';
     if (sign_neg && pad == '0') sb_put(s, '-');
     while (len < width) { sb_put(s, pad); len++; }
     if (sign_neg && pad == ' ') sb_put(s, '-');
+    while (ti < precision) { sb_put(s, '0'); precision--; }
     while (ti--) sb_put(s, tmp[ti]);
 }
 
@@ -155,15 +160,14 @@ int vsnprintf(char *buf, unsigned int sz, const char *fmt, va_list ap)
         p++;
         /* Flags (minimal subset: `-`, `+`, ` ` ignored; `0` triggers
          * zero-padding; `#` ignored). */
-        char pad = ' '; int width = 0;
+        char pad = ' '; int width = 0; int precision = -1;
         if (*p == '-' || *p == '+' || *p == ' ' || *p == '#') p++;
         if (*p == '0') { pad = '0'; p++; }
         while (*p >= '0' && *p <= '9') { width = width*10 + (*p - '0'); p++; }
-        /* Optional precision (.N) -- parsed but ignored for now; just
-         * keep the va_arg sequence aligned. */
         if (*p == '.') {
             p++;
-            while (*p >= '0' && *p <= '9') p++;
+            precision = 0;
+            while (*p >= '0' && *p <= '9') { precision = precision*10 + (*p - '0'); p++; }
         }
         /* Length modifier: `h`, `hh`, `l`, `ll`, `z`, `t`, `j`.  On i386
          * `long`, `size_t`, `ptrdiff_t`, `intmax_t` are all 32-bit, so
@@ -207,52 +211,52 @@ int vsnprintf(char *buf, unsigned int sz, const char *fmt, va_list ap)
                  * is lossy for the full 64-bit range, but a typical
                  * TCC %lld value (line numbers, sizes) fits in 32 bits.
                  * Wrap-around above 2^32 is documented as best-effort. */
-                sb_num(&s, (unsigned long)uv, 10, 0, v < 0, width, pad);
+                sb_num(&s, (unsigned long)uv, 10, 0, v < 0, width, pad, precision);
             } else {
                 int v = va_arg(ap, int);
                 unsigned long uv = (v < 0) ? (unsigned long)(-(long)v) : (unsigned long)v;
-                sb_num(&s, uv, 10, 0, v < 0, width, pad);
+                sb_num(&s, uv, 10, 0, v < 0, width, pad, precision);
             }
             break;
         }
         case 'u': {
             if (is_ll) {
                 unsigned long long v = va_arg(ap, unsigned long long);
-                sb_num(&s, (unsigned long)v, 10, 0, 0, width, pad);
+                sb_num(&s, (unsigned long)v, 10, 0, 0, width, pad, precision);
             } else {
-                sb_num(&s, va_arg(ap, unsigned int), 10, 0, 0, width, pad);
+                sb_num(&s, va_arg(ap, unsigned int), 10, 0, 0, width, pad, precision);
             }
             break;
         }
         case 'x': {
             if (is_ll) {
                 unsigned long long v = va_arg(ap, unsigned long long);
-                sb_num(&s, (unsigned long)v, 16, 0, 0, width, pad);
+                sb_num(&s, (unsigned long)v, 16, 0, 0, width, pad, precision);
             } else {
-                sb_num(&s, va_arg(ap, unsigned int), 16, 0, 0, width, pad);
+                sb_num(&s, va_arg(ap, unsigned int), 16, 0, 0, width, pad, precision);
             }
             break;
         }
         case 'X': {
             if (is_ll) {
                 unsigned long long v = va_arg(ap, unsigned long long);
-                sb_num(&s, (unsigned long)v, 16, 1, 0, width, pad);
+                sb_num(&s, (unsigned long)v, 16, 1, 0, width, pad, precision);
             } else {
-                sb_num(&s, va_arg(ap, unsigned int), 16, 1, 0, width, pad);
+                sb_num(&s, va_arg(ap, unsigned int), 16, 1, 0, width, pad, precision);
             }
             break;
         }
         case 'o': {
             if (is_ll) {
                 unsigned long long v = va_arg(ap, unsigned long long);
-                sb_num(&s, (unsigned long)v, 8, 0, 0, width, pad);
+                sb_num(&s, (unsigned long)v, 8, 0, 0, width, pad, precision);
             } else {
-                sb_num(&s, va_arg(ap, unsigned int), 8, 0, 0, width, pad);
+                sb_num(&s, va_arg(ap, unsigned int), 8, 0, 0, width, pad, precision);
             }
             break;
         }
         case 'p': sb_put(&s,'0'); sb_put(&s,'x');
-                  sb_num(&s, (unsigned long)(unsigned int)va_arg(ap, void *), 16, 0, 0, 8, '0'); break;
+                  sb_num(&s, (unsigned long)(unsigned int)va_arg(ap, void *), 16, 0, 0, 8, '0', -1); break;
         case '%': sb_put(&s, '%'); break;
         default:  sb_put(&s, '%'); sb_put(&s, *p); break;
         }

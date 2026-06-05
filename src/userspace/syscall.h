@@ -115,6 +115,8 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_NET_INFO    253
 #define SYS_NET_CTL     254
 #define SYS_WGET        255
+#define SYS_LOGOUT      260
+#define SYS_GUI_CLOSE   261
 
 #define NET_CTL_DHCP_RELEASE 1
 #define NET_CTL_DHCP_RENEW   2
@@ -737,6 +739,14 @@ static inline int sys_reboot(void)
 static inline int sys_shutdown(void)
 {
     return (int)syscall1(SYS_SHUTDOWN, 0);
+}
+static inline int sys_logout(void)
+{
+    return (int)syscall1(SYS_LOGOUT, 0);
+}
+static inline int sys_gui_close(void)
+{
+    return (int)syscall1(SYS_GUI_CLOSE, 0);
 }
 
 /* Display.  NULL/empty `arg` queries current state. */

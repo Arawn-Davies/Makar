@@ -104,6 +104,7 @@
 
 #include <kernel/keyboard.h>
 #include <kernel/mouse.h>
+#include <kernel/auth.h>
 #include <kernel/vtty.h>
 #include <kernel/isr.h>
 #include <kernel/asm.h>
@@ -435,6 +436,8 @@ typedef struct {
     volatile uint8_t  buf[KB_SLOT_BUF];
     volatile uint8_t  head;
     volatile uint8_t  tail;
+    volatile uint8_t  raw_mode;
+    volatile uint8_t  scancode_mode;
 } kb_slot_t;
 
 static kb_slot_t kb_slots[KB_TASK_SLOTS];
@@ -566,6 +569,8 @@ static int slot_register(task_t *t)
                                         __ATOMIC_ACQUIRE)) {
             kb_slots[i].head = 0;
             kb_slots[i].tail = 0;
+            kb_slots[i].raw_mode = 0;
+            kb_slots[i].scancode_mode = 0;
             idx = i;
             break;
         }
@@ -610,6 +615,8 @@ void keyboard_release_task(task_t *t)
         if (__atomic_load_n(&kb_slots[i].owner, __ATOMIC_ACQUIRE) == t) {
             kb_slots[i].head = 0;
             kb_slots[i].tail = 0;
+            kb_slots[i].raw_mode = 0;
+            kb_slots[i].scancode_mode = 0;
             __atomic_store_n(&kb_slots[i].owner, (task_t *)NULL,
                              __ATOMIC_RELEASE);
             break;
@@ -790,11 +797,9 @@ static void kb_sync_leds(void)
 /* Raw mode: see keyboard_set_raw().  When set, on_make delivers modifier
  * presses, F-keys, Caps, and Super as sentinel bytes; cooked shortcuts
  * (Alt+F1..F4 vtty switch, Ctrl-A pane prefix) are suspended.  Ctrl+C
- * still fires so a raw-mode app can be exited the usual way.
- *
- * A single global flag is fine because only the focused task receives
- * cooked-mode shortcuts in the first place - there is no scenario where
- * one running task wants raw delivery and another wants cooked. */
+ * still fires so a raw-mode app can be exited the usual way.  The active
+ * flags mirror the focused task's saved slot state so console switching
+ * restores each owner without leaking modes across sessions. */
 static volatile int kb_raw_mode = 0;
 
 /* Scancode passthrough: when set, deliver_kc routes the raw set-1 single-byte
@@ -802,6 +807,35 @@ static volatile int kb_raw_mode = 0;
  * events, bypassing all cooked/raw translation.  This is the make/break stream
  * a game (doom.elf) needs; cooked + sentinel raw modes only ever emit makes. */
 static volatile int kb_scancode_mode = 0;
+
+/* Ctrl-Alt-Del requested (set in IRQ, serviced in task context by
+ * keyboard_getchar -> cad_menu).  Text/shell sessions only. */
+static volatile int kb_cad_pending = 0;
+
+static void kb_reset_mods(void);
+
+static void kb_save_mode_for_task(task_t *t)
+{
+    int s = slot_lookup(t);
+    if (s < 0) return;
+    kb_slots[s].raw_mode =
+        (uint8_t)(__atomic_load_n(&kb_raw_mode, __ATOMIC_ACQUIRE) ? 1 : 0);
+    kb_slots[s].scancode_mode =
+        (uint8_t)(__atomic_load_n(&kb_scancode_mode, __ATOMIC_ACQUIRE) ? 1 : 0);
+}
+
+static void kb_restore_mode_for_task(task_t *t)
+{
+    int raw = 0, sc = 0;
+    int s = slot_lookup(t);
+    if (s >= 0) {
+        raw = READ_ONCE(kb_slots[s].raw_mode) ? 1 : 0;
+        sc  = READ_ONCE(kb_slots[s].scancode_mode) ? 1 : 0;
+    }
+    __atomic_store_n(&kb_raw_mode, raw, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&kb_scancode_mode, sc, __ATOMIC_SEQ_CST);
+    kb_reset_mods();
+}
 
 /* Clear all modifier state.  Scancode passthrough bypasses apply_modifier, so a
  * Shift/Ctrl held during a game (doom's run key) would otherwise stay "stuck"
@@ -817,6 +851,7 @@ static void kb_reset_mods(void)
 void keyboard_set_scancode(int on)
 {
     __atomic_store_n(&kb_scancode_mode, on ? 1 : 0, __ATOMIC_SEQ_CST);
+    kb_save_mode_for_task(task_current());
     kb_reset_mods();
 }
 
@@ -828,6 +863,7 @@ void keyboard_set_raw(int on)
      * shared state today, but the cost is one mfence and the future-
      * proofing is worth it). */
     __atomic_store_n(&kb_raw_mode, on ? 1 : 0, __ATOMIC_SEQ_CST);
+    kb_save_mode_for_task(task_current());
     kb_reset_mods();
 }
 
@@ -962,10 +998,18 @@ static void on_make(kc_t kc)
         default: break;
     }
 
+    /* Ctrl-Alt-Del: request the text-session system menu (Log off / Change
+     * password).  Serviced in task context by keyboard_getchar -> cad_menu;
+     * gated there to the active root text session (not the GUI). */
+    if (mod_ctrl && mod_alt && kc == KC_DELETE) {
+        __atomic_store_n(&kb_cad_pending, 1, __ATOMIC_RELEASE);
+        return;
+    }
+
     /* Cooked-mode shortcuts: Alt+Fn TTY switch, Ctrl+Tab cycle, and
      * Ctrl-A pane prefix.  Raw-mode apps (kbtester) need every keystroke
-     * as data, so these intercepts are suspended for the duration of their
-     * session. */
+     * as data, so the global F5/F6 console switch is handled earlier in
+     * deliver_kc(), before raw/scancode routing chooses the active owner. */
     if (!raw) {
         if (mod_alt) {
             switch (kc) {
@@ -973,7 +1017,6 @@ static void on_make(kc_t kc)
                 case KC_F2: vtty_switch(1); return;
                 case KC_F3: vtty_switch(2); return;
                 case KC_F4: vtty_switch(3); return;
-                case KC_F5: vtty_request_clock_toggle(); return;  /* Makar <-> clock */
                 case KC_T:  vtty_request_open(); return;
                 default: break;
             }
@@ -1084,15 +1127,8 @@ static int is_modifier_kc(kc_t kc)
  */
 static void deliver_kc(kc_t kc, int is_break)
 {
-    /* Scancode passthrough: raw set-1 byte (low7 | 0x80-break) for make AND
-     * break, no translation.  e0-extended keys collapse to their low7 (e.g.
-     * arrow up -> 0x48), matching the soso/doom scancode convention. */
-    if (__atomic_load_n(&kb_scancode_mode, __ATOMIC_ACQUIRE)) {
-        kb_route((unsigned char)((kc & 0x7F) | (is_break ? 0x80 : 0)));
-        return;
-    }
-
-    if (is_modifier_kc(kc)) {
+    int is_mod = is_modifier_kc(kc);
+    if (is_mod) {
         if (!is_break) {
             if (s_modkey_held[kc]) return;  /* drop typematic repeat */
             s_modkey_held[kc] = 1;
@@ -1101,6 +1137,32 @@ static void deliver_kc(kc_t kc, int is_break)
         }
     }
     apply_modifier(kc, is_break);
+
+    /* Console switching is global: the chord is consumed before the active
+     * owner sees it, including GUI sessions and raw/scancode terminal apps.
+     * Accept both Alt+Fn and Ctrl+Alt+Fn so the older Makar shortcut and the
+     * Linux-style VT chord land on the same owner-switch path. */
+    if (!is_break && mod_alt) {
+        switch (kc) {
+            case KC_F5:
+                vtty_switch_root_text();
+                return;
+            case KC_F6:
+                vtty_switch_root_gui();
+                return;
+            default:
+                break;
+        }
+    }
+
+    /* Scancode passthrough: raw set-1 byte (low7 | 0x80-break) for make AND
+     * break, no translation.  e0-extended keys collapse to their low7 (e.g.
+     * arrow up -> 0x48), matching the soso/doom scancode convention. */
+    if (__atomic_load_n(&kb_scancode_mode, __ATOMIC_ACQUIRE)) {
+        kb_route((unsigned char)((kc & 0x7F) | (is_break ? 0x80 : 0)));
+        return;
+    }
+
     if (!is_break) on_make(kc);
 }
 
@@ -1281,7 +1343,27 @@ void keyboard_test_driver(void)
             pass = 0;
         }
 
-        /* 3: app-tab routing.  Type a fullscreen app in a makmux VT shell ->
+        /* 3: Ctrl+Alt+F5 surfaces the root text console even while makmux
+         *    owns the visible VT set; Alt+F1 returns to the first makmux VT
+         *    so the rest of the test continues in the app-tab environment. */
+        keyboard_inject_key(KC_F5, 0, 1, 1);   /* Ctrl+Alt+F5 -> mak.sh0 */
+        ksleep(80);
+        if (vtty_root_text_active()) {
+            Serial_WriteString("KBTEST: root-f5 PASS\n");
+        } else {
+            Serial_WriteString("KBTEST: root-f5 FAIL\n");
+            pass = 0;
+        }
+        keyboard_inject_key(KC_F1, 0, 0, 1);   /* Alt+F1 -> makmux VT 1 */
+        ksleep(80);
+        if (!vtty_root_text_active() && vtty_active() == 0) {
+            Serial_WriteString("KBTEST: vt-f1 PASS\n");
+        } else {
+            Serial_WriteString("KBTEST: vt-f1 FAIL\n");
+            pass = 0;
+        }
+
+        /* 4: app-tab routing.  Type a fullscreen app in a makmux VT shell ->
          *    it should open in its own named tab (not replace the shell). */
         keyboard_inject_text("maktop\n");
         ksleep(300);            /* sh.elf routes -> kernel queue -> makmux spawns */
@@ -1292,7 +1374,7 @@ void keyboard_test_driver(void)
             pass = 0;
         }
 
-        /* 4: close every tab -> makmux exits -> focus + screen return to
+        /* 5: close every tab -> makmux exits -> focus + screen return to
          *    mak.sh0 (the root console).  Asserts vtty_count() drops to 0. */
         keyboard_inject_text("q");          /* quit maktop (q/Esc/F10) */
         ksleep(150);
@@ -1447,6 +1529,7 @@ void keyboard_focus_pane(int pane_id)
 void keyboard_set_focus(task_t *t)
 {
     __atomic_store_n(&kb_focused, t, __ATOMIC_RELEASE);
+    kb_restore_mode_for_task(t);
 }
 
 /*
@@ -1608,6 +1691,13 @@ unsigned char keyboard_getchar(void)
      * Cheap when nothing is pending; the cost only lands here, in task
      * context, so the keyboard IRQ stays short. */
     vtty_drain_pending();
+
+    /* Service a pending Ctrl-Alt-Del in the active text session's context.
+     * Cleared before the call so cad_menu's own key reads don't re-enter. */
+    if (__atomic_load_n(&kb_cad_pending, __ATOMIC_ACQUIRE) && vtty_root_text_active()) {
+        __atomic_store_n(&kb_cad_pending, 0, __ATOMIC_RELEASE);
+        cad_menu();
+    }
 
     int s = slot_for_current();
     if (s >= 0) {

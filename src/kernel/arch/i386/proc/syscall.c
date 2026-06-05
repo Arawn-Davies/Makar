@@ -71,6 +71,29 @@ static const uint32_t s_vga_palette[16] = {
     0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF,
 };
 
+static int stdin_pipe_getchar(task_t *t)
+{
+    fd_entry_t *e = fd_get(t ? t->fd_table : NULL, 0);
+    if (!e || e->kind != FD_KIND_PIPE)
+        return -2;
+    if (e->pipe_is_writer || !e->pipe)
+        return -1;
+
+    pipe_ring_t *r = e->pipe;
+    for (;;) {
+        if (r->head != r->tail) {
+            unsigned char c = r->buf[r->tail % PIPE_RING_CAP];
+            r->tail++;
+            return (int)c;
+        }
+        if (r->refcount_w == 0)
+            return -1;
+        if (e->flags & FD_FLAG_NONBLOCK)
+            return -11;
+        task_yield();
+    }
+}
+
 /* Callback + context for SYS_LS_DIR using vfs_complete. */
 typedef struct { char *buf; uint32_t cap; uint32_t off; } ls_ctx_t;
 static void ls_cb(const char *name, int is_dir, void *ctx)
@@ -330,6 +353,14 @@ void syscall_dispatch(registers_t *regs)
                 me->name_buf[n] = '\0';
                 me->name = me->name_buf;
             }
+            if (me && me->tty == VTTY_ROOT_SLOT && is_sh &&
+                kargc >= 2 && strcmp(s_argv[1], "--login") == 0) {
+                vtty_register_root_text_task(me);
+            }
+            if (me && me->tty == VTTY_ROOT_SLOT &&
+                (strcmp(base, "gui.elf") == 0 || strcmp(base, "gui") == 0)) {
+                vtty_register_root_gui(me);
+            }
         }
 
         /* POSIX: execve resets all caught signal handlers to SIG_DFL.
@@ -347,8 +378,11 @@ void syscall_dispatch(registers_t *regs)
          * thing you just exec'd takes the keyboard" rule. */
         task_t *me = task_current();
         if (me) {
-            keyboard_set_focus(me);
-            vtty_set_foreground(me->tty, me);
+            fd_entry_t *stdin_e = fd_get(me->fd_table, 0);
+            if (stdin_e && stdin_e->kind == FD_KIND_KEYBOARD) {
+                keyboard_set_focus(me);
+                vtty_set_foreground(me->tty, me);
+            }
         }
 
         /* elf_exec swaps the PD and iret's to the new entry on success
@@ -711,6 +745,17 @@ void syscall_dispatch(registers_t *regs)
         break;
     }
 
+    case SYS_LOGOUT: {
+        regs->eax = (vtty_logout_root_session() == 0) ? 0u : (uint32_t)-1;
+        break;
+    }
+
+    case SYS_GUI_CLOSE: {
+        vtty_switch_root_text();
+        regs->eax = 0;
+        break;
+    }
+
     /* ------------------------------------------------------------------
      * SYS_GETTIMEOFDAY(78): write current wall time into struct timeval.
      * EBX = struct timeval *, ECX = struct timezone * (ignored).
@@ -849,7 +894,7 @@ void syscall_dispatch(registers_t *regs)
      * SYS_MOUSE_READ(256): pop one PS/2 mouse event (0 when empty).
      * ------------------------------------------------------------------ */
     case SYS_MOUSE_READ:
-        regs->eax = mouse_pop_event();
+        regs->eax = vtty_is_focused() ? mouse_pop_event() : 0;
         break;
 
     /* ------------------------------------------------------------------
@@ -1458,9 +1503,12 @@ void syscall_dispatch(registers_t *regs)
      * line-buffering.  Returns raw char value including arrow sentinels
      * (0x80-0x83) as unsigned bytes in EAX.
      * ------------------------------------------------------------------ */
-    case SYS_GETKEY:
-        regs->eax = (uint32_t)(uint8_t)keyboard_getchar();
+    case SYS_GETKEY: {
+        int pc = stdin_pipe_getchar(task_current());
+        regs->eax = (pc != -2) ? (uint32_t)(int32_t)pc
+                               : (uint32_t)(uint8_t)keyboard_getchar();
         break;
+    }
 
     /* ------------------------------------------------------------------
      * SYS_PUTCH_AT(201): write an array of screen cells.
@@ -2080,7 +2128,9 @@ void syscall_dispatch(registers_t *regs)
          * VT slot (0-3); with no VT children the root console (mak.sh0) is
          * focused, so report VTTY_ROOT_SLOT -- lets the userspace statusbar's
          * `command` widget find the root shell's foreground task. */
-        uint32_t active = mask ? (uint32_t)(vtty_active() & 0xFFFF)
+        uint32_t active = vtty_root_text_active()
+                               ? (uint32_t)VTTY_ROOT_SLOT
+                               : mask ? (uint32_t)(vtty_active() & 0xFFFF)
                                : (uint32_t)VTTY_ROOT_SLOT;
         regs->eax = (active << 16) | mask;
         break;

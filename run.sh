@@ -83,9 +83,11 @@ _timeout() {
 # style: incremental by default (make handles "did anything change");
 # only `clean` wipes artefacts.
 #
-#   iso build                    iso boot                iso test
+#   iso build                    iso clean build         iso boot
+#   iso clean boot               iso test
 #   iso release
-#   hdd build                    hdd boot                hdd test
+#   hdd build                    hdd clean build         hdd boot
+#   hdd clean boot               hdd test
 #   hdd release
 #   gdb iso                      gdb hdd
 #   ktest                        ktest graphical
@@ -95,8 +97,8 @@ _timeout() {
 _usage() {
     echo "Usage: $0 <target> <verb> [args...]"
     echo ""
-    echo "  iso   build | boot [nic] | test | release"
-    echo "  hdd   build | boot [nic] | test | release"
+    echo "  iso   [clean] build | [clean] boot [nic] | test | release"
+    echo "  hdd   [clean] build | [clean] boot [nic] | test | release"
     echo "        boot nic (slirp networking): virtio | rtl8139 | e1000 | pcnet (default virtio)"
     echo "  gdb   iso | hdd"
     echo "  ktest [graphical]"
@@ -116,9 +118,16 @@ if [ $# -eq 0 ]; then
 fi
 
 case "${1:-}" in
-    iso|hdd|gdb)
+    iso|hdd)
         if [ -z "${2:-}" ]; then _usage; fi
-        MODE="$1 $2"
+        TARGET="$1"
+        CLEAN_FIRST=0
+        if [ "$2" = "clean" ]; then
+            CLEAN_FIRST=1
+            shift
+            if [ -z "${2:-}" ]; then _usage; fi
+        fi
+        MODE="$TARGET $2"
         # `iso boot [nic]` / `hdd boot [nic]`: optional NIC selector (same set
         # as nettest) attaches that device with slirp user networking.
         if [ "$2" = "boot" ] && [ -n "${3:-}" ]; then
@@ -129,6 +138,10 @@ case "${1:-}" in
         else
             shift 2
         fi ;;
+    gdb)
+        if [ -z "${2:-}" ]; then _usage; fi
+        MODE="$1 $2"
+        shift 2 ;;
     ktest)
         if [ "${2:-}" = "graphical" ]; then
             MODE="ktest graphical"; shift 2
@@ -178,6 +191,8 @@ case "${1:-}" in
         echo "ERROR: unknown target '$1'" >&2
         _usage ;;
 esac
+
+CLEAN_FIRST=${CLEAN_FIRST:-0}
 
 # ── context helpers ────────────────────────────────────────────────────────────
 
@@ -623,6 +638,13 @@ _clean() {
          for p in $PROJECTS; do (cd "$p" && $MAKE clean 2>/dev/null || true); done'
 }
 
+_clean_full() {
+    _clean
+    rm -rf "$REPO_ROOT/sysroot" "$REPO_ROOT/isodir" \
+           "$REPO_ROOT/makar.iso" "$REPO_ROOT/hdd.img"
+    echo "==> Clean complete."
+}
+
 _build_iso() {
     local _flags="${1:-}"
     echo "==> Building ISO${_flags:+ ($_flags)}..."
@@ -675,6 +697,10 @@ _build_kernel() {
 }
 
 # ── modes ──────────────────────────────────────────────────────────────────────
+
+if [ "$CLEAN_FIRST" = "1" ]; then
+    _clean_full
+fi
 
 case "$MODE" in
 
@@ -889,10 +915,7 @@ nettest)
 
 # ── clean ─────────────────────────────────────────────────────────────────────
 clean)
-    _clean
-    rm -rf "$REPO_ROOT/sysroot" "$REPO_ROOT/isodir" \
-           "$REPO_ROOT/makar.iso" "$REPO_ROOT/hdd.img"
-    echo "==> Clean complete."
+    _clean_full
     ;;
 
 *)

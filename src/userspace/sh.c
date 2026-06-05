@@ -93,6 +93,17 @@ static int  s_atoi(const char *s)
     return v * sign;
 }
 
+static void ignore_login_shell_signals(void)
+{
+    sys_signal(SIGHUP,  SIG_IGN);
+    sys_signal(SIGINT,  SIG_IGN);
+    sys_signal(SIGQUIT, SIG_IGN);
+    sys_signal(SIGPIPE, SIG_IGN);
+    sys_signal(SIGALRM, SIG_IGN);
+    sys_signal(SIGTERM, SIG_IGN);
+    sys_signal(SIGTSTP, SIG_IGN);
+}
+
 /* ---------- variable table ---------- */
 
 typedef struct { char name[VAR_NAME_MAX]; char val[VAR_VAL_MAX]; } var_t;
@@ -352,7 +363,7 @@ static int tab_collect_commands(const char *leaf, tab_match_t *out)
     int n = 0;
     unsigned int leaf_len = s_len(leaf);
     static const char *builtins[] = {
-        "exit", "cd", "pwd", "env", "unset", "read", "true", "false",
+        "exit", "logout", "cd", "pwd", "env", "unset", "read", "true", "false",
         "sleep", "[", "history", "hostname", "clear", "exec", "sh", ".",
         "shutdown", "reboot", "eject", "setmode", "fgcol", "bgcol",
         "mount", "umount", "mkfs.ext2", "mkfs.fat32", "sched_quantum",
@@ -803,9 +814,19 @@ static int run_builtin(int argc, char **argv, int *should_exit, int *exit_status
     if (s_eq(argv[0], "exit")) {
         *exit_status = (argc > 1) ? s_atoi(argv[1]) : 0;
         if (g_login) {
-            put_s("sh: cannot exit a login shell -- use `shutdown` or `reboot`\n");
+            put_s("sh: cannot exit a login shell -- use `logout`, `shutdown`, or `reboot`\n");
             return 1;
         }
+        *should_exit = 1;
+        return 1;
+    }
+    if (s_eq(argv[0], "logout")) {
+        if (!g_login) {
+            put_s("sh: not a login shell\n");
+            g_last_status = 1;
+            return 1;
+        }
+        *exit_status = 0;
         *should_exit = 1;
         return 1;
     }
@@ -966,6 +987,7 @@ static int path_exists(const char *path)
  * redirect_t typedef in the pipeline support block).  We forward-declare
  * just the helper that spawn()'s child uses. */
 static void apply_pending_redirects_in_child(void);
+static void jobs_add(int pid);
 
 static int spawn(const char *path, char **argv)
 {
@@ -980,16 +1002,46 @@ static int spawn(const char *path, char **argv)
     sys_wait4(pid, &status, 0);
     return status & 0xFF;
 }
+
+static int spawn_background(const char *path, char **argv)
+{
+    int pid = sys_fork();
+    if (pid < 0) { put_s("sh: fork failed\n"); return 1; }
+    if (pid == 0) {
+        apply_pending_redirects_in_child();
+        sys_execve(path, argv, (char *const *)0);
+        sys_exit(127);
+    }
+    jobs_add(pid);
+    return 0;
+}
+
+static int is_gui_path(const char *path)
+{
+    const char *base = path;
+    for (const char *p = path; *p; p++)
+        if (*p == '/') base = p + 1;
+    return s_eq(base, "gui") || s_eq(base, "gui.elf");
+}
+
 static int try_exec_path(const char *path, char **argv, int *out_status)
 {
-    if (path_exists(path)) { *out_status = spawn(path, argv); return 1; }
+    if (path_exists(path)) {
+        *out_status = is_gui_path(path) ? spawn_background(path, argv)
+                                        : spawn(path, argv);
+        return 1;
+    }
     char wext[VFS_PATH_MAX];
     unsigned int plen = s_len(path);
     if (plen + 5 >= VFS_PATH_MAX) return 0;
     unsigned int i;
     for (i = 0; i < plen; i++) wext[i] = path[i];
     wext[i++] = '.'; wext[i++] = 'e'; wext[i++] = 'l'; wext[i++] = 'f'; wext[i] = '\0';
-    if (path_exists(wext)) { *out_status = spawn(wext, argv); return 1; }
+    if (path_exists(wext)) {
+        *out_status = is_gui_path(wext) ? spawn_background(wext, argv)
+                                        : spawn(wext, argv);
+        return 1;
+    }
     return 0;
 }
 static int shell_path_dir(int p, char *out, unsigned int outsz)
@@ -1829,6 +1881,9 @@ int main(int argc, char **argv, char **envp)
             s_copy(g_username, argv[i] + 7, sizeof(g_username));
         else if (argv[i][0] != '-')   script_path = argv[i];
     }
+
+    if (g_login)
+        ignore_login_shell_signals();
 
     /* Resolve hostname (best-effort). */
     char hbuf[HOST_MAX];

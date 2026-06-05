@@ -1222,20 +1222,34 @@ void shell_enter_root_tty(void)
  */
 void shell_login_loop(void)
 {
+    int first_boot = 1;
     for (;;) {
-        /* --- Authenticate (installed systems only) ---
-         * Require login when all three conditions hold:
-         *   1. Booted without `live` on the cmdline (not a live ISO session)
-         *   2. The rootfs at / is a disk filesystem (ext2 or FAT32)
-         *   3. /etc/shadow exists (password has been configured)
-         * Any live ISO boot — even one where the kernel elected an HDD as
-         * rootfs — skips authentication entirely. */
-        if (!g_live_boot && vfs_rootfs_is_disk() && vfs_file_exists("/etc/shadow")) {
-            /* Try auto-login first (cmdline autologin=<user>, else
-             * /etc/autologin).  Falls through to the password prompt when
-             * not configured or the named user is invalid. */
-            if (!auth_try_autologin(g_autologin_user[0] ? g_autologin_user : (const char *)0))
-                login_screen();
+        /* --- Authenticate ---
+         * Initial boot (first_boot): require login only on an installed system
+         *   (not live, disk rootfs, /etc/shadow present) -- live ISO sessions
+         *   start straight at the shell.
+         * Re-login (any later iteration = a session that ended via logout/exit):
+         *   ALWAYS show the login prompt, like a getty.  login_screen() works
+         *   on live too (no /etc/shadow -> accepts root with an empty password),
+         *   so `logout` reliably returns to the login screen everywhere. */
+        if (first_boot) {
+            if (!g_live_boot && vfs_rootfs_is_disk() && vfs_file_exists("/etc/shadow")) {
+                /* Try auto-login first (cmdline autologin=<user>, else
+                 * /etc/autologin); fall through to the prompt otherwise. */
+                if (!auth_try_autologin(g_autologin_user[0] ? g_autologin_user : (const char *)0))
+                    login_screen();
+            }
+        } else {
+            login_screen();
+        }
+        first_boot = 0;
+
+        /* Invariant: never start a shell without an authenticated user.  If the
+         * session user is empty (logout cleared it, or a login was dismissed),
+         * keep prompting -- the shell only starts once someone is logged in. */
+        {
+            const char *u = auth_current_user();
+            while (!u || !u[0]) { login_screen(); u = auth_current_user(); }
         }
 
         /* --- Session start: clear to the shell's own palette and print
@@ -1301,7 +1315,10 @@ void shell_login_loop(void)
         }
 
         /* shell_exec_elf blocks until the child dies, then returns here.
-         * The next loop iteration shows the login prompt again. */
+         * The session has ended (logout / exit), so clear the current user --
+         * the next iteration shows the login prompt and won't start a shell
+         * until someone authenticates. */
+        auth_clear_user();
 
         /* Drain any stale keyboard input before the next login attempt. */
         while (keyboard_poll()) {}

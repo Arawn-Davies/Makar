@@ -15,6 +15,14 @@ void microhash_hex16(const uint8_t *data, size_t len, char out[17]);
 int shadow_verify      (const char *username, const char *password);
 int shadow_set_password(const char *username, const char *password);
 
+/* Full-screen TUI to change `user`'s password (login-style New/Confirm form).
+ * Caller must gate this to installed systems (writable rootfs).  0 ok / -1. */
+int passwd_screen(const char *user);
+
+/* Ctrl-Alt-Del menu (text/shell session): Log off or Change password.
+ * Runs in the caller's task context (Log off task_exit()s it). */
+void cad_menu(void);
+
 /* Returns 1 if `username` has an entry in /etc/shadow, else 0. */
 int shadow_user_exists (const char *username);
 
@@ -24,6 +32,10 @@ void login_screen(void);
 /* Returns the username that authenticated in the current session.
  * Defaults to "user" on live boots where login_screen was skipped. */
 const char *auth_current_user(void);
+
+/* Clear the session user (logout) -- shell_login_loop won't start a shell
+ * until a login sets it again. */
+void auth_clear_user(void);
 
 /* Re-enter the login prompt (call from `logout` shell command). */
 void auth_logout(void);

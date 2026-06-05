@@ -42,6 +42,8 @@
 #define SYS_SET_THREAD_AREA 243 /* int set_thread_area(struct user_desc*) -- TLS    */
 #define SYS_EXIT_GROUP    252   /* void exit_group(int status) -- == exit           */
 #define SYS_SET_TID_ADDRESS 258 /* int set_tid_address(int *tidptr) -> tid          */
+#define SYS_LOGOUT          260 /* int logout(void) - end root login session        */
+#define SYS_GUI_CLOSE       261 /* int gui_close(void) - return to root text mode   */
 #define SYS_SIGNAL     48   /* sig_handler_t signal(int signo, sig_handler_t)   */
 #define SYS_STAT      106   /* int stat(const char *path, struct stat *st)      */
 #define SYS_FSTAT     108   /* int fstat(int fd, struct stat *st)               */

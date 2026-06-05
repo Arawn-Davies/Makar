@@ -345,18 +345,19 @@ static void cmd_passwd(int argc, char **argv)
     const char *user = (argc >= 2) ? argv[1] : auth_current_user();
     char pass1[256], pass2[256];
 
+    /* Installed systems only: a live session's rootfs is a read-only CD. */
     if (!vfs_rootfs_is_disk()) {
-        t_writestring("passwd: no writable rootfs (live session).\n");
+        t_writestring("passwd: not available on a live session (read-only rootfs).\n");
         return;
     }
 
+    /* Plain Unix-style prompt (the Ctrl-Alt-Del menu offers a TUI variant). */
     t_writestring("Changing password for ");
     t_writestring(user);
     t_writestring(".\n");
     t_writestring("New password: ");
     read_password(pass1, sizeof(pass1));
     t_putchar('\n');
-
     t_writestring("Retype new password: ");
     read_password(pass2, sizeof(pass2));
     t_putchar('\n');

@@ -625,6 +625,11 @@ void task_terminate(task_t *t, int status)
     if (!t)
         return;
 
+    /* If the root GUI task is exiting, hand input + display back to the root
+     * text session so mak.sh0's keyboard works again (covers Exit GUI, crash,
+     * and kill paths uniformly). */
+    vtty_task_exited(t);
+
     /* Detach from the IPC graph before the slot can be reused: wake any
      * senders blocked on us and unlink us from a receiver's queue. */
     ipc_task_cleanup(t);

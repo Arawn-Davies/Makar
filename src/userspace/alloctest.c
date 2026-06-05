@@ -152,6 +152,16 @@ int main(int argc, char **argv, char **envp)
         const char *want = "x=-7 hex=0x00ab s=hi c=!";
         for (int i = 0; want[i]; i++)
             if (b[i] != want[i]) return fail("snprintf content mismatch");
+        n = snprintf(b, sizeof(b), "STCFN%.3d", 33);
+        if (n != 8) return fail("snprintf precision length");
+        const char *doom_font = "STCFN033";
+        for (int i = 0; doom_font[i]; i++)
+            if (b[i] != doom_font[i]) return fail("snprintf precision digits");
+        n = snprintf(b, sizeof(b), "CWILV%2.2d", 4);
+        if (n != 7) return fail("snprintf width precision length");
+        const char *doom_level = "CWILV04";
+        for (int i = 0; doom_level[i]; i++)
+            if (b[i] != doom_level[i]) return fail("snprintf width precision");
         /* truncation guard: buf small enough to clip */
         int m = snprintf(b, 6, "hello world");
         if (m != 11) return fail("snprintf return != full length");

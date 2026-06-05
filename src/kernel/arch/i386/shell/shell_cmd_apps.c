@@ -136,6 +136,18 @@ void shell_exec_elf(const char *path, int argc, char **argv)
     }
     t->exec_params = p;
 
+    task_t *self = task_current();
+    if (self && self->tty == VTTY_ROOT_SLOT &&
+        nargs >= 2 && strcmp(p->argv[0], "sh.elf") == 0 &&
+        strcmp(p->argv[1], "--login") == 0) {
+        t->unkillable = 1;
+        /* This is the root login session (mak.sh0 -> sh.elf --login).  The
+         * SYS_EXECVE registration path is bypassed by the in-kernel exec, so
+         * register it here -- SYS_LOGOUT terminates this task to end the
+         * session and drop shell_login_loop back to the login prompt. */
+        vtty_register_root_text_task(t);
+    }
+
     /* Replace the placeholder "exec" task name with the basename of
      * the program (minus a trailing ".elf") so /proc/tasks + maktop
      * + `cat /proc/tasks` show the real running binary.  Stored in
@@ -159,7 +171,6 @@ void shell_exec_elf(const char *path, int argc, char **argv)
         t->name = t->name_buf;
     }
 
-    task_t *self = task_current();
     keyboard_set_focus(t);
     /* Register t as VT-foreground so a user Alt+Fn excursion + return
      * routes focus + KEY_FOCUS_GAIN back to the child, not the shell. */

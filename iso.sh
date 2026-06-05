@@ -28,6 +28,16 @@ cp sysroot/boot/makar.kernel isodir/boot/makar.kernel
 # /etc/hostname mybox  from the rescue shell) to change the prompt.
 echo "makar" > isodir/etc/hostname
 
+# Default /etc/shadow for the live CD: one account `user` with password `user`.
+# Format: name:$mh$<16-hex-salt>$<16-hex-microhash(salt_hex++password)>:::::::
+# (microhash is the kernel's auth hash; this entry is precomputed against the
+#  canonical algorithm so `login` accepts user/user on a live boot, and the GUI
+#  Logout / shell `logout` flows return to a working login prompt.)
+{
+  echo 'root:$mh$fedcba9876543210$b0dc9b7e4dd3cae6:::::::'
+  echo 'user:$mh$0123456789abcdef$b9cdde36b9972a60:::::::'
+} > isodir/etc/shadow
+
 # Copy source tree and docs onto the ISO so they're readable via VIX.
 cp -r src/. isodir/src/
 cp -r docs/. isodir/docs/
