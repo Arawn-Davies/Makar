@@ -103,8 +103,11 @@ int fputs(const char *s, FILE *f)
     return (int)fwrite(s, 1, n, f);
 }
 int fputc(int c, FILE *f) { unsigned char b = (unsigned char)c; return fwrite(&b,1,1,f)==1 ? c : -1; }
+int putchar(int c) { return fputc(c, stdout); }
+int puts(const char *s) { if (fputs(s, stdout) < 0) return -1; return fputc('\n', stdout); }
 int fgetc(FILE *f) { unsigned char b; long r = sys_read(f->fd,&b,1); if (r<=0){f->eof=(r==0);return -1;} return b; }
 int feof(FILE *f)  { return f ? f->eof : 1; }
+/* fseek/ftell are provided by tcc_compat.o (over sys_lseek) -- not redefined. */
 
 /* ---- vsnprintf / snprintf / fprintf / printf ----------------------------- */
 

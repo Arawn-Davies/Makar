@@ -103,6 +103,7 @@
  */
 
 #include <kernel/keyboard.h>
+#include <kernel/mouse.h>
 #include <kernel/vtty.h>
 #include <kernel/isr.h>
 #include <kernel/asm.h>
@@ -785,6 +786,17 @@ static void kb_sync_leds(void)
  * one running task wants raw delivery and another wants cooked. */
 static volatile int kb_raw_mode = 0;
 
+/* Scancode passthrough: when set, deliver_kc routes the raw set-1 single-byte
+ * code (low7 of the keycode) with bit 0x80 = break, for BOTH make and break
+ * events, bypassing all cooked/raw translation.  This is the make/break stream
+ * a game (doom.elf) needs; cooked + sentinel raw modes only ever emit makes. */
+static volatile int kb_scancode_mode = 0;
+
+void keyboard_set_scancode(int on)
+{
+    __atomic_store_n(&kb_scancode_mode, on ? 1 : 0, __ATOMIC_SEQ_CST);
+}
+
 void keyboard_set_raw(int on)
 {
     /* Memory ordering: a sequentially consistent store keeps the IRQ
@@ -1048,6 +1060,14 @@ static int is_modifier_kc(kc_t kc)
  */
 static void deliver_kc(kc_t kc, int is_break)
 {
+    /* Scancode passthrough: raw set-1 byte (low7 | 0x80-break) for make AND
+     * break, no translation.  e0-extended keys collapse to their low7 (e.g.
+     * arrow up -> 0x48), matching the soso/doom scancode convention. */
+    if (__atomic_load_n(&kb_scancode_mode, __ATOMIC_ACQUIRE)) {
+        kb_route((unsigned char)((kc & 0x7F) | (is_break ? 0x80 : 0)));
+        return;
+    }
+
     if (is_modifier_kc(kc)) {
         if (!is_break) {
             if (s_modkey_held[kc]) return;  /* drop typematic repeat */
@@ -1297,7 +1317,7 @@ static void keyboard_irq_handler(registers_t *regs)
         uint8_t status = inb(PS2_STATUS_PORT);
         if (!(status & PS2_STAT_OBF)) break;
         uint8_t sc = inb(PS2_DATA_PORT);
-        if (status & PS2_STAT_AUXB) continue;
+        if (status & PS2_STAT_AUXB) { mouse_feed_byte(sc); continue; }
         decoder_feed(sc);
     }
 

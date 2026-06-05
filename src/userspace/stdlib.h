@@ -50,6 +50,9 @@ static inline long strtol(const char *s, char **endp, int base)
 
 static inline int atoi(const char *s) { return (int)strtol(s, 0, 10); }
 
+int    abs(int x);
+double atof(const char *s);
+
 /* strtoul: unsigned version of strtol.  Accepts the same prefix grammar
  * (whitespace, optional '+'/'-', 0x/0 base autodetect).  A leading '-'
  * is honoured by negating the accumulator on return -- POSIX says the

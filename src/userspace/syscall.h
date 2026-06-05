@@ -75,6 +75,8 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_GETCWD       215
 #define SYS_FB_INFO      216
 #define SYS_DRAW_LINE    217
+#define SYS_MOUSE_READ   256
+#define SYS_FB_PRESENT   257
 #define SYS_CARET_STYLE  218
 /* Admin syscalls (privileged operations).  task_is_admin() gates each;
  * currently always-true (no user model).  Negative return = denied or
@@ -492,6 +494,21 @@ static inline int sys_draw_line(int x0, int y0, int x1, int y1, unsigned int rgb
     unsigned int xy0 = ((unsigned int)(x0 & 0xFFFF) << 16) | (unsigned int)(y0 & 0xFFFF);
     unsigned int xy1 = ((unsigned int)(x1 & 0xFFFF) << 16) | (unsigned int)(y1 & 0xFFFF);
     return (int)syscall3(SYS_DRAW_LINE, (long)xy0, (long)xy1, (long)rgb);
+}
+
+/* Pop one PS/2 mouse event.  0 when none, else packed: bit31=valid,
+ * bits0-2 buttons (bit0 L, bit1 R, bit2 M), bits8-15 dx int8, bits16-23 dy
+ * int8 (+y down). */
+static inline unsigned int sys_mouse_read(void)
+{
+    return (unsigned int)syscall1(SYS_MOUSE_READ, 0);
+}
+
+/* Blit a tightly-packed width*height 32-bpp back buffer full-frame to the
+ * framebuffer.  Returns 0 on success, -1 if no pixel FB / not focused. */
+static inline int sys_fb_present(const void *backbuf)
+{
+    return (int)syscall1(SYS_FB_PRESENT, (long)backbuf);
 }
 
 /* Set the VESA caret style (0 = underline/line, 2 = flashing block).

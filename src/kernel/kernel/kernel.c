@@ -18,6 +18,7 @@
 
 #include <kernel/paging.h>
 #include <kernel/keyboard.h>
+#include <kernel/mouse.h>
 #include <kernel/ide.h>
 #include <kernel/vfs.h>
 #include <kernel/shell.h>
@@ -25,6 +26,7 @@
 #include <kernel/syscall.h>
 #include <kernel/acpi.h>
 #include <kernel/pci.h>
+void usb_init(void);   /* arch/i386/drivers/usb/usb.h (not on the kernel inc path) */
 #include <kernel/net_drivers.h>
 #include <kernel/net_lwip.h>
 #include <kernel/ktest.h>
@@ -293,6 +295,8 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	kprint_ok();
 	keyboard_init();
 	KLOG("keyboard: PS/2 IRQ1 handler registered\n");
+	mouse_init();
+	KLOG("mouse: PS/2 IRQ12 handler registered\n");
 
 	t_writestring("Initializing IDE controller");
 	kprint_ok();
@@ -308,6 +312,7 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	pci_init();
 	pci_probe_all();   /* bind registered drivers to scanned devices */
 	KLOG("pci: bus scan complete\n");
+	usb_init();        /* report USB host controllers (HID driver TBD) */
 
 	/* Parse Multiboot 2 tags: boot device and kernel command line. */
 	int test_mode = 0;

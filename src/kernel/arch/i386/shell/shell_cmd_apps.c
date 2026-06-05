@@ -216,6 +216,7 @@ void shell_exec_elf(const char *path, int argc, char **argv)
      * means a dead app can never lock the user out of Alt+Fn TTY switching
      * or the Ctrl+A pane prefix. */
     keyboard_set_raw(0);
+    keyboard_set_scancode(0);   /* dead game (doom.elf) can't lock raw scancodes */
 
     /* Only clean up after FULLSCREEN apps (those that touched the
      * framebuffer via SYS_PUTCH_AT / SYS_TTY_CLEAR / SYS_DRAW_LINE).

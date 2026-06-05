@@ -58,3 +58,7 @@ int sscanf(const char *s, const char *fmt, ...)
     va_end(ap);
     return matched;
 }
+
+int abs(int x) { return x < 0 ? -x : x; }
+double atof(const char *s) { return (double)strtold(s, (char **)0); }
+double fabs(double x) { return x < 0.0 ? -x : x; }

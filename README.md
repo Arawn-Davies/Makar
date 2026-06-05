@@ -23,6 +23,11 @@ ELF userspace, a userspace shell, a small hosted libc, an in-OS TinyCC, FAT32
 and ext2 storage, copy-on-write `fork`, `execve`, `wait4`, pipes, signals,
 anonymous `mmap`, i386 TLS, and x87/SSE task-state handling.
 
+There is an experimental double-buffered **GUI** (type `gui`): a PS/2-mouse-driven
+desktop with a draggable terminal window, a dock, and launcher icons. A userspace
+**Doom** port (`doom.elf`, vendored doomgeneric, no sound) compiles and links;
+fetch a WAD with `getwad.sh` from a plain-HTTP mirror. See `docs/plans/gui-wm.md`.
+
 Networking is in: an in-kernel lwIP stack over a NIC-agnostic `netdev` layer with
 four polled PCI drivers (virtio-net, RTL8139, Intel E1000, AMD PCNet), DHCP with a
 static slirp fallback, and a small client toolset — DNS resolution, ICMP ping, an

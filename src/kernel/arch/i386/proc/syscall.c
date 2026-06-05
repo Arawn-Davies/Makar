@@ -31,6 +31,7 @@
 #include <kernel/signal.h>
 #include <kernel/tty.h>
 #include <kernel/keyboard.h>
+#include <kernel/mouse.h>
 #include <kernel/shell.h>
 #include <kernel/vfs.h>
 #include <kernel/heap.h>
@@ -627,10 +628,14 @@ void syscall_dispatch(registers_t *regs)
      * defensively forces raw=0 after the child exits in case the app
      * was killed before its own cleanup ran.
      * ------------------------------------------------------------------ */
-    case SYS_KEYBOARD_RAW:
-        keyboard_set_raw((int)regs->ebx);
+    case SYS_KEYBOARD_RAW: {
+        /* 0 = cooked, 1 = raw sentinels, 2 = scancode passthrough (make+break) */
+        int m = (int)regs->ebx;
+        keyboard_set_scancode(m == 2);
+        keyboard_set_raw(m == 1);
         regs->eax = 0;
         break;
+    }
 
     /* ------------------------------------------------------------------
      * SYS_SHELL_CLEAR(213): full-screen reset identical to the `clear`
@@ -837,6 +842,37 @@ void syscall_dispatch(registers_t *regs)
         if (vtty_is_focused())
             vesa_tty_set_caret_style(regs->ebx);
         regs->eax = prev;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_MOUSE_READ(256): pop one PS/2 mouse event (0 when empty).
+     * ------------------------------------------------------------------ */
+    case SYS_MOUSE_READ:
+        regs->eax = mouse_pop_event();
+        break;
+
+    /* ------------------------------------------------------------------
+     * SYS_FB_PRESENT(257): blit a userspace 32-bpp back buffer (tightly
+     * packed, pitch = width*4) full-frame to the framebuffer.  Honours the
+     * FB's own pitch.  Gated on focus like SYS_DRAW_LINE so a backgrounded
+     * WM can't scribble over the visible VT; sets fb_touched so the VT
+     * repaints after the WM exits.  EBX = user back-buffer pointer.
+     * ------------------------------------------------------------------ */
+    case SYS_FB_PRESENT: {
+        const vesa_fb_t *fb = vesa_get_fb();
+        if (!fb || !vesa_tty_is_ready()) { regs->eax = (uint32_t)-1; break; }
+        if (!vtty_is_focused()) {
+            task_t *cur = task_current(); if (cur) cur->fb_touched = 1;
+            regs->eax = 0; break;
+        }
+        const uint8_t *src = (const uint8_t *)(uintptr_t)regs->ebx;
+        uint8_t *dst = (uint8_t *)fb->addr;
+        uint32_t row_bytes = fb->width * 4u;
+        for (uint32_t y = 0; y < fb->height; y++)
+            memcpy(dst + y * fb->pitch, src + y * row_bytes, row_bytes);
+        { task_t *cur = task_current(); if (cur) cur->fb_touched = 1; }
+        regs->eax = 0;
         break;
     }
 

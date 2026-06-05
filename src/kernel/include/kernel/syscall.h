@@ -78,6 +78,14 @@
                                 * VESA caret style (0=line, 2=flashing block),
                                 * returns the previous style.  No-op (returns 0)
                                 * in VGA-text mode.  Used by vix.elf. */
+#define SYS_MOUSE_READ   256  /* uint32_t mouse_read(void) - pop one PS/2 mouse
+                                * event; 0 if none.  Packed: bit31=valid,
+                                * bits0-2 buttons (L/R/M), bits8-15 dx int8,
+                                * bits16-23 dy int8 (+y down). */
+#define SYS_FB_PRESENT   257  /* int fb_present(const void *backbuf) - blit a
+                                * width*height*32bpp (pitch=width*4) user back
+                                * buffer full-frame to the framebuffer.  0 ok,
+                                * -1 if no pixel FB / not focused. */
 
 /*
  * Admin syscalls (219..229).

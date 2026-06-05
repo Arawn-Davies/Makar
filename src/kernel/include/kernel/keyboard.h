@@ -96,6 +96,11 @@ void keyboard_send_to(task_t *t, unsigned char c);
  */
 void keyboard_set_raw(int on);
 
+/* keyboard_set_scancode - enable raw set-1 scancode passthrough (make+break,
+ * 0x80=break) for full-keyboard apps (games) that need key-release events.
+ * Mutually exclusive with cooked/raw sentinel delivery. */
+void keyboard_set_scancode(int on);
+
 /* ===========================================================================
  * Test hooks (in-kernel ktest harness).
  *

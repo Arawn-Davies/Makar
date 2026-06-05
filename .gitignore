@@ -41,3 +41,7 @@ vendor/tinycc/*.o
 vendor/tinycc/lib/*.o
 vendor/tinycc/lib/*.a
 vendor/tinycc/config.h
+
+# Vendored doomgeneric build artefacts
+vendor/doomgeneric/doomgeneric/*.o
+vendor/doomgeneric/doomgeneric/*.d
