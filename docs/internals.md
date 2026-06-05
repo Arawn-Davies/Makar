@@ -472,8 +472,12 @@ The trap gate at IDT[0x80] is DPL=3 so ring 3 can fire it. Inside the
 handler, IF stays 0 — interrupts are masked for the syscall's duration.
 This is the simplest thread-safety story: a syscall can't be preempted, so
 no syscall handler needs to be reentrant or take locks against IRQ context.
-The cost is latency — a slow syscall (FAT32 read, IDE PIO) holds the IRQ
-mask for milliseconds. Acceptable on a single-task interactive shell; the
+The cost is latency — a slow syscall (FAT32 read, IDE access) holds the IRQ
+mask for milliseconds. Disk transfers now prefer bus-master DMA
+(`ide.c`, BMIDE BAR4) over the old per-word PIO loop, which both shortens
+that window and — more importantly — avoids ~256 VM exits per sector on VT-x
+hypervisors (VirtualBox, Hyper-V); PIO remains the fallback when no DMA-capable
+controller is found. Acceptable on a single-task interactive shell; the
 fix is to *enable* IF inside the handler once we're past the regs-save and
 no longer running on a possibly-corrupt stack, the same pattern Linux uses
 for `local_irq_enable()` inside its syscall path. The plumbing is there
