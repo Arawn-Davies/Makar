@@ -12,6 +12,7 @@
 
 #include <kernel/task.h>
 #include <kernel/vtty.h>
+#include <kernel/keyboard.h>
 #include <kernel/fd.h>
 #include <kernel/signal.h>
 #include <kernel/heap.h>
@@ -614,6 +615,13 @@ void task_yield(void)
 
 void task_terminate(task_t *t, int status)
 {
+    /* Universal exit path (task_exit + signal kills).  Release the dying task's
+     * keyboard binding; if it was the focused task this also forces cooked mode
+     * + clears modifiers (a game in scancode mode / kbtester in raw mode would
+     * otherwise leave the keyboard stuck -- e.g. Alt's scancode 0x38 read as
+     * '8' after doom).  Was previously only done by the in-kernel shell, so
+     * userland-sh.elf-launched apps never reset it. */
+    keyboard_release_task(t);
     if (!t)
         return;
 
