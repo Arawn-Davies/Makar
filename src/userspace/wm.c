@@ -540,9 +540,9 @@ int main(int argc, char **argv, char **envp)
                 int act = icon_hit(cx, cy);
                 if (act == ACT_DOOM)        launch_fullscreen("/apps/doom.elf");
                 else if (act == ACT_EDITOR) launch_fullscreen("/apps/vix.elf");
-                else if (act == ACT_TERM || act == ACT_FILES) {
-                    win_open = 1; term_init();        /* (Files: terminal for now) */
-                } else if (win_open && in_closebox(cx, cy)) {
+                else if (act == ACT_FILES)  launch_fullscreen("/apps/files.elf");
+                else if (act == ACT_TERM) { win_open = 1; term_init(); }
+                else if (win_open && in_closebox(cx, cy)) {
                     win_open = 0;                     /* close window, not the gui */
                 } else if (win_open && in_titlebar(cx, cy)) {
                     dragging = 1; drag_dx = cx - win_x; drag_dy = cy - win_y;

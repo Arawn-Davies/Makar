@@ -30,8 +30,10 @@ mouse-driven desktop runs; this doc keeps the architecture + the remaining queue
    (`keyboard.c on_make`); that binding must move/coexist.
 2. **Live shell in the terminal window** — host real `sh.elf` via fork/exec with
    **non-blocking pipe** reads (kernel pipe read currently blocks).
-3. **File browser** app + a **windowed text editor** (today the Editor icon
-   reuses fullscreen `vix.elf`; Files opens a terminal as a placeholder).
+3. **Windowed** file browser + text editor.  Basic fullscreen PoCs exist: the
+   Files icon launches `files.elf` (list + arrow-nav + enter/backspace), the
+   Editor icon reuses fullscreen `vix.elf`.  Making them in-window apps needs the
+   windowed-hosting infra (item 2).
 4. **In-OS tcc build of doom** (ship doomgeneric source + build script, mind the
    tcc-bundled stdint/limits headers).
 
