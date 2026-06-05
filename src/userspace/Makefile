@@ -80,7 +80,7 @@ ktest_uspace.elf: crt0.o ktest_uspace.o
 vix.elf: crt0.o vix.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-gui.elf: crt0.o wm.o
+gui.elf: crt0.o wm.o gui_gfx.o gui_ui.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 files.elf: crt0.o files.o

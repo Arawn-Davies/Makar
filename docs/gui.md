@@ -49,10 +49,29 @@ WM:    each frame: blit the surface into the app's window rect
        on child exit: surface_destroy(id)
 ```
 
+## Widget framework (userspace)
+
+`src/userspace/gui_gfx.{c,h}` + `gui_ui.{c,h}` (flat in `src/userspace/`, since
+the userspace build is single-directory `-nostdinc -I.`). Linked into `gui.elf`
+and reusable by future surface-rendering apps.
+
+- **gui_gfx** — a `gfx_surface` (XRGB8888 pixel buffer + w/h) and clipped
+  primitives: `gfx_px/fill/outline/round/char/str/str_clip`, `gfx_blit` (region
+  copy, for compositing window contents) and `gfx_blit_scaled` (nearest-
+  neighbour, for fitting a fixed app surface like DOOM's 640x400 into a window).
+- **gui_ui** — an immediate-mode toolkit. Each frame the caller snapshots input
+  with `ui_begin` then calls widgets in a fixed order; widget identity is the
+  call order. Widgets: `ui_button`, `ui_slider`, `ui_textbox`, `ui_label`,
+  `ui_listbox`. Transient interaction (pressed/dragged widget, keyboard focus)
+  lives in `ui_ctx`; all content is caller-owned. The window manager hit-tests
+  windows first and only feeds the focused window a "live" ctx (others get a ctx
+  with no buttons/keys so they still draw but don't react) — this is how the
+  per-window focus model reaches individual widgets.
+
 ## Status
 
 - **Phase 1 (done):** kernel shared surfaces + ktest.
-- Phase 2: userspace GUI widget framework (`src/userspace/gui/`).
+- **Phase 2 (done):** userspace GUI widget framework (`gui_gfx`, `gui_ui`).
 - Phase 3: multi-window WM + click-to-focus input routing.
 - Phase 4: native Editor / Files / Task-manager windows.
 - Phase 5: DOOM in a window via a shared surface.
