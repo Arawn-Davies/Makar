@@ -129,8 +129,9 @@ int main(int argc, char **argv)
     static char *na[16];
     if (!has_iwad(argc, argv)) {
         static const char *cand[] = {
-            "/apps/DOOM.WAD", "/apps/DOOM2.WAD", "/apps/doom1.wad",
-            "/tmp/DOOM.WAD",  "/tmp/doom1.wad",  0
+            "/apps/DOOM.WAD",  "/apps/DOOM1.WAD", "/apps/DOOM2.WAD",
+            "/apps/doom1.wad", "/tmp/DOOM.WAD",   "/tmp/DOOM1.WAD",
+            "/tmp/doom1.wad",  0
         };
         for (int i = 0; cand[i]; i++) {
             int fd = sys_open(cand[i], O_RDONLY);
