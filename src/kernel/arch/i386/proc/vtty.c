@@ -475,11 +475,26 @@ int vtty_is_focused(void)
     if (!me) return 0;
     if (me->tty == VTTY_ROOT_SLOT) {
         if (vtty_display_mode == VTTY_DISPLAY_ROOT_GUI) {
+            /* GUI fullscreen apps (doom, vix, files) are launched via execve
+             * which replaces the gui task's image in place, so the running
+             * app keeps the registered gui task's identity and matches here. */
             task_t *gui = __atomic_load_n(&vtty_root_gui_task, __ATOMIC_ACQUIRE);
             return task_live(gui) && me == gui;
         }
-        if (vtty_display_mode == VTTY_DISPLAY_ROOT_TEXT)
-            return me == vtty_root_text_owner();
+        if (vtty_display_mode == VTTY_DISPLAY_ROOT_TEXT) {
+            if (me == vtty_root_text_owner()) return 1;
+            /* A fullscreen child the shell forked (registered as the root-slot
+             * foreground task in shell_cmd_apps.c) owns the display while it
+             * runs -- e.g. doom drawing via SYS_FB_PRESENT.  Unlike the GUI
+             * path the shell forks a *separate* task, so it never matches the
+             * session owner above; without this its framebuffer writes silently
+             * no-op and the game never switches into graphics.  Mirrors the VT
+             * path, which treats any task on the focused tty as focused.  Gated
+             * on ROOT_TEXT so a child backgrounded by a Ctrl+Alt+F6 switch to
+             * the GUI cannot scribble over the GUI. */
+            task_t *fg = __atomic_load_n(&vtty_foreground[VTTY_ROOT_SLOT], __ATOMIC_ACQUIRE);
+            return task_live(fg) && me == fg;
+        }
         return vtty_nslots == 0 && me == vtty_root_text_owner();
     }
     if (vtty_display_mode != VTTY_DISPLAY_VT) return 0;
