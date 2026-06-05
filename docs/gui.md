@@ -68,11 +68,49 @@ and reusable by future surface-rendering apps.
   with no buttons/keys so they still draw but don't react) — this is how the
   per-window focus model reaches individual widgets.
 
+## Window manager (`wm.c`)
+
+`gui.elf` keeps a fixed window per kind (`W_TERMINAL/EDITOR/FILES/TASKS/DOOM`)
+with a z-order list. Each frame it: gathers mouse + one key, does
+window-management click handling (dock/taskbar, icons, raise+focus, title-bar
+drag, close box), routes the key to the focused window (terminal/doom over a
+pipe; editor/files/tasks via their `ui_ctx` pass), then composites desktop →
+windows back-to-front → dock → cursor and presents once. Only the focused
+window receives a "live" `ui_ctx`; others draw but don't react. `gui uitest`
+runs a headless widget self-test emitting `GUI-UITEST: PASS`.
+
+- **Terminal** hosts `sh.elf` over pipes (byte stream drawn as a grid).
+- **Editor** is a native multi-line editor (caret, click-to-position, file I/O).
+- **Files** is a native browser (`sys_readdir`); opening a file routes it to the
+  Editor window.
+- **Tasks** parses `/proc/tasks`, Kill via `SYS_KILL`, refresh-interval slider.
+- **Doom** forks `doom.elf -surface <id>`; the WM maps the shared surface and
+  `gfx_blit_scaled`s it into the window, forwarding keys over the child's stdin.
+
+## DOOM windowed backend (`doomgeneric_makar.c`)
+
+`-surface <id>` selects windowed mode: `DG_Init` maps the surface instead of the
+full framebuffer, `DG_DrawFrame` writes the frame into the surface and does
+**not** call `SYS_FB_PRESENT` (the WM composites), and input comes from stdin
+(the WM forwards decoded key bytes). Since cooked stdin has no key-up codes, a
+press auto-releases after ~120 ms (tap-to-move) — good enough for menus/turning,
+a known limitation. Without `-surface`, DOOM runs its normal fullscreen path
+(shell `doom`), unchanged.
+
 ## Status
 
 - **Phase 1 (done):** kernel shared surfaces + ktest.
 - **Phase 2 (done):** userspace GUI widget framework (`gui_gfx`, `gui_ui`).
-- Phase 3: multi-window WM + click-to-focus input routing.
-- Phase 4: native Editor / Files / Task-manager windows.
-- Phase 5: DOOM in a window via a shared surface.
-- Phase 6: host drag-and-drop GUI designer that emits widget-layout code.
+- **Phase 3 (done):** multi-window WM + click-to-focus input routing.
+- **Phase 4 (done):** native Editor / Files / Task-manager windows.
+- **Phase 5 (done):** DOOM in a window via a shared surface.
+- **Phase 6 (todo):** host drag-and-drop GUI designer that emits widget-layout
+  code. Deferred — the widget schema (`gui_ui.h`) is the contract it will target.
+
+## Not yet verified interactively
+
+The desktop builds clean and the kernel surface path is ktest-covered, but the
+windowed rendering/focus interaction is inherently pixel-level and has **not**
+been driven in a live QEMU session yet (the harness is headless/serial-only).
+Next session: `./run.sh iso boot`, exercise each window, click-to-focus, and the
+Doom surface blit; watch the task manager's process list across open/close.
