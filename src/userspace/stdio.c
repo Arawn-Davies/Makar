@@ -90,11 +90,17 @@ unsigned int fwrite(const void *p, unsigned int sz, unsigned int n, FILE *f)
 unsigned int fread(void *p, unsigned int sz, unsigned int n, FILE *f)
 {
     if (!f || !p || sz == 0 || n == 0) return 0;
-    unsigned int total = sz * n;
-    long got = sys_read(f->fd, p, total);
-    if (got < 0) { f->err = 1; return 0; }
-    if ((unsigned long)got < total) f->eof = 1;
-    return (unsigned int)got / sz;
+    unsigned int total = sz * n, done = 0;
+    unsigned char *d = (unsigned char *)p;
+    /* Loop until satisfied or real EOF -- sys_read may short-read a large
+     * request (e.g. a 12 MiB WAD directory); a single read would truncate it. */
+    while (done < total) {
+        long got = sys_read(f->fd, d + done, total - done);
+        if (got < 0) { f->err = 1; break; }
+        if (got == 0) { f->eof = 1; break; }
+        done += (unsigned int)got;
+    }
+    return done / sz;
 }
 
 int fputs(const char *s, FILE *f)

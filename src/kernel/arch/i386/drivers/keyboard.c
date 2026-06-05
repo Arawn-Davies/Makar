@@ -792,9 +792,21 @@ static volatile int kb_raw_mode = 0;
  * a game (doom.elf) needs; cooked + sentinel raw modes only ever emit makes. */
 static volatile int kb_scancode_mode = 0;
 
+/* Clear all modifier state.  Scancode passthrough bypasses apply_modifier, so a
+ * Shift/Ctrl held during a game (doom's run key) would otherwise stay "stuck"
+ * after returning to cooked mode -- every subsequent key would come out shifted.
+ * Reset on every raw/scancode mode change so cooked input starts clean. */
+static void kb_reset_mods(void)
+{
+    mod_lshift = mod_rshift = mod_lctrl = mod_rctrl = mod_lalt = mod_ralt = 0;
+    mod_shift  = mod_ctrl  = mod_alt = 0;
+    for (unsigned i = 0; i < sizeof(s_modkey_held); i++) s_modkey_held[i] = 0;
+}
+
 void keyboard_set_scancode(int on)
 {
     __atomic_store_n(&kb_scancode_mode, on ? 1 : 0, __ATOMIC_SEQ_CST);
+    kb_reset_mods();
 }
 
 void keyboard_set_raw(int on)
@@ -805,6 +817,7 @@ void keyboard_set_raw(int on)
      * shared state today, but the cost is one mfence and the future-
      * proofing is worth it). */
     __atomic_store_n(&kb_raw_mode, on ? 1 : 0, __ATOMIC_SEQ_CST);
+    kb_reset_mods();
 }
 
 /*
