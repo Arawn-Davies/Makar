@@ -17,6 +17,7 @@
 #include <kernel/signal.h>
 #include <kernel/heap.h>
 #include <kernel/vmm.h>
+#include <kernel/surface.h>
 #include <kernel/fpu.h>
 #include <kernel/paging.h>
 #include <kernel/descr_tbl.h>
@@ -633,6 +634,12 @@ void task_terminate(task_t *t, int status)
     /* Detach from the IPC graph before the slot can be reused: wake any
      * senders blocked on us and unlink us from a receiver's queue. */
     ipc_task_cleanup(t);
+
+    /* Drop any shared-surface mappings (and creator refs) this task holds,
+     * unmapping the shared frames from t->page_dir BEFORE vmm_free_pd() walks
+     * it later — otherwise the frames, still mapped by another holder, would
+     * be double-freed.  Must run while t->page_dir is intact. */
+    surface_release_task(t);
 
     t->exit_status = status;
 

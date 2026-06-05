@@ -35,6 +35,7 @@
 #include <kernel/tmpfs.h>
 #include <kernel/asm.h>
 #include <kernel/keyboard.h>
+#include <kernel/surface.h>
 #include <lwip/ip_addr.h>
 #include <lwip/pbuf.h>
 #include <lwip/tcp.h>
@@ -1063,6 +1064,88 @@ static void test_pmm(void)
     uint32_t rf2 = pmm_alloc_frame();
     KTEST_ASSERT(rf2 == rf);
     pmm_free_frame(rf2);
+
+    ktest_summary();
+}
+
+/* Walk page directory `pd` and return the physical frame backing virtual
+ * address `va`, or 0 if not present.  Mirrors the inline walk in test_vmm. */
+static uint32_t kt_pte_phys(uint32_t *pd, uint32_t va)
+{
+    uint32_t pde = pd[va >> 22];
+    if (!(pde & 0x1u) || (pde & 0x80u)) return 0;       /* present, not large */
+    uint32_t *pt = (uint32_t *)(pde & ~0xFFFu);
+    uint32_t pte = pt[(va >> 12) & 0x3FFu];
+    return (pte & 0x1u) ? (pte & ~0xFFFu) : 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * Suite: shared pixel surfaces (kernel/surface.h)
+ *
+ * The only shared-memory primitive: a surface's physical frames are mapped
+ * into two independent page directories at once, so the window manager and a
+ * forked graphical child share a frame buffer.  Verifies create/info, that two
+ * PDs resolve to the *same* physical frame (genuine sharing, write-visible),
+ * reference-counted teardown (a holder's release clears only its own PTEs and
+ * keeps the surface alive while others hold it), and exact frame accounting.
+ * ------------------------------------------------------------------------- */
+static void test_surface(void)
+{
+    ktest_begin("surface", "shared pixel surfaces: create/map/share/release/destroy + frame accounting");
+
+    uint32_t fc0 = pmm_free_count();
+
+    /* 8x8 RGBA = 256 bytes -> exactly one frame. */
+    int id = surface_create(8, 8);
+    KTEST_ASSERT(id >= 0);
+    KTEST_ASSERT(surface_info(id) == ((8u << 16) | 8u));
+    KTEST_ASSERT(pmm_free_count() == fc0 - 1);          /* one frame reserved */
+
+    /* Map the same surface into two independent address spaces. */
+    uint32_t *pdA = vmm_create_pd();
+    uint32_t *pdB = vmm_create_pd();
+    KTEST_ASSERT(pdA != NULL && pdB != NULL);
+
+    task_t ta, tb;
+    memset(&ta, 0, sizeof ta);
+    memset(&tb, 0, sizeof tb);
+    ta.page_dir = pdA;                                  /* mmap_next = 0 -> lazy base */
+    tb.page_dir = pdB;
+
+    uint32_t va_a = surface_map(id, &ta);
+    uint32_t va_b = surface_map(id, &tb);
+    KTEST_ASSERT(va_a != 0 && va_b != 0);
+
+    /* Both PDs must resolve to the SAME physical frame -> shared memory. */
+    uint32_t physA = kt_pte_phys(pdA, va_a);
+    uint32_t physB = kt_pte_phys(pdB, va_b);
+    KTEST_ASSERT(physA != 0 && physA == physB);
+
+    /* A write through the shared frame is visible to "both" mappings. */
+    *(volatile uint32_t *)physA = 0xCAFEBABEu;
+    KTEST_ASSERT(*(volatile uint32_t *)physB == 0xCAFEBABEu);
+
+    /* Releasing holder A clears only A's PTE; the surface stays alive because
+     * holder B and the creator reference still hold it. */
+    surface_release_task(&ta);
+    KTEST_ASSERT(kt_pte_phys(pdA, va_a) == 0);
+    KTEST_ASSERT(kt_pte_phys(pdB, va_b) == physA);
+    KTEST_ASSERT(surface_info(id) == ((8u << 16) | 8u));
+
+    /* Release holder B and drop the creator ref -> frame is reclaimed. */
+    surface_release_task(&tb);
+    KTEST_ASSERT(surface_destroy(id, task_current()) == 0);
+    KTEST_ASSERT(surface_info(id) == (uint32_t)-1);
+
+    /* Surface pages are already unmapped, so tearing the scratch PDs down frees
+     * only their own PT+PD frames (no double-free) and accounting balances. */
+    vmm_free_pd(pdA);
+    vmm_free_pd(pdB);
+    KTEST_ASSERT(pmm_free_count() == fc0);
+
+    /* Bad-arg guards. */
+    KTEST_ASSERT(surface_create(0, 8) == -1);
+    KTEST_ASSERT(surface_info(-1) == (uint32_t)-1);
 
     ktest_summary();
 }
@@ -3250,6 +3333,10 @@ int ktest_run_all(void)
     total_fail += ktest_fail_count;
 
     test_pmm();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_surface();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 

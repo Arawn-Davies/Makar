@@ -105,7 +105,8 @@ tests/                       GDB boot-test suite
 - **`CLAUDE.history.md`** — shipped state, PR log, FOSS attribution.
 - **`CLAUDE.roadmap.md`** — slice queue + porting/hardware roadmap.
 - `docs/` — `testing.md`, `posix.md`, `syscalls.md`, `scripting.md`,
-  `internals.md`, `kernel/`; `SURVEY.md`; `toolchain/README.md`.
+  `internals.md`, `gui.md` (windowing/compositor + shared surfaces), `kernel/`;
+  `SURVEY.md`; `toolchain/README.md`.
 
 ## Conventions
 - Paths follow Linux: `/usr` `/apps` `/root` `/proc` `/dev` `/mnt/<name>`

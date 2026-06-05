@@ -77,6 +77,10 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_DRAW_LINE    217
 #define SYS_MOUSE_READ   256
 #define SYS_FB_PRESENT   257
+#define SYS_SURFACE_CREATE  259
+#define SYS_SURFACE_MAP     262
+#define SYS_SURFACE_INFO    263
+#define SYS_SURFACE_DESTROY 264
 #define SYS_CARET_STYLE  218
 /* Admin syscalls (privileged operations).  task_is_admin() gates each;
  * currently always-true (no user model).  Negative return = denied or
@@ -511,6 +515,29 @@ static inline unsigned int sys_mouse_read(void)
 static inline int sys_fb_present(const void *backbuf)
 {
     return (int)syscall1(SYS_FB_PRESENT, (long)backbuf);
+}
+
+/* Shared pixel surfaces — the one shared-memory primitive (kernel/surface.h).
+ * surface_create reserves w*h*4 bytes of kernel frames and returns an id;
+ * surface_map maps that surface into the caller and returns its base address
+ * (NULL on failure); surface_info packs (w<<16)|h; surface_destroy drops the
+ * creator's reference.  A window manager creates + maps a surface, passes the
+ * id to a forked child which also maps it, and both share the pixels. */
+static inline int sys_surface_create(int w, int h)
+{
+    return (int)syscall2(SYS_SURFACE_CREATE, (long)w, (long)h);
+}
+static inline void *sys_surface_map(int id)
+{
+    return (void *)syscall1(SYS_SURFACE_MAP, (long)id);
+}
+static inline unsigned int sys_surface_info(int id)
+{
+    return (unsigned int)syscall1(SYS_SURFACE_INFO, (long)id);
+}
+static inline int sys_surface_destroy(int id)
+{
+    return (int)syscall1(SYS_SURFACE_DESTROY, (long)id);
 }
 
 /* Set the VESA caret style (0 = underline/line, 2 = flashing block).

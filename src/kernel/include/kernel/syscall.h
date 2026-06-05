@@ -89,6 +89,15 @@
                                 * buffer full-frame to the framebuffer.  0 ok,
                                 * -1 if no pixel FB / not focused. */
 
+/* Shared pixel surfaces (kernel/surface.h): the one shared-memory primitive.
+ * A window manager creates a surface, a forked graphical child maps the same
+ * physical frames by id, both draw into it; the WM composites.  See
+ * docs/syscalls.md. */
+#define SYS_SURFACE_CREATE  259 /* int surface_create(int w, int h) -> id / -1   */
+#define SYS_SURFACE_MAP     262 /* void *surface_map(int id) -> addr / NULL       */
+#define SYS_SURFACE_INFO    263 /* uint32_t surface_info(int id) -> (w<<16)|h /-1 */
+#define SYS_SURFACE_DESTROY 264 /* int surface_destroy(int id) -> 0 / -1          */
+
 /*
  * Admin syscalls (219..229).
  *

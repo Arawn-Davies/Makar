@@ -37,6 +37,7 @@
 #include <kernel/heap.h>
 #include <kernel/vmm.h>
 #include <kernel/pmm.h>
+#include <kernel/surface.h>
 #include <kernel/elf.h>
 #include <kernel/serial.h>
 #include <kernel/vga.h>
@@ -2246,6 +2247,24 @@ void syscall_dispatch(registers_t *regs)
     case SYS_IPC_SENDREC:
         regs->eax = (uint32_t)ipc_sendrec((int)regs->ebx,
                                           (ipc_msg_t *)(uintptr_t)regs->ecx);
+        break;
+
+    /* ------------------------------------------------------------------
+     * Shared pixel surfaces.  EBX/ECX carry the args; see kernel/surface.h.
+     * SURFACE_MAP returns a userspace address (0 == failure, like mmap-ish
+     * but NULL not MAP_FAILED); the others return the helper's int/uint.
+     * ------------------------------------------------------------------ */
+    case SYS_SURFACE_CREATE:
+        regs->eax = (uint32_t)surface_create((int)regs->ebx, (int)regs->ecx);
+        break;
+    case SYS_SURFACE_MAP:
+        regs->eax = surface_map((int)regs->ebx, task_current());
+        break;
+    case SYS_SURFACE_INFO:
+        regs->eax = surface_info((int)regs->ebx);
+        break;
+    case SYS_SURFACE_DESTROY:
+        regs->eax = (uint32_t)surface_destroy((int)regs->ebx, task_current());
         break;
 
     default:
