@@ -595,9 +595,10 @@ void keyboard_release_task(task_t *t)
     uint32_t flags = kb_spin_lock_irqsave(&kb_slots_lock);
 
     task_t *expected = t;
-    __atomic_compare_exchange_n(&kb_focused, &expected, (task_t *)NULL,
-                                /*weak=*/0,
-                                __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+    int was_focused =
+        __atomic_compare_exchange_n(&kb_focused, &expected, (task_t *)NULL,
+                                    /*weak=*/0,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
     for (int p = 0; p < 2; p++) {
         expected = t;
         __atomic_compare_exchange_n(&kb_pane[p], &expected, (task_t *)NULL,
@@ -615,6 +616,16 @@ void keyboard_release_task(task_t *t)
         }
     }
     kb_spin_unlock_irqrestore(&kb_slots_lock, flags);
+
+    /* If the focused task died, force the keyboard back to cooked mode + clear
+     * modifier state.  A ring-3 app (doom in scancode mode, kbtester in raw
+     * mode) launched from EITHER the in-kernel shell OR userland sh.elf would
+     * otherwise leave the mode/modifiers stuck, so every subsequent key in the
+     * shell came out wrong.  This is the universal exit path (task_exit). */
+    if (was_focused) {
+        keyboard_set_scancode(0);
+        keyboard_set_raw(0);
+    }
 }
 
 /* ===========================================================================

@@ -128,10 +128,13 @@ int main(int argc, char **argv)
 {
     static char *na[16];
     if (!has_iwad(argc, argv)) {
+        /* Prefer the smaller shareware IWAD: the kernel loads the whole file
+         * into a heap buffer at open(), and the 12 MiB full DOOM.WAD truncates
+         * on a 32 MiB heap / ISO9660 -> missing lumps (STCFN33).  DOOM1.WAD
+         * (4.2 MiB) loads cleanly.  /tmp first (tmpfs) if getwad fetched there. */
         static const char *cand[] = {
-            "/apps/DOOM.WAD",  "/apps/DOOM1.WAD", "/apps/DOOM2.WAD",
-            "/apps/doom1.wad", "/tmp/DOOM.WAD",   "/tmp/DOOM1.WAD",
-            "/tmp/doom1.wad",  0
+            "/tmp/DOOM1.WAD",  "/apps/DOOM1.WAD", "/apps/doom1.wad",
+            "/apps/DOOM2.WAD", "/apps/DOOM.WAD",  "/tmp/DOOM.WAD",  0
         };
         for (int i = 0; cand[i]; i++) {
             int fd = sys_open(cand[i], O_RDONLY);
