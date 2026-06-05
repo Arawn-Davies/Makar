@@ -33,6 +33,15 @@ typedef struct {
 void ide_init(void);
 
 /*
+ * ide_pci_register – register the PCI class driver (mass-storage / IDE) that
+ * locates the bus-master IDE (BMIDE) base and enables PCI bus mastering, so
+ * ide_read_sectors/ide_write_sectors can use DMA instead of PIO.  Call before
+ * pci_init()/pci_probe_all(), like the NIC *_register() helpers.  Harmless if
+ * no DMA-capable controller is found: the driver simply falls back to PIO.
+ */
+void ide_pci_register(void);
+
+/*
  * ide_read_sectors – read 'count' 512-byte sectors starting at 'lba'
  * from drive 'drive_num' into 'buf'.
  * Returns 0 on success, negative on invalid args, positive on ATA error.

@@ -328,6 +328,7 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 
 	t_writestring("Scanning PCI bus");
 	kprint_ok();
+	ide_pci_register();   /* arm bus-master IDE DMA when the controller binds */
 	virtio_net_register();
 	rtl8139_register();
 	e1000_register();
