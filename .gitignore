@@ -48,3 +48,6 @@ vendor/doomgeneric/doomgeneric/*.d
 
 # Doom WADs (copyrighted / large -- staged into ISO, never committed)
 wads/
+
+# Ephemeral handoff -- never commit
+HANDOFF.md
