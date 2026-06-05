@@ -21,6 +21,15 @@ void paging_init(void);
  */
 void paging_map_region(uint32_t phys_start, uint32_t size);
 
+/*
+ * Same as paging_map_region(), but maps the range write-combining (WC) when the
+ * CPU supports PAT (armed by paging_init()).  Used for the linear framebuffer so
+ * pixel writes are batched instead of trapping as uncacheable MMIO on VT-x
+ * hypervisors (VirtualBox, Hyper-V) and real hardware.  Falls back to a plain
+ * mapping when PAT is unavailable.
+ */
+void paging_map_region_wc(uint32_t phys_start, uint32_t size);
+
 /* Returns a pointer to the kernel's page directory. Used by vmm_create_pd()
    to propagate kernel PDEs into new per-process page directories. */
 uint32_t *paging_kernel_pd(void);

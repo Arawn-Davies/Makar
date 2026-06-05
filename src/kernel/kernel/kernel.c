@@ -250,12 +250,14 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 				else { bw = max_w; bh = max_h; }
 			}
 
-			/* Pre-map the max-supported FB span into the kernel PD (pre-tasking). */
+			/* Pre-map the max-supported FB span into the kernel PD (pre-tasking),
+			 * write-combining so pixel writes don't trap as UC MMIO on real
+			 * VT-x hypervisors / bare metal (see paging_map_region_wc). */
 			{
 				const vesa_fb_t *fbp = vesa_get_fb();
 				if (fbp)
-					paging_map_region((uint32_t)(uintptr_t)fbp->addr,
-					                  max_w * max_h * 4u);
+					paging_map_region_wc((uint32_t)(uintptr_t)fbp->addr,
+					                     max_w * max_h * 4u);
 			}
 
 			{
@@ -277,7 +279,28 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			bochs_vbe_set_mode(bw, bh, 32);
 			vesa_update_geometry(bw, bh, 32);
 			vesa_tty_init();
+		} else if (vesa_get_fb()) {
+			/* No Bochs/DISPI adapter, but the bootloader honoured our
+			 * Multiboot2 framebuffer request and handed us a linear
+			 * framebuffer (Hyper-V Gen1, VMware SVGA without DISPI, much
+			 * real hardware).  The hardware is therefore already in a
+			 * GRAPHICS mode -- the VGA text buffer at 0xB8000 is invisible,
+			 * which is the Hyper-V Gen1 "black screen" symptom.  We cannot
+			 * change the mode (no DISPI registers), so adopt the
+			 * bootloader's geometry: map the FB span (write-combining) and
+			 * bring vesa_tty up on it. */
+			const vesa_fb_t *fbp = vesa_get_fb();
+			paging_map_region_wc((uint32_t)(uintptr_t)fbp->addr,
+			                     fbp->pitch * fbp->height);
+			Serial_WriteString("display: no DISPI; using bootloader LFB ");
+			Serial_WriteDec(fbp->width);  Serial_WriteString("x");
+			Serial_WriteDec(fbp->height); Serial_WriteString("x");
+			Serial_WriteDec(fbp->bpp);    Serial_WriteString("\n");
+			vesa_tty_set_scale(fbp->width >= 1280 ? 2 : 1);
+			vesa_tty_init();
 		} else {
+			/* No framebuffer at all: genuine VGA text mode. */
+			vesa_disable();
 			vesa_tty_disable();
 			terminal_set_rows(50);
 		}

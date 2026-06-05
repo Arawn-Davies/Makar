@@ -267,3 +267,22 @@ for building the kernel itself.
 | stale userspace behavior after header edits | old object did not rebuild | dependency tracking should now handle this; try `./run.sh clean` if in doubt |
 | GDB checkpoint flaky under KVM | KVM timing/debug behavior | leave `MAKAR_USE_KVM=0` |
 | writes fail on live ISO paths | ISO9660 is read-only | write to `/tmp` or an installed writable root |
+
+## Running on other hypervisors / real hardware
+
+Makar is developed against QEMU but also boots on VirtualBox, Hyper-V (Gen 1),
+and bare metal. A few notes:
+
+- **Graphics mode.** On a Bochs/DISPI adapter (QEMU `std`, VirtualBox) the
+  kernel drives the mode itself (720p/1080p, `vmode=` cmdline). Without DISPI
+  (Hyper-V Gen 1, VMware SVGA, much real hardware) the kernel adopts the linear
+  framebuffer the bootloader set up. If you previously saw a **black screen on
+  Hyper-V Gen 1**, that was the kernel falling back to the VGA text buffer while
+  the hardware was in a graphics mode — now fixed by using the bootloader LFB.
+- **Hyper-V**: use a **Generation 1** VM (BIOS/Multiboot, IDE, PS/2). Generation
+  2 is UEFI + SCSI only and is not yet supported (see `CLAUDE.roadmap.md`).
+- **Performance.** Under VT-x hypervisors (VirtualBox, Hyper-V) each port-I/O
+  and MMIO access is a VM exit, so disk PIO and framebuffer writes cost more than
+  under QEMU's TCG emulation. The framebuffer is mapped **write-combining** (PAT)
+  to batch pixel writes; disk access is still PIO and remains comparatively slow
+  until a DMA path lands.
