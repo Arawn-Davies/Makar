@@ -114,8 +114,37 @@ int DG_GetKey(int *pressed, unsigned char *doomKey)
 
 void DG_SetWindowTitle(const char *title) { (void)title; }
 
+/* If the caller didn't pass -iwad, look for a WAD next to doom.elf (/apps) or
+ * in /tmp (where getwad.sh saves) and inject it.  Lets `doom` and the gui Doom
+ * icon Just Work with a bundled/fetched WAD. */
+static int has_iwad(int argc, char **argv)
+{
+    for (int i = 1; i < argc; i++)
+        if (!strcmp(argv[i], "-iwad")) return 1;
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
+    static char *na[16];
+    if (!has_iwad(argc, argv)) {
+        static const char *cand[] = {
+            "/apps/DOOM.WAD", "/apps/DOOM2.WAD", "/apps/doom1.wad",
+            "/tmp/DOOM.WAD",  "/tmp/doom1.wad",  0
+        };
+        for (int i = 0; cand[i]; i++) {
+            int fd = sys_open(cand[i], O_RDONLY);
+            if (fd >= 0) {
+                sys_close(fd);
+                int n = 0;
+                na[n++] = argv[0]; na[n++] = "-iwad"; na[n++] = (char *)cand[i];
+                for (int j = 1; j < argc && n < 14; j++) na[n++] = argv[j];
+                na[n] = 0;
+                argv = na; argc = n;
+                break;
+            }
+        }
+    }
     doomgeneric_Create(argc, argv);
     for (;;)
         doomgeneric_Tick();

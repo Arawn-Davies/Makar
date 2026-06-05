@@ -187,6 +187,7 @@ install: all
 	      $(ISODIR)/apps/rm.elf $(ISODIR)/apps/echo.elf $(ISODIR)/apps/fsutil.elf
 	cp $(PROGS) $(ISODIR)/apps/
 	cp demo.sh incore.sh rebuild-kernel.sh kend.S getwad.sh $(ISODIR)/apps/
+	-cp ../../wads/*.WAD ../../wads/*.wad $(ISODIR)/apps/ 2>/dev/null || true
 	cp *.bas $(ISODIR)/apps/
 # /usr sysroot for the in-OS compiler (tcc) and any future hosted ports.
 # `crt0.o` is the C-runtime startup; `libc.a` the freestanding libc shim
