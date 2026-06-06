@@ -1155,7 +1155,11 @@ void shell_enter_root_tty(void)
     vtty_register_root();
 
     terminal_set_colorscheme(SHELL_COLOR_VGA);
-    if (vesa_tty_is_ready()) {
+    /* `verbose` boot skips the splash + logo + progress bar entirely so the
+     * boot log (and serial ktest output) left on screen stays visible; we still
+     * wait for ktest_bg_done below.  This is mak.sh0's loading screen -- the
+     * matching gate in shell_enter_slot() only covers the non-root VT slots. */
+    if (!g_verbose_boot && vesa_tty_is_ready()) {
         vesa_tty_set_status_visible(0);
         vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
         vesa_tty_clear();
@@ -1204,11 +1208,15 @@ void shell_enter_root_tty(void)
      * the bottom row from here; Alt+F5 toggles it). */
     vesa_tty_set_status_visible(1);
     terminal_set_colorscheme(SHELL_COLOR_VGA);
-    if (vesa_tty_is_ready()) {
-        vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
-        vesa_tty_clear();
-    } else {
-        t_fill(SHELL_COLOR_VGA);
+    /* Verbose boot leaves the boot log on screen (the login prompt prints
+     * below it); normal boot clears the splash to the VT background first. */
+    if (!g_verbose_boot) {
+        if (vesa_tty_is_ready()) {
+            vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
+            vesa_tty_clear();
+        } else {
+            t_fill(SHELL_COLOR_VGA);
+        }
     }
     /* Boot splash ends here; the login prompt follows in shell_login_loop. */
 }
