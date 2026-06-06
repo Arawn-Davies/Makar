@@ -8,6 +8,7 @@
 #include <kernel/vtty.h>
 #include <kernel/serial.h>
 
+volatile int g_boot_loading = 0;   /* gates framebuffer text during the loading screen (kernel/tty.h) */
 size_t t_line_fill[VGA_WIDTH];
 size_t t_row;
 size_t t_column;
@@ -72,12 +73,13 @@ void t_putchar(char c)
 {
 	if (g_serial_verbose)
 		Serial_WriteChar(c);
-	/* Don't paint kernel text onto the framebuffer while the GUI owns scanout:
-	 * a stray t_writestring (e.g. vfs_mkdir's "read-only filesystem" on the live
-	 * CD, or any kernel diagnostic) would otherwise bleed white-on-blue over the
-	 * desktop.  The VGA-text buffer + serial still record it; GUI app output
-	 * goes through the compositor surface, not this path, so it's unaffected. */
-	if (!vtty_root_gui_active())
+	/* Don't paint kernel text onto the framebuffer while the GUI owns scanout
+	 * (a stray t_writestring would bleed white-on-blue over the desktop) or while
+	 * the boot loading screen is up (background ktest output would bleed over the
+	 * logo/progress bar).  The VGA-text buffer + serial still record it; GUI app
+	 * output goes via the compositor surface and the loading bar via
+	 * vesa_tty_put_at, so neither is affected. */
+	if (!vtty_root_gui_active() && !g_boot_loading)
 		vesa_tty_putchar(c);
 
 	if (c != '\n')

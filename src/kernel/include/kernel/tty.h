@@ -27,6 +27,12 @@ void t_putchar(char c);
 void t_write(const char *data, size_t size);
 void t_writestring(const char *data);
 
+/* Set while the (non-verbose) boot loading screen owns the framebuffer: t_putchar
+ * then keeps text off the framebuffer (VGA buffer + serial still record it) so
+ * concurrent background ktest output doesn't bleed over the logo/progress bar.
+ * The loading screen draws the logo/bar via vesa_tty_put_at, which is unaffected. */
+extern volatile int g_boot_loading;
+
 void t_hex(uint32_t num);
 void t_dec(uint32_t num);
 

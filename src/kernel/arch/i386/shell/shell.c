@@ -971,6 +971,11 @@ int shell_enter_slot(int with_loading_screen)
          * the REPL takes over. */
         terminal_set_colorscheme(SHELL_COLOR_VGA);
 
+        /* Keep background ktest text off the framebuffer for the loading screen
+         * (it draws the bar via vesa_tty_put_at, which is unaffected).  Verbose
+         * boot wants the boot log shown, so it leaves painting enabled. */
+        if (!g_verbose_boot) g_boot_loading = 1;
+
         /* Hide the tmux-style VT status bar for the duration of the
          * loading screen: nothing's registered yet on most slots, and
          * the half-populated bar looks broken next to the logo + bar
@@ -1038,6 +1043,7 @@ int shell_enter_slot(int with_loading_screen)
         while (!ktest_bg_done)
             task_yield();
         while (keyboard_poll()) {}
+        g_boot_loading = 0;   /* loading over -- framebuffer text painting resumes */
 
         /* Loading is over.  Enable the kernel status bar (statusbar_task
          * owns the bottom row from here on); Alt+F5 toggles it off. */
@@ -1155,6 +1161,10 @@ void shell_enter_root_tty(void)
     vtty_register_root();
 
     terminal_set_colorscheme(SHELL_COLOR_VGA);
+    /* Hold background ktest text off the framebuffer for the loading screen so it
+     * can't bleed over the logo/bar (the bar uses vesa_tty_put_at, unaffected).
+     * Verbose boot wants the boot log on screen, so it leaves painting enabled. */
+    if (!g_verbose_boot) g_boot_loading = 1;
     /* `verbose` boot skips the splash + logo + progress bar entirely so the
      * boot log (and serial ktest output) left on screen stays visible; we still
      * wait for ktest_bg_done below.  This is mak.sh0's loading screen -- the
@@ -1203,6 +1213,7 @@ void shell_enter_root_tty(void)
     while (!ktest_bg_done)
         task_yield();
     while (keyboard_poll()) {}
+    g_boot_loading = 0;   /* loading over -- framebuffer text painting resumes */
 
     /* Boot splash done: enable the kernel status bar (statusbar_task owns
      * the bottom row from here; Alt+F5 toggles it). */
