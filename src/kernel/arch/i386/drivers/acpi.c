@@ -100,6 +100,14 @@ static uint16_t slp_typb       = 0;
 static const uint8_t *fadt_raw  = NULL;
 static uint32_t       fadt_len  = 0;
 
+/* Cached for the on-screen acpi_diag() (serial is impractical on VMware/VBox/
+ * Hyper-V).  Set as far through acpi_init() as the parse reached. */
+static uint32_t       diag_rsdt_addr = 0;
+static uint32_t       diag_xsdt_addr = 0;
+static int            diag_fadt_ok   = 0;
+static const uint8_t *diag_dsdt      = NULL;
+static uint32_t       diag_dsdt_len  = 0;
+
 #define SLP_EN   (1u << 13)    /* SLP_EN bit in PM1 control register */
 
 /* ---------------------------------------------------------------------------
@@ -266,6 +274,32 @@ static const acpi_sdt_header_t *acpi_map_table(uint32_t phys_addr)
     return hdr;
 }
 
+/* Walk an RSDT (entry_bytes=4) or XSDT (entry_bytes=8) for the FADT ("FACP"),
+ * mapping each candidate before reading it.  On i386 we use the low 32 bits of
+ * each entry address (firmware places ACPI tables below 4 GiB).  Returns NULL on
+ * a null/invalid/checksum-failed table or no FADT. */
+static const acpi_fadt_t *find_fadt(uint32_t sdt_phys, int entry_bytes)
+{
+    if (!sdt_phys) return NULL;
+    const acpi_sdt_header_t *sdt = acpi_map_table(sdt_phys);
+    if (!sdt || !acpi_checksum(sdt, sdt->length)) return NULL;
+
+    const uint8_t *ents = (const uint8_t *)(sdt + 1);
+    uint32_t n = (sdt->length - sizeof(acpi_sdt_header_t)) / (uint32_t)entry_bytes;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t ep = *(const uint32_t *)(ents + i * (uint32_t)entry_bytes);
+        if (!ep) continue;
+        paging_map_region(ep, sizeof(acpi_sdt_header_t));
+        const acpi_sdt_header_t *h = (const acpi_sdt_header_t *)(uintptr_t)ep;
+        if (memcmp(h->signature, "FACP", 4) == 0) {
+            if (h->length > sizeof(acpi_sdt_header_t))
+                paging_map_region(ep, h->length);
+            return (const acpi_fadt_t *)h;
+        }
+    }
+    return NULL;
+}
+
 int acpi_init(void)
 {
     const acpi_rsdp_t *rsdp = locate_rsdp();
@@ -275,45 +309,21 @@ int acpi_init(void)
     }
     KLOG("acpi: RSDP found\n");
 
-    /* Map and validate the RSDT. */
-    const acpi_sdt_header_t *rsdt = acpi_map_table(rsdp->rsdt_address);
-    if (!rsdt) {
-        KLOG("acpi: RSDT address is null\n");
-        return 0;
-    }
-    if (!acpi_checksum(rsdt, rsdt->length)) {
-        KLOG("acpi: RSDT checksum bad\n");
-        return 0;
-    }
-
-    const uint32_t *entry = (const uint32_t *)(rsdt + 1);
-    uint32_t n_entries = (rsdt->length - sizeof(acpi_sdt_header_t)) / 4;
-
-    /* Find the FADT ("FACP") entry, mapping each candidate before reading it. */
+    /* Prefer the 64-bit XSDT on ACPI 2.0+ (what Linux does -- some firmwares,
+     * incl. hypervisors, populate the XSDT more reliably than the legacy RSDT),
+     * then fall back to the 32-bit RSDT. */
+    diag_rsdt_addr = rsdp->rsdt_address;
     const acpi_fadt_t *fadt = NULL;
-    for (uint32_t i = 0; i < n_entries; i++) {
-        uint32_t entry_phys = entry[i];
-        if (entry_phys == 0)
-            continue;
-
-        /* Map enough of this entry to read the 4-byte signature. */
-        paging_map_region(entry_phys, sizeof(acpi_sdt_header_t));
-
-        const acpi_sdt_header_t *hdr =
-            (const acpi_sdt_header_t *)(uintptr_t)entry_phys;
-
-        if (memcmp(hdr->signature, "FACP", 4) == 0) {
-            /* Map the full FADT now that we know its address. */
-            if (hdr->length > sizeof(acpi_sdt_header_t))
-                paging_map_region(entry_phys, hdr->length);
-            fadt = (const acpi_fadt_t *)hdr;
-            break;
-        }
+    if (rsdp->revision >= 2) {
+        diag_xsdt_addr = *(const uint32_t *)((const uint8_t *)rsdp + 24); /* XSDT addr low32 */
+        if (diag_xsdt_addr) fadt = find_fadt(diag_xsdt_addr, 8);
     }
+    if (!fadt) fadt = find_fadt(rsdp->rsdt_address, 4);
     if (!fadt) {
-        KLOG("acpi: FADT not found in RSDT\n");
+        KLOG("acpi: FADT not found in RSDT/XSDT\n");
         return 0;
     }
+    diag_fadt_ok = 1;
     if (!acpi_checksum(fadt, fadt->hdr.length)) {
         KLOG("acpi: FADT checksum bad\n");
         return 0;
@@ -326,12 +336,20 @@ int acpi_init(void)
     fadt_raw = (const uint8_t *)fadt;
     fadt_len = fadt->hdr.length;
 
-    /* Map and validate the DSDT, then scan for \_S5_. */
-    const acpi_sdt_header_t *dsdt_hdr = acpi_map_table(fadt->dsdt);
+    /* Map and validate the DSDT, then scan for \_S5_.  Prefer the 64-bit X_DSDT
+     * (FADT offset 140, ACPI 2.0+) over the 32-bit DSDT field, like Linux. */
+    uint32_t dsdt_phys = fadt->dsdt;
+    if (fadt->hdr.length >= 148) {
+        uint32_t xdsdt = *(const uint32_t *)((const uint8_t *)fadt + 140);
+        if (xdsdt) dsdt_phys = xdsdt;
+    }
+    const acpi_sdt_header_t *dsdt_hdr = acpi_map_table(dsdt_phys);
     if (!dsdt_hdr) {
         KLOG("acpi: DSDT address is null\n");
         return 0;
     }
+    diag_dsdt = (const uint8_t *)dsdt_hdr;
+    diag_dsdt_len = dsdt_hdr->length;
     if (!acpi_checksum(dsdt_hdr, dsdt_hdr->length)) {
         KLOG("acpi: DSDT checksum bad\n");
         return 0;
@@ -364,6 +382,37 @@ int acpi_init(void)
     return 1;
 }
 
+/* Print the ACPI soft-off parse state to the *screen* (serial is impractical on
+ * VMware/VirtualBox/Hyper-V).  Shown when soft-off is about to fail so it can be
+ * photographed: which stage broke, and the AML bytes around \_S5_ for decoding. */
+static void acpi_diag(void)
+{
+    t_writestring("\n--- ACPI soft-off diagnostic (photograph this) ---\n");
+    t_writestring("RSDT=");    t_hex(diag_rsdt_addr);
+    t_writestring(" XSDT=");   t_hex(diag_xsdt_addr);
+    t_writestring(" FADT=");   t_writestring(diag_fadt_ok ? "ok" : "MISSING");
+    t_writestring("\npm1a=");  t_hex(pm1a_cnt_port);
+    t_writestring(" dsdt=");   t_hex((uint32_t)(uintptr_t)diag_dsdt);
+    t_writestring(" len=");    t_hex(diag_dsdt_len);
+    t_writestring(" enabled="); t_dec(acpi_enabled);
+    t_writestring("\n");
+    if (diag_dsdt && diag_dsdt_len) {
+        int found = 0;
+        for (uint32_t i = 36; i + 4 < diag_dsdt_len; i++) {
+            if (memcmp(diag_dsdt + i, "_S5_", 4) != 0) continue;
+            found = 1;
+            uint32_t lo = (i >= 2) ? i - 2 : 0;
+            t_writestring("_S5_ AML:");
+            for (uint32_t k = lo; k < i + 18 && k < diag_dsdt_len; k++) {
+                t_writestring(" "); t_hex(diag_dsdt[k]);
+            }
+            t_writestring("\n");
+            break;
+        }
+        if (!found) t_writestring("_S5_ not present in DSDT\n");
+    }
+}
+
 __attribute__((noreturn)) void acpi_shutdown(void)
 {
     t_writestring("System shutting down...\n");
@@ -382,7 +431,10 @@ __attribute__((noreturn)) void acpi_shutdown(void)
     /* 3. Bochs / old QEMU power-off (port 0xB004, value 0x2000). */
     outw(0xB004, 0x2000);
 
-    /* 4. Last resort: disable interrupts and spin on HLT. */
+    /* 4. Soft-off didn't take.  Show the ACPI parse state on screen (no serial
+     * needed) so a hypervisor that still hangs can be diagnosed from a photo,
+     * then disable interrupts and spin on HLT. */
+    acpi_diag();
     t_writestring("It is now safe to turn off your computer.\n");
     asm volatile("cli");
     for (;;)
