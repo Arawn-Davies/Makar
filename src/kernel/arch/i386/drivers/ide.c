@@ -104,12 +104,24 @@ static ide_drive_t drives[IDE_MAX_DRIVES];
  * On a VT-x hypervisor every port access is a VM exit, so PIO costs ~256 exits
  * per sector; DMA costs a handful of exits per transfer regardless of size.
  *
- * Minimal polling implementation: nIEN stays set (no IRQs) and completion is
- * detected by polling the BMIDE Active bit.  Transfers go through a static,
- * 64 KiB-aligned bounce buffer (identity-mapped, so its virtual address is its
- * physical address) and are then memcpy'd to/from the caller -- this sidesteps
- * the PRD physical-contiguity / 64 KiB-boundary constraints on arbitrary
- * caller buffers.  Any setup failure falls back to the PIO path.
+ * Polling implementation: nIEN stays set (no IRQs) and completion is detected
+ * by polling the BMIDE Active bit with a bounded timeout.  Polling is the safe
+ * choice across every hypervisor and emulator -- emulated controllers complete
+ * the transfer synchronously when the engine is started, so the poll returns
+ * almost immediately (no busy-wait of VM exits), and there is no task-sleep to
+ * collide with the kernel's non-preemptible-syscall model.  Transfers go
+ * through a static, 64 KiB-aligned bounce buffer (identity-mapped, so its
+ * virtual address is its physical address) and are memcpy'd to/from the caller,
+ * sidestepping PRD physical-contiguity / 64 KiB-boundary constraints on
+ * arbitrary caller buffers.
+ *
+ * Linux-style resilience so the same binary works on type-1/type-2 hypervisors,
+ * paravirtual and fully-emulated platforms alike: DMA is used only for drives
+ * whose IDENTIFY advertises it; every setup/transfer failure soft-resets the
+ * channel and retries the request via PIO; and after a few consecutive failures
+ * the driver demotes itself to PIO entirely.  A platform whose BMIDE we cannot
+ * drive therefore still works (just slower) instead of hanging or erroring.
+ * (Paravirtual virtio-blk and AHCI/NVMe are separate drivers, not this path.)
  * ---------------------------------------------------------------------- */
 
 /* BMIDE register offsets, relative to (s_bmide_base + channel * 8). */
@@ -138,11 +150,54 @@ typedef struct __attribute__((packed)) {
 #define DMA_ATA_CHUNK_SECS (DMA_CHUNK_BYTES / 512u)    /* 64  */
 #define DMA_ATAPI_CHUNK_SECS (DMA_CHUNK_BYTES / ATAPI_CD_SECTOR_SIZE) /* 16 */
 
-static uint16_t s_bmide_base = 0;   /* 0 = no DMA controller found */
+/* IDENTIFY word 49, bit 8: device supports DMA (drives[].capabilities). */
+#define ATA_CAP_DMA    0x0100u
+
+#define DMA_MAX_FAILS  3        /* consecutive DMA errors before global demotion */
+
+static uint16_t s_bmide_base  = 0;  /* 0 = no bus-master IDE controller found    */
+static int      s_dma_enabled = 0;  /* armed once the controller binds; cleared  */
+                                    /* (demoted to PIO) after repeated DMA errors */
+static int      s_dma_fails   = 0;  /* consecutive DMA failures                  */
 static uint8_t  s_dma_buf[DMA_BOUNCE_BYTES] __attribute__((aligned(65536)));
 static prd_t    s_prdt[1] __attribute__((aligned(16)));
 
 static int ide_poll(uint8_t ch, int check_drq);   /* defined below */
+
+/* Linux-style resilience: a DMA error is never fatal while PIO can do the job.
+ * Each failure soft-resets the channel and the caller retries via PIO; after a
+ * few consecutive failures we demote the whole driver to PIO so a hypervisor
+ * whose BMIDE we mis-drive still works (just slower) instead of erroring. */
+static void ide_soft_reset(uint8_t ch);   /* defined below */
+
+static void dma_note_failure(uint8_t ch)
+{
+    ide_soft_reset(ch);
+    if (++s_dma_fails >= DMA_MAX_FAILS) {
+        s_dma_enabled = 0;
+        Serial_WriteString("ide: repeated DMA errors -> disabled, using PIO\n");
+    }
+}
+
+static inline void dma_note_success(void) { s_dma_fails = 0; }
+
+/* DMA usable for this ATA drive right now? (controller present, not demoted,
+ * drive present + ATA + advertises DMA in its IDENTIFY capabilities). */
+static int dma_ata_usable(uint8_t drive_num)
+{
+    return s_bmide_base && s_dma_enabled &&
+           drive_num < IDE_MAX_DRIVES && drives[drive_num].present &&
+           drives[drive_num].type == IDE_TYPE_ATA &&
+           (drives[drive_num].capabilities & ATA_CAP_DMA);
+}
+
+static int dma_atapi_usable(uint8_t drive_num)
+{
+    return s_bmide_base && s_dma_enabled &&
+           drive_num < IDE_MAX_DRIVES && drives[drive_num].present &&
+           drives[drive_num].type == IDE_TYPE_ATAPI &&
+           (drives[drive_num].capabilities & ATA_CAP_DMA);
+}
 
 /* Disk I/O runs with the timer effectively stalled (long polled waits, often
  * with interrupts masked in syscall context), so the boot/status spinner
@@ -264,6 +319,17 @@ static int ide_poll(uint8_t ch, int check_drq)
     return 0;
 }
 
+/* Software-reset one channel (ATA spec §9.1): pulse SRST in the Device Control
+ * register with nIEN held so no IRQs fire, then let the drives recalibrate.
+ * Used at probe time and to recover a channel after a DMA error. */
+static void ide_soft_reset(uint8_t ch)
+{
+    outb(channels[ch].ctrl, 0x06);   /* nIEN | SRST */
+    for (int r = 0; r < 5; r++) ide_400ns_delay(ch);
+    outb(channels[ch].ctrl, 0x02);   /* nIEN, SRST cleared */
+    for (int r = 0; r < 250; r++) ide_400ns_delay(ch);  /* ~100 µs settle */
+}
+
 /* -------------------------------------------------------------------------
  * ide_init
  * ---------------------------------------------------------------------- */
@@ -283,12 +349,8 @@ void ide_init(void)
      *   3. Deassert SRST; drives recalibrate in ≤31 ms (QEMU is instant).
      *   4. Wait briefly before issuing any commands.
      */
-    outb(channels[0].ctrl, 0x06);   /* nIEN | SRST */
-    outb(channels[1].ctrl, 0x06);   /* nIEN | SRST */
-    for (int _r = 0; _r < 5; _r++) ide_400ns_delay(0);
-    outb(channels[0].ctrl, 0x02);   /* nIEN, SRST cleared */
-    outb(channels[1].ctrl, 0x02);   /* nIEN, SRST cleared */
-    for (int _r = 0; _r < 250; _r++) ide_400ns_delay(0);  /* ~100 µs settle */
+    ide_soft_reset(0);
+    ide_soft_reset(1);
 
     for (uint8_t ch = 0; ch < 2; ch++) {
         for (uint8_t dr = 0; dr < 2; dr++) {
@@ -468,12 +530,8 @@ static int ide_access(uint8_t direction, uint8_t drive_num,
 static int ide_dma_ata(uint8_t direction, uint8_t drive_num,
                        uint32_t lba, uint8_t count, void *buf)
 {
-    if (!s_bmide_base)
-        return -3;
-    if (drive_num >= IDE_MAX_DRIVES || !drives[drive_num].present)
-        return -1;
-    if (drives[drive_num].type != IDE_TYPE_ATA)
-        return -3;
+    if (!dma_ata_usable(drive_num))
+        return -3;                            /* not usable: caller uses PIO */
     if (count == 0)
         return 0;
 
@@ -527,6 +585,7 @@ static int ide_dma_ata(uint8_t direction, uint8_t drive_num,
         ide_write(ch, ATA_REG_COMMAND, ATA_CMD_CACHE_FLUSH);
         ide_poll(ch, 0);
     }
+    dma_note_success();
     return 0;
 }
 
@@ -538,17 +597,21 @@ int ide_read_sectors(uint8_t drive_num, uint32_t lba, uint8_t count,
                      void *buf)
 {
     int r = ide_dma_ata(0, drive_num, lba, count, buf);
-    if (r != -3)
-        return r;                       /* DMA handled it (success or error) */
-    return ide_access(0, drive_num, lba, count, buf);   /* PIO fallback */
+    if (r == 0)
+        return 0;
+    if (r != -3)                        /* DMA tried but errored: reset + retry */
+        dma_note_failure(drives[drive_num].channel);
+    return ide_access(0, drive_num, lba, count, buf);   /* PIO fallback/retry */
 }
 
 int ide_write_sectors(uint8_t drive_num, uint32_t lba, uint8_t count,
                       const void *buf)
 {
     int r = ide_dma_ata(1, drive_num, lba, count, (void *)buf);
+    if (r == 0)
+        return 0;
     if (r != -3)
-        return r;
+        dma_note_failure(drives[drive_num].channel);
     return ide_access(1, drive_num, lba, count, (void *)buf);   /* PIO */
 }
 
@@ -691,9 +754,10 @@ int ide_read_atapi_sectors(uint8_t drive_num, uint32_t lba,
     uint8_t  dr = drives[drive_num].drive;
     uint8_t *p  = (uint8_t *)buf;
 
-    /* Fast path: bus-master DMA in chunks.  On any error fall back to PIO
-     * from the start so a flaky DMA controller never wedges CD reads. */
-    if (s_bmide_base) {
+    /* Fast path: bus-master DMA in chunks.  On any error soft-reset, demote,
+     * and fall back to PIO from the start so a flaky DMA controller never
+     * wedges CD reads. */
+    if (dma_atapi_usable(drive_num)) {
         int      ok        = 1;
         uint32_t remaining = count;
         uint32_t cur       = lba;
@@ -707,8 +771,11 @@ int ide_read_atapi_sectors(uint8_t drive_num, uint32_t lba,
             cur       += secs;
             remaining -= secs;
         }
-        if (ok)
+        if (ok) {
+            dma_note_success();
             return 0;
+        }
+        dma_note_failure(ch);
     }
 
     for (uint16_t i = 0; i < count; i++) {
@@ -858,7 +925,9 @@ static int ide_dma_probe(pci_device_t *d)
         return 1;                       /* no BMIDE here: don't claim */
 
     pci_enable_bus_master(d);
-    s_bmide_base = (uint16_t)io;
+    s_bmide_base  = (uint16_t)io;
+    s_dma_enabled = 1;
+    s_dma_fails   = 0;
 
     Serial_WriteString("ide: BMIDE DMA at io ");
     Serial_WriteHex(s_bmide_base);
