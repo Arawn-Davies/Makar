@@ -46,6 +46,12 @@ char g_autologin_user[64] = {0};
  * entry).  shell_login_loop launches the desktop in the login session. */
 int g_boot_gui = 0;
 
+/* Whether the *current* session is a GUI one (init = g_boot_gui).  Set to 1
+ * when the GUI registers as the root-GUI task, 0 on Exit to Shell
+ * (SYS_GUI_CLOSE).  shell_login_loop reads it so Log Off re-shows the GUI
+ * login but a CLI `logout` re-shows the text login. */
+int g_gui_session = 0;
+
 /*
  * Column at which "[ OK ]" starts, counting from 0.
  * "[ OK ]" is 6 characters wide, so it occupies columns 74–79 on an

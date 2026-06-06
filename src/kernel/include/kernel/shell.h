@@ -16,6 +16,11 @@ extern char g_autologin_user[64];
  * (the GUI boot menu entry; pairs with autologin=<user> for a desktop boot). */
 extern int g_boot_gui;
 
+/* Whether the current session is a GUI session (vs a CLI shell).  Init =
+ * g_boot_gui; flipped to 1 when the GUI registers, 0 on Exit to Shell.
+ * shell_login_loop uses it to pick GUI vs text login on re-login. */
+extern int g_gui_session;
+
 /*
  * Minimal kernel REPL over VGA + PS/2 keyboard.
  *

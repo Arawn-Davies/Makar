@@ -1847,6 +1847,11 @@ static int run_script_buf(const char *src)
 
 static void build_prompt(char *out, unsigned int outsz)
 {
+    /* "logged in as" is global kernel state (auth_current_user); read it live
+     * so a login that happened elsewhere -- notably the GUI graphical login,
+     * which sets the session user via SYS_LOGIN after this shell started with
+     * an empty --user= -- is reflected in the prompt (was showing `@host`). */
+    { char wn[USER_MAX]; if (sys_whoami(wn, sizeof wn) > 0 && wn[0]) s_copy(g_username, wn, sizeof g_username); }
     char cwd[VFS_PATH_MAX];
     if (sys_getcwd(cwd, sizeof(cwd)) < 0) { cwd[0] = '/'; cwd[1] = '\0'; }
     /* user@host:cwd$  (root gets '#', unprivileged users get '$' -- the

@@ -656,6 +656,62 @@ static int icon_hit(int px,int py){ for(int i=0;i<ICON_N;i++){icon_t*c=&icons[i]
 
 static const char *kind_short(int k){ return k==W_TERMINAL?"sh":k==W_EDITOR?"ed":k==W_FILES?"fs":k==W_TASKS?"ps":"dm"; }
 
+/* ---- system stats for the right of the dock (CPU% + RAM%) --------------- */
+static unsigned dock_meminfo_kb(const char *label)
+{
+    char buf[512]; int fd=sys_open("/proc/meminfo",O_RDONLY); if(fd<0) return 0;
+    long r=sys_read(fd,buf,sizeof buf-1); sys_close(fd); if(r<=0) return 0; buf[r]=0;
+    int ll=slen(label);
+    for(long i=0;i<r;){
+        int j=0; while(j<ll && buf[i+j]==label[j]) j++;
+        if(j==ll && buf[i+ll]==':'){ const char *p=buf+i+ll+1; while(*p==' ')p++;
+            unsigned v=0; while(*p>='0'&&*p<='9'){v=v*10u+(unsigned)(*p-'0');p++;} return v; }
+        while(i<r && buf[i]!='\n') i++; i++;
+    }
+    return 0;
+}
+/* Sum of TICKS across all tasks except idle (pid 1) -- maktop's CPU% basis. */
+static unsigned dock_busy_ticks(void)
+{
+    char buf[1024]; int fd=sys_open("/proc/tasks",O_RDONLY); if(fd<0) return 0;
+    long r=sys_read(fd,buf,sizeof buf-1); sys_close(fd); if(r<=0) return 0; buf[r]=0;
+    long i=0; int line=0; unsigned sum=0;
+    while(i<r){
+        char tok[6][20]; int nt=0;
+        while(i<r && buf[i]!='\n'){
+            while(i<r&&(buf[i]==' '||buf[i]=='\t'))i++;
+            if(i>=r||buf[i]=='\n')break;
+            int tl=0; while(i<r&&buf[i]!=' '&&buf[i]!='\t'&&buf[i]!='\n'){ if(nt<6&&tl<19)tok[nt][tl++]=buf[i]; i++; }
+            if(nt<6){tok[nt][tl]=0;nt++;}
+        }
+        if(i<r)i++;
+        if(line++==0)continue;                       /* header */
+        if(nt<5)continue;
+        if(tok[0][0]=='1'&&tok[0][1]==0)continue;     /* skip idle (pid 1) */
+        unsigned v=0; for(int k=0;tok[4][k];k++)v=v*10u+(unsigned)(tok[4][k]-'0'); sum+=v;
+    }
+    return sum;
+}
+/* "CPU n%  RAM n%" into out; recomputed ~once/sec, cached between. */
+static void dock_stats(char *out)
+{
+    static unsigned last_busy=0,last_up=0,cpu=0,ram=0; static int have=0;
+    unsigned up=sys_uptime();
+    if(!have || (up-last_up)>=100u){             /* ~1s at 100 Hz */
+        unsigned busy=dock_busy_ticks();
+        if(have && up>last_up){ unsigned dt=up-last_up, db=(busy>last_busy)?busy-last_busy:0u;
+                                cpu=db*100u/dt; if(cpu>100u)cpu=100u; }
+        unsigned tot=dock_meminfo_kb("MemTotal"), fr=dock_meminfo_kb("MemFree");
+        ram=(tot>fr)?(tot-fr)*100u/tot:0u;
+        last_busy=busy; last_up=up; have=1;
+    }
+    char n[8]; int o=0; const char *p;
+    p="CPU "; while(*p)out[o++]=*p++; u2s(cpu,n); for(int i=0;n[i];i++)out[o++]=n[i]; out[o++]='%';
+    out[o++]=' '; out[o++]=' ';
+    p="RAM "; while(*p)out[o++]=*p++; u2s(ram,n); for(int i=0;n[i];i++)out[o++]=n[i]; out[o++]='%';
+    out[o]=0;
+}
+
 /* taskbar button rects live here so click handling and drawing agree */
 static int dock_btn_x(int slot){ return 8 + slot*42; }
 static void draw_dock(void)
@@ -671,6 +727,9 @@ static void draw_dock(void)
         gfx_str(&scr,bx+(36-gfx_text_w(kind_short(k)))/2, y0+(DOCK_H-8)/2, kind_short(k), 0xFFFFFF);
         slot++;
     }
+    /* CPU / RAM stats, right-aligned. */
+    { char st[32]; dock_stats(st);
+      gfx_str(&scr,(int)FBW-gfx_text_w(st)-10, y0+(DOCK_H-8)/2, st, RGB(0x90,0xa0,0xb5)); }
 }
 
 /* The top menu bar.  Drawn on every composited frame (after the windows, so it
@@ -684,16 +743,25 @@ static const char *kind_name(int k)
                case W_DOOM:return "Doom"; default:return "Desktop"; }
 }
 #define LOGOFF_W 70
+#define EXIT_W   54
 static void draw_menubar(void)
 {
     gfx_fill(&scr,0,0,(int)FBW,MENU_H,COL_MENU);
     gfx_fill(&scr,0,MENU_H-1,(int)FBW,1,RGB(0x28,0x32,0x44));
     gfx_str(&scr,8,(MENU_H-8)/2,"Makar",RGB(0x8a,0xe2,0x34));
     gfx_str(&scr,64,(MENU_H-8)/2, kind_name(focus_kind), RGB(0x90,0xa0,0xb5));
-    /* Log Off item, right-aligned. */
+    /* Right-aligned: [ Exit ] [ Log Off ]. */
     int lx=(int)FBW-LOGOFF_W-4;
     gfx_fill(&scr,lx,2,LOGOFF_W,MENU_H-4,COL_CLOSE);
     gfx_str(&scr,lx+(LOGOFF_W-gfx_text_w("Log Off"))/2,(MENU_H-8)/2,"Log Off",0xFFFFFF);
+    int ex=lx-EXIT_W-4;
+    gfx_fill(&scr,ex,2,EXIT_W,MENU_H-4,UI_COL_BTN);
+    gfx_str(&scr,ex+(EXIT_W-gfx_text_w("Exit"))/2,(MENU_H-8)/2,"Exit",0xFFFFFF);
+}
+static int exit_hit(int px,int py)
+{
+    int ex=(int)FBW-LOGOFF_W-4-EXIT_W-4;
+    return in_rect(px,py,ex,2,EXIT_W,MENU_H-4);
 }
 static int logoff_hit(int px,int py)
 {
@@ -893,7 +961,8 @@ int main(int argc, char **argv, char **envp)
 
     int cx=(int)FBW/2, cy=(int)FBH/2, prev_left=0;
     int dragging=0, drag_kind=-1, drag_dx=0, drag_dy=0;
-    int dirty=1, announced=0;
+    int dirty=1, announced=0, exit_to_shell=0;
+    unsigned stat_up=0;
 
     for(;;){
         /* ---- gather input ---- */
@@ -921,6 +990,7 @@ int main(int argc, char **argv, char **envp)
         if (mpressed){
             int dk;
             if (logoff_hit(cx,cy)) break;     /* Log Off: clean up + end session */
+            else if (exit_hit(cx,cy)){ exit_to_shell=1; break; }   /* Exit to CLI shell */
             else if (dock_hit(cx,cy,&dk)){ open_window(dk); dirty=1; }
             else {
                 int hk=hit_window(cx,cy);
@@ -956,6 +1026,7 @@ int main(int argc, char **argv, char **envp)
         if (wins[W_TERMINAL].open && term_pump()) dirty=1;
         if (wins[W_TASKS].open) dirty=1;           /* tasks auto-refresh ticks */
         if (wins[W_DOOM].open) dirty=1;            /* doom animates            */
+        { unsigned now=sys_uptime(); if (now-stat_up>=100u){ stat_up=now; dirty=1; } } /* ~1s: refresh dock stats */
 
         if (!dirty){ sys_yield(); continue; }
 
@@ -992,15 +1063,19 @@ int main(int argc, char **argv, char **envp)
         sys_yield();
     }
 
-    /* Reached on Log Off.  Tear down our children so no forked shell / doom
-     * leaks, restore terminal + statusbar state, then end the underlying login
-     * session (sys_logout).  The login loop running mak.sh0 stays alive and
-     * re-shows the login screen; this WM task then exits.  Note: the GUI shell
-     * is a forked sh.elf on a private pipe, so a Ctrl-C/Ctrl-D in it only ever
-     * closed that terminal window -- mak.sh0 is never in that blast radius. */
+    /* Reached on Log Off or Exit.  Either way tear down our children so no
+     * forked shell / doom leaks and restore terminal + statusbar state.  Then:
+     *   - Exit  -> sys_gui_close(): hand the display + keyboard back to the CLI
+     *              shell of *this* session (same login), and mark the session
+     *              CLI so a later `logout` re-shows the text login.
+     *   - LogOff-> sys_logout(): end the login session entirely; the login loop
+     *              re-shows the (GUI) login.
+     * The GUI shell is a forked sh.elf on a private pipe, so a Ctrl-C/Ctrl-D in
+     * it only ever closed that terminal window -- mak.sh0 is never in range. */
     term_kill(); doom_stop();
     sys_fcntl(0,F_SETFL,0);
     sys_statusbar_set(saved_status);
-    sys_logout();
+    if (exit_to_shell) sys_gui_close();
+    else               sys_logout();
     return 0;
 }
