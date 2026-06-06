@@ -501,6 +501,14 @@ static int ide_dma_ata(uint8_t direction, uint8_t drive_num,
         cur_lba   += secs;
         remaining -= secs;
     }
+
+    if (direction == 1) {
+        /* Commit the drive's write cache, exactly like the PIO path.  Without
+         * this the tail of a large write (e.g. an OS install) can be lost on
+         * reset on real hardware / hypervisors that honour the write cache. */
+        ide_write(ch, ATA_REG_COMMAND, ATA_CMD_CACHE_FLUSH);
+        ide_poll(ch, 0);
+    }
     return 0;
 }
 
