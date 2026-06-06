@@ -160,6 +160,78 @@ static void term_draw(window *w)
         gfx_fill(&scr, bx+t_cc*8, by+t_cr*8, 8, 8, RGB(0x8a,0xe2,0x34));
 }
 
+/* ================= Reusable file browser (model) ======================== */
+/* A small directory-navigation model shared by the Files window and the
+ * Editor's open/save dialog.  It keeps its OWN cwd string and re-establishes
+ * it via sys_chdir before every read, so two browsers (Files + a dialog) can
+ * be open at once without fighting over the process-wide cwd.  All filesystem
+ * access is via the existing chdir/readdir/getcwd syscalls -- no new ABI. */
+#define FZ_MAX  256
+#define FZ_NAMW 64
+typedef struct {
+    char          cwd[256];
+    char          name[FZ_MAX][FZ_NAMW];   /* display names; dirs end with '/' */
+    unsigned char type[FZ_MAX];
+    const char   *ptr[FZ_MAX];             /* listbox item pointers            */
+    int           n, sel, scroll, loaded;
+} browser;
+
+static void br_load(browser *b)
+{
+    if (!b->cwd[0]) scpy(b->cwd, "/", sizeof b->cwd);
+    sys_chdir(b->cwd);                      /* make this browser's cwd current  */
+    b->n = 0;
+    struct dirent de;
+    for (unsigned i=0; b->n<FZ_MAX; i++){
+        if (sys_readdir(".", i, &de)!=1) break;
+        /* hide "." and ".." -- the Up button handles parent navigation */
+        if (de.d_name[0]=='.' && (de.d_name[1]==0 || (de.d_name[1]=='.'&&de.d_name[2]==0))) continue;
+        scpy(b->name[b->n], de.d_name, FZ_NAMW);
+        if (de.d_type==DT_DIR){ int l=slen(b->name[b->n]); if(l<FZ_NAMW-2){b->name[b->n][l]='/';b->name[b->n][l+1]=0;} }
+        b->type[b->n]=de.d_type;
+        b->n++;
+    }
+    sys_getcwd(b->cwd, sizeof b->cwd);       /* normalised absolute cwd          */
+    for (int i=0;i<b->n;i++) b->ptr[i]=b->name[i];
+    if (b->sel>=b->n) b->sel = b->n?b->n-1:0;
+    b->loaded=1;
+}
+static int  br_sel_isdir(browser *b){ return b->sel>=0 && b->sel<b->n && b->type[b->sel]==DT_DIR; }
+/* Navigate then capture the resulting absolute cwd back into b->cwd *before*
+ * reloading -- otherwise br_load's own sys_chdir(b->cwd) would snap us back to
+ * the pre-navigation directory (this was the "Files does nothing" bug). */
+static void br_up(browser *b)
+{
+    sys_chdir(b->cwd); sys_chdir("..");
+    sys_getcwd(b->cwd, sizeof b->cwd);
+    b->sel=b->scroll=0; br_load(b);
+}
+static void br_enter_sel(browser *b)
+{
+    if (!br_sel_isdir(b)) return;
+    char nm[FZ_NAMW]; scpy(nm, b->name[b->sel], FZ_NAMW);
+    int l=slen(nm); if(l>0 && nm[l-1]=='/') nm[l-1]=0;
+    sys_chdir(b->cwd); sys_chdir(nm);
+    sys_getcwd(b->cwd, sizeof b->cwd);
+    b->sel=b->scroll=0; br_load(b);
+}
+/* Build the absolute path of the current selection (file or dir) into out. */
+static void br_sel_path(browser *b, char *out, int max)
+{
+    scpy(out, b->cwd, max);
+    int l=slen(out); if(l>0 && out[l-1]!='/' && l<max-2){ out[l]='/'; out[l+1]=0; }
+    char nm[FZ_NAMW]; scpy(nm, (b->sel>=0&&b->sel<b->n)?b->name[b->sel]:"", FZ_NAMW);
+    int nl=slen(nm); if(nl>0 && nm[nl-1]=='/') nm[nl-1]=0;
+    scat(out, nm);
+}
+/* Build cwd/<leaf> for an arbitrary leaf name (used by Save-As). */
+static void br_join(browser *b, const char *leaf, char *out, int max)
+{
+    scpy(out, b->cwd, max);
+    int l=slen(out); if(l>0 && out[l-1]!='/' && l<max-2){ out[l]='/'; out[l+1]=0; }
+    scat(out, leaf);
+}
+
 /* ===================== Editor window (native) =========================== */
 
 #define ED_MAX  (32*1024)
@@ -168,6 +240,26 @@ static char ed_path[128];
 static int  ed_len, ed_caret, ed_top;     /* caret = byte index, top = first row */
 static int  ed_dirty_flag;
 static char ed_status[80];
+
+/* Open/Save-As dialog: 0 = none, 1 = open, 2 = save-as.  ed_brz is the dialog's
+ * own file browser; ed_savename is the Save-As filename field. */
+static int     ed_dlg;
+static browser ed_brz;
+static char    ed_savename[FZ_NAMW];
+
+/* Copy the directory part of an absolute path into out (defaults to "/"). */
+static void path_dir(const char *path, char *out, int max)
+{
+    int last=-1; for(int i=0; path[i]; i++) if(path[i]=='/') last=i;
+    if (last<=0){ scpy(out,"/",max); return; }
+    int n = last<max-1?last:max-1; for(int i=0;i<n;i++) out[i]=path[i]; out[n]=0;
+}
+/* Copy the file part (after the last '/') of a path into out. */
+static void path_base(const char *path, char *out, int max)
+{
+    int last=-1; for(int i=0; path[i]; i++) if(path[i]=='/') last=i;
+    scpy(out, path+last+1, max);
+}
 
 static void ed_new(void){ ed_buf[0]=0; ed_len=0; ed_caret=0; ed_top=0; ed_dirty_flag=0; scpy(ed_status,"new buffer",sizeof ed_status); }
 static void ed_load(const char *path)
@@ -212,22 +304,92 @@ static int ed_index_of(int row, int col)
     }
     return ed_len;
 }
+/* Open the dialog: mode 1 = open, 2 = save-as.  Seeds the browser at the
+ * directory of the current file (or "/") and, for save-as, the filename field
+ * with the current base name. */
+static void ed_open_dialog(int mode)
+{
+    ed_dlg = mode;
+    path_dir(ed_path[0]?ed_path:"/", ed_brz.cwd, sizeof ed_brz.cwd);
+    ed_brz.sel = ed_brz.scroll = 0; ed_brz.loaded = 0;
+    br_load(&ed_brz);
+    if (mode==2){ if(ed_path[0]) path_base(ed_path, ed_savename, sizeof ed_savename);
+                  else scpy(ed_savename, "untitled.txt", sizeof ed_savename); }
+}
+
+/* The open/save browser, drawn in the editor's text-area rect while ed_dlg!=0.
+ * Returns having fully handled this frame's input. */
+static void ed_dialog(int tax, int tay, int taw, int tah, ui_ctx *u)
+{
+    gfx_fill(&scr, tax, tay, taw, tah, UI_COL_FIELD);
+    gfx_outline(&scr, tax, tay, taw, tah, UI_COL_BTN_ACT);
+
+    int bx=tax+6, by=tay+6;
+    int up_c  = ui_button(u,&scr,bx,by,52,20,"Up");
+    int act_c = ui_button(u,&scr,bx+60,by,76,20, ed_dlg==1?"Open":"Save");
+    int can_c = ui_button(u,&scr,bx+144,by,72,20,"Cancel");
+    gfx_str_clip(&scr, bx+224, by+6, ed_brz.cwd, UI_COL_MUTED, tax+taw-4);
+
+    if (up_c)  br_up(&ed_brz);
+    if (can_c){ ed_dlg=0; return; }
+
+    /* save-as filename field sits on its own row */
+    int rowy = by+26, listy = rowy;
+    if (ed_dlg==2){
+        ui_label(u,&scr,bx,rowy+4,"Name:",UI_COL_MUTED);
+        ui_textbox(u,&scr,bx+48,rowy,taw-60-90,20, ed_savename, FZ_NAMW);
+        listy = rowy+26;
+    }
+
+    int lx=tax+6, ly=listy, lw=taw-12, lh=(tay+tah)-listy-6;
+    int prev=ed_brz.sel;
+    ui_listbox(u,&scr,lx,ly,lw,lh,ed_brz.ptr,ed_brz.n,&ed_brz.sel,&ed_brz.scroll);
+
+    /* A click on the already-selected row, Enter, or "Open" descends a dir or
+     * (open mode) loads the file.  In save-as, picking a file copies its name
+     * into the field so you can overwrite it. */
+    int activate = act_c
+        || (u->key=='\n')
+        || (u->mpressed && prev==ed_brz.sel && u->mx>=lx && u->mx<lx+lw && u->my>=ly && u->my<ly+lh);
+
+    if (ed_dlg==1){
+        if (activate){
+            if (br_sel_isdir(&ed_brz)) br_enter_sel(&ed_brz);
+            else if (ed_brz.n>0){ char full[256]; br_sel_path(&ed_brz, full, sizeof full); ed_load(full); ed_dlg=0; }
+        }
+    } else { /* save-as */
+        if (br_sel_isdir(&ed_brz) && activate && act_c==0) br_enter_sel(&ed_brz);
+        else if (!br_sel_isdir(&ed_brz) && (u->mpressed && prev==ed_brz.sel)) path_base(ed_brz.name[ed_brz.sel], ed_savename, sizeof ed_savename);
+        if (act_c && ed_savename[0]){
+            char full[256]; br_join(&ed_brz, ed_savename, full, sizeof full);
+            scpy(ed_path, full, sizeof ed_path); ed_save(); ed_dlg=0;
+        }
+    }
+}
+
 static void ed_draw_and_input(window *w, ui_ctx *u)
 {
     int cx=client_x(w), cy=client_y(w), cw=client_w(w), ch=client_h(w);
     /* toolbar */
     int bx=cx+6, by=cy+6;
-    int open_c = ui_button(u,&scr,bx,by,64,20,"Open");
-    int save_c = ui_button(u,&scr,bx+72,by,64,20,"Save");
-    int new_c  = ui_button(u,&scr,bx+144,by,64,20,"New");
-    ui_label(u,&scr,bx+224,by+6, ed_path[0]?ed_path:"(unsaved)", UI_COL_MUTED);
+    int open_c = ui_button(u,&scr,bx,by,60,20,"Open");
+    int save_c = ui_button(u,&scr,bx+66,by,60,20,"Save");
+    int saveas_c = ui_button(u,&scr,bx+132,by,76,20,"Save As");
+    int new_c  = ui_button(u,&scr,bx+216,by,52,20,"New");
+    ui_label(u,&scr,bx+276,by+6, ed_path[0]?ed_path:"(unsaved)", UI_COL_MUTED);
 
-    if (new_c)  ed_new();
-    if (open_c){ if(ed_path[0]) ed_load(ed_path); else scpy(ed_status,"set a path via Files",sizeof ed_status); }
-    if (save_c) ed_save();
+    if (new_c)    { ed_new(); ed_dlg=0; }
+    if (open_c)   ed_open_dialog(1);
+    if (saveas_c) ed_open_dialog(2);
+    if (save_c)   { if (ed_path[0]) ed_save(); else ed_open_dialog(2); }
 
-    /* text area */
+    /* text area (or the open/save browser overlay when a dialog is active) */
     int tax=cx+6, tay=cy+34, taw=cw-12, tah=ch-34-18;
+    if (ed_dlg){
+        ed_dialog(tax, tay, taw, tah, u);
+        gfx_str_clip(&scr, tax+4, tay+tah+6, ed_status, UI_COL_MUTED, tax+taw);
+        return;
+    }
     gfx_fill(&scr, tax, tay, taw, tah, UI_COL_FIELD);
     gfx_outline(&scr, tax, tay, taw, tah, (focus_kind==W_EDITOR)?UI_COL_BTN_ACT:COL_BORDER);
 
@@ -278,69 +440,44 @@ static void ed_draw_and_input(window *w, ui_ctx *u)
 
 /* ====================== Files window (native) =========================== */
 
-#define FZ_MAX 256
-#define FZ_NAMW 64
-static char files_cwd[256] = "/";
-static char files_name[FZ_MAX][FZ_NAMW];
-static unsigned char files_type[FZ_MAX];
-static const char *files_ptr[FZ_MAX];
-static int  files_n, files_sel, files_scroll;
-static int  files_loaded;
+static browser g_files;
+static char    files_pathbox[256];     /* type an absolute path + Go         */
 
-static void files_load(void)
-{
-    sys_chdir(files_cwd);
-    files_n=0;
-    struct dirent de;
-    for (unsigned i=0; files_n<FZ_MAX; i++){
-        if (sys_readdir(".", i, &de)!=1) break;
-        scpy(files_name[files_n], de.d_name, FZ_NAMW);
-        /* tag dirs with a trailing slash for display */
-        if (de.d_type==DT_DIR){ int l=slen(files_name[files_n]); if(l<FZ_NAMW-2){files_name[files_n][l]='/';files_name[files_n][l+1]=0;} }
-        files_type[files_n]=de.d_type;
-        files_n++;
-    }
-    sys_getcwd(files_cwd, sizeof files_cwd);
-    for (int i=0;i<files_n;i++) files_ptr[i]=files_name[i];
-    if (files_sel>=files_n) files_sel=files_n?files_n-1:0;
-    files_loaded=1;
-}
 static void files_open_sel(void)
 {
-    if (files_sel<0 || files_sel>=files_n) return;
-    if (files_type[files_sel]==DT_DIR){
-        char nm[FZ_NAMW]; scpy(nm, files_name[files_sel], FZ_NAMW);
-        int l=slen(nm); if(l>0&&nm[l-1]=='/')nm[l-1]=0;
-        sys_chdir(nm); files_sel=files_scroll=0; files_load();
-    } else {
-        /* open a regular file in the editor */
-        char full[256]; scpy(full, files_cwd, sizeof full);
-        int l=slen(full); if(l>0 && full[l-1]!='/'){ full[l]='/'; full[l+1]=0; }
-        scat(full, files_name[files_sel]);
-        ed_load(full);
-        wins[W_EDITOR].open=1; z_raise(W_EDITOR);
-    }
+    if (g_files.sel<0 || g_files.sel>=g_files.n) return;
+    if (br_sel_isdir(&g_files)) { br_enter_sel(&g_files); return; }
+    /* a regular file -> open it in the Editor window */
+    char full[256]; br_sel_path(&g_files, full, sizeof full);
+    ed_load(full);
+    wins[W_EDITOR].open=1; z_raise(W_EDITOR);
 }
 static void files_draw_and_input(window *w, ui_ctx *u)
 {
-    if (!files_loaded) files_load();
+    if (!g_files.loaded){ scpy(g_files.cwd,"/",sizeof g_files.cwd); br_load(&g_files); }
     int cx=client_x(w), cy=client_y(w), cw=client_w(w), ch=client_h(w);
     int bx=cx+6, by=cy+6;
     int up_c = ui_button(u,&scr,bx,by,52,20,"Up");
     int op_c = ui_button(u,&scr,bx+60,by,64,20,"Open");
     int rf_c = ui_button(u,&scr,bx+132,by,72,20,"Refresh");
-    ui_label(u,&scr,bx+216,by+6, files_cwd, UI_COL_MUTED);
-    if (up_c){ sys_chdir(".."); files_sel=files_scroll=0; files_load(); }
-    if (rf_c){ files_load(); }
+    /* path box + Go: jump straight to a typed absolute path */
+    int pbx=bx+212, pbw=cw-12-(pbx-cx)-52; if (pbw<60) pbw=60;
+    ui_textbox(u,&scr,pbx,by,pbw,20, files_pathbox, (int)sizeof files_pathbox);
+    int go_c = ui_button(u,&scr,pbx+pbw+4,by,48,20,"Go");
 
-    int lx=cx+6, ly=cy+34, lw=cw-12, lh=ch-40;
-    int prev=files_sel;
-    ui_listbox(u,&scr,lx,ly,lw,lh,files_ptr,files_n,&files_sel,&files_scroll);
-    /* Open via button, double-activation (Enter), or a second click on the
-     * already-selected row. */
+    if (up_c) br_up(&g_files);
+    if (rf_c) br_load(&g_files);
+    if (go_c && files_pathbox[0]){ scpy(g_files.cwd, files_pathbox, sizeof g_files.cwd); g_files.sel=g_files.scroll=0; br_load(&g_files); }
+
+    ui_label(u,&scr,bx,by+24, g_files.cwd, UI_COL_MUTED);
+
+    int lx=cx+6, ly=cy+50, lw=cw-12, lh=ch-56;
+    int prev=g_files.sel;
+    ui_listbox(u,&scr,lx,ly,lw,lh,g_files.ptr,g_files.n,&g_files.sel,&g_files.scroll);
+    /* Open via button, Enter, or a second click on the already-selected row. */
     if (op_c) files_open_sel();
     else if (focus_kind==W_FILES && u->key=='\n') files_open_sel();
-    else if (focus_kind==W_FILES && u->mpressed && prev==files_sel &&
+    else if (focus_kind==W_FILES && u->mpressed && prev==g_files.sel &&
              u->mx>=lx && u->mx<lx+lw && u->my>=ly && u->my<ly+lh) files_open_sel();
 }
 
@@ -532,6 +669,15 @@ static void draw_dock(void)
         gfx_str(&scr,bx+(36-gfx_text_w(kind_short(k)))/2, y0+(DOCK_H-8)/2, kind_short(k), 0xFFFFFF);
         slot++;
     }
+    /* Log Off button, pinned to the right edge of the dock. */
+    int lx=(int)FBW-78;
+    gfx_round(&scr,lx,y0+5,70,DOCK_H-10, COL_CLOSE, RGB(0x12,0x16,0x1e));
+    gfx_str(&scr,lx+(70-gfx_text_w("Log Off"))/2, y0+(DOCK_H-8)/2, "Log Off", 0xFFFFFF);
+}
+static int logoff_hit(int px,int py)
+{
+    int y0=(int)FBH-DOCK_H, lx=(int)FBW-78;
+    return in_rect(px,py,lx,y0+5,70,DOCK_H-10);
 }
 static int dock_hit(int px,int py,int *out_kind)
 {
@@ -607,12 +753,43 @@ static int uitest(void)
     return ok?0:1;
 }
 
+/* Headless self-test of the reusable file-browser navigation against the real
+ * VFS (the chdir/readdir/getcwd path the Files window + editor dialog use).
+ * Invoked as `gui fstest`; emits GUI-FSTEST.  This is the coverage that proves
+ * "Files actually moves about the filesystem" without needing pixels. */
+static int seq2(const char *a, const char *b){ int i=0; while(a[i]&&a[i]==b[i])i++; return a[i]==b[i]; }
+static int fstest(void)
+{
+    static browser b; int ok=1;
+    scpy(b.cwd, "/", sizeof b.cwd); b.sel=b.scroll=0; b.loaded=0;
+    br_load(&b);
+    if (b.n<=0) ok=0;                         /* root must enumerate */
+    if (!seq2(b.cwd, "/")) ok=0;              /* normalised to "/"   */
+
+    /* descend into the first directory entry, confirm cwd deepened, climb back */
+    int di=-1; for(int i=0;i<b.n;i++) if(b.type[i]==DT_DIR){ di=i; break; }
+    if (di>=0){
+        b.sel=di; br_enter_sel(&b);
+        if (seq2(b.cwd, "/")) ok=0;           /* cwd must have changed off "/" */
+        if (b.n<0) ok=0;
+        br_up(&b);
+        if (!seq2(b.cwd, "/")) ok=0;          /* ".." from depth-1 returns "/" */
+    } else { ok=0; }                          /* root with no subdir is wrong  */
+
+    /* getcwd round-trips an explicit chdir target */
+    scpy(b.cwd, "/", sizeof b.cwd); b.sel=b.scroll=0; b.loaded=0; br_load(&b);
+
+    emit(ok? "GUI-FSTEST: PASS\n" : "GUI-FSTEST: FAIL\n");
+    return ok?0:1;
+}
+
 /* ============================== main ==================================== */
 
 int main(int argc, char **argv, char **envp)
 {
     (void)envp;
     if (argc>1 && seq(argv[1],"uitest")) return uitest();
+    if (argc>1 && seq(argv[1],"fstest")) return fstest();
 
     unsigned info=sys_fb_info();
     if(!info){ const char*e="gui: no pixel framebuffer (VGA-only)\n"; sys_write(2,e,36); return 1; }
@@ -665,7 +842,8 @@ int main(int argc, char **argv, char **envp)
         int client_click_kind=-1;
         if (mpressed){
             int dk;
-            if (dock_hit(cx,cy,&dk)){ open_window(dk); dirty=1; }
+            if (logoff_hit(cx,cy)) break;     /* Log Off: clean up + end session */
+            else if (dock_hit(cx,cy,&dk)){ open_window(dk); dirty=1; }
             else {
                 int hk=hit_window(cx,cy);
                 if (hk>=0){
@@ -731,9 +909,15 @@ int main(int argc, char **argv, char **envp)
         sys_yield();
     }
 
-    /* not reached in the PoC; cleanup for completeness */
+    /* Reached on Log Off.  Tear down our children so no forked shell / doom
+     * leaks, restore terminal + statusbar state, then end the underlying login
+     * session (sys_logout).  The login loop running mak.sh0 stays alive and
+     * re-shows the login screen; this WM task then exits.  Note: the GUI shell
+     * is a forked sh.elf on a private pipe, so a Ctrl-C/Ctrl-D in it only ever
+     * closed that terminal window -- mak.sh0 is never in that blast radius. */
     term_kill(); doom_stop();
     sys_fcntl(0,F_SETFL,0);
     sys_statusbar_set(saved_status);
+    sys_logout();
     return 0;
 }

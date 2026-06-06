@@ -79,13 +79,37 @@ windows back-to-front → dock → cursor and presents once. Only the focused
 window receives a "live" `ui_ctx`; others draw but don't react. `gui uitest`
 runs a headless widget self-test emitting `GUI-UITEST: PASS`.
 
-- **Terminal** hosts `sh.elf` over pipes (byte stream drawn as a grid).
-- **Editor** is a native multi-line editor (caret, click-to-position, file I/O).
-- **Files** is a native browser (`sys_readdir`); opening a file routes it to the
-  Editor window.
+- **Terminal** hosts `sh.elf` over pipes (byte stream drawn as a grid). It is a
+  *forked* shell on a private pipe, so Ctrl-C / Ctrl-D there only ever closes
+  that terminal window — `mak.sh0` (the login session) is never in the blast
+  radius.
+- **Editor** is a native multi-line editor (caret, click-to-position) with an
+  **Open / Save / Save As** dialog built on the shared file browser (below):
+  Save As lets you traverse to a directory and type a filename.
+- **Files** is a native browser built on the same reusable `browser` model:
+  **Up / Open / Refresh** plus a path box + **Go** to jump to an absolute path;
+  `.`/`..` are hidden (Up handles the parent). Opening a file routes it to the
+  Editor window. Navigation captures the post-`chdir` cwd via `getcwd` before
+  reloading (an earlier bug reset the cwd on every reload — see the `fstest`).
 - **Tasks** parses `/proc/tasks`, Kill via `SYS_KILL`, refresh-interval slider.
 - **Doom** forks `doom.elf -surface <id>`; the WM maps the shared surface and
   `gfx_blit_scaled`s it into the window, forwarding keys over the child's stdin.
+
+The dock carries a **Log Off** button: it tears down the WM's children
+(terminal / doom), restores terminal + statusbar state, calls `sys_logout()` to
+end the underlying login session, and exits — returning to the login screen with
+`mak.sh0` intact. All of the above use only existing syscalls (no new ABI).
+
+### Reusable file browser + headless coverage
+
+The Files window and the Editor's Open/Save dialog share one `browser` model
+(`cwd` + entries + select/enter/up), navigating via the existing
+`chdir`/`readdir`/`getcwd` syscalls. `gui fstest` drives that model against the
+live VFS (descend a real dir, confirm the cwd deepened, climb back) and emits
+`GUI-FSTEST: PASS`; it runs under `shell-smoke.sh` alongside `gui uitest`
+(`GUI-UITEST: PASS`). Both return before touching the framebuffer, so they are
+headless-safe — this is the automated proof that "Files actually moves about the
+filesystem" without needing pixels.
 
 ## DOOM windowed backend (`doomgeneric_makar.c`)
 
@@ -102,15 +126,27 @@ a known limitation. Without `-surface`, DOOM runs its normal fullscreen path
 - **Phase 1 (done):** kernel shared surfaces + ktest.
 - **Phase 2 (done):** userspace GUI widget framework (`gui_gfx`, `gui_ui`).
 - **Phase 3 (done):** multi-window WM + click-to-focus input routing.
-- **Phase 4 (done):** native Editor / Files / Task-manager windows.
+- **Phase 4 (done):** native Editor / Files / Task-manager windows, now with a
+  working file browser (Up/Open/Go), an Editor Open/Save/Save-As dialog on the
+  shared browser, and a dock **Log Off**. Navigation is regression-covered by
+  `gui fstest` (`GUI-FSTEST: PASS`).
 - **Phase 5 (done):** DOOM in a window via a shared surface.
 - **Phase 6 (todo):** host drag-and-drop GUI designer that emits widget-layout
   code. Deferred — the widget schema (`gui_ui.h`) is the contract it will target.
 
+## Next PR (not this one): trim the syscall surface
+
+The GUI leans on many bespoke syscalls (`FB_PRESENT`, `DRAW_LINE`, `MOUSE_READ`,
+`SURFACE_*`, `WHOAMI`, `STATUSBAR`, `WRITE_FILE`, `WRITE_SERIAL`, `KEYBOARD_RAW`)
+that on real Linux are device files + ioctl (`/dev/fb0`, `/dev/input/*`), `getuid`,
+`open`/`write`, `/dev/kmsg`, termios. Reducing the ~101-syscall surface toward
+those idioms is the next "proper kernel" PR; GUI changes here were kept
+syscall-neutral so that rework isn't pre-empted.
+
 ## Not yet verified interactively
 
-The desktop builds clean and the kernel surface path is ktest-covered, but the
-windowed rendering/focus interaction is inherently pixel-level and has **not**
-been driven in a live QEMU session yet (the harness is headless/serial-only).
-Next session: `./run.sh iso boot`, exercise each window, click-to-focus, and the
-Doom surface blit; watch the task manager's process list across open/close.
+Navigation logic is now headlessly proven (`gui fstest`), but the **pixel-level**
+rendering/focus interaction still has not been driven in a live QEMU session
+(the harness is headless/serial-only). Next session: `./run.sh iso boot`,
+exercise each window, click-to-focus, the Files browser + Editor Save-As dialog,
+Log Off, and the Doom surface blit; watch the task manager across open/close.
