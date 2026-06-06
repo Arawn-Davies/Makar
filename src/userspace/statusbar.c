@@ -101,7 +101,7 @@ static void active_command(char *out,unsigned int cap)
     if(r<=0) return; buf[r]='\0';
 
     long i=0; int line=0; int best_pid=-1; char best[20]; best[0]='\0';
-    int root_console = active == 8u;
+    int root_console = active == 9u;   /* VTTY_ROOT_SLOT (tty0) */
     while(i<r){
         char tok[5][20]; int nt=0;
         while(i<r && buf[i]!='\n'){
@@ -344,10 +344,10 @@ static int render_tabs(tty_cell_t *cells,unsigned int *n,unsigned int row,
     unsigned int mask=state&0xFFFFu;
     if(!mask || hi<=lo) return 0;
 
-    char  lab[8][18];
-    int   idx[8], cnt=0;
+    char  lab[9][18];
+    int   idx[9], cnt=0;
     unsigned int total=0;
-    for(int i=0;i<8;i++){
+    for(int i=0;i<9;i++){
         if(!(mask&(1u<<i))) continue;
         char nm[16]; int ln=sys_vt_getname(i,nm,sizeof(nm));
         char *l=lab[cnt]; unsigned int w=0;
@@ -356,7 +356,7 @@ static int render_tabs(tty_cell_t *cells,unsigned int *n,unsigned int row,
         else    { l[w++]='V'; l[w++]='T'; l[w++]=(char)('1'+i); }
         l[w++]=' '; l[w]='\0';
         idx[cnt]=i; total+=w; cnt++;
-        if(cnt>=8) break;
+        if(cnt>=9) break;
     }
     if(!cnt) return 0;
 

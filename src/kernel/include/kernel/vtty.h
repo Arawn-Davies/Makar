@@ -12,16 +12,18 @@
 #include <kernel/task.h>
 #include <kernel/vt.h>
 
-/* Slots 0..VTTY_MAX-2 are the user-visible VT slots: 0-3 are makmux's VT
- * shells (mak.sh1-4, reached via Alt+F1-F4) and 4-7 are dynamic named
- * app-tabs (maktop/vix/clock/..., reached via Alt-Tab cycling).
- * Slot VTTY_ROOT_SLOT is the hidden "console" slot for mak.sh0: it has a
- * full backing buffer (so its content is preserved across makmux sessions)
- * but it is excluded from Alt-Tab cycling, Alt+Fn switching, and the
- * status bar — exactly like Linux's tty0/console. */
-#define VTTY_MAX        9
-#define VTTY_SHELL_MAX  4   /* slots 0..3 = the VT shells (Alt+F1-F4) */
-#define VTTY_ROOT_SLOT  8   /* hidden root console = the last slot */
+/* Slots 0..VTTY_MAX-2 are the user-visible VT slots, exposed to userspace as
+ * /dev/tty1../dev/tty9 (slot i == /dev/tty(i+1)).  makmux runs them tmux-style:
+ * exactly one shell exists by default and more are created on demand (Alt+T /
+ * SYS_VT_OPEN_REQUEST), up to VTTY_SHELL_MAX.  A slot may instead carry a named
+ * app-tab (maktop/vix/clock/...).  All are reached via Alt+F1-F9 or Alt-Tab.
+ * Slot VTTY_ROOT_SLOT is the hidden "console" slot for mak.sh0 (exposed as
+ * /dev/tty0): it has a full backing buffer (so its content is preserved across
+ * makmux sessions) but it is excluded from Alt-Tab cycling, Alt+Fn switching,
+ * and the status bar — exactly like Linux's tty0/console. */
+#define VTTY_MAX        10
+#define VTTY_SHELL_MAX  9   /* slots 0..8 = the VT shells (Alt+F1-F9, tty1-9) */
+#define VTTY_ROOT_SLOT  9   /* hidden root console (tty0) = the last slot */
 
 /* Call once before spawning shell tasks.  Allocates per-slot backing
  * grids sized from the active display geometry (VESA cell dims if the
