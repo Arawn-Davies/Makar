@@ -38,21 +38,33 @@ files, editor, tasks, doom are client `.elf`s over IPC + shared surfaces; see
 ### OS-specific cross toolchain (`i686-makar`)
 
 Per the OSDev wiki (https://wiki.osdev.org/OS_Specific_Toolchain and
-https://wiki.osdev.org/Creating_an_Operating_System — both currently 403 to
-automated fetches, so consult in a browser). Today the build uses a generic
-`i686-elf` cross-compiler. A Makar-targeted toolchain is the "proper" path and
-the foundation for a real libc port:
+https://wiki.osdev.org/Creating_an_Operating_System — both 403 to automated
+fetches, read in a browser). Today the build uses a generic `i686-elf` cross-
+compiler. A Makar-targeted `i686-makar` toolchain is the "proper" path and the
+foundation for a real libc port. Needs autoconf 2.69 + automake 1.15.1 (match
+the binutils/gcc vintage). Exact file checklist (swap `myos`→`makar`):
 
-- **binutils:** add `i686-makar` to `config.sub` (a `-makar` OS), build
-  `--target=i686-makar`.
-- **gcc:** add the target to `gcc/config.gcc` with a `gcc/config/makar.h`
-  (defines `__makar__`, sets the default `crt0`/lib search + `-D` builtins,
-  `STARTFILE_SPEC`/`ENDFILE_SPEC`/`LIB_SPEC`), build gcc + **libgcc** against it.
-- **sysroot:** `--with-sysroot` so `<...>` headers + libs resolve under the
-  Makar tree; lets `i686-makar-gcc` Just Work without per-invocation `-I/-L`.
-- **payoff:** unblocks a hosted **newlib** or **musl** port (the consolidated
-  `makar_*` ABI headers are the kernel-side contract it targets), and lets ports
-  build with a normal `./configure --host=i686-makar`.
+- **binutils:** `config.sub` (accept `-makar*`); `bfd/config.bfd`
+  (`i[3-7]86-*-makar*` → `i386_elf32_vec`); `gas/configure.tgt`
+  (`i386-*-makar*` fmt=elf, use `em=gnu` so `/` isn't a comment);
+  `ld/configure.tgt` (`targ_emul=elf_i386_makar`); new
+  `ld/emulparams/elf_i386_makar.sh` (source `elf_i386.sh`, set `TEXT_START_ADDR`);
+  add `eelf_i386_makar.c` to `ld/Makefile.am` `ALL_EMULATION_SOURCES` (then
+  re-run automake in `ld/`).
+- **gcc:** `config.sub`; `gcc/config.gcc` — a generic `*-*-makar*` case
+  (`gas=yes gnu_ld=yes default_use_cxa_atexit=yes use_gcc_stdint=provide`) and an
+  arch case adding `makar.h gnu-user.h` to `tm_file`; new `gcc/config/makar.h`
+  (`LIB_SPEC "-lc"`, `STARTFILE_SPEC "crt0.o%s crti.o%s crtbegin.o%s"`,
+  `ENDFILE_SPEC "crtend.o%s crtn.o%s"`, `TARGET_OS_CPP_BUILTINS` →
+  `__makar__`/`__unix__`); `libgcc/config.host` (crt parts + `t-crtstuff*`);
+  `fixincludes/mkfixinc.sh` (disable for `*-makar*`); `libstdc++-v3/crossconfig.m4`
+  if C++ wanted (re-run autoconf there).
+- **sysroot:** `--with-sysroot=/path` on both configures; install libc headers
+  into the sysroot BEFORE building gcc (libgcc must believe a libc exists).
+- **payoff:** `i686-makar-gcc hello.c` Just Works; freestanding kernel/libk
+  build with it too; unblocks a hosted **newlib**/**musl** port (the consolidated
+  `makar_*` ABI headers are the kernel-side contract), and ports build with a
+  normal `./configure --host=i686-makar`.
 
 ### Compatibility layers (research / longer-term)
 
