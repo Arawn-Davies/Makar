@@ -387,11 +387,55 @@ static int hit_window(int px,int py)
     return -1;
 }
 
+/* Draw a recognisable per-app glyph in a ~32x26 box at (gx,gy).  Pixel art via
+ * primitives -- no bitmap pipeline -- matched to each launcher by index. */
+static void icon_glyph(int idx, int gx, int gy)
+{
+    gfx_u32 bg = RGB(0x2a,0x38,0x50);
+    switch (idx) {
+    case 0: /* Terminal: dark screen + green prompt + cursor */
+        gfx_round(&scr,gx,gy,32,26,RGB(0x10,0x16,0x20),bg);
+        gfx_outline(&scr,gx,gy,32,26,RGB(0x4c,0x8d,0xff));
+        gfx_str(&scr,gx+4,gy+5,">",RGB(0x8a,0xe2,0x34));
+        gfx_fill(&scr,gx+14,gy+5,7,7,RGB(0x8a,0xe2,0x34));
+        break;
+    case 1: /* Files: folder with a tab */
+        gfx_fill(&scr,gx+1,gy+2,13,6,RGB(0xc8,0x8a,0x20));
+        gfx_round(&scr,gx,gy+6,32,20,RGB(0xf0,0xa8,0x30),bg);
+        gfx_fill(&scr,gx,gy+9,32,2,RGB(0xc8,0x8a,0x20));
+        break;
+    case 2: /* Editor: page with text lines + folded corner */
+        gfx_fill(&scr,gx+5,gy,22,26,RGB(0xe6,0xea,0xf0));
+        gfx_fill(&scr,gx+21,gy,6,6,bg);             /* folded corner */
+        for(int k=0;k<4;k++) gfx_fill(&scr,gx+8,gy+6+k*5,15,2,RGB(0x90,0xa0,0xb5));
+        gfx_outline(&scr,gx+5,gy,22,26,RGB(0x35,0xc7,0x59));
+        break;
+    case 3: { /* Tasks: a little bar chart */
+        gfx_round(&scr,gx,gy,32,26,RGB(0x1b,0x22,0x2e),bg);
+        static const int w[3]={24,15,20};
+        for(int k=0;k<3;k++) gfx_fill(&scr,gx+3,gy+4+k*7,w[k],5,RGB(0x9b,0x6c,0xff));
+        break; }
+    case 4: /* Doom: angry red face */
+        gfx_round(&scr,gx,gy,32,26,RGB(0xc0,0x40,0x40),bg);
+        gfx_fill(&scr,gx+7,gy+8,5,6,RGB(0x20,0x06,0x06));
+        gfx_fill(&scr,gx+20,gy+8,5,6,RGB(0x20,0x06,0x06));
+        gfx_fill(&scr,gx+10,gy+18,12,3,RGB(0x20,0x06,0x06));
+        break;
+    case 5: /* About: info 'i' on a disc */
+        gfx_round(&scr,gx+2,gy,28,26,RGB(0x35,0x6a,0xa8),bg);
+        gfx_fill(&scr,gx+15,gy+5,3,3,0xFFFFFF);
+        gfx_fill(&scr,gx+15,gy+10,3,11,0xFFFFFF);
+        break;
+    default:
+        gfx_round(&scr,gx,gy,32,26,RGB(0x4c,0x8d,0xff),bg);
+        break;
+    }
+}
 static void draw_icons(void)
 {
     for(int i=0;i<ICON_N;i++){ icon_t *c=&icons[i];
         gfx_round(&scr,c->x,c->y,c->w,c->h,RGB(0x2a,0x38,0x50),COL_DESK);
-        gfx_round(&scr,c->x+c->w/2-16,c->y+10,32,30,c->tint,RGB(0x2a,0x38,0x50));
+        icon_glyph(i, c->x+c->w/2-16, c->y+9);
         gfx_str(&scr,c->x+(c->w-gfx_text_w(c->label))/2,c->y+c->h-16,c->label,0xFFFFFF);
     }
 }
