@@ -9,6 +9,25 @@
 #define PAGE_USER      0x4u
 #define PAGE_LARGE     0x80u
 
+/* Higher-half kernel virtual base (must match KERNEL_VBASE in linker.ld /
+ * boot.S / paging.c).  Per-task user page directories come from
+ * pmm_alloc_frame() and so are addressed by their (low) physical address,
+ * which equals their virtual address via the permanent identity map.  The
+ * kernel's own page directory, however, is a kernel static linked high; its
+ * pointer is >= KERNEL_VBASE and must be converted to a physical address
+ * before it can be loaded into CR3.  v2p_pd() does that translation. */
+#ifdef __TINYC__
+#define KERNEL_VBASE   0x00000000u   /* low-half TCC build: identity */
+#else
+#define KERNEL_VBASE   0xC0000000u
+#endif
+
+static inline uint32_t v2p_pd(uint32_t *pd)
+{
+    uint32_t a = (uint32_t)pd;
+    return (a >= KERNEL_VBASE) ? (a - KERNEL_VBASE) : a;
+}
+
 uint32_t *vmm_create_pd(void)
 {
     uint32_t phys = pmm_alloc_frame();
@@ -66,16 +85,19 @@ void vmm_unmap_page(uint32_t *pd, uint32_t virt)
 
     pt[pti] = 0;
 
-    /* Flush TLB entry only if this PD is currently loaded. */
+    /* Flush TLB entry only if this PD is currently loaded.  CR3 holds a
+       physical address; translate pd before comparing. */
     uint32_t cr3;
     asm volatile("mov %%cr3, %0" : "=r"(cr3));
-    if (cr3 == (uint32_t)pd)
+    if (cr3 == v2p_pd(pd))
         asm volatile("invlpg (%0)" :: "r"(virt) : "memory");
 }
 
 void vmm_switch(uint32_t *pd)
 {
-    asm volatile("mov %0, %%cr3" :: "r"((uint32_t)pd) : "memory");
+    /* CR3 needs a physical address.  User PDs are physical already; the kernel
+       PD is a high-linked static and must be translated down. */
+    asm volatile("mov %0, %%cr3" :: "r"(v2p_pd(pd)) : "memory");
 }
 
 /* Kernel identity-map upper bound (paging.c maps 0-256 MiB via 4 MiB PSE

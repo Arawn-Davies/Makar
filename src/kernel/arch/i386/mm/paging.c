@@ -33,6 +33,29 @@
    of additional mappable virtual address space.                              */
 #define EXTRA_PAGE_TABLES 32
 
+/* Higher-half kernel virtual base (must match KERNEL_VBASE in linker.ld and
+ * boot.S).  The kernel image and all its static structures (page_directory[],
+ * extra_page_tables[], mem_map[], ...) are linked at KERNEL_VBASE + phys, but
+ * the low physical region is also permanently identity-mapped (the boot stub
+ * sets up PDE[0..3] and paging_init() extends the identity window to 256 MiB).
+ *
+ * CR3 and PDE entries need PHYSICAL addresses; a kernel static address minus
+ * KERNEL_VBASE yields its physical address. */
+/* The in-OS TCC rebuild (build-kernel-tcc.sh / rebuild-kernel.sh) has no GNU
+ * ld script and links the kernel low-half (identity).  In that case KERNEL_VBASE
+ * is 0 so V2P() is the identity and the "high" PD window coincides with the
+ * low one -- the kernel stays at its physical address.  The gcc build links
+ * higher-half at 0xC0000000 (linker.ld + boot.S). */
+#ifdef __TINYC__
+#define KERNEL_VBASE   0x00000000u
+#else
+#define KERNEL_VBASE   0xC0000000u
+#endif
+#define V2P(x)         ((uint32_t)(x) - KERNEL_VBASE)
+
+/* First high page-directory index (0xC0000000 >> 22 = 768; 0 under TCC). */
+#define KERNEL_PD_IDX  (KERNEL_VBASE >> 22)
+
 /* Page-entry flags */
 #define PAGE_PRESENT   0x1u
 #define PAGE_WRITABLE  0x2u
@@ -107,15 +130,25 @@ void paging_init(void)
     cr4 |= (1u << 4);   /* PSE – Page Size Extensions */
     asm volatile("mov %0, %%cr4" :: "r"(cr4) : "memory");
 
-    /* Identity-map 0–256 MiB: one PDE per 4 MiB region, PS bit set.
-       No intermediate page table is needed for these entries.              */
+    /* Build the runtime page directory.  Two windows, both via 4 MiB PSE
+       large pages, both pointing at the same low physical memory:
+         • Identity window  0x00000000..0x10000000 (PDE 0..63)   -> phys 0..256M
+         • Higher-half      0xC0000000..0xD0000000 (PDE 768..831)-> phys 0..256M
+       The kernel runs at the higher-half addresses; the identity window is kept
+       permanently so the PMM/heap/VMM can dereference low physical frames as
+       (uint32_t *)phys, the Multiboot info pointer (a low physical address in
+       EBX) stays reachable, and the VGA buffer / ACPI tables map phys==virt.   */
     for (uint32_t i = 0; i < IDENTITY_LARGE_PAGES; i++) {
         uint32_t phys = i * LARGE_PAGE_SIZE;
-        page_directory[i] = phys | PAGE_PRESENT | PAGE_WRITABLE | PAGE_LARGE;
+        uint32_t pde  = phys | PAGE_PRESENT | PAGE_WRITABLE | PAGE_LARGE;
+        page_directory[i]                 = pde;   /* identity  */
+        page_directory[KERNEL_PD_IDX + i] = pde;   /* higher-half */
     }
 
-    /* Load CR3 with the physical address of the page directory. */
-    asm volatile("mov %0, %%cr3" :: "r"(page_directory) : "memory");
+    /* Load CR3 with the PHYSICAL address of the page directory (it is a kernel
+       static, so its linked address is high; subtract KERNEL_VBASE).  This
+       replaces the minimal boot page directory built in boot.S.              */
+    asm volatile("mov %0, %%cr3" :: "r"(V2P(page_directory)) : "memory");
 
     /* Enable paging and write-protect:
      *   bit 31 (PG): turn paging on.
@@ -132,8 +165,8 @@ void paging_init(void)
 
     paging_init_pat();
 
-    t_writestring("Paging: enabled (identity-mapped 0-256 MiB, 4 MiB large pages, WP on)\n");
-    KLOG("paging_init: 256 MiB identity map via PSE large pages, CR0.WP=1\n");
+    t_writestring("Paging: higher-half (0xC0000000->0, +256 MiB identity, 4 MiB pages, WP on)\n");
+    KLOG("paging_init: higher-half kernel @ 0xC0000000, 256 MiB identity + high map, CR0.WP=1\n");
 }
 
 static void map_region_flags(uint32_t phys_start, uint32_t size, uint32_t extra_flags)
@@ -179,10 +212,13 @@ static void map_region_flags(uint32_t phys_start, uint32_t size, uint32_t extra_
             for (uint32_t i = 0; i < 1024; i++)
                 pt[i] = 0;
 
-            page_directory[pdi] = (uint32_t)pt | PAGE_PRESENT | PAGE_WRITABLE;
+            /* PDE stores the PHYSICAL address of the page table.  extra_page_tables
+               is a kernel static (high virtual); subtract KERNEL_VBASE.          */
+            page_directory[pdi] = V2P(pt) | PAGE_PRESENT | PAGE_WRITABLE;
         }
 
-        /* Map the 4 KiB page if it is not already present. */
+        /* Map the 4 KiB page if it is not already present.  The PDE holds a
+           physical PT address; dereference it through the low identity map. */
         uint32_t *pt = (uint32_t *)(page_directory[pdi] & ~0xFFFu);
         if (!(pt[pti] & PAGE_PRESENT))
             pt[pti] = addr | PAGE_PRESENT | PAGE_WRITABLE | extra_flags;

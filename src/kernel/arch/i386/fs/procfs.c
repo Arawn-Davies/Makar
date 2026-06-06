@@ -211,8 +211,9 @@ static void render_meminfo(pf_writer_t *w)
      * the kernel image into the total) so MemUsed reflects the real working
      * set instead of sitting near zero on a freshly booted 32 MiB system --
      * this is what maktop and the statusbar mem widget display. */
-    extern uint32_t _kernel_end;
-    uint32_t kernel_kb    = (uint32_t)&_kernel_end / 1024u;
+    /* Higher-half kernel: _kernel_phys_end is the physical end of the image. */
+    extern uint32_t _kernel_phys_end;
+    uint32_t kernel_kb    = (uint32_t)&_kernel_phys_end / 1024u;
     uint32_t heap_used_kb = (uint32_t)(heap_u / 1024u);
     uint32_t total_kb = total_frames * 4u + kernel_kb;
     uint32_t used_kb  = used_frames  * 4u + heap_used_kb + kernel_kb;
