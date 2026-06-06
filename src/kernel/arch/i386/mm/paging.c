@@ -68,6 +68,10 @@
  * slot.  Until then paging_map_region_wc() falls back to plain mappings. */
 static uint32_t s_pat_wc_ok = 0;
 
+/* Set once a WC MTRR has been pinned over the framebuffer (see
+ * paging_set_mtrr_wc); guards against programming a second overlapping slot. */
+static uint32_t s_mtrr_fb_done = 0;
+
 /* Static, page-aligned structures.  All live inside the kernel image which
    is itself within the 0–256 MiB identity-mapped window.                    */
 static uint32_t page_directory[1024]                              __attribute__((aligned(4096)));
@@ -239,8 +243,132 @@ void paging_map_region(uint32_t phys_start, uint32_t size)
  * WC slot was armed at init (falls back to a plain mapping otherwise).  Intended
  * for the linear framebuffer: WC batches the many small pixel writes that would
  * otherwise each trap as UC MMIO on VT-x hypervisors / real hardware. */
+/*
+ * paging_set_mtrr_wc – pin a write-combining variable-range MTRR over
+ * [base, base+size).
+ *
+ * The framebuffer lives in the PCI MMIO hole, which firmware marks UC (via the
+ * default MTRR type) on VT-x hypervisors (VMware, Hyper-V, VirtualBox) and bare
+ * metal.  PAT-WC alone CANNOT override a UC MTRR -- per the Intel SDM memory-
+ * type combining rules, PAT=WC + MTRR=UC still resolves to UC -- so without a WC
+ * MTRR every pixel write traps as an uncached MMIO transaction and the GUI
+ * crawls (the symptom: smooth under QEMU/TCG, where MMIO is cheap, but sluggish
+ * under real virtualization).  A *variable* MTRR takes precedence over the
+ * default type and doesn't overlap any variable UC MTRR (the hole's UC comes
+ * from the default type), so the WC range is well-defined.  This is exactly what
+ * Linux's framebuffer/DRM drivers do via arch_phys_wc_add().
+ *
+ * Returns 1 if a WC MTRR was armed, 0 otherwise (no MTRR support, no free slot,
+ * or the range can't be expressed as one naturally-aligned power-of-two block).
+ */
+static int paging_set_mtrr_wc(uint32_t base, uint32_t size)
+{
+    uint32_t eax, ebx, ecx, edx;
+
+    /* CPUID.01h:EDX[12] = MTRR supported. */
+    asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1u));
+    if (!(edx & (1u << 12)))
+        return 0;
+
+    /* A variable MTRR covers one naturally-aligned power-of-two block.  Round
+     * the span up to a power of two; framebuffer bases on real adapters and
+     * hypervisors are aligned to large powers of two, so the alignment holds. */
+    uint32_t pw = 0x1000u;                       /* 4 KiB minimum */
+    while (pw < size && pw < 0x40000000u) pw <<= 1;
+    if (pw < size)            return 0;          /* span too large to cover */
+    if (base & (pw - 1u))     return 0;          /* base not aligned to pw  */
+
+    /* IA32_MTRRCAP[7:0] = number of variable MTRR pairs. */
+    uint32_t cap_lo, cap_hi;
+    asm volatile("rdmsr" : "=a"(cap_lo), "=d"(cap_hi) : "c"(0xFEu));
+    uint32_t vcnt = cap_lo & 0xFFu;
+    if (vcnt == 0)
+        return 0;
+
+    /* Physical address width (CPUID 0x80000008:EAX[7:0]); default to 36. */
+    uint32_t phys_bits = 36;
+    asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(0x80000000u));
+    if (eax >= 0x80000008u) {
+        asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(0x80000008u));
+        phys_bits = eax & 0xFFu;
+        if (phys_bits < 32u || phys_bits > 52u) phys_bits = 36u;
+    }
+
+    /* Find a free variable MTRR pair (PHYSMASK valid bit, bit 11, clear). */
+    int slot = -1;
+    for (uint32_t i = 0; i < vcnt; i++) {
+        uint32_t m_lo, m_hi;
+        asm volatile("rdmsr" : "=a"(m_lo), "=d"(m_hi) : "c"(0x201u + 2u * i));
+        if (!(m_lo & (1u << 11))) { slot = (int)i; break; }
+    }
+    if (slot < 0)
+        return 0;
+
+    /* PHYSBASE: base (4 KiB-aligned) | memory type 0x01 (WC).  base < 4 GiB, so
+     * the high dword is 0.  PHYSMASK: mask of significant address bits | valid. */
+    uint32_t base_lo = (base & 0xFFFFF000u) | 0x01u;
+    uint32_t base_hi = 0;
+    uint32_t mask_lo = ((~(pw - 1u)) & 0xFFFFF000u) | (1u << 11);
+    uint32_t mask_hi = (phys_bits > 32u) ? ((1u << (phys_bits - 32u)) - 1u) : 0u;
+    uint32_t msr     = 0x200u + 2u * (uint32_t)slot;
+
+    /* --- Canonical MTRR-change sequence (Intel SDM Vol 3, §12.11.7.2). --- */
+    uint32_t flags;
+    asm volatile("pushf; pop %0" : "=r"(flags));
+    asm volatile("cli");
+
+    /* Clear CR4.PGE (if set) so global TLB entries are flushed by the CR3
+     * reloads below; restored at the end. */
+    uint32_t cr4;
+    asm volatile("mov %%cr4, %0" : "=r"(cr4));
+    if (cr4 & (1u << 7))
+        asm volatile("mov %0, %%cr4" :: "r"(cr4 & ~(1u << 7)) : "memory");
+
+    /* Enter no-fill cache mode (CR0.CD=1, NW=0) and flush caches + TLB. */
+    uint32_t cr0;
+    asm volatile("mov %%cr0, %0" : "=r"(cr0));
+    asm volatile("mov %0, %%cr0" :: "r"((cr0 | (1u << 30)) & ~(1u << 29)) : "memory");
+    asm volatile("wbinvd");
+    uint32_t cr3;
+    asm volatile("mov %%cr3, %0" : "=r"(cr3));
+    asm volatile("mov %0, %%cr3" :: "r"(cr3) : "memory");
+
+    /* Disable MTRRs (clear E, bit 11, in IA32_MTRR_DEF_TYPE = 0x2FF). */
+    uint32_t def_lo, def_hi;
+    asm volatile("rdmsr" : "=a"(def_lo), "=d"(def_hi) : "c"(0x2FFu));
+    asm volatile("wrmsr" :: "a"(def_lo & ~(1u << 11)), "d"(def_hi), "c"(0x2FFu));
+
+    /* Program the chosen variable MTRR pair. */
+    asm volatile("wrmsr" :: "a"(base_lo), "d"(base_hi), "c"(msr));
+    asm volatile("wrmsr" :: "a"(mask_lo), "d"(mask_hi), "c"(msr + 1u));
+
+    /* Re-enable MTRRs (set E). */
+    asm volatile("wrmsr" :: "a"(def_lo | (1u << 11)), "d"(def_hi), "c"(0x2FFu));
+
+    /* Flush caches + TLB again, then leave no-fill mode. */
+    asm volatile("wbinvd");
+    asm volatile("mov %0, %%cr3" :: "r"(cr3) : "memory");
+    asm volatile("mov %0, %%cr0" :: "r"(cr0) : "memory");
+
+    /* Restore CR4.PGE and the interrupt flag. */
+    if (cr4 & (1u << 7))
+        asm volatile("mov %0, %%cr4" :: "r"(cr4) : "memory");
+    if (flags & (1u << 9))
+        asm volatile("sti");
+
+    return 1;
+}
+
 void paging_map_region_wc(uint32_t phys_start, uint32_t size)
 {
     map_region_flags(phys_start, size, s_pat_wc_ok ? PAGE_PAT : 0u);
+
+    /* Also pin a WC MTRR over the framebuffer so write-combining survives a UC
+     * default MTRR type (PAT-WC cannot override that on its own).  Once only --
+     * the FB base is fixed, and a second overlapping slot would waste an MTRR. */
+    if (!s_mtrr_fb_done && size) {
+        paging_set_mtrr_wc(phys_start, size);
+        s_mtrr_fb_done = 1;
+    }
 }
 
