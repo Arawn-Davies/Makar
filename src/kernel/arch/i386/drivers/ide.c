@@ -918,11 +918,45 @@ int ide_eject_atapi(uint8_t drive_num)
 /* -------------------------------------------------------------------------
  * PCI binding: find the bus-master IDE controller and arm DMA.
  * ---------------------------------------------------------------------- */
+
+/* Known-good bus-master IDE controllers: the Intel PIIX/PIIX3/PIIX4 family.
+ * QEMU (i440FX), Hyper-V Gen1, VMware and VirtualBox all emulate one of these
+ * identically, so their DMA engine behaves as the spec describes.  We only arm
+ * DMA for a recognised controller; anything else (exotic or genuinely legacy
+ * silicon we haven't validated) stays on PIO from boot rather than risk a
+ * stalled transfer on an unfamiliar BMIDE.  The runtime reset/PIO-fallback +
+ * demotion path (dma_note_failure) remains the safety net for a whitelisted
+ * controller that misbehaves; this gate just keeps unknown ones off DMA
+ * entirely.  See the IDE DMA notes near the top of this file. */
+static int dma_controller_known_good(const pci_device_t *d)
+{
+    if (d->vendor_id != 0x8086)         /* Intel */
+        return 0;
+    switch (d->device_id) {
+        case 0x1230:                    /* 82371FB  PIIX  IDE */
+        case 0x7010:                    /* 82371SB  PIIX3 IDE (QEMU i440FX)  */
+        case 0x7111:                    /* 82371AB/EB PIIX4 IDE (HV/VMware/  */
+            return 1;                   /*            VirtualBox)            */
+        default:
+            return 0;
+    }
+}
+
 static int ide_dma_probe(pci_device_t *d)
 {
     uint32_t io = pci_bar_io(d, 4);     /* BAR4 = bus-master I/O base */
     if (!io)
         return 1;                       /* no BMIDE here: don't claim */
+
+    if (!dma_controller_known_good(d)) {
+        Serial_WriteString("ide: unrecognised IDE controller (vendor ");
+        Serial_WriteHex(d->vendor_id);
+        Serial_WriteString(" device ");
+        Serial_WriteHex(d->device_id);
+        Serial_WriteString(") -> PIO only\n");
+        s_dma_enabled = 0;
+        return 1;                       /* leave on PIO; don't claim for DMA */
+    }
 
     pci_enable_bus_master(d);
     s_bmide_base  = (uint16_t)io;
