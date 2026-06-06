@@ -150,6 +150,29 @@ live VFS (descend a real dir, confirm the cwd deepened, climb back) and emits
 headless-safe — this is the automated proof that "Files actually moves about the
 filesystem" without needing pixels.
 
+## Text-mode VTs, /dev/ttyN, and the per-tab status bar
+
+Outside the GUI, the text console runs `makmux` — a tmux-style virtual-terminal
+multiplexer (`src/userspace/makmux.c`). There are nine user VT slots plus a
+hidden root console; full model in [kernel/vtty](kernel/vtty.md). The relevant
+points for the desktop story:
+
+- **/dev/ttyN.** Every VT slot is addressable as a Linux-style character node:
+  `/dev/tty0` is the root console (mak.sh0) and `/dev/tty1`..`/dev/tty9` are the
+  nine makmux slots (slot `i` == `/dev/tty(i+1)`). Writing to one streams into
+  that VT's backing grid (`echo hi > /dev/tty2`); reads are EOF. They are always
+  present and ride the existing devfs `SYS_OPEN`/`SYS_WRITE` path — no new
+  syscall.
+- **tmux-style tabs.** makmux opens **one** shell by default; further tabs are
+  created on demand with **Alt+T** (`SYS_VT_OPEN_REQUEST`), up to nine. Alt+F1–F4
+  jump to the first four; Alt+Tab / Ctrl+Tab cycle the rest.
+- **Per-tab status bar.** `statusbar.elf` renders the layout of the *active* VT
+  (read from `SYS_VT_STATE`). Each tab can own its bar via `~/.sbrc.tty<N>`
+  (the `/dev/ttyN` number; root = `tty0`), which overrides the shared `~/.sbrc`;
+  switching tabs reloads and re-renders that tab's own bar. Layout/widget format
+  is the same `<section> <widget>...` `.sbrc` grammar (`left`/`center`/`right`
+  with `hostname user date time cpu mem rootfs command tabs`).
+
 ## DOOM windowed backend (`doomgeneric_makar.c`)
 
 `-surface <id>` selects windowed mode: `DG_Init` maps the surface instead of the

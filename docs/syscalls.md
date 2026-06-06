@@ -215,8 +215,8 @@ VT/app-tab syscalls support the userspace multiplexer:
 |---|---|
 | `SYS_VT_ENTER` | bind a task to a new VT slot |
 | `SYS_VT_CLOSE` | close/free a VT owner pid |
-| `SYS_VT_OPEN_REQUEST` | request another shell VT |
-| `SYS_VT_STATE` | return live VT state |
+| `SYS_VT_OPEN_REQUEST` | request another shell VT (the Alt+T route) |
+| `SYS_VT_STATE` | return live VT state: `(focused_slot << 16) \| live_mask` |
 | `SYS_VT_OPEN_APP` | queue or switch to a named app tab |
 | `SYS_VT_TAKE_APP` | makmux drains one queued app path |
 | `SYS_VT_SETNAME` | name the current VT/app tab |
@@ -224,6 +224,23 @@ VT/app-tab syscalls support the userspace multiplexer:
 
 `SYS_VT_TAKE_APP` is currently number 248. It was moved off 243 so Linux i386
 `set_thread_area` could use its standard number.
+
+There are **nine user-visible VT slots** (kernel slots 0–8) plus a hidden root
+console (`VTTY_ROOT_SLOT`). They are exposed to userspace as Linux-style
+character nodes under `/dev`:
+
+| Path | Slot | Notes |
+|---|---|---|
+| `/dev/tty0` | `VTTY_ROOT_SLOT` | the root console (mak.sh0), hidden from the tab strip |
+| `/dev/tty1` … `/dev/tty9` | 0 … 8 | the nine makmux VT slots (slot == ttyN − 1) |
+
+These nodes are **always present** (independent of makmux). They are character
+sinks, not block devices: reads return EOF, and a write streams into that
+slot's backing grid (`vtty_write`), painting the framebuffer if the VT is
+focused — e.g. `echo hi > /dev/tty2`. No new syscall: writes ride the existing
+`SYS_OPEN`/`SYS_WRITE` block-device fd path through devfs. makmux is tmux-style
+— it opens **one** shell by default and grows more on the `SYS_VT_OPEN_REQUEST`
+(Alt+T) route, up to nine.
 
 ## TLS Details
 
