@@ -844,6 +844,26 @@ static void test_devfs(void)
         KTEST_ASSERT(n == (long)sizeof(blk));
     }
 
+    /* Virtual terminals: /dev/tty0 (root console) + /dev/tty1../dev/tty9 are
+     * always registered, regardless of makmux state.  They are character
+     * sinks, not block devices: writable, never read-only, no LBA location,
+     * reads return EOF, and a write is consumed into the slot's backing grid.
+     * Exercise tty9 (slot 8) -- a background slot during ktest, so painting it
+     * never disturbs the live console. */
+    int t0 = devfs_lookup("/tty0");
+    int t9 = devfs_lookup("/tty9");
+    KTEST_ASSERT(t0 >= 0 && t9 >= 0);
+    KTEST_ASSERT(devfs_file_exists("/tty0") == 1);
+    KTEST_ASSERT(devfs_node_readonly(t9) == 0);
+    {
+        uint8_t drv = 0xFF; uint32_t lba = 0xFFFFFFFFu;
+        KTEST_ASSERT(devfs_node_location(t9, &drv, &lba) < 0);   /* not a block dev */
+        char rb[4];
+        KTEST_ASSERT(devfs_pread(t9, rb, sizeof(rb), 0) == 0);    /* read = EOF */
+        const char msg[] = "ktest\n";
+        KTEST_ASSERT(devfs_pwrite(t9, msg, sizeof(msg) - 1, 0) == (long)(sizeof(msg) - 1));
+    }
+
     ktest_summary();
 }
 

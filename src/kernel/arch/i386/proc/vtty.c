@@ -529,6 +529,31 @@ vt_buf_t *vtty_buf(int n)
     return &vtty_bufs[n];
 }
 
+/* Write `len` bytes into slot `n`'s backing grid (the /dev/ttyN sink).
+ * Renders straight to the framebuffer when that slot is the focused VT,
+ * otherwise the bytes accumulate in the grid and surface on the next switch.
+ * Returns bytes consumed, or -1 if the slot is out of range / unallocated. */
+long vtty_write(int n, const char *buf, unsigned int len)
+{
+    if (n < 0 || n >= VTTY_MAX || !buf) return -1;
+    vt_buf_t *vt = vtty_buf(n);
+    if (!vt || !vt->cells) return -1;
+
+    int focused;
+    if (n == VTTY_ROOT_SLOT)
+        focused = (vtty_display_mode == VTTY_DISPLAY_ROOT_TEXT) ||
+                  (vtty_display_mode == VTTY_DISPLAY_VT && vtty_nslots == 0);
+    else
+        focused = (vtty_display_mode == VTTY_DISPLAY_VT && n == vtty_current);
+
+    for (unsigned int i = 0; i < len; i++)
+        vt_putchar(vt, buf[i]);
+
+    if (focused && vesa_tty_is_ready())
+        vesa_tty_paint_buf(vt);
+    return (long)len;
+}
+
 vt_buf_t *vtty_buf_current(void)
 {
     if (!vtty_bufs_ready) return NULL;

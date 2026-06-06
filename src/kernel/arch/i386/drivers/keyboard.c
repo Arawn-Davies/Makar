@@ -1324,10 +1324,27 @@ void keyboard_test_driver(void)
     keyboard_inject_text("echo KBTEST_CTRLC_OK\n");
     ksleep(150);
 
-    /* 2: makmux + Alt-Tab / Alt-Shift-Tab VT cycling.  Asserts directly on
-     *    in-kernel state (vtty_active) -- no serial-scrape needed. */
+    /* 2: makmux + Alt-Tab / Alt-Shift-Tab VT cycling.  makmux is tmux-style:
+     *    it opens exactly ONE shell (VT1) at startup, so prove the on-demand
+     *    route first -- Alt+T (SYS_VT_OPEN_REQUEST) must grow a second tab --
+     *    then assert cycling on in-kernel state (vtty_active).  No
+     *    serial-scrape needed. */
     keyboard_inject_text("makmux\n");
-    ksleep(400);                /* let makmux fork mak.sh1-4 + take focus */
+    ksleep(400);                /* let makmux fork the first shell + take focus */
+    if (vtty_count() == 1) {
+        Serial_WriteString("KBTEST: makmux-default-1 PASS\n");
+    } else {
+        Serial_WriteString("KBTEST: makmux-default-1 FAIL\n");
+        pass = 0;
+    }
+    keyboard_inject_key(KC_T, 0, 0, 1);     /* Alt+T -> open a second tab */
+    ksleep(300);                /* makmux drains the open request + forks VT2 */
+    if (vtty_count() > 1) {
+        Serial_WriteString("KBTEST: alt-t-newtab PASS\n");
+    } else {
+        Serial_WriteString("KBTEST: alt-t-newtab FAIL\n");
+        pass = 0;
+    }
     if (vtty_count() > 1) {
         int a0 = vtty_active();
         keyboard_inject_key(KC_TAB, 0, 0, 1);   /* Alt+Tab       -> forward  */
@@ -1378,7 +1395,7 @@ void keyboard_test_driver(void)
          *    mak.sh0 (the root console).  Asserts vtty_count() drops to 0. */
         keyboard_inject_text("q");          /* quit maktop (q/Esc/F10) */
         ksleep(150);
-        for (int e = 0; e < 5; e++) {       /* exit the four VT shells */
+        for (int e = 0; e < 5; e++) {       /* exit the open VT shells (VT1/VT2) */
             keyboard_inject_text("exit\n");
             ksleep(120);
         }

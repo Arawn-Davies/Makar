@@ -64,6 +64,20 @@ else
     fail=1
 fi
 
+# /dev/ttyN: the VT slots are addressable as Linux-style terminal nodes.
+# tty3 is a background slot here (no makmux running under the smoke driver),
+# so writing to it just lands in that VT's backing grid -- a clean exit (0)
+# proves open+write routed through devfs DEV_TTY -> vtty_write.
+echo SHELL-SMOKE: dev-tty-write
+echo vtwrite > /dev/tty3
+if [ $? -eq 0 ]
+then
+    echo SHELL-SMOKE: [PASS] dev-tty-write
+else
+    echo SHELL-SMOKE: [FAIL] dev-tty-write
+    fail=1
+fi
+
 echo SHELL-SMOKE: ls-mnt
 ls /mnt
 if [ $? -eq 0 ]
