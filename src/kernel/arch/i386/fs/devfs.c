@@ -6,6 +6,7 @@
 #include <kernel/ide.h>
 #include <kernel/partition.h>
 #include <kernel/tty.h>
+#include <kernel/vtty.h>
 #include <string.h>
 
 #define DEVFS_MAX_NODES   32
@@ -16,11 +17,12 @@ typedef enum {
     DEV_DISK = 0,   /* whole ATA disk          */
     DEV_PART,       /* ATA partition window    */
     DEV_CDROM,      /* ATAPI optical drive     */
+    DEV_TTY,        /* virtual terminal (/dev/ttyN -> vtty slot) */
 } dev_kind_t;
 
 typedef struct {
     char       name[16];   /* node name, no leading '/' (e.g. "hda1")   */
-    uint8_t    drive;      /* IDE drive index 0-3                       */
+    uint8_t    drive;      /* IDE drive index 0-3 (DEV_TTY: vtty slot)  */
     uint8_t    kind;       /* dev_kind_t                                 */
     uint8_t    readonly;   /* 1 = writes rejected (CD-ROM)               */
     uint32_t   base_lba;   /* first sector of the window                */
@@ -97,6 +99,22 @@ void devfs_init(void)
 
         disk_letter++;
     }
+
+    /* Virtual terminals: /dev/tty0 is the root console (VTTY_ROOT_SLOT) and
+     * /dev/tty1../dev/tty9 are the nine user VT slots (slot == ttyN-1).  These
+     * are name/route nodes, not block-backed: reads are EOF, writes paint the
+     * slot's backing grid via vtty_write.  Always present so userspace can
+     * address a VT by a stable Linux-style path regardless of makmux state. */
+    for (int t = 0; t <= VTTY_SHELL_MAX; t++) {   /* tty0..tty9 */
+        char nm[16];
+        int o = 0;
+        nm[o++] = 't'; nm[o++] = 't'; nm[o++] = 'y';
+        nm[o++] = (char)('0' + t);
+        nm[o]   = '\0';
+        /* drive field carries the vtty slot: tty0 -> root, ttyN -> slot N-1. */
+        uint8_t slot = (t == 0) ? (uint8_t)VTTY_ROOT_SLOT : (uint8_t)(t - 1);
+        add_node(nm, slot, DEV_TTY, 0, 0, 0);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -139,6 +157,7 @@ int devfs_node_readonly(int idx)
 int devfs_node_location(int idx, uint8_t *out_drive, uint32_t *out_base_lba)
 {
     if (idx < 0 || idx >= s_count) return -1;
+    if (s_nodes[idx].kind == DEV_TTY) return -1;   /* not a block device */
     if (out_drive)    *out_drive    = s_nodes[idx].drive;
     if (out_base_lba) *out_base_lba = s_nodes[idx].base_lba;
     return 0;
@@ -163,6 +182,7 @@ long devfs_pread(int idx, void *buf, uint32_t len, uint32_t off)
 {
     if (idx < 0 || idx >= s_count || !buf) return -1;
     dev_node_t *n = &s_nodes[idx];
+    if (n->kind == DEV_TTY) return 0;       /* VT sink: nothing to read back */
     uint32_t ssz   = node_sector_size(n);
     uint32_t total = n->sectors * ssz;
 
@@ -192,6 +212,8 @@ long devfs_pwrite(int idx, const void *buf, uint32_t len, uint32_t off)
 {
     if (idx < 0 || idx >= s_count || !buf) return -1;
     dev_node_t *n = &s_nodes[idx];
+    if (n->kind == DEV_TTY)                 /* route bytes to the VT grid */
+        return vtty_write((int)n->drive, (const char *)buf, len);
     if (n->readonly) return -1;
 
     uint32_t ssz   = node_sector_size(n);

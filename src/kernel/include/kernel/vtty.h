@@ -105,6 +105,11 @@ int          vtty_take_app_request(char *out, int cap);
  * or vtty has not initialised buffers yet. */
 vt_buf_t *vtty_buf(int n);
 
+/* Write len bytes into slot n's backing grid (the /dev/ttyN write sink).
+ * Repaints the framebuffer if n is the focused VT.  Returns bytes written,
+ * or -1 if n is out of range / has no allocated grid. */
+long vtty_write(int n, const char *buf, unsigned int len);
+
 /* Returns the backing buffer bound to the calling task's TTY index, or
  * NULL if the task has TASK_TTY_NONE (e.g. idle, ktest_bg, boot CPU). */
 vt_buf_t *vtty_buf_current(void);
