@@ -23,7 +23,7 @@ static void open_sel(void){
 
 int main(int argc,char**argv){
     mx_conn c;
-    if(mx_connect(&c,argc,argv,560,380)!=0) return 1;
+    if(mx_connect(&c,argc,argv,560,380,MX_F_RESIZABLE)!=0) return 1;
     scpy(g_files.cwd,"/",sizeof g_files.cwd); br_load(&g_files);
 
     ui_ctx u; for(unsigned i=0;i<sizeof u/sizeof(int);i++)((int*)&u)[i]=0;
@@ -33,7 +33,7 @@ int main(int argc,char**argv){
         mx_pump(&c);
         int key=mx_key(&c);
         int changed = first || key>=0 || c.mpressed || c.mreleased ||
-                      c.mx!=lmx || c.my!=lmy || c.focused!=lfocus;
+                      c.mx!=lmx || c.my!=lmy || c.focused!=lfocus||c.resized;
         lmx=c.mx; lmy=c.my; lfocus=c.focused; first=0;
         if(!changed){ sys_yield(); continue; }
 

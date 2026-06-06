@@ -213,7 +213,7 @@ int main(int argc, char **argv)
      * makx client and request a 640x400 surface up front -- DG_Init then renders
      * into it.  Strip the flag so doomgeneric never sees it.  No -makx -> the
      * normal fullscreen path (shell `doom`). */
-    if (mx_connect(&s_mc, argc, argv, DOOMGENERIC_RESX, DOOMGENERIC_RESY) == 0)
+    if (mx_connect(&s_mc, argc, argv, DOOMGENERIC_RESX, DOOMGENERIC_RESY, 0) == 0)
         s_windowed = 1;
 
     static char *fa[18];

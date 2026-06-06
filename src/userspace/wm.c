@@ -73,6 +73,7 @@ typedef struct {
     gfx_surface  surf;          /* our mapping of the client surface        */
     int          x, y, w, h;    /* outer rect                              */
     int          minimized, maximized;
+    int          resizable;     /* MX_F_RESIZABLE: re-flow (blit 1:1) vs scale */
     int          sx, sy, sw, sh;/* geometry saved before maximise          */
     char         title[40];
     mxev         ev[EVQ]; int eh, et;     /* per-window event queue        */
@@ -202,6 +203,18 @@ static void launch_icon(int ii)
     z_raise(i); set_focus(i); g_dirty=1;
 }
 
+/* Ask a resizable window's client to re-flow to the current client rect (it
+ * reallocates its surface via MX_RESIZE).  No-op for fixed (scaled) clients or
+ * when the surface already matches.  Sent on connect + every geometry change. */
+static void maybe_send_resize(int i)
+{
+    if (i < 0 || !W[i].in_use || !W[i].resizable) return;
+    int cw = client_w(&W[i]), ch = client_h(&W[i]);
+    if (cw < 1) cw = 1; if (ch < 1) ch = 1;
+    if (cw != W[i].sw || ch != W[i].sh)
+        win_push(&W[i], MXEV_RESIZE, cw, ch, 0);
+}
+
 /* ===================== client request servicing ========================== */
 static int win_valid(int i, int src){ return i>=0 && i<MAXWIN && W[i].in_use && W[i].client==src; }
 
@@ -221,7 +234,7 @@ static void serve_requests(void)
         ipc_msg_t r; for(int i=0;i<IPC_MSG_DATA_WORDS;i++) r.data[i]=0; r.type=MXEV_NONE;
 
         if (m.type==MX_HELLO){
-            int w=(int)m.data[0], h=(int)m.data[1];
+            int w=(int)m.data[0], h=(int)m.data[1], flags=(int)m.data[2];
             int i=-1;
             for(int k=0;k<MAXWIN;k++) if(W[k].in_use && W[k].client==src && W[k].sid<0){ i=k; break; }
             if (i<0){ /* a client we didn't reserve: give it a default window */
@@ -236,9 +249,30 @@ static void serve_requests(void)
                 r.data[0]=(unsigned)-1; r.data[1]=(unsigned)-1;
             } else {
                 W[i].sid=sid; W[i].surf.px=(gfx_u32*)base; W[i].surf.w=w; W[i].surf.h=h; W[i].sw=w; W[i].sh=h;
+                W[i].resizable = (flags & MX_F_RESIZABLE) ? 1 : 0;
                 r.data[0]=(unsigned)i; r.data[1]=(unsigned)sid;
                 z_raise(i); set_focus(i); g_dirty=1;
+                /* A resizable client re-flows to fill: ask it to size its surface
+                 * to the actual client rect (the window geometry, not the
+                 * initial request) so the blit is exact 1:1 from the first frame. */
+                maybe_send_resize(i);
             }
+        } else if (m.type==MX_RESIZE){
+            int i=(int)m.data[0], w=(int)m.data[1], h=(int)m.data[2];
+            if (win_valid(i,src) && w>0 && h>0){
+                int ns = sys_surface_create(w,h);
+                void *nb = (ns>=0) ? sys_surface_map(ns) : 0;
+                if (ns<0 || !nb){            /* keep the old surface on failure */
+                    if (ns>=0) sys_surface_destroy(ns);
+                    r.data[0]=(unsigned)-1;
+                } else {
+                    int old = W[i].sid;
+                    sys_surface_unmap(old);    /* drop the server's mapping of the old one */
+                    sys_surface_destroy(old);  /* drop creator ref (client still maps it until it unmaps) */
+                    W[i].sid=ns; W[i].surf.px=(gfx_u32*)nb; W[i].surf.w=w; W[i].surf.h=h; W[i].sw=w; W[i].sh=h;
+                    r.data[0]=(unsigned)ns; g_dirty=1;
+                }
+            } else r.data[0]=(unsigned)-1;
         } else if (m.type==MX_PRESENT){
             int i=(int)m.data[0];
             if (win_valid(i,src)){ g_dirty=1; win_pop(&W[i],&r); }
@@ -286,6 +320,7 @@ static void win_toggle_max(int i)
         w->x=w->sx; w->y=w->sy; w->w=w->sw; w->h=w->sh;
         w->maximized=0;
     }
+    maybe_send_resize(i);   /* re-flow the client to the new client rect */
     g_dirty=1;
 }
 
@@ -315,10 +350,21 @@ static void draw_window_frame(int i)
      * content sitting at its original size in the corner). */
     int cx=client_x(w), cy=client_y(w), cw=client_w(w), ch=client_h(w);
     if (W[i].sid>=0 && W[i].surf.px){
-        if (cw==W[i].sw && ch==W[i].sh)
-            gfx_blit(&scr, cx, cy, &W[i].surf, 0,0, W[i].sw, W[i].sh);
-        else
+        if (W[i].resizable){
+            /* re-flow client: its surface tracks the window, so blit 1:1.  Clip
+             * to the overlap for the brief frame between a window resize and the
+             * client's MX_RESIZE re-alloc landing (content stays native size,
+             * the window just reveals more/less -- normal resize behaviour). */
+            int bw = cw < W[i].sw ? cw : W[i].sw;
+            int bh = ch < W[i].sh ? ch : W[i].sh;
+            gfx_blit(&scr, cx, cy, &W[i].surf, 0,0, bw, bh);
+        } else if (cw>=W[i].sw && ch>=W[i].sh){
+            /* fixed-size client (e.g. doom): 1:1 centred when it fits (no scaling
+             * cost) -- only scale when the window is smaller than the surface. */
+            gfx_blit(&scr, cx+(cw-W[i].sw)/2, cy+(ch-W[i].sh)/2, &W[i].surf, 0,0, W[i].sw, W[i].sh);
+        } else {
             gfx_blit_scaled(&scr, cx, cy, cw, ch, &W[i].surf);
+        }
     } else {
         gfx_fill(&scr, cx, cy, cw, ch, RGB(0x0e,0x12,0x18));
         gfx_str(&scr, cx+8, cy+8, "starting...", UI_COL_MUTED);
@@ -636,7 +682,11 @@ int main(int argc, char **argv, char **envp)
                 }
             }
         }
-        if (mreleased){ dragging=0; resizing=0; }
+        if (mreleased){
+            /* On finishing a resize drag, re-flow the client to the new size. */
+            if (resizing && drag_win>=0) maybe_send_resize(drag_win);
+            dragging=0; resizing=0;
+        }
         if (dragging && drag_win>=0 && W[drag_win].in_use){ swin *w=&W[drag_win];
             w->x=cx-drag_dx; w->y=cy-drag_dy;
             if(w->x<0)w->x=0; if(w->y<MENU_H)w->y=MENU_H;

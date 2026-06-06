@@ -103,6 +103,7 @@
 #define SYS_SURFACE_MAP     262 /* void *surface_map(int id) -> addr / NULL       */
 #define SYS_SURFACE_INFO    263 /* uint32_t surface_info(int id) -> (w<<16)|h /-1 */
 #define SYS_SURFACE_DESTROY 264 /* int surface_destroy(int id) -> 0 / -1          */
+#define SYS_SURFACE_UNMAP   268 /* int surface_unmap(int id) -> 0/-1 (resize realloc) */
 
 /*
  * Admin syscalls (219..229).

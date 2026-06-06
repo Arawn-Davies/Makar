@@ -336,6 +336,12 @@ static inline int sys_surface_destroy(int id)
 {
     return (int)syscall1(SYS_SURFACE_DESTROY, (long)id);
 }
+/* Unmap a surface from the caller (free its frames if unreferenced) -- used to
+ * release the old surface when a window client reallocates on resize. */
+static inline int sys_surface_unmap(int id)
+{
+    return (int)syscall1(SYS_SURFACE_UNMAP, (long)id);
+}
 
 /* Synchronous message-passing IPC (MINIX-style; kernel/ipc.h).  Endpoints are
  * task pids; messages are fixed 32-byte structs.  send/recv block until the

@@ -45,14 +45,20 @@ static void mx_apply(mx_conn *c, const ipc_msg_t *m)
     case MXEV_CLOSE:
         c->closed = 1;
         break;
+    case MXEV_RESIZE:
+        /* Server asked us to re-flow to a new client size; applied after the
+         * pump drain (a resizable client only -- see mx_pump). */
+        c->pending_rw = (int)m->data[0];
+        c->pending_rh = (int)m->data[1];
+        break;
     default: break;
     }
 }
 
-int mx_connect(mx_conn *c, int argc, char **argv, int w, int h)
+int mx_connect(mx_conn *c, int argc, char **argv, int w, int h, int flags)
 {
     for (unsigned i = 0; i < sizeof *c; i++) ((unsigned char *)c)[i] = 0;
-    c->server = -1; c->win = -1; c->sid = -1;
+    c->server = -1; c->win = -1; c->sid = -1; c->flags = flags;
 
     for (int i = 1; i + 1 < argc; i++)
         if (mx_streq(argv[i], "-makx")) { c->server = mx_atoi(argv[i + 1]); break; }
@@ -61,6 +67,7 @@ int mx_connect(mx_conn *c, int argc, char **argv, int w, int h)
     ipc_msg_t m;
     for (unsigned i = 0; i < IPC_MSG_DATA_WORDS; i++) m.data[i] = 0;
     m.type = MX_HELLO; m.data[0] = (unsigned)w; m.data[1] = (unsigned)h;
+    m.data[2] = (unsigned)flags;
     if (sys_ipc_sendrec(c->server, &m) != 0) return -1;
 
     int win = (int)m.data[0], sid = (int)m.data[1];
@@ -75,10 +82,32 @@ int mx_connect(mx_conn *c, int argc, char **argv, int w, int h)
     return 0;
 }
 
+/* Re-flow to a new client size the server requested: ask it to reallocate our
+ * surface (MX_RESIZE), map the new one and release the old.  Only for resizable
+ * clients; on any failure we keep the current surface. */
+static void mx_apply_resize(mx_conn *c, int w, int h)
+{
+    if (w <= 0 || h <= 0 || (w == c->surf.w && h == c->surf.h)) return;
+    ipc_msg_t m;
+    for (unsigned i = 0; i < IPC_MSG_DATA_WORDS; i++) m.data[i] = 0;
+    m.type = MX_RESIZE; m.data[0] = (unsigned)c->win;
+    m.data[1] = (unsigned)w; m.data[2] = (unsigned)h;
+    if (sys_ipc_sendrec(c->server, &m) != 0) { c->closed = 1; return; }
+    int nsid = (int)m.data[0];
+    if (nsid < 0) return;                 /* server kept the old surface */
+    void *base = sys_surface_map(nsid);
+    if (!base) { c->closed = 1; return; } /* can't map the new one -> broken */
+    int old = c->sid;
+    c->sid = nsid; c->surf.px = (gfx_u32 *)base; c->surf.w = w; c->surf.h = h;
+    c->resized = 1;
+    sys_surface_unmap(old);               /* free the old frames + map slot */
+}
+
 int mx_pump(mx_conn *c)
 {
     int prev = c->last_mdown;
     c->mpressed = c->mreleased = 0;
+    c->resized = 0;
     if (c->closed) return -1;
 
     for (;;) {
@@ -89,6 +118,13 @@ int mx_pump(mx_conn *c)
         if (m.type == MXEV_NONE) break;
         mx_apply(c, &m);
         if (m.data[MX_PENDING] == 0) break;
+    }
+
+    /* Apply a pending resize once the event queue is drained (resizable only). */
+    if (c->pending_rw && (c->flags & MX_F_RESIZABLE)) {
+        int w = c->pending_rw, h = c->pending_rh;
+        c->pending_rw = c->pending_rh = 0;
+        mx_apply_resize(c, w, h);
     }
 
     c->mpressed  =  c->mdown && !prev;

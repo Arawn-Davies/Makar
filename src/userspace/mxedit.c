@@ -117,7 +117,7 @@ static void ed_frame(gfx_surface *s,ui_ctx *u,int focused){
 
 int main(int argc,char**argv){
     mx_conn c;
-    if(mx_connect(&c,argc,argv,620,420)!=0) return 1;
+    if(mx_connect(&c,argc,argv,620,420,MX_F_RESIZABLE)!=0) return 1;
     ed_new();
     for(int i=1;i+1<argc;i++) if(streq(argv[i],"-open")){ ed_load(argv[i+1]); break; }
 
@@ -127,7 +127,7 @@ int main(int argc,char**argv){
     while(!c.closed){
         mx_pump(&c);
         int key=mx_key(&c);
-        int changed=first||key>=0||c.mpressed||c.mreleased||c.mx!=lmx||c.my!=lmy||c.focused!=lfocus;
+        int changed=first||key>=0||c.mpressed||c.mreleased||c.mx!=lmx||c.my!=lmy||c.focused!=lfocus||c.resized;
         lmx=c.mx; lmy=c.my; lfocus=c.focused; first=0;
         if(!changed){ sys_yield(); continue; }
         ui_begin(&u,c.mx,c.my,c.mdown,c.mpressed,c.mreleased,key);

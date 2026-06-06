@@ -7,6 +7,7 @@
 #include "syscall.h"
 #include "gui_gfx.h"
 #include "makx.h"
+#include <kernel/version.h>   /* MAKAR_VERSION -- reachable via -I../kernel/include */
 
 #define RGB GFX_RGB
 
@@ -41,7 +42,7 @@ static void field(const char *buf, const char *key, char *out, int max)
 int main(int argc, char **argv)
 {
     mx_conn c;
-    if (mx_connect(&c, argc, argv, 560, 430) != 0) return 1;
+    if (mx_connect(&c, argc, argv, 560, 430, MX_F_RESIZABLE) != 0) return 1;
 
     /* Gather specs once (RAM/disk/uptime refresh per redraw below). */
     static char cpuinfo[2048];
@@ -62,7 +63,7 @@ int main(int argc, char **argv)
         (void)mx_key(&c);
         unsigned now = sys_uptime();
         int tick = (now - last_up) >= 100u;     /* refresh dynamic stats ~1 Hz */
-        if (!(first || tick || c.focused != lfocus)) { sys_yield(); continue; }
+        if (!(first || tick || c.resized || c.focused != lfocus)) { sys_yield(); continue; }
         last_up = now; lfocus = c.focused; first = 0;
 
         char meminfo[512]; readfile("/proc/meminfo", meminfo, sizeof meminfo);
@@ -74,7 +75,7 @@ int main(int argc, char **argv)
         gfx_fill(s, 0, 0, s->w, 2, RGB(0x35,0x6a,0xa8));
 
         int x = 18, y = 16;
-        gfx_str(s, x, y, "Makar 0.9.5 -- The GCC/C++ sibling of Medli", RGB(0x8a,0xe2,0x34)); y += 16;
+        gfx_str(s, x, y, "Makar " MAKAR_VERSION " -- The GCC/C++ sibling of Medli", RGB(0x8a,0xe2,0x34)); y += 16;
         gfx_str(s, x, y, "Copyright (C) 2026 Arawn Davies", RGB(0xd3,0xd7,0xcf)); y += 13;
         gfx_str(s, x, y, "Released under the BSD-3 Clause Clear license", RGB(0x90,0xa0,0xb5)); y += 13;
         gfx_str(s, x, y, "A hobby x86 (i386) bare-metal OS kernel in C + AT&T asm.", RGB(0x90,0xa0,0xb5)); y += 22;

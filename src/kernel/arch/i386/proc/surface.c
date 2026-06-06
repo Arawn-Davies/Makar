@@ -148,6 +148,33 @@ int surface_destroy(int id, task_t *caller)
     return 0;
 }
 
+int surface_unmap(int id, task_t *t)
+{
+    if (id < 0 || id >= SURFACE_MAX || !t) return -1;
+    uint32_t flags = irq_save();
+    surface_t *s = &s_surf[id];
+    if (!s->in_use) { irq_restore(flags); return -1; }
+
+    int rc = -1;
+    for (int m = 0; m < SURFACE_MAP_SLOTS; m++) {
+        if (s->map[m].task != t) continue;
+        /* Clear the PTEs first so the frames are no longer reachable from t
+         * before we (maybe) free them -- same ordering surface_release_task
+         * relies on to avoid a double free. */
+        if (t->page_dir)
+            for (int p = 0; p < s->npages; p++)
+                vmm_unmap_page(t->page_dir,
+                               s->map[m].base_va + ((uint32_t)p << 12));
+        s->map[m].task = NULL;
+        s->map[m].base_va = 0;
+        rc = 0;
+        break;
+    }
+    surface_gc(s);
+    irq_restore(flags);
+    return rc;
+}
+
 void surface_release_task(task_t *t)
 {
     if (!t) return;

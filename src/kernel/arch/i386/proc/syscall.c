@@ -2280,6 +2280,9 @@ void syscall_dispatch(registers_t *regs)
     case SYS_SURFACE_DESTROY:
         regs->eax = (uint32_t)surface_destroy((int)regs->ebx, task_current());
         break;
+    case SYS_SURFACE_UNMAP:
+        regs->eax = (uint32_t)surface_unmap((int)regs->ebx, task_current());
+        break;
 
     default:
         /* Unknown syscall - return -ENOSYS. */

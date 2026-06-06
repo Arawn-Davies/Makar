@@ -41,7 +41,7 @@ static void tasks_load(void){
 
 int main(int argc,char**argv){
     mx_conn c;
-    if(mx_connect(&c,argc,argv,560,360)!=0) return 1;
+    if(mx_connect(&c,argc,argv,560,360,MX_F_RESIZABLE)!=0) return 1;
     tasks_load();
     ui_ctx u; for(unsigned i=0;i<sizeof u/sizeof(int);i++)((int*)&u)[i]=0;
     int first=1, lmx=-1, lmy=-1, lfocus=-1;
@@ -52,7 +52,7 @@ int main(int argc,char**argv){
         unsigned now=sys_uptime();
         int tick = (tk_n==0 || (int)(now-tk_next)>=0);
         if(tick){ tasks_load(); tk_next=now+(unsigned)(tk_interval<1?1:tk_interval)*100u; }
-        int changed = first||tick||key>=0||c.mpressed||c.mreleased||c.mx!=lmx||c.my!=lmy||c.focused!=lfocus;
+        int changed = first||tick||key>=0||c.mpressed||c.mreleased||c.mx!=lmx||c.my!=lmy||c.focused!=lfocus||c.resized;
         lmx=c.mx; lmy=c.my; lfocus=c.focused; first=0;
         if(!changed){ sys_yield(); continue; }
 

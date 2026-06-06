@@ -78,7 +78,7 @@ static void term_draw(gfx_surface *s, int focused){
 
 int main(int argc,char**argv){
     mx_conn c;
-    if(mx_connect(&c,argc,argv,640,400)!=0) return 1;
+    if(mx_connect(&c,argc,argv,640,400,MX_F_RESIZABLE)!=0) return 1;
     /* Size the grid up front: term_putc wraps/scrolls using t_cols/t_rows, and
      * the shell can emit its banner+prompt before the first term_draw runs --
      * leaving these 0 would scroll the first output off into a negative row. */
@@ -91,7 +91,7 @@ int main(int argc,char**argv){
         mx_pump(&c);
         int k,keyed=0; while((k=mx_key(&c))>=0){ term_key(k); keyed=1; }
         int dirty=term_pump();
-        if(dirty||keyed||first){ term_draw(&c.surf,c.focused); mx_present(&c); first=0; }
+        if(dirty||keyed||first||c.resized){ term_draw(&c.surf,c.focused); mx_present(&c); first=0; }
         sys_yield();
     }
     term_kill();
