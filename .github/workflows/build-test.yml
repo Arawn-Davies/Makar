@@ -64,7 +64,9 @@ jobs:
         run: |
           mkdir -p ci-logs
           set -o pipefail
-          ./run.sh iso build 2>&1 | tee ci-logs/iso-build.log
+          # TEST_ISO=1 so the build job also emits makar-test.iso for the
+          # downstream artifact (local `iso build` skips it -- one ISO, faster).
+          TEST_ISO=1 ./run.sh iso build 2>&1 | tee ci-logs/iso-build.log
 
       - name: Build HDD test image (kernel cached from ISO build)
         run: |
