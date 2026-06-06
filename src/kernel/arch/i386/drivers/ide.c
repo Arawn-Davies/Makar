@@ -144,6 +144,18 @@ static prd_t    s_prdt[1] __attribute__((aligned(16)));
 
 static int ide_poll(uint8_t ch, int check_drq);   /* defined below */
 
+/* Disk I/O runs with the timer effectively stalled (long polled waits, often
+ * with interrupts masked in syscall context), so the boot/status spinner
+ * freezes and a slow read/write looks like a hang.  Pump it directly from the
+ * I/O path: animation then tracks actual disk progress.  `t_spinner_tick`
+ * advances one frame per 12 counts, so step the counter by 12 each pump. */
+static uint32_t s_io_spin = 0;
+static inline void io_spin_pump(void)
+{
+    s_io_spin += 12u;
+    t_spinner_tick(s_io_spin);
+}
+
 /* Program the BMIDE engine for one transfer and clear stale status bits.
  * to_mem != 0 selects device->memory (a read). */
 static void bm_setup(uint8_t ch, uint16_t nbytes, int to_mem)
@@ -173,6 +185,8 @@ static int bm_run_and_wait(uint8_t ch, int to_mem)
     uint8_t  sr;
     do {
         sr = inb(bm + BM_REG_STATUS);
+        if ((limit & 0x3FFFFu) == 0)        /* keep the spinner alive on long DMA */
+            io_spin_pump();
         if (--limit == 0)
             break;
     } while ((sr & BM_SR_ACTIVE) && !(sr & BM_SR_ERR));
@@ -231,10 +245,14 @@ static int ide_poll(uint8_t ch, int check_drq)
     /* Bounded poll: ~5 million iterations covers any realistic ATA response
      * time under QEMU TCG.  If BSY never clears the drive is gone and we
      * must not spin forever. */
+    io_spin_pump();                         /* one frame per poll = per sector/chunk */
+
     uint8_t status;
     uint32_t limit = 5000000;
     do {
         status = ide_read_altstatus(ch);
+        if ((limit & 0x3FFFFu) == 0)        /* keep moving during a long wait */
+            io_spin_pump();
         if (--limit == 0)
             KPANIC("ide_poll: ATA drive BSY never cleared (drive hung or absent)");
     } while (status & ATA_SR_BSY);
