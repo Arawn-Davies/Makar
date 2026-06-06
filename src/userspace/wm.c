@@ -308,12 +308,14 @@ static void draw_window_frame(int i)
         gfx_u32 grip = focused ? UI_COL_BTN_ACT : RGB(0x4a,0x5a,0x74);
         for (int r=0;r<14;r++) gfx_fill(&scr, w->x+w->w-1-r, w->y+w->h-1-r, r+1, 1, grip);
     }
-    /* client area: blit the client's surface, 1:1 centred if it fits else
-     * nearest-neighbour scaled to the window (the established fit behaviour). */
+    /* client area: blit the client's surface so it always FILLS the window --
+     * 1:1 only when the surface exactly matches the client rect, otherwise
+     * nearest-neighbour scale to fill (so a resized window doesn't leave the
+     * content sitting at its original size in the corner). */
     int cx=client_x(w), cy=client_y(w), cw=client_w(w), ch=client_h(w);
     if (W[i].sid>=0 && W[i].surf.px){
-        if (cw>=W[i].sw && ch>=W[i].sh)
-            gfx_blit(&scr, cx+(cw-W[i].sw)/2, cy+(ch-W[i].sh)/2, &W[i].surf, 0,0, W[i].sw, W[i].sh);
+        if (cw==W[i].sw && ch==W[i].sh)
+            gfx_blit(&scr, cx, cy, &W[i].surf, 0,0, W[i].sw, W[i].sh);
         else
             gfx_blit_scaled(&scr, cx, cy, cw, ch, &W[i].surf);
     } else {

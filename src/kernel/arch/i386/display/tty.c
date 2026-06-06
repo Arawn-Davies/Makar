@@ -72,7 +72,13 @@ void t_putchar(char c)
 {
 	if (g_serial_verbose)
 		Serial_WriteChar(c);
-	vesa_tty_putchar(c);
+	/* Don't paint kernel text onto the framebuffer while the GUI owns scanout:
+	 * a stray t_writestring (e.g. vfs_mkdir's "read-only filesystem" on the live
+	 * CD, or any kernel diagnostic) would otherwise bleed white-on-blue over the
+	 * desktop.  The VGA-text buffer + serial still record it; GUI app output
+	 * goes through the compositor surface, not this path, so it's unaffected. */
+	if (!vtty_root_gui_active())
+		vesa_tty_putchar(c);
 
 	if (c != '\n')
 	{
