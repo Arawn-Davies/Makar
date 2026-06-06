@@ -66,9 +66,14 @@ Bochs VBE, else VGA 80×50) → timer(100Hz)/keyboard/IDE → cmdline parse
 (`test_mode`, `console=ttyS0`, `root=<spec>`) → `vfs_init`/`vfs_mount_root`/
 `vfs_auto_mount` → `tasking_init` + shell/ktest tasks → `syscall_init` → idle.
 
-**Memory map**: `0x0–0x0FFFFFFF` kernel identity (4 MiB pages); `0x40000000`
-ring-3 code; `0x90000000` anon-mmap window; `0xBFFF0000` ring-3 stack top
-(`USER_STACK_PAGES=8`).
+**Memory map** (higher-half kernel): kernel linked at `0xC0000000` (loaded at
+phys 1 MiB via `AT()`); runtime page directory keeps `0x0–0x0FFFFFFF` as a low
+identity window (4 MiB pages) for phys access (PMM frames, MBI, framebuffer,
+ACPI) alongside the `0xC0000000+` high kernel map. User space (below
+`0xC0000000`): `0x40000000` ring-3 code; `0x90000000` anon-mmap window;
+`0xBFFF0000` ring-3 stack top (`USER_STACK_PAGES=8`). Hand any kernel pointer to
+DMA/hardware via `kvirt_to_phys()` (`kernel/paging.h`). TCC in-OS build links
+low-half (`KERNEL_VBASE=0`).
 
 **Subsystems** (source is the source of truth):
 - Tasking/scheduler, per-task `task_t`: `kernel/task.h`, `proc/task.c`
