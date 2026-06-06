@@ -55,3 +55,8 @@ HANDOFF.md
 # GUI smoke-test screendumps (run.sh guitest)
 gui-screendump.ppm
 gui-screendump.bmp
+
+# Vendored build artefacts (compiled from source per-build; were
+# accidentally committed in effbe90, breaking CI path resolution)
+vendor/lwip/**/*.o
+vendor/lwip/**/*.d
