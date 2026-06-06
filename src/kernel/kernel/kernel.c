@@ -5,6 +5,7 @@
 #include <kernel/vga.h>
 #include <kernel/descr_tbl.h>
 #include <kernel/fpu.h>
+#include <kernel/vm.h>
 #include <kernel/serial.h>
 #include <kernel/timer.h>
 #include <kernel/system.h>
@@ -179,6 +180,14 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	kprint_ok();
 	fpu_init();
 	KLOG("fpu: x87 armed (fninit) + per-task fxsave/fxrstor on context switch\n");
+
+	/* Identify the hypervisor/VM early so later drivers can apply per-platform
+	 * quirks (e.g. the Hyper-V PS/2 mouse Y convention). */
+	vm_detect();
+	t_writestring("Virtualization: ");
+	t_writestring(vm_name());
+	t_putchar('\n');
+	KLOG("vm: detected platform\n");
 
 	t_writestring("Installing exception handlers");
 	kprint_ok();

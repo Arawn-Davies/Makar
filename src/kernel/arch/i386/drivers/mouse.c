@@ -16,6 +16,7 @@
 #include <kernel/mouse.h>
 #include <kernel/isr.h>
 #include <kernel/asm.h>
+#include <kernel/vm.h>
 
 #define PS2_DATA   0x60
 #define PS2_STATUS 0x64
@@ -76,7 +77,12 @@ void mouse_feed_byte(uint8_t b)
 
     int dx = (int)s_pkt[1] - ((flags & 0x10) ? 256 : 0);
     int dy = (int)s_pkt[2] - ((flags & 0x20) ? 256 : 0);
-    dy = -dy;                   /* PS/2 +y is up; screen +y is down */
+    /* Standard PS/2 reports +y up, so negate to screen +y down.  Hyper-V's
+     * emulated mouse reports the opposite convention -- negating there inverts
+     * it -- so skip the flip under Hyper-V.  (Reasoned from the inverted-Y
+     * report; gated by vm_kind() so QEMU/Bochs/VBox/VMware are unaffected.) */
+    if (vm_kind() != VM_HYPERV)
+        dy = -dy;
 
     if (dx >  127) dx =  127; else if (dx < -127) dx = -127;
     if (dy >  127) dy =  127; else if (dy < -127) dy = -127;
