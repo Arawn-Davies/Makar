@@ -8,6 +8,7 @@
  */
 #include "syscall.h"
 #include "string.h"
+#include "makx.h"
 #include "doomkeys.h"
 #include "doomgeneric.h"
 
@@ -18,12 +19,14 @@ static unsigned int s_rd = 0, s_wr = 0;
 static unsigned int  FB_W, FB_H, off_x, off_y;
 static unsigned int *fullfb;
 
-/* Windowed mode (launched by the window manager as `doom.elf -surface <id>`):
- * render into a shared surface the WM composites, take key bytes from stdin
- * (the WM forwards them) instead of locking the raw scancode stream, and never
- * call SYS_FB_PRESENT (the WM owns scanout).  See docs/gui.md. */
-static int s_windowed = 0;
-static int s_surface_id = -1;
+/* Windowed mode: Doom is a makx *client* (launched by the display server with
+ * `-makx <server-pid>`).  It renders into a shared surface the server
+ * composites, takes decoded keys the server forwards over IPC (not the raw
+ * scancode stream), and never calls SYS_FB_PRESENT -- only the server owns
+ * scanout.  See makx.h / docs/gui.md.  Without -makx, Doom runs its normal
+ * fullscreen path (shell `doom`). */
+static int     s_windowed = 0;
+static mx_conn s_mc;
 
 /* stdin in windowed mode carries decoded key-*down* bytes only (no break
  * codes), so a held movement key would stick.  Synthesize a release a short
@@ -94,13 +97,12 @@ static unsigned char convertWinKey(unsigned char a)
 void DG_Init(void)
 {
     if (s_windowed) {
-        unsigned int info = sys_surface_info(s_surface_id);
-        FB_W = (info >> 16) & 0xFFFF;
-        FB_H = info & 0xFFFF;
-        fullfb = (unsigned int *)sys_surface_map(s_surface_id);
+        /* the makx surface was mapped by mx_connect() in main() */
+        FB_W = (unsigned int)s_mc.surf.w;
+        FB_H = (unsigned int)s_mc.surf.h;
+        fullfb = (unsigned int *)s_mc.surf.px;
         off_x = (FB_W > DOOMGENERIC_RESX) ? (FB_W - DOOMGENERIC_RESX) / 2 : 0;
         off_y = (FB_H > DOOMGENERIC_RESY) ? (FB_H - DOOMGENERIC_RESY) / 2 : 0;
-        sys_fcntl(0, F_SETFL, O_NONBLOCK);   /* WM forwards keys on our stdin */
         return;
     }
 
@@ -130,9 +132,11 @@ static void handle_input(void)
                 kq_push(0, s_held[i].key);
                 s_held[i].key = 0;
             }
-        unsigned char a;
-        while (sys_read(0, &a, 1) == 1) {
-            unsigned char k = convertWinKey(a);
+        mx_pump(&s_mc);
+        if (s_mc.closed) sys_exit(0);        /* server closed our window */
+        int a;
+        while ((a = mx_key(&s_mc)) >= 0) {
+            unsigned char k = convertWinKey((unsigned char)a);
             if (!k) continue;
             kq_push(1, k);
             /* (re)arm an auto-release slot for this key */
@@ -160,8 +164,11 @@ void DG_DrawFrame(void)
             memcpy(fullfb + off_x + (off_y + y) * FB_W,
                    DG_ScreenBuffer + y * DOOMGENERIC_RESX,
                    DOOMGENERIC_RESX * 4);
-        /* Windowed: the WM composites the surface; never touch scanout. */
-        if (!s_windowed)
+        /* Windowed: push the frame to the server (it composites); never touch
+         * scanout directly.  Fullscreen: present to the real framebuffer. */
+        if (s_windowed)
+            mx_present(&s_mc);
+        else
             sys_fb_present(fullfb);
     }
     handle_input();
@@ -202,19 +209,17 @@ static int has_iwad(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
-    /* Pull a `-surface <id>` pair out of argv (window-manager launch) before
-     * anything else, and strip it so doomgeneric never sees the unknown flag.
-     * Without it doom runs its normal fullscreen path (shell `doom`). */
+    /* If launched by the display server (`-makx <pid>` in argv), connect as a
+     * makx client and request a 640x400 surface up front -- DG_Init then renders
+     * into it.  Strip the flag so doomgeneric never sees it.  No -makx -> the
+     * normal fullscreen path (shell `doom`). */
+    if (mx_connect(&s_mc, argc, argv, DOOMGENERIC_RESX, DOOMGENERIC_RESY) == 0)
+        s_windowed = 1;
+
     static char *fa[18];
     int fc = 0;
     for (int i = 0; i < argc && fc < 17; i++) {
-        if (i >= 1 && !strcmp(argv[i], "-surface") && i + 1 < argc) {
-            const char *p = argv[i + 1];
-            int v = 0; while (*p >= '0' && *p <= '9') v = v * 10 + (*p++ - '0');
-            s_surface_id = v; s_windowed = 1;
-            i++;                 /* also skip the id */
-            continue;
-        }
+        if (i >= 1 && !strcmp(argv[i], "-makx") && i + 1 < argc) { i++; continue; }
         fa[fc++] = argv[i];
     }
     fa[fc] = 0;

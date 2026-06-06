@@ -5,6 +5,31 @@ day-to-day work — consult when planning new features or asked about direction.
 
 ## Future roadmap
 
+### makx GUI follow-ups (after the server/client split)
+
+The display server/client split has landed (`gui.elf` = makx server; terminal,
+files, editor, tasks, doom are client `.elf`s over IPC + shared surfaces; see
+`docs/gui.md`). Natural next steps, now that the protocol + client lib exist:
+
+- **More makx clients** — each is a small single-file client using `makx.c` +
+  `gui_gfx`/`gui_ui`:
+  - **`mxweb`** — a lynx/links/dillo-style **text web browser** (no JS): fetch
+    over the existing `SYS_WGET` / HTTP path, render plain text / very simple
+    HTML into the window. The cleanest demonstration client.
+  - **`mximg`** — an **image viewer** for BMP/PNG/JPEG/GIF (BMP is trivial; PNG
+    via the existing `inflate.c`; JPEG/GIF need small decoders).
+  - **`mxpaint`** — a simple **paint** app drawing into its surface.
+- **Panel + login as clients (Phase 6b)** — lift the dock + menu bar out to an
+  always-on-top panel client, and `do_login` out to a fullscreen `login.elf` the
+  server composites before opening the desktop. Removes the last built-in app
+  logic from the server.
+- **Cross-client launch** — e.g. Files "Open" a file → ask the server to spawn
+  `mxedit -open <path>` (needs a `MX_SPAWN` protocol message so the *server*
+  stays the parent and reaps it).
+- **Resize that re-lays-out clients** — currently the server scales/1:1-blits a
+  fixed client surface; a `MXEV_RESIZE` + surface realloc would let text clients
+  re-flow crisply at any size.
+
 ### Slice queue (`feat/tty-multitasking` → follow-ups)
 
 Tracked here, pulled into branches one at a time so each PR stays focused.
