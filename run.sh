@@ -697,6 +697,12 @@ _clean_full() {
 _build_iso() {
     local _flags="${1:-}"
     echo "==> Building ISO${_flags:+ ($_flags)}..."
+    # Pull the BSD-licensed FreeDOOM IWADs into wads/ (best-effort, idempotent)
+    # so DOOM ships playable without the copyrighted DOOM.WAD.  Skipped in CI to
+    # keep the runners + ISO artifact lean (the gates never launch DOOM).
+    if [ -z "${CI:-}" ] && [ -f "$REPO_ROOT/getfreedoom.sh" ]; then
+        bash "$REPO_ROOT/getfreedoom.sh" || true
+    fi
     # Forward KERNEL_ARGS (extra GRUB cmdline, e.g. `kbtest`) into the build
     # container; iso.sh appends it to the interactive menuentry.
     local _kenv=()

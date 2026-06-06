@@ -227,9 +227,12 @@ int main(int argc, char **argv)
 
     static char *na[16];
     if (!has_iwad(argc, argv)) {
-        /* With -m 64 + a 40 MiB backed heap the full 12 MiB DOOM.WAD loads, so
-         * prefer it; DOOM1.WAD (shareware) and /tmp fetches are fallbacks. */
+        /* Prefer the BSD-licensed FreeDOOM IWADs (shipped by default, see
+         * getfreedoom.sh) so DOOM Just Works without the copyrighted DOOM.WAD;
+         * fall back to DOOM.WAD / DOOM1.WAD (shareware) and /tmp fetches if
+         * someone supplies them. */
         static const char *cand[] = {
+            "/apps/freedoom1.wad", "/apps/freedoom2.wad",
             "/apps/DOOM.WAD",  "/tmp/DOOM.WAD",   "/apps/DOOM2.WAD",
             "/apps/DOOM1.WAD", "/apps/doom1.wad", "/tmp/DOOM1.WAD", 0
         };
