@@ -16,18 +16,15 @@
  *   1280 × 1024 × 32
  */
 
-/* Uncomment VESA_AUTO to request the highest common resolution (1920×1080)
- * from the bootloader and let GRUB fall back to the best available mode.
- * Leave commented to use the fixed 640×480 safe default. */
-/* #define VESA_AUTO */
-
-#ifdef VESA_AUTO
-# define VESA_WIDTH  1920
-# define VESA_HEIGHT 1080
-#else
-# define VESA_WIDTH   640
-# define VESA_HEIGHT  480
-#endif
+/* Default + maximum supported resolution: 720p.  This is the resolution
+ * requested from the bootloader via the Multiboot 2 framebuffer tag, so GRUB
+ * sets it using the firmware VESA BIOS on EVERY platform -- including ones with
+ * no Bochs/DISPI register interface (VMware SVGA, Hyper-V Gen1).  GRUB falls
+ * back to the closest available mode if 720p isn't offered.  QEMU/Bochs are
+ * also held at 720p (the kernel's DISPI upgrade is capped to match); 720p is a
+ * good ceiling for a software compositor (1080p is ~2x the pixels to push). */
+#define VESA_WIDTH   1280
+#define VESA_HEIGHT  720
 #define VESA_BPP 32
 
 #endif /* _KERNEL_VESA_CONFIG_H */

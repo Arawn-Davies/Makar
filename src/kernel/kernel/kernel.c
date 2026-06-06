@@ -248,7 +248,7 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			 * later setmode up to this size never reaches an unmapped FB region
 			 * (the 1080p page-fault-at-0xFD400000 bug). */
 			static const struct { uint32_t w, h; } prefs[] = {
-				{ 1920, 1080 }, { 1280, 720 }, { 640, 480 },
+				{ 1280, 720 }, { 640, 480 },   /* 720p is the supported ceiling */
 			};
 			uint32_t max_w = 0, max_h = 0;
 			for (uint32_t i = 0; i < sizeof(prefs)/sizeof(prefs[0]); i++) {
@@ -263,7 +263,8 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			uint32_t bw = 0, bh = 0;
 			if (vmode[0]) {
 				uint32_t rw = 0, rh = 0;
-				if (!strcmp(vmode,"1080p") || !strcmp(vmode,"1920x1080")) { rw=1920; rh=1080; }
+				/* 720p is the cap; 1080p requests clamp to it. */
+				if (!strcmp(vmode,"1080p") || !strcmp(vmode,"1920x1080")) { rw=1280; rh=720; }
 				else if (!strcmp(vmode,"720p") || !strcmp(vmode,"1280x720")) { rw=1280; rh=720; }
 				else if (!strcmp(vmode,"480p") || !strcmp(vmode,"640x480")) { rw=640; rh=480; }
 				if (rw && bochs_vbe_mode_supported(rw, rh, 32)) { bw = rw; bh = rh; }
