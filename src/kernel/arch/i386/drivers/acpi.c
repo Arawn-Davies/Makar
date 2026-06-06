@@ -150,69 +150,85 @@ static const acpi_rsdp_t *locate_rsdp(void)
     return find_rsdp_in_range(0xE0000, 0x100000);
 }
 
+/* Decode an AML PkgLength at d[*pj]; advance *pj past it.  The lead byte's top
+ * two bits give how many extra length bytes follow (0..3); the rest are the low
+ * length nibble/bits.  (Value itself is unused -- we only need to skip it.) */
+static void aml_skip_pkglength(const uint8_t *d, uint32_t *pj, uint32_t end)
+{
+    uint32_t j = *pj;
+    if (j >= end) { *pj = j; return; }
+    uint32_t nfollow = (uint32_t)(d[j] >> 6);
+    j += 1 + nfollow;
+    *pj = j;
+}
+
+/* Read an AML integer constant (Zero/One/Ones/Byte/Word/DWord) at d[*pj] into
+ * *val; advance *pj.  Returns 1 if a recognised constant was read. */
+static int aml_read_const(const uint8_t *d, uint32_t *pj, uint32_t end, uint32_t *val)
+{
+    uint32_t j = *pj;
+    if (j >= end) return 0;
+    switch (d[j]) {
+    case 0x00: *val = 0;    *pj = j + 1; return 1;          /* ZeroOp */
+    case 0x01: *val = 1;    *pj = j + 1; return 1;          /* OneOp  */
+    case 0xFF: *val = 0xFF; *pj = j + 1; return 1;          /* OnesOp */
+    case 0x0A:                                              /* BytePrefix */
+        if (j + 1 >= end) return 0;
+        *val = d[j + 1]; *pj = j + 2; return 1;
+    case 0x0B:                                              /* WordPrefix */
+        if (j + 2 >= end) return 0;
+        *val = d[j + 1] | ((uint32_t)d[j + 2] << 8); *pj = j + 3; return 1;
+    case 0x0C:                                              /* DWordPrefix */
+        if (j + 4 >= end) return 0;
+        *val = d[j+1] | ((uint32_t)d[j+2]<<8) | ((uint32_t)d[j+3]<<16) | ((uint32_t)d[j+4]<<24);
+        *pj = j + 5; return 1;
+    default: return 0;
+    }
+}
+
 /*
- * scan_s5 – search a DSDT byte stream for the \_S5_ AML package.
+ * scan_s5 – search a DSDT byte stream for the \_S5_ AML package and extract the
+ * SLP_TYPa/b values written to PM1{a,b}_CNT for soft-off.
  *
- * The AML encoding for a typical _S5_ object looks like:
- *   08 5F 53 35 5F  12 06  0A SLP_TYPa  0A SLP_TYPb  ...
- *   (DefName  "_S5_"  DefPackage  pkgLen  ByteConst  val  ByteConst  val)
+ * AML: Name(_S5_, Package(){ SLP_TYPa, SLP_TYPb, ... })
+ *      08 5F 53 35 5F  12  <PkgLength>  <NumElements>  <const a>  <const b> ...
  *
- * We search for the literal bytes "_S5_" (without the leading 08) and then
- * look backwards/forwards for the context bytes.
+ * The original parser hard-coded a 1-byte PkgLength, a NumElements of exactly
+ * 0x04, and only 0x0A/0x00 constants -- which matches QEMU/SeaBIOS but not the
+ * encodings emitted by other firmwares (VirtualBox, VMware, Hyper-V), so soft-
+ * off silently failed there (the system hung instead of powering down).  This
+ * version decodes the variable-length PkgLength and the full set of integer
+ * constant ops, so it works across hypervisors.
  *
- * Returns 1 on success and writes *typa, *typb; 0 if not found.
+ * Returns 1 on success and writes *typa, *typb (already shifted into PM1_CNT
+ * position); 0 if not found.
  */
 static int scan_s5(const uint8_t *dsdt_data, uint32_t dsdt_len,
                    uint16_t *typa, uint16_t *typb)
 {
-    /* Walk the DSDT body (skip the 36-byte SDT header). */
     for (uint32_t i = 36; i + 8 < dsdt_len; i++) {
         if (memcmp(dsdt_data + i, "_S5_", 4) != 0)
             continue;
-
-        /*
-         * Found "_S5_".  The preceding byte should be 0x08 (DefName opcode).
-         * After the name, expect: 0x12 (DefPackage), pkgLen byte, then
-         * 0x0A (ByteConst) SLP_TYPa, 0x0A (ByteConst) SLP_TYPb.
-         *
-         * Some implementations use 0x00 (ZeroOp) instead of 0x0A 0x00.
-         */
+        /* The definition is introduced by NameOp (0x08); a bare "_S5_" not so
+         * preceded is a reference, not the package we want. */
         if (i < 1 || dsdt_data[i - 1] != 0x08)
             continue;
 
-        uint32_t j = i + 4; /* skip "_S5_" */
-
-        /* Optional: skip 0x12 0xNN (DefPackage opcode + length). */
-        if (j + 2 < dsdt_len && dsdt_data[j] == 0x12)
-            j += 2; /* skip opcode and 1-byte length */
-
-        /* Skip a count byte that DefPackage may emit. */
-        if (j < dsdt_len && dsdt_data[j] == 0x04)
-            j++;
-
-        /* Read SLP_TYPa. */
-        uint8_t ta, tb;
-        if (j + 1 >= dsdt_len) continue;
-        if (dsdt_data[j] == 0x0A) {           /* ByteConst */
-            ta = dsdt_data[j + 1]; j += 2;
-        } else if (dsdt_data[j] == 0x00) {    /* ZeroOp */
-            ta = 0; j += 1;
-        } else {
+        uint32_t j = i + 4;                       /* past "_S5_" */
+        if (j >= dsdt_len || dsdt_data[j] != 0x12) /* expect PackageOp */
             continue;
-        }
+        j++;
+        aml_skip_pkglength(dsdt_data, &j, dsdt_len);
+        if (j >= dsdt_len) continue;
+        j++;                                       /* skip NumElements byte */
 
-        /* Read SLP_TYPb. */
-        if (j + 1 > dsdt_len) continue;
-        if (dsdt_data[j] == 0x0A) {
-            tb = dsdt_data[j + 1];
-        } else if (dsdt_data[j] == 0x00) {
-            tb = 0;
-        } else {
-            continue;
-        }
+        uint32_t a = 0, b = 0;
+        if (!aml_read_const(dsdt_data, &j, dsdt_len, &a))
+            continue;                              /* need at least SLP_TYPa */
+        aml_read_const(dsdt_data, &j, dsdt_len, &b);   /* SLP_TYPb optional */
 
-        *typa = (uint16_t)ta << 10;
-        *typb = (uint16_t)tb << 10;
+        *typa = (uint16_t)(a & 0x7) << 10;
+        *typb = (uint16_t)(b & 0x7) << 10;
         return 1;
     }
     return 0;
@@ -323,7 +339,23 @@ int acpi_init(void)
 
     if (!scan_s5((const uint8_t *)dsdt_hdr, dsdt_hdr->length,
                  &slp_typa, &slp_typb)) {
-        KLOG("acpi: _S5_ not found in DSDT\n");
+        /* Diagnostic: dump the bytes around any "_S5_" so an unrecognised AML
+         * encoding (a hypervisor whose firmware soft-off still fails) can be
+         * decoded from the serial log -- pm1a port + DSDT len + a hex window. */
+        KLOG("acpi: _S5_ not found in DSDT (soft-off will fail)\n");
+        KLOG("acpi: pm1a_cnt port="); KLOG_HEX(pm1a_cnt_port); KLOG("\n");
+        KLOG("acpi: dsdt len=");      KLOG_HEX(dsdt_hdr->length); KLOG("\n");
+        const uint8_t *d = (const uint8_t *)dsdt_hdr;
+        for (uint32_t i = 36; i + 4 < dsdt_hdr->length; i++) {
+            if (memcmp(d + i, "_S5_", 4) != 0) continue;
+            uint32_t lo = (i >= 4) ? i - 4 : 0;
+            KLOG("acpi: _S5_ window: ");
+            for (uint32_t k = lo; k < i + 16 && k < dsdt_hdr->length; k++) {
+                KLOG_HEX(d[k]); KLOG(" ");
+            }
+            KLOG("\n");
+            break;
+        }
         return 0;
     }
 
