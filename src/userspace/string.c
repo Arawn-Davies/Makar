@@ -202,3 +202,19 @@ char *strerror(int errnum)
     default:      return "Unknown error";
     }
 }
+
+/* BSD case-insensitive compares (doomgeneric's doomtype.h needs <strings.h>). */
+static int lc(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
+
+int strcasecmp(const char *a, const char *b)
+{
+    while (*a && lc((unsigned char)*a) == lc((unsigned char)*b)) { a++; b++; }
+    return lc((unsigned char)*a) - lc((unsigned char)*b);
+}
+
+int strncasecmp(const char *a, const char *b, unsigned int n)
+{
+    while (n && *a && lc((unsigned char)*a) == lc((unsigned char)*b)) { a++; b++; n--; }
+    if (n == 0) return 0;
+    return lc((unsigned char)*a) - lc((unsigned char)*b);
+}

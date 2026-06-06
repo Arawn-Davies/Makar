@@ -42,6 +42,9 @@
 #define SYS_SET_THREAD_AREA 243 /* int set_thread_area(struct user_desc*) -- TLS    */
 #define SYS_EXIT_GROUP    252   /* void exit_group(int status) -- == exit           */
 #define SYS_SET_TID_ADDRESS 258 /* int set_tid_address(int *tidptr) -> tid          */
+#define SYS_LOGOUT          260 /* int logout(void) - end root login session        */
+#define SYS_GUI_CLOSE       261 /* int gui_close(void) - return to root text mode   */
+#define SYS_LOGIN           266 /* int login(const char *user, const char *pass)    */
 #define SYS_SIGNAL     48   /* sig_handler_t signal(int signo, sig_handler_t)   */
 #define SYS_STAT      106   /* int stat(const char *path, struct stat *st)      */
 #define SYS_FSTAT     108   /* int fstat(int fd, struct stat *st)               */
@@ -78,6 +81,23 @@
                                 * VESA caret style (0=line, 2=flashing block),
                                 * returns the previous style.  No-op (returns 0)
                                 * in VGA-text mode.  Used by vix.elf. */
+#define SYS_MOUSE_READ   256  /* uint32_t mouse_read(void) - pop one PS/2 mouse
+                                * event; 0 if none.  Packed: bit31=valid,
+                                * bits0-2 buttons (L/R/M), bits8-15 dx int8,
+                                * bits16-23 dy int8 (+y down). */
+#define SYS_FB_PRESENT   257  /* int fb_present(const void *backbuf) - blit a
+                                * width*height*32bpp (pitch=width*4) user back
+                                * buffer full-frame to the framebuffer.  0 ok,
+                                * -1 if no pixel FB / not focused. */
+
+/* Shared pixel surfaces (kernel/surface.h): the one shared-memory primitive.
+ * A window manager creates a surface, a forked graphical child maps the same
+ * physical frames by id, both draw into it; the WM composites.  See
+ * docs/syscalls.md. */
+#define SYS_SURFACE_CREATE  259 /* int surface_create(int w, int h) -> id / -1   */
+#define SYS_SURFACE_MAP     262 /* void *surface_map(int id) -> addr / NULL       */
+#define SYS_SURFACE_INFO    263 /* uint32_t surface_info(int id) -> (w<<16)|h /-1 */
+#define SYS_SURFACE_DESTROY 264 /* int surface_destroy(int id) -> 0 / -1          */
 
 /*
  * Admin syscalls (219..229).

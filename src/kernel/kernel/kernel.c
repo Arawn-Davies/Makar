@@ -18,6 +18,7 @@
 
 #include <kernel/paging.h>
 #include <kernel/keyboard.h>
+#include <kernel/mouse.h>
 #include <kernel/ide.h>
 #include <kernel/vfs.h>
 #include <kernel/shell.h>
@@ -25,6 +26,7 @@
 #include <kernel/syscall.h>
 #include <kernel/acpi.h>
 #include <kernel/pci.h>
+void usb_init(void);   /* arch/i386/drivers/usb/usb.h (not on the kernel inc path) */
 #include <kernel/net_drivers.h>
 #include <kernel/net_lwip.h>
 #include <kernel/ktest.h>
@@ -39,6 +41,10 @@ int g_live_boot = 0;
 /* `autologin=<user>` from the kernel cmdline.  Overrides /etc/autologin;
  * empty = not set.  Read by shell_login_loop -> auth_try_autologin. */
 char g_autologin_user[64] = {0};
+
+/* Set to 1 when `autoboot=gui` is on the kernel cmdline (the GUI boot menu
+ * entry).  shell_login_loop launches the desktop in the login session. */
+int g_boot_gui = 0;
 
 /*
  * Column at which "[ OK ]" starts, counting from 0.
@@ -248,12 +254,14 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 				else { bw = max_w; bh = max_h; }
 			}
 
-			/* Pre-map the max-supported FB span into the kernel PD (pre-tasking). */
+			/* Pre-map the max-supported FB span into the kernel PD (pre-tasking),
+			 * write-combining so pixel writes don't trap as UC MMIO on real
+			 * VT-x hypervisors / bare metal (see paging_map_region_wc). */
 			{
 				const vesa_fb_t *fbp = vesa_get_fb();
 				if (fbp)
-					paging_map_region((uint32_t)(uintptr_t)fbp->addr,
-					                  max_w * max_h * 4u);
+					paging_map_region_wc((uint32_t)(uintptr_t)fbp->addr,
+					                     max_w * max_h * 4u);
 			}
 
 			{
@@ -275,7 +283,28 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			bochs_vbe_set_mode(bw, bh, 32);
 			vesa_update_geometry(bw, bh, 32);
 			vesa_tty_init();
+		} else if (vesa_get_fb()) {
+			/* No Bochs/DISPI adapter, but the bootloader honoured our
+			 * Multiboot2 framebuffer request and handed us a linear
+			 * framebuffer (Hyper-V Gen1, VMware SVGA without DISPI, much
+			 * real hardware).  The hardware is therefore already in a
+			 * GRAPHICS mode -- the VGA text buffer at 0xB8000 is invisible,
+			 * which is the Hyper-V Gen1 "black screen" symptom.  We cannot
+			 * change the mode (no DISPI registers), so adopt the
+			 * bootloader's geometry: map the FB span (write-combining) and
+			 * bring vesa_tty up on it. */
+			const vesa_fb_t *fbp = vesa_get_fb();
+			paging_map_region_wc((uint32_t)(uintptr_t)fbp->addr,
+			                     fbp->pitch * fbp->height);
+			Serial_WriteString("display: no DISPI; using bootloader LFB ");
+			Serial_WriteDec(fbp->width);  Serial_WriteString("x");
+			Serial_WriteDec(fbp->height); Serial_WriteString("x");
+			Serial_WriteDec(fbp->bpp);    Serial_WriteString("\n");
+			vesa_tty_set_scale(fbp->width >= 1280 ? 2 : 1);
+			vesa_tty_init();
 		} else {
+			/* No framebuffer at all: genuine VGA text mode. */
+			vesa_disable();
 			vesa_tty_disable();
 			terminal_set_rows(50);
 		}
@@ -293,6 +322,8 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	kprint_ok();
 	keyboard_init();
 	KLOG("keyboard: PS/2 IRQ1 handler registered\n");
+	mouse_init();
+	KLOG("mouse: PS/2 IRQ12 handler registered\n");
 
 	t_writestring("Initializing IDE controller");
 	kprint_ok();
@@ -301,6 +332,7 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 
 	t_writestring("Scanning PCI bus");
 	kprint_ok();
+	ide_pci_register();   /* arm bus-master IDE DMA when the controller binds */
 	virtio_net_register();
 	rtl8139_register();
 	e1000_register();
@@ -308,6 +340,7 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	pci_init();
 	pci_probe_all();   /* bind registered drivers to scanned devices */
 	KLOG("pci: bus scan complete\n");
+	usb_init();        /* report USB host controllers (HID driver TBD) */
 
 	/* Parse Multiboot 2 tags: boot device and kernel command line. */
 	int test_mode = 0;
@@ -392,6 +425,16 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 							g_autologin_user[j++] = *ap++;
 						}
 						g_autologin_user[j] = '\0';
+					}
+					/* autoboot=<target> -- auto-start <target> in the login
+					 * session.  Only "gui" is recognised (the GUI desktop boot
+					 * entry); pairs with autologin=<user> to land on a desktop. */
+					const char *bp = strstr(cmd->string, "autoboot=");
+					if (bp) {
+						bp += 9;
+						if (bp[0] == 'g' && bp[1] == 'u' && bp[2] == 'i' &&
+						    (bp[3] == '\0' || bp[3] == ' ' || bp[3] == '\t'))
+							g_boot_gui = 1;
 					}
 					/* test=<comma-list> -- which test-mode scripts to run. */
 					const char *tp = strstr(cmd->string, "test=");

@@ -36,7 +36,14 @@
 /* Page-entry flags */
 #define PAGE_PRESENT   0x1u
 #define PAGE_WRITABLE  0x2u
-#define PAGE_LARGE     0x80u  /* PS bit: 4 MiB page (requires CR4.PSE) */
+#define PAGE_PWT       0x8u   /* page-level write-through (PAT index bit 0)   */
+#define PAGE_PCD       0x10u  /* page-level cache disable  (PAT index bit 1)  */
+#define PAGE_LARGE     0x80u  /* PS bit: 4 MiB page (requires CR4.PSE)        */
+#define PAGE_PAT       0x80u  /* in a 4 KiB *PTE*, bit 7 is the PAT index MSB */
+
+/* Set once by paging_init() if the CPU has PAT and we armed a write-combining
+ * slot.  Until then paging_map_region_wc() falls back to plain mappings. */
+static uint32_t s_pat_wc_ok = 0;
 
 /* Static, page-aligned structures.  All live inside the kernel image which
    is itself within the 0–256 MiB identity-mapped window.                    */
@@ -60,6 +67,34 @@ static void page_fault_handler(registers_t *regs)
     t_writestring(")\n");
 
     PANIC("Page fault");
+}
+
+/* Arm a write-combining (WC) memory type in the PAT so framebuffer pages can
+ * be mapped WC instead of inheriting the firmware's uncacheable (UC) MTRR for
+ * the PCI MMIO hole.  Under TCG (QEMU) MMIO is cheap so UC is invisible; under
+ * a real VT-x hypervisor (VirtualBox, Hyper-V) or bare metal, UC framebuffer
+ * writes trap per access and make the GUI crawl.  Per the Intel SDM, a WC PAT
+ * type yields WC even where the MTRRs say UC, so this works without touching
+ * MTRRs.  Leaves PA0..PA3 at their power-on defaults (WB,WT,UC-,UC) so ordinary
+ * write-back mappings are unaffected; only PA4 (selected by PTE PAT bit, with
+ * PCD=PWT=0) is reprogrammed to WC. */
+static void paging_init_pat(void)
+{
+    /* CPUID.01h:EDX[16] = PAT supported. */
+    uint32_t eax, ebx, ecx, edx;
+    asm volatile("cpuid"
+                 : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                 : "a"(1u));
+    if (!(edx & (1u << 16)))
+        return;                       /* no PAT: leave WC disabled */
+
+    /* IA32_PAT = MSR 0x277.  PA4 is byte 4 -> low byte of the high dword. */
+    uint32_t lo, hi;
+    asm volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0x277u));
+    hi = (hi & 0xFFFFFF00u) | 0x01u;  /* PA4 = WC (memory type 0x01) */
+    asm volatile("wrmsr" :: "a"(lo), "d"(hi), "c"(0x277u));
+
+    s_pat_wc_ok = 1;
 }
 
 void paging_init(void)
@@ -95,11 +130,13 @@ void paging_init(void)
     cr0 |= 0x80010000u;
     asm volatile("mov %0, %%cr0" :: "r"(cr0) : "memory");
 
+    paging_init_pat();
+
     t_writestring("Paging: enabled (identity-mapped 0-256 MiB, 4 MiB large pages, WP on)\n");
     KLOG("paging_init: 256 MiB identity map via PSE large pages, CR0.WP=1\n");
 }
 
-void paging_map_region(uint32_t phys_start, uint32_t size)
+static void map_region_flags(uint32_t phys_start, uint32_t size, uint32_t extra_flags)
 {
     if (size == 0)
         return;
@@ -148,12 +185,26 @@ void paging_map_region(uint32_t phys_start, uint32_t size)
         /* Map the 4 KiB page if it is not already present. */
         uint32_t *pt = (uint32_t *)(page_directory[pdi] & ~0xFFFu);
         if (!(pt[pti] & PAGE_PRESENT))
-            pt[pti] = addr | PAGE_PRESENT | PAGE_WRITABLE;
+            pt[pti] = addr | PAGE_PRESENT | PAGE_WRITABLE | extra_flags;
     }
 
     /* Flush the TLB by reloading CR3. */
     uint32_t cr3;
     asm volatile("mov %%cr3, %0" : "=r"(cr3));
     asm volatile("mov %0, %%cr3" :: "r"(cr3) : "memory");
+}
+
+void paging_map_region(uint32_t phys_start, uint32_t size)
+{
+    map_region_flags(phys_start, size, 0);
+}
+
+/* Like paging_map_region(), but maps the range write-combining when the PAT
+ * WC slot was armed at init (falls back to a plain mapping otherwise).  Intended
+ * for the linear framebuffer: WC batches the many small pixel writes that would
+ * otherwise each trap as UC MMIO on VT-x hypervisors / real hardware. */
+void paging_map_region_wc(uint32_t phys_start, uint32_t size)
+{
+    map_region_flags(phys_start, size, s_pat_wc_ok ? PAGE_PAT : 0u);
 }
 

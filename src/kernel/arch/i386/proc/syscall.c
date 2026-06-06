@@ -31,11 +31,13 @@
 #include <kernel/signal.h>
 #include <kernel/tty.h>
 #include <kernel/keyboard.h>
+#include <kernel/mouse.h>
 #include <kernel/shell.h>
 #include <kernel/vfs.h>
 #include <kernel/heap.h>
 #include <kernel/vmm.h>
 #include <kernel/pmm.h>
+#include <kernel/surface.h>
 #include <kernel/elf.h>
 #include <kernel/serial.h>
 #include <kernel/vga.h>
@@ -69,6 +71,29 @@ static const uint32_t s_vga_palette[16] = {
     0x555555, 0x5555FF, 0x55FF55, 0x55FFFF,
     0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF,
 };
+
+static int stdin_pipe_getchar(task_t *t)
+{
+    fd_entry_t *e = fd_get(t ? t->fd_table : NULL, 0);
+    if (!e || e->kind != FD_KIND_PIPE)
+        return -2;
+    if (e->pipe_is_writer || !e->pipe)
+        return -1;
+
+    pipe_ring_t *r = e->pipe;
+    for (;;) {
+        if (r->head != r->tail) {
+            unsigned char c = r->buf[r->tail % PIPE_RING_CAP];
+            r->tail++;
+            return (int)c;
+        }
+        if (r->refcount_w == 0)
+            return -1;
+        if (e->flags & FD_FLAG_NONBLOCK)
+            return -11;
+        task_yield();
+    }
+}
 
 /* Callback + context for SYS_LS_DIR using vfs_complete. */
 typedef struct { char *buf; uint32_t cap; uint32_t off; } ls_ctx_t;
@@ -329,6 +354,14 @@ void syscall_dispatch(registers_t *regs)
                 me->name_buf[n] = '\0';
                 me->name = me->name_buf;
             }
+            if (me && me->tty == VTTY_ROOT_SLOT && is_sh &&
+                kargc >= 2 && strcmp(s_argv[1], "--login") == 0) {
+                vtty_register_root_text_task(me);
+            }
+            if (me && me->tty == VTTY_ROOT_SLOT &&
+                (strcmp(base, "gui.elf") == 0 || strcmp(base, "gui") == 0)) {
+                vtty_register_root_gui(me);
+            }
         }
 
         /* POSIX: execve resets all caught signal handlers to SIG_DFL.
@@ -346,8 +379,11 @@ void syscall_dispatch(registers_t *regs)
          * thing you just exec'd takes the keyboard" rule. */
         task_t *me = task_current();
         if (me) {
-            keyboard_set_focus(me);
-            vtty_set_foreground(me->tty, me);
+            fd_entry_t *stdin_e = fd_get(me->fd_table, 0);
+            if (stdin_e && stdin_e->kind == FD_KIND_KEYBOARD) {
+                keyboard_set_focus(me);
+                vtty_set_foreground(me->tty, me);
+            }
         }
 
         /* elf_exec swaps the PD and iret's to the new entry on success
@@ -627,10 +663,14 @@ void syscall_dispatch(registers_t *regs)
      * defensively forces raw=0 after the child exits in case the app
      * was killed before its own cleanup ran.
      * ------------------------------------------------------------------ */
-    case SYS_KEYBOARD_RAW:
-        keyboard_set_raw((int)regs->ebx);
+    case SYS_KEYBOARD_RAW: {
+        /* 0 = cooked, 1 = raw sentinels, 2 = scancode passthrough (make+break) */
+        int m = (int)regs->ebx;
+        keyboard_set_scancode(m == 2);
+        keyboard_set_raw(m == 1);
         regs->eax = 0;
         break;
+    }
 
     /* ------------------------------------------------------------------
      * SYS_SHELL_CLEAR(213): full-screen reset identical to the `clear`
@@ -703,6 +743,24 @@ void syscall_dispatch(registers_t *regs)
     case SYS_GETPPID: {
         task_t *t = task_current();
         regs->eax = (uint32_t)(t ? t->parent_pid : 0);
+        break;
+    }
+
+    case SYS_LOGOUT: {
+        regs->eax = (vtty_logout_root_session() == 0) ? 0u : (uint32_t)-1;
+        break;
+    }
+
+    case SYS_LOGIN: {
+        const char *user = (const char *)(uintptr_t)regs->ebx;
+        const char *pass = (const char *)(uintptr_t)regs->ecx;
+        regs->eax = (uint32_t)(auth_login(user, pass) == 0 ? 0 : -1);
+        break;
+    }
+
+    case SYS_GUI_CLOSE: {
+        vtty_switch_root_text();
+        regs->eax = 0;
         break;
     }
 
@@ -837,6 +895,37 @@ void syscall_dispatch(registers_t *regs)
         if (vtty_is_focused())
             vesa_tty_set_caret_style(regs->ebx);
         regs->eax = prev;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_MOUSE_READ(256): pop one PS/2 mouse event (0 when empty).
+     * ------------------------------------------------------------------ */
+    case SYS_MOUSE_READ:
+        regs->eax = vtty_is_focused() ? mouse_pop_event() : 0;
+        break;
+
+    /* ------------------------------------------------------------------
+     * SYS_FB_PRESENT(257): blit a userspace 32-bpp back buffer (tightly
+     * packed, pitch = width*4) full-frame to the framebuffer.  Honours the
+     * FB's own pitch.  Gated on focus like SYS_DRAW_LINE so a backgrounded
+     * WM can't scribble over the visible VT; sets fb_touched so the VT
+     * repaints after the WM exits.  EBX = user back-buffer pointer.
+     * ------------------------------------------------------------------ */
+    case SYS_FB_PRESENT: {
+        const vesa_fb_t *fb = vesa_get_fb();
+        if (!fb || !vesa_tty_is_ready()) { regs->eax = (uint32_t)-1; break; }
+        if (!vtty_is_focused()) {
+            task_t *cur = task_current(); if (cur) cur->fb_touched = 1;
+            regs->eax = 0; break;
+        }
+        const uint8_t *src = (const uint8_t *)(uintptr_t)regs->ebx;
+        uint8_t *dst = (uint8_t *)fb->addr;
+        uint32_t row_bytes = fb->width * 4u;
+        for (uint32_t y = 0; y < fb->height; y++)
+            memcpy(dst + y * fb->pitch, src + y * row_bytes, row_bytes);
+        { task_t *cur = task_current(); if (cur) cur->fb_touched = 1; }
+        regs->eax = 0;
         break;
     }
 
@@ -1422,9 +1511,12 @@ void syscall_dispatch(registers_t *regs)
      * line-buffering.  Returns raw char value including arrow sentinels
      * (0x80-0x83) as unsigned bytes in EAX.
      * ------------------------------------------------------------------ */
-    case SYS_GETKEY:
-        regs->eax = (uint32_t)(uint8_t)keyboard_getchar();
+    case SYS_GETKEY: {
+        int pc = stdin_pipe_getchar(task_current());
+        regs->eax = (pc != -2) ? (uint32_t)(int32_t)pc
+                               : (uint32_t)(uint8_t)keyboard_getchar();
         break;
+    }
 
     /* ------------------------------------------------------------------
      * SYS_PUTCH_AT(201): write an array of screen cells.
@@ -2044,7 +2136,9 @@ void syscall_dispatch(registers_t *regs)
          * VT slot (0-3); with no VT children the root console (mak.sh0) is
          * focused, so report VTTY_ROOT_SLOT -- lets the userspace statusbar's
          * `command` widget find the root shell's foreground task. */
-        uint32_t active = mask ? (uint32_t)(vtty_active() & 0xFFFF)
+        uint32_t active = vtty_root_text_active()
+                               ? (uint32_t)VTTY_ROOT_SLOT
+                               : mask ? (uint32_t)(vtty_active() & 0xFFFF)
                                : (uint32_t)VTTY_ROOT_SLOT;
         regs->eax = (active << 16) | mask;
         break;
@@ -2160,6 +2254,24 @@ void syscall_dispatch(registers_t *regs)
     case SYS_IPC_SENDREC:
         regs->eax = (uint32_t)ipc_sendrec((int)regs->ebx,
                                           (ipc_msg_t *)(uintptr_t)regs->ecx);
+        break;
+
+    /* ------------------------------------------------------------------
+     * Shared pixel surfaces.  EBX/ECX carry the args; see kernel/surface.h.
+     * SURFACE_MAP returns a userspace address (0 == failure, like mmap-ish
+     * but NULL not MAP_FAILED); the others return the helper's int/uint.
+     * ------------------------------------------------------------------ */
+    case SYS_SURFACE_CREATE:
+        regs->eax = (uint32_t)surface_create((int)regs->ebx, (int)regs->ecx);
+        break;
+    case SYS_SURFACE_MAP:
+        regs->eax = surface_map((int)regs->ebx, task_current());
+        break;
+    case SYS_SURFACE_INFO:
+        regs->eax = surface_info((int)regs->ebx);
+        break;
+    case SYS_SURFACE_DESTROY:
+        regs->eax = (uint32_t)surface_destroy((int)regs->ebx, task_current());
         break;
 
     default:

@@ -17,7 +17,8 @@
  *  VT's foreground task; `tabs` = the makmux VT strip.)
  * Default ~/.sbrc:  left command / center tabs / right cpu mem rootfs time.
  *
- * Alt+F5 toggles the whole bar (reserve <-> free the row).
+ * Alt+F5/F6 switching is kernel-owned: Alt+F5 surfaces mak.sh0 + this
+ * statusbar, Alt+F6 hides the text console/statusbar and restores the GUI.
  *
  * Freestanding (only syscall.h) so in-OS TCC can rebuild it.
  */
@@ -100,6 +101,7 @@ static void active_command(char *out,unsigned int cap)
     if(r<=0) return; buf[r]='\0';
 
     long i=0; int line=0; int best_pid=-1; char best[20]; best[0]='\0';
+    int root_console = active == 8u;
     while(i<r){
         char tok[5][20]; int nt=0;
         while(i<r && buf[i]!='\n'){
@@ -118,7 +120,9 @@ static void active_command(char *out,unsigned int cap)
         unsigned int tn=0; for(int k=0;tok[3][k];k++) tn=tn*10+(unsigned int)(tok[3][k]-'0');
         if(tn!=active) continue;
         int pid=0; for(int k=0;tok[0][k];k++) pid=pid*10+(tok[0][k]-'0');
-        if(pid>best_pid){ best_pid=pid; int b=0; while(tok[1][b]&&b<19){best[b]=tok[1][b];b++;} best[b]='\0'; }
+        if((!root_console && pid>best_pid) || (root_console && (best_pid<0 || pid<best_pid))){
+            best_pid=pid; int b=0; while(tok[1][b]&&b<19){best[b]=tok[1][b];b++;} best[b]='\0';
+        }
     }
     if(best[0]){ unsigned int o=0; s_cat(out,&o,cap,best); }
 }
@@ -420,9 +424,6 @@ int main(void)
     unsigned int last=sys_uptime();
     unsigned int rc_next=0;             /* force an immediate ~/.sbrc load */
     for(;;){
-        if(sys_vt_clock_request()>0)
-            sys_statusbar_set(!sys_statusbar_enabled());
-
         /* Re-read user + ~/.sbrc every ~3 s (picks up login + edits). */
         unsigned int now=sys_uptime();
         if(now>=rc_next){

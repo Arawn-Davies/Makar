@@ -113,6 +113,27 @@ These support text-mode and framebuffer apps without a termios layer:
 Display-mutating syscalls are focus-gated where appropriate so background VTs
 update backing buffers without scribbling on the visible framebuffer.
 
+### Shared Pixel Surfaces
+
+The only shared-memory primitive in the system (`fork` is copy-on-write and
+`SYS_MMAP2` is private-anon only). A surface is a kernel-owned run of physical
+frames that can be mapped into more than one task at the same physical
+location, so a window manager and a forked graphical child (e.g. `doom.elf`
+windowed) can share a frame buffer: the WM composites what the child renders.
+See `kernel/surface.h` for the lifetime model.
+
+| Number | Name | Arguments | Returns |
+| --- | --- | --- | --- |
+| 259 | `SYS_SURFACE_CREATE` | `w, h` | surface id (`>=0`) holding a creator ref, or `-1` |
+| 262 | `SYS_SURFACE_MAP` | `id` | base user address, or `0`/`NULL` on failure |
+| 263 | `SYS_SURFACE_INFO` | `id` | `(w << 16) | h`, or `-1` for a bad id |
+| 264 | `SYS_SURFACE_DESTROY` | `id` | drop the creator ref; `0` ok, `-1` error |
+
+A surface stays alive while its creator reference is held **or** any task still
+has it mapped; its frames are reclaimed once neither holds. On task teardown
+the kernel unmaps the dying task's surface pages **before** its page directory
+is torn down, so the shared frames are never double-freed.
+
 ### Keyboard
 
 Keyboard syscalls expose:
@@ -177,6 +198,14 @@ Admin/session helpers include:
 
 There is no permission model yet, so privilege checks are structural rather
 than user/credential based.
+
+| Syscall | Args | Returns |
+|---|---|---|
+| 260 `SYS_LOGOUT` | — | end the root login session; `0` ok, `-1` |
+| 266 `SYS_LOGIN` | `user, pass` | `shadow_verify` + set session user; `0` ok, `-1` bad creds |
+
+`SYS_LOGIN` backs the GUI graphical login (`gui.elf`'s `do_login`); see
+`docs/gui.md`.
 
 ### Virtual Terminals and makmux
 

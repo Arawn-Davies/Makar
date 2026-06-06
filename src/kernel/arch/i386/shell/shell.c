@@ -1222,21 +1222,41 @@ void shell_enter_root_tty(void)
  */
 void shell_login_loop(void)
 {
+    int first_boot = 1;
     for (;;) {
-        /* --- Authenticate (installed systems only) ---
-         * Require login when all three conditions hold:
-         *   1. Booted without `live` on the cmdline (not a live ISO session)
-         *   2. The rootfs at / is a disk filesystem (ext2 or FAT32)
-         *   3. /etc/shadow exists (password has been configured)
-         * Any live ISO boot — even one where the kernel elected an HDD as
-         * rootfs — skips authentication entirely. */
-        if (!g_live_boot && vfs_rootfs_is_disk() && vfs_file_exists("/etc/shadow")) {
-            /* Try auto-login first (cmdline autologin=<user>, else
-             * /etc/autologin).  Falls through to the password prompt when
-             * not configured or the named user is invalid. */
-            if (!auth_try_autologin(g_autologin_user[0] ? g_autologin_user : (const char *)0))
+        /* gui_login: with autoboot=gui, gui.elf draws its OWN graphical login
+         * (do_login -> SYS_LOGIN), so the kernel must NOT show the text
+         * login_screen or insist on a pre-authenticated user.  Otherwise the
+         * normal text-login getty flow applies. */
+        int gui_login = 0;
+
+        if (g_boot_gui) {
+            /* The GUI owns authentication.  Autologin only on first boot
+             * (cmdline autologin=<user> / /etc/autologin); if that doesn't sign
+             * anyone in, hand off to the GUI login.  On re-login (after Log Off)
+             * always show the GUI login. */
+            int authed = 0;
+            if (first_boot)
+                authed = auth_try_autologin(g_autologin_user[0] ? g_autologin_user : (const char *)0);
+            gui_login = !authed;
+            if (gui_login) auth_clear_user();   /* drop the default user; GUI sets the real one */
+        } else {
+            /* --- Authenticate (text getty) ---
+             * Initial boot: require login only on an installed system (not live,
+             * disk rootfs, /etc/shadow present).  Re-login: always prompt. */
+            if (first_boot) {
+                if (!g_live_boot && vfs_rootfs_is_disk() && vfs_file_exists("/etc/shadow")) {
+                    if (!auth_try_autologin(g_autologin_user[0] ? g_autologin_user : (const char *)0))
+                        login_screen();
+                }
+            } else {
                 login_screen();
+            }
+            /* Invariant: never start a text shell without an authenticated user. */
+            const char *u = auth_current_user();
+            while (!u || !u[0]) { login_screen(); u = auth_current_user(); }
         }
+        first_boot = 0;
 
         /* --- Session start: clear to the shell's own palette and print
          *     the build-info banner, matching the pre-login-flow UX. --- */
@@ -1296,12 +1316,26 @@ void shell_login_loop(void)
                                   ? "/mnt/cdrom/apps/sh.elf"
                                   : "/apps/sh.elf";
 
-            const char *argv[4] = { "sh.elf", "--login", user_arg, NULL };
-            shell_exec_elf(sh_path, 3, (char **)argv);
+            /* `gui` on the cmdline -> tell the login shell to auto-launch the
+             * GUI desktop after sourcing rc.  Running it *inside* the session
+             * (rather than exec'ing gui.elf directly) keeps this sh.elf as the
+             * GUI's parent, so Log Off / exit hands control back here cleanly. */
+            const char *argv[5];
+            int ac = 0;
+            argv[ac++] = "sh.elf";
+            argv[ac++] = "--login";
+            argv[ac++] = user_arg;
+            if (g_boot_gui)
+                argv[ac++] = gui_login ? "--autostart=gui-login" : "--autostart=gui";
+            argv[ac] = NULL;
+            shell_exec_elf(sh_path, ac, (char **)argv);
         }
 
         /* shell_exec_elf blocks until the child dies, then returns here.
-         * The next loop iteration shows the login prompt again. */
+         * The session has ended (logout / exit), so clear the current user --
+         * the next iteration shows the login prompt and won't start a shell
+         * until someone authenticates. */
+        auth_clear_user();
 
         /* Drain any stale keyboard input before the next login attempt. */
         while (keyboard_poll()) {}

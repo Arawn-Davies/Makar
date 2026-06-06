@@ -53,6 +53,21 @@ static volatile int vtty_app_tail = 0;
  * task context the next time the new owner's REPL yields. */
 static volatile int vtty_pending = -1;
 
+typedef enum {
+    VTTY_DISPLAY_VT = 0,
+    VTTY_DISPLAY_ROOT_TEXT,
+    VTTY_DISPLAY_ROOT_GUI,
+} vtty_display_mode_t;
+
+static volatile int vtty_display_mode = VTTY_DISPLAY_ROOT_TEXT;
+static task_t * volatile vtty_root_text_task = (task_t *)0;
+static task_t * volatile vtty_root_gui_task = (task_t *)0;
+/* The task that launched the GUI (gui's parent) -- the live text-side reader to
+ * return keyboard focus to when leaving the GUI.  The registered root_text_task
+ * is the kernel login-loop (mak.sh0), which is blocked waiting on this shell and
+ * is NOT the interactive reader, so focusing it leaves the keyboard dead. */
+static task_t * volatile vtty_root_gui_launcher = (task_t *)0;
+
 /* Per-slot foreground task override.  When non-NULL, vtty_switch
  * directs keyboard focus + KEY_FOCUS_GAIN to this task instead of
  * the slot's registered shell.  Used by shell_exec_elf so the
@@ -137,6 +152,18 @@ static task_t *vtty_owner(int n)
     return best;
 }
 
+static int task_live(task_t *t)
+{
+    return t && t->state != TASK_DEAD && t->state != TASK_ZOMBIE;
+}
+
+static task_t *vtty_root_text_owner(void)
+{
+    task_t *t = __atomic_load_n(&vtty_root_text_task, __ATOMIC_ACQUIRE);
+    if (task_live(t)) return t;
+    return vtty_owner(VTTY_ROOT_SLOT);
+}
+
 int vtty_register(void)
 {
     task_t *me = task_current();
@@ -161,6 +188,7 @@ int vtty_register(void)
     asm volatile("pushl %0; popfl" :: "r"(flags) : "memory", "cc");
 
     if (slot < 0) return -1;
+    vtty_display_mode = VTTY_DISPLAY_VT;
     if (slot == 0)
         keyboard_set_focus(me);
     vt_buf_t *vt = vtty_buf(slot);
@@ -176,6 +204,8 @@ int vtty_register_root(void)
     /* Root slot is focused whenever vtty_nslots == 0; set keyboard focus
      * now since mak.sh0 starts before any makmux VTs exist. */
     keyboard_set_focus(me);
+    __atomic_store_n(&vtty_root_text_task, me, __ATOMIC_RELEASE);
+    vtty_display_mode = VTTY_DISPLAY_ROOT_TEXT;
     vt_buf_t *vt = vtty_buf(VTTY_ROOT_SLOT);
     if (vt) vt_clear(vt);
     return VTTY_ROOT_SLOT;
@@ -209,7 +239,9 @@ int vtty_close_pid(int pid)
 
     if (vtty_nslots == 0) {
         vtty_current = 0;
-        keyboard_set_focus(task_current());
+        vtty_display_mode = VTTY_DISPLAY_ROOT_TEXT;
+        task_t *root = vtty_owner(VTTY_ROOT_SLOT);
+        keyboard_set_focus(root ? root : task_current());
         /* No VT children left: the status bar stays enabled (it just stops
          * drawing tabs since vtty_count() == 0).  Restore mak.sh0's screen --
          * the VT children/app-tabs drew over the framebuffer, and makmux
@@ -238,6 +270,99 @@ int vtty_close_pid(int pid)
     }
 
     return slot;
+}
+
+void vtty_register_root_gui(task_t *t)
+{
+    if (!t) return;
+    __atomic_store_n(&vtty_root_gui_task, t, __ATOMIC_RELEASE);
+    /* Remember who launched the GUI so leaving it returns focus to that live
+     * reader (the sh.elf the user typed `gui` in), not the login-loop. */
+    __atomic_store_n(&vtty_root_gui_launcher, task_by_pid(t->parent_pid),
+                     __ATOMIC_RELEASE);
+    __atomic_store_n(&vtty_foreground[VTTY_ROOT_SLOT], t, __ATOMIC_RELEASE);
+    vtty_display_mode = VTTY_DISPLAY_ROOT_GUI;
+    vesa_tty_set_status_visible(0);
+    keyboard_set_focus(t);
+}
+
+void vtty_register_root_text_task(task_t *t)
+{
+    if (!t) return;
+    __atomic_store_n(&vtty_root_text_task, t, __ATOMIC_RELEASE);
+}
+
+void vtty_switch_root_text(void)
+{
+    /* Prefer the GUI launcher (the live sh.elf the user typed `gui` in); fall
+     * back to the registered root-text owner.  Focusing the login-loop
+     * (mak.sh0) instead would leave the keyboard dead -- it's blocked in wait4,
+     * not reading. */
+    task_t *root = __atomic_load_n(&vtty_root_gui_launcher, __ATOMIC_ACQUIRE);
+    if (!task_live(root)) root = vtty_root_text_owner();
+    if (!root) return;
+    vtty_display_mode = VTTY_DISPLAY_ROOT_TEXT;
+    vesa_tty_set_status_visible(1);
+    keyboard_set_focus(root);
+    keyboard_send_to(root, KEY_FOCUS_GAIN);
+    vt_buf_t *vt = vtty_buf(VTTY_ROOT_SLOT);
+    if (vt && vesa_tty_is_ready())
+        vesa_tty_paint_buf(vt);
+    else
+        vtty_request_repaint(VTTY_ROOT_SLOT);
+}
+
+void vtty_switch_root_gui(void)
+{
+    task_t *gui = __atomic_load_n(&vtty_root_gui_task, __ATOMIC_ACQUIRE);
+    if (!task_live(gui)) return;
+    vtty_display_mode = VTTY_DISPLAY_ROOT_GUI;
+    vesa_tty_set_status_visible(0);
+    keyboard_set_focus(gui);
+    keyboard_send_to(gui, KEY_FOCUS_GAIN);
+}
+
+int vtty_root_text_active(void)
+{
+    return vtty_display_mode == VTTY_DISPLAY_ROOT_TEXT;
+}
+
+/* Called from task_terminate for every dying task.  If the root GUI task
+ * exits (Exit GUI, crash, or kill), hand input + display back to the root
+ * text session -- otherwise kb_focused is left dangling and mak.sh0 gets no
+ * keyboard.  Idempotent with the explicit SYS_GUI_CLOSE path. */
+void vtty_task_exited(task_t *t)
+{
+    if (!t) return;
+    task_t *gui = __atomic_load_n(&vtty_root_gui_task, __ATOMIC_ACQUIRE);
+    if (t != gui) return;
+    __atomic_store_n(&vtty_root_gui_task, (task_t *)0, __ATOMIC_RELEASE);
+    if (__atomic_load_n(&vtty_foreground[VTTY_ROOT_SLOT], __ATOMIC_ACQUIRE) == t)
+        __atomic_store_n(&vtty_foreground[VTTY_ROOT_SLOT], (task_t *)0, __ATOMIC_RELEASE);
+    vtty_switch_root_text();
+}
+
+int vtty_logout_root_session(void)
+{
+    task_t *session = __atomic_load_n(&vtty_root_text_task, __ATOMIC_ACQUIRE);
+    task_t *manager = vtty_owner(VTTY_ROOT_SLOT);
+    if (!task_live(session) || session == manager)
+        return -1;
+
+    task_terminate(session, 0);
+    __atomic_store_n(&vtty_root_text_task, (task_t *)0, __ATOMIC_RELEASE);
+    task_t *fg = __atomic_load_n(&vtty_foreground[VTTY_ROOT_SLOT], __ATOMIC_ACQUIRE);
+    if (fg == session)
+        __atomic_store_n(&vtty_foreground[VTTY_ROOT_SLOT], (task_t *)0, __ATOMIC_RELEASE);
+
+    vtty_display_mode = VTTY_DISPLAY_ROOT_TEXT;
+    vesa_tty_set_status_visible(1);
+    if (manager) {
+        keyboard_set_focus(manager);
+        keyboard_send_to(manager, KEY_FOCUS_GAIN);
+    }
+    vtty_request_repaint(VTTY_ROOT_SLOT);
+    return 0;
 }
 
 void vtty_request_open(void)
@@ -348,9 +473,31 @@ int vtty_is_focused(void)
 {
     task_t *me = task_current();
     if (!me) return 0;
-    /* Root slot is focused whenever no makmux VT children are registered. */
-    if (me->tty == VTTY_ROOT_SLOT)
-        return vtty_nslots == 0;
+    if (me->tty == VTTY_ROOT_SLOT) {
+        if (vtty_display_mode == VTTY_DISPLAY_ROOT_GUI) {
+            /* GUI fullscreen apps (doom, vix, files) are launched via execve
+             * which replaces the gui task's image in place, so the running
+             * app keeps the registered gui task's identity and matches here. */
+            task_t *gui = __atomic_load_n(&vtty_root_gui_task, __ATOMIC_ACQUIRE);
+            return task_live(gui) && me == gui;
+        }
+        if (vtty_display_mode == VTTY_DISPLAY_ROOT_TEXT) {
+            if (me == vtty_root_text_owner()) return 1;
+            /* A fullscreen child the shell forked (registered as the root-slot
+             * foreground task in shell_cmd_apps.c) owns the display while it
+             * runs -- e.g. doom drawing via SYS_FB_PRESENT.  Unlike the GUI
+             * path the shell forks a *separate* task, so it never matches the
+             * session owner above; without this its framebuffer writes silently
+             * no-op and the game never switches into graphics.  Mirrors the VT
+             * path, which treats any task on the focused tty as focused.  Gated
+             * on ROOT_TEXT so a child backgrounded by a Ctrl+Alt+F6 switch to
+             * the GUI cannot scribble over the GUI. */
+            task_t *fg = __atomic_load_n(&vtty_foreground[VTTY_ROOT_SLOT], __ATOMIC_ACQUIRE);
+            return task_live(fg) && me == fg;
+        }
+        return vtty_nslots == 0 && me == vtty_root_text_owner();
+    }
+    if (vtty_display_mode != VTTY_DISPLAY_VT) return 0;
     return me->tty >= 0 && me->tty == vtty_current;
 }
 
@@ -394,20 +541,21 @@ vt_buf_t *vtty_buf_current(void)
 
 vt_buf_t *vtty_buf_focused(void)
 {
-    /* When no makmux VTs exist the root slot is the active display. */
-    if (vtty_nslots == 0)
+    if (vtty_display_mode != VTTY_DISPLAY_VT || vtty_nslots == 0)
         return vtty_buf(VTTY_ROOT_SLOT);
     return vtty_buf(vtty_current);
 }
 
 void vtty_switch(int n)
 {
-    if (n < 0 || n >= vtty_nslots || n == vtty_current || n == VTTY_ROOT_SLOT) return;
+    if (n < 0 || n >= vtty_nslots || n == VTTY_ROOT_SLOT) return;
+    if (vtty_display_mode == VTTY_DISPLAY_VT && n == vtty_current) return;
     /* Foreground task override beats the slot's shell.  Falls back to
      * the slot owner when no fullscreen child is currently running. */
     task_t *fg    = __atomic_load_n(&vtty_foreground[n], __ATOMIC_ACQUIRE);
     task_t *owner = fg ? fg : vtty_owner(n);
     if (!owner) return;
+    vtty_display_mode = VTTY_DISPLAY_VT;
     vtty_current = n;
     keyboard_set_focus(owner);
     keyboard_send_to(owner, KEY_FOCUS_GAIN);

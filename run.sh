@@ -83,9 +83,11 @@ _timeout() {
 # style: incremental by default (make handles "did anything change");
 # only `clean` wipes artefacts.
 #
-#   iso build                    iso boot                iso test
+#   iso build                    iso clean build         iso boot
+#   iso clean boot               iso test
 #   iso release
-#   hdd build                    hdd boot                hdd test
+#   hdd build                    hdd clean build         hdd boot
+#   hdd clean boot               hdd test
 #   hdd release
 #   gdb iso                      gdb hdd
 #   ktest                        ktest graphical
@@ -95,8 +97,8 @@ _timeout() {
 _usage() {
     echo "Usage: $0 <target> <verb> [args...]"
     echo ""
-    echo "  iso   build | boot [nic] | test | release"
-    echo "  hdd   build | boot [nic] | test | release"
+    echo "  iso   [clean] build | [clean] boot [nic] | test | release"
+    echo "  hdd   [clean] build | [clean] boot [nic] | test | release"
     echo "        boot nic (slirp networking): virtio | rtl8139 | e1000 | pcnet (default virtio)"
     echo "  gdb   iso | hdd"
     echo "  ktest [graphical]"
@@ -116,9 +118,16 @@ if [ $# -eq 0 ]; then
 fi
 
 case "${1:-}" in
-    iso|hdd|gdb)
+    iso|hdd)
         if [ -z "${2:-}" ]; then _usage; fi
-        MODE="$1 $2"
+        TARGET="$1"
+        CLEAN_FIRST=0
+        if [ "$2" = "clean" ]; then
+            CLEAN_FIRST=1
+            shift
+            if [ -z "${2:-}" ]; then _usage; fi
+        fi
+        MODE="$TARGET $2"
         # `iso boot [nic]` / `hdd boot [nic]`: optional NIC selector (same set
         # as nettest) attaches that device with slirp user networking.
         if [ "$2" = "boot" ] && [ -n "${3:-}" ]; then
@@ -129,6 +138,10 @@ case "${1:-}" in
         else
             shift 2
         fi ;;
+    gdb)
+        if [ -z "${2:-}" ]; then _usage; fi
+        MODE="$1 $2"
+        shift 2 ;;
     ktest)
         if [ "${2:-}" = "graphical" ]; then
             MODE="ktest graphical"; shift 2
@@ -155,6 +168,8 @@ case "${1:-}" in
         else
             MODE="kbtest"; shift 1
         fi ;;
+    guitest)
+        MODE="guitest"; shift 1 ;;
     gui)
         # `gui <suite>` boots an in-guest test suite in a visible QEMU
         # window so the operator can watch the script driver run inside
@@ -178,6 +193,8 @@ case "${1:-}" in
         echo "ERROR: unknown target '$1'" >&2
         _usage ;;
 esac
+
+CLEAN_FIRST=${CLEAN_FIRST:-0}
 
 # ── context helpers ────────────────────────────────────────────────────────────
 
@@ -322,16 +339,16 @@ _run_qemu_interactive() {
     if [ -n "$_qemu" ]; then
         local _host_args="${_args//\/work\//$REPO_ROOT/}"
         # shellcheck disable=SC2086
-        "$_qemu" -m 32 $_host_args
+        "$_qemu" -m 64 $_host_args
     elif [ "$(_build_ctx)" = "docker" ]; then
         echo "==> Host QEMU not found - running QEMU in Docker (serial stdio)..."
         "$DOCKER_BIN" run --rm -it \
             --platform "$DOCKER_PLATFORM" \
             -v "$REPO_ROOT:/work" -w /work \
             "$DOCKER_IMAGE" \
-            bash -lc "qemu-system-i386 -m 32 $_args"
+            bash -lc "qemu-system-i386 -m 64 $_args"
     else
-        bash -lc "qemu-system-i386 -m 32 $_args"
+        bash -lc "qemu-system-i386 -m 64 $_args"
     fi
 }
 
@@ -378,10 +395,19 @@ _run_ktest() {
     if   command -v timeout  >/dev/null 2>&1; then _tmo="timeout $_ktest_secs"
     elif command -v gtimeout >/dev/null 2>&1; then _tmo="gtimeout $_ktest_secs"
     fi
+    # Scratch ATA disk attached as primary master (index=0) so the in-kernel
+    # ide_dma ktest can exercise the bus-master DMA write/read round-trip (the
+    # path the installer's file copy uses).  The test is non-destructive and
+    # skips cleanly if the disk is absent, so a stale/missing image is harmless.
+    local _scratch="$REPO_ROOT/ktest-scratch.img"
+    rm -f "$_scratch"
+    truncate -s 16M "$_scratch" 2>/dev/null || dd if=/dev/zero of="$_scratch" bs=1M count=16 2>/dev/null
+
     if [ -n "$_qemu" ]; then
         # shellcheck disable=SC2086
         $_tmo "$_qemu" \
             -cdrom "$REPO_ROOT/$_iso" \
+            -drive "file=$_scratch,format=raw,if=ide,index=0" \
             -serial stdio \
             -display none \
             -no-reboot \
@@ -394,7 +420,8 @@ _run_ktest() {
         _drun --as-root --env "QEMU_ACCEL=$_accel" --env "KTEST_ISO_NAME=$_iso" --env "KTEST_TIMEOUT=$_ktest_secs" --env "NET_DEVICE=${NET_DEVICE:-virtio}" -- \
             'timeout "$KTEST_TIMEOUT" qemu-system-i386 \
                  -cdrom /work/$KTEST_ISO_NAME \
-                 -m 32 \
+                 -drive file=/work/ktest-scratch.img,format=raw,if=ide,index=0 \
+                 -m 64 \
                  -serial stdio \
                  -display none \
                  -no-reboot \
@@ -522,7 +549,7 @@ _run_gdb_iso_test() {
     if [ -n "$_qemu" ] && [ -n "$_gdb" ]; then
         # shellcheck disable=SC2086
         "$_qemu" \
-            -m 32 \
+            -m 64 \
             -drive "file=$REPO_ROOT/makar.iso,if=ide,index=2,media=cdrom" \
             -boot order=d \
             -serial "file:$REPO_ROOT/gdb-serial.log" \
@@ -543,7 +570,7 @@ _run_gdb_iso_test() {
         _drun --as-root --env "QEMU_ACCEL=$_accel" -- \
             'qemu-system-i386 \
                  -drive file=/work/makar.iso,if=ide,index=2,media=cdrom \
-                 -m 32 \
+                 -m 64 \
                  -boot order=d \
                  -serial file:/work/gdb-serial.log \
                  -display none -no-reboot -no-shutdown \
@@ -576,7 +603,7 @@ _run_gdb_hdd_test() {
         "$_qemu" \
             -drive "file=$REPO_ROOT/$_img,format=raw,if=ide,index=0" \
             -boot c \
-            -m 32 \
+            -m 64 \
             -serial "file:$REPO_ROOT/hdd-test-serial.log" \
             -display none -no-reboot -no-shutdown \
             $_accel \
@@ -596,7 +623,7 @@ _run_gdb_hdd_test() {
             'qemu-system-i386 \
                  -drive file=/work/$HDD_IMG_NAME,format=raw,if=ide,index=0 \
                  -boot c \
-                 -m 32 \
+                 -m 64 \
                  -serial file:/work/hdd-test-serial.log \
                  -display none -no-reboot -no-shutdown \
                  $QEMU_ACCEL \
@@ -623,13 +650,23 @@ _clean() {
          for p in $PROJECTS; do (cd "$p" && $MAKE clean 2>/dev/null || true); done'
 }
 
+_clean_full() {
+    _clean
+    rm -rf "$REPO_ROOT/sysroot" "$REPO_ROOT/isodir" \
+           "$REPO_ROOT/makar.iso" "$REPO_ROOT/hdd.img"
+    echo "==> Clean complete."
+}
+
 _build_iso() {
     local _flags="${1:-}"
     echo "==> Building ISO${_flags:+ ($_flags)}..."
     # Forward KERNEL_ARGS (extra GRUB cmdline, e.g. `kbtest`) into the build
     # container; iso.sh appends it to the interactive menuentry.
     local _kenv=()
-    [ -n "${KERNEL_ARGS:-}" ] && _kenv=(--env "KERNEL_ARGS=$KERNEL_ARGS")
+    [ -n "${KERNEL_ARGS:-}" ] && _kenv+=(--env "KERNEL_ARGS=$KERNEL_ARGS")
+    # GRUB_DEFAULT selects the auto-booted menuentry (default: the GUI desktop).
+    # The kbtest/guitest harnesses pin it to 0 (the KERNEL_ARGS-bearing entry).
+    [ -n "${GRUB_DEFAULT:-}" ] && _kenv+=(--env "GRUB_DEFAULT=$GRUB_DEFAULT")
     _drun "${_kenv[@]}" -- "${_flags:+$_flags }bash iso.sh"
 }
 
@@ -674,7 +711,63 @@ _build_kernel() {
     _drun -- "${_flags:+$_flags }bash build.sh"
 }
 
+# GUI smoke test: boot straight into the GUI desktop (autoboot=gui + autologin),
+# wait for gui.elf's "GUI: READY" serial marker (proves the window server came
+# up and presented a frame), grab a QEMU screendump as a viewable BMP artifact,
+# then shut down.  The marker is the pass gate; the screendump is best-effort so
+# a missing image-tool never fails the test.  Needs host qemu (headless + the
+# QEMU monitor on stdio fed from a FIFO -- no python/socat dependency for the
+# control channel).
+_run_guitest() {
+    echo "==> GUI smoke test (boot desktop -> GUI: READY -> screendump -> shutdown)..."
+    local _qemu; _qemu=$(_host_qemu)
+    if [ -z "$_qemu" ]; then echo "==> guitest needs host qemu-system-i386"; return 1; fi
+    # Auto-log-in so the boot lands on the desktop rather than the GUI login;
+    # pin GRUB to entry 0 (the KERNEL_ARGS-bearing entry).
+    GRUB_DEFAULT=0 KERNEL_ARGS="autoboot=gui autologin=user" _build_iso "CFLAGS='-O0 -g3'"
+    local _log="$REPO_ROOT/guitest.log";        rm -f "$_log"
+    local _shot="$REPO_ROOT/gui-screendump.ppm"; rm -f "$_shot" "$REPO_ROOT/gui-screendump.bmp"
+    local _fifo="$REPO_ROOT/.guimon.$$";         rm -f "$_fifo"; mkfifo "$_fifo"
+    local _secs="${GUITEST_TIMEOUT:-150}"
+    # shellcheck disable=SC2086
+    "$_qemu" -cdrom "$REPO_ROOT/makar.iso" -m 64 -vga std -display none \
+        -serial "file:$_log" -monitor stdio -no-reboot <"$_fifo" >/dev/null 2>&1 &
+    local _qp=$!
+    exec 9>"$_fifo"        # hold the FIFO open so QEMU's monitor stdin stays up
+    local _i=0 _ok=0
+    while [ "$_i" -lt "$_secs" ]; do
+        grep -q "GUI: READY" "$_log" 2>/dev/null && { _ok=1; break; }
+        kill -0 "$_qp" 2>/dev/null || break
+        sleep 1; _i=$((_i + 1))
+    done
+    if [ "$_ok" = 1 ]; then
+        printf 'screendump %s\n' "$_shot" >&9    # HMP screendump -> PPM
+        sleep 2
+    fi
+    printf 'quit\n' >&9 2>/dev/null || true       # graceful QEMU shutdown
+    exec 9>&-
+    sleep 1; kill "$_qp" 2>/dev/null || true; wait "$_qp" 2>/dev/null || true
+    rm -f "$_fifo"
+    # Best-effort PPM -> BMP for a viewable artifact.
+    if [ -f "$_shot" ] && command -v python3 >/dev/null 2>&1; then
+        python3 "$REPO_ROOT/tests/ppm2bmp.py" "$_shot" "$REPO_ROOT/gui-screendump.bmp" 2>/dev/null || true
+    fi
+    echo "--- guitest serial ---"
+    grep -aE "GUI: READY|\[auth\]|panic|PAGE FAULT|KPANIC" "$_log" | tail -8 || true
+    if [ "$_ok" = 1 ]; then
+        local _art="$_shot"; [ -f "$REPO_ROOT/gui-screendump.bmp" ] && _art="$REPO_ROOT/gui-screendump.bmp"
+        [ -f "$_shot" ] && echo "==> guitest PASS (GUI: READY; screendump: $_art)" \
+                        || echo "==> guitest PASS (GUI: READY; screendump unavailable)"
+        return 0
+    fi
+    echo "==> guitest FAIL (no GUI: READY marker; see $_log)"; return 1
+}
+
 # ── modes ──────────────────────────────────────────────────────────────────────
+
+if [ "$CLEAN_FIRST" = "1" ]; then
+    _clean_full
+fi
 
 case "$MODE" in
 
@@ -808,13 +901,20 @@ nettest)
 # `kbtest` on the cmdline (the kernel injects keys, no host typing) and asserts
 # on serial KBTEST markers.
 "kbtest")
-    KERNEL_ARGS="kbtest${KERNEL_ARGS:+ $KERNEL_ARGS}" _build_iso "CFLAGS='-O0 -g3'"
+    GRUB_DEFAULT=0 KERNEL_ARGS="kbtest${KERNEL_ARGS:+ $KERNEL_ARGS}" _build_iso "CFLAGS='-O0 -g3'"
     _run_kbtest
     ;;
 
 "kbtest gui")
-    KERNEL_ARGS="kbtest${KERNEL_ARGS:+ $KERNEL_ARGS}" _build_iso "CFLAGS='-O0 -g3'"
+    GRUB_DEFAULT=0 KERNEL_ARGS="kbtest${KERNEL_ARGS:+ $KERNEL_ARGS}" _build_iso "CFLAGS='-O0 -g3'"
     _run_kbtest gui
+    ;;
+
+# ── guitest ──────────────────────────────────────────────────────────────────
+# GUI smoke test: boot into the desktop, assert gui.elf's "GUI: READY" serial
+# marker, capture a screendump (PPM + BMP), then shut down.  Builds its own ISO.
+"guitest")
+    _run_guitest
     ;;
 
 # ── ktest graphical ──────────────────────────────────────────────────────────
@@ -889,10 +989,7 @@ nettest)
 
 # ── clean ─────────────────────────────────────────────────────────────────────
 clean)
-    _clean
-    rm -rf "$REPO_ROOT/sysroot" "$REPO_ROOT/isodir" \
-           "$REPO_ROOT/makar.iso" "$REPO_ROOT/hdd.img"
-    echo "==> Clean complete."
+    _clean_full
     ;;
 
 *)

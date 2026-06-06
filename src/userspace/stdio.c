@@ -90,11 +90,17 @@ unsigned int fwrite(const void *p, unsigned int sz, unsigned int n, FILE *f)
 unsigned int fread(void *p, unsigned int sz, unsigned int n, FILE *f)
 {
     if (!f || !p || sz == 0 || n == 0) return 0;
-    unsigned int total = sz * n;
-    long got = sys_read(f->fd, p, total);
-    if (got < 0) { f->err = 1; return 0; }
-    if ((unsigned long)got < total) f->eof = 1;
-    return (unsigned int)got / sz;
+    unsigned int total = sz * n, done = 0;
+    unsigned char *d = (unsigned char *)p;
+    /* Loop until satisfied or real EOF -- sys_read may short-read a large
+     * request (e.g. a 12 MiB WAD directory); a single read would truncate it. */
+    while (done < total) {
+        long got = sys_read(f->fd, d + done, total - done);
+        if (got < 0) { f->err = 1; break; }
+        if (got == 0) { f->eof = 1; break; }
+        done += (unsigned int)got;
+    }
+    return done / sz;
 }
 
 int fputs(const char *s, FILE *f)
@@ -103,8 +109,11 @@ int fputs(const char *s, FILE *f)
     return (int)fwrite(s, 1, n, f);
 }
 int fputc(int c, FILE *f) { unsigned char b = (unsigned char)c; return fwrite(&b,1,1,f)==1 ? c : -1; }
+int putchar(int c) { return fputc(c, stdout); }
+int puts(const char *s) { if (fputs(s, stdout) < 0) return -1; return fputc('\n', stdout); }
 int fgetc(FILE *f) { unsigned char b; long r = sys_read(f->fd,&b,1); if (r<=0){f->eof=(r==0);return -1;} return b; }
 int feof(FILE *f)  { return f ? f->eof : 1; }
+/* fseek/ftell are provided by tcc_compat.o (over sys_lseek) -- not redefined. */
 
 /* ---- vsnprintf / snprintf / fprintf / printf ----------------------------- */
 
@@ -121,20 +130,25 @@ static void sb_put(sb_t *s, char c)
 static void sb_str(sb_t *s, const char *p) { while (*p) sb_put(s, *p++); }
 
 static void sb_num(sb_t *s, unsigned long v, unsigned int base,
-                   int upper, int sign_neg, int width, char pad)
+                   int upper, int sign_neg, int width, char pad,
+                   int precision)
 {
     char tmp[32]; int ti = 0;
-    if (v == 0) tmp[ti++] = '0';
+    if (v == 0 && precision != 0) tmp[ti++] = '0';
     while (v) {
         unsigned int d = v % base;
         tmp[ti++] = (char)(d < 10 ? '0' + d
                                   : (upper ? 'A' : 'a') + (d - 10));
         v /= base;
     }
-    int len = ti + (sign_neg ? 1 : 0);
+    int digits = ti;
+    if (precision > digits) digits = precision;
+    int len = digits + (sign_neg ? 1 : 0);
+    if (precision >= 0) pad = ' ';
     if (sign_neg && pad == '0') sb_put(s, '-');
     while (len < width) { sb_put(s, pad); len++; }
     if (sign_neg && pad == ' ') sb_put(s, '-');
+    while (ti < precision) { sb_put(s, '0'); precision--; }
     while (ti--) sb_put(s, tmp[ti]);
 }
 
@@ -146,15 +160,14 @@ int vsnprintf(char *buf, unsigned int sz, const char *fmt, va_list ap)
         p++;
         /* Flags (minimal subset: `-`, `+`, ` ` ignored; `0` triggers
          * zero-padding; `#` ignored). */
-        char pad = ' '; int width = 0;
+        char pad = ' '; int width = 0; int precision = -1;
         if (*p == '-' || *p == '+' || *p == ' ' || *p == '#') p++;
         if (*p == '0') { pad = '0'; p++; }
         while (*p >= '0' && *p <= '9') { width = width*10 + (*p - '0'); p++; }
-        /* Optional precision (.N) -- parsed but ignored for now; just
-         * keep the va_arg sequence aligned. */
         if (*p == '.') {
             p++;
-            while (*p >= '0' && *p <= '9') p++;
+            precision = 0;
+            while (*p >= '0' && *p <= '9') { precision = precision*10 + (*p - '0'); p++; }
         }
         /* Length modifier: `h`, `hh`, `l`, `ll`, `z`, `t`, `j`.  On i386
          * `long`, `size_t`, `ptrdiff_t`, `intmax_t` are all 32-bit, so
@@ -198,52 +211,52 @@ int vsnprintf(char *buf, unsigned int sz, const char *fmt, va_list ap)
                  * is lossy for the full 64-bit range, but a typical
                  * TCC %lld value (line numbers, sizes) fits in 32 bits.
                  * Wrap-around above 2^32 is documented as best-effort. */
-                sb_num(&s, (unsigned long)uv, 10, 0, v < 0, width, pad);
+                sb_num(&s, (unsigned long)uv, 10, 0, v < 0, width, pad, precision);
             } else {
                 int v = va_arg(ap, int);
                 unsigned long uv = (v < 0) ? (unsigned long)(-(long)v) : (unsigned long)v;
-                sb_num(&s, uv, 10, 0, v < 0, width, pad);
+                sb_num(&s, uv, 10, 0, v < 0, width, pad, precision);
             }
             break;
         }
         case 'u': {
             if (is_ll) {
                 unsigned long long v = va_arg(ap, unsigned long long);
-                sb_num(&s, (unsigned long)v, 10, 0, 0, width, pad);
+                sb_num(&s, (unsigned long)v, 10, 0, 0, width, pad, precision);
             } else {
-                sb_num(&s, va_arg(ap, unsigned int), 10, 0, 0, width, pad);
+                sb_num(&s, va_arg(ap, unsigned int), 10, 0, 0, width, pad, precision);
             }
             break;
         }
         case 'x': {
             if (is_ll) {
                 unsigned long long v = va_arg(ap, unsigned long long);
-                sb_num(&s, (unsigned long)v, 16, 0, 0, width, pad);
+                sb_num(&s, (unsigned long)v, 16, 0, 0, width, pad, precision);
             } else {
-                sb_num(&s, va_arg(ap, unsigned int), 16, 0, 0, width, pad);
+                sb_num(&s, va_arg(ap, unsigned int), 16, 0, 0, width, pad, precision);
             }
             break;
         }
         case 'X': {
             if (is_ll) {
                 unsigned long long v = va_arg(ap, unsigned long long);
-                sb_num(&s, (unsigned long)v, 16, 1, 0, width, pad);
+                sb_num(&s, (unsigned long)v, 16, 1, 0, width, pad, precision);
             } else {
-                sb_num(&s, va_arg(ap, unsigned int), 16, 1, 0, width, pad);
+                sb_num(&s, va_arg(ap, unsigned int), 16, 1, 0, width, pad, precision);
             }
             break;
         }
         case 'o': {
             if (is_ll) {
                 unsigned long long v = va_arg(ap, unsigned long long);
-                sb_num(&s, (unsigned long)v, 8, 0, 0, width, pad);
+                sb_num(&s, (unsigned long)v, 8, 0, 0, width, pad, precision);
             } else {
-                sb_num(&s, va_arg(ap, unsigned int), 8, 0, 0, width, pad);
+                sb_num(&s, va_arg(ap, unsigned int), 8, 0, 0, width, pad, precision);
             }
             break;
         }
         case 'p': sb_put(&s,'0'); sb_put(&s,'x');
-                  sb_num(&s, (unsigned long)(unsigned int)va_arg(ap, void *), 16, 0, 0, 8, '0'); break;
+                  sb_num(&s, (unsigned long)(unsigned int)va_arg(ap, void *), 16, 0, 0, 8, '0', -1); break;
         case '%': sb_put(&s, '%'); break;
         default:  sb_put(&s, '%'); sb_put(&s, *p); break;
         }

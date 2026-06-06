@@ -12,10 +12,12 @@
 
 #include <kernel/task.h>
 #include <kernel/vtty.h>
+#include <kernel/keyboard.h>
 #include <kernel/fd.h>
 #include <kernel/signal.h>
 #include <kernel/heap.h>
 #include <kernel/vmm.h>
+#include <kernel/surface.h>
 #include <kernel/fpu.h>
 #include <kernel/paging.h>
 #include <kernel/descr_tbl.h>
@@ -614,12 +616,30 @@ void task_yield(void)
 
 void task_terminate(task_t *t, int status)
 {
+    /* Universal exit path (task_exit + signal kills).  Release the dying task's
+     * keyboard binding; if it was the focused task this also forces cooked mode
+     * + clears modifiers (a game in scancode mode / kbtester in raw mode would
+     * otherwise leave the keyboard stuck -- e.g. Alt's scancode 0x38 read as
+     * '8' after doom).  Was previously only done by the in-kernel shell, so
+     * userland-sh.elf-launched apps never reset it. */
+    keyboard_release_task(t);
     if (!t)
         return;
+
+    /* If the root GUI task is exiting, hand input + display back to the root
+     * text session so mak.sh0's keyboard works again (covers Exit GUI, crash,
+     * and kill paths uniformly). */
+    vtty_task_exited(t);
 
     /* Detach from the IPC graph before the slot can be reused: wake any
      * senders blocked on us and unlink us from a receiver's queue. */
     ipc_task_cleanup(t);
+
+    /* Drop any shared-surface mappings (and creator refs) this task holds,
+     * unmapping the shared frames from t->page_dir BEFORE vmm_free_pd() walks
+     * it later — otherwise the frames, still mapped by another holder, would
+     * be double-freed.  Must run while t->page_dir is intact. */
+    surface_release_task(t);
 
     t->exit_status = status;
 

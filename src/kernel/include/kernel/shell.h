@@ -11,6 +11,11 @@ extern int g_live_boot;
  * auth_try_autologin by shell_login_loop; overrides /etc/autologin. */
 extern char g_autologin_user[64];
 
+/* Set to 1 by kernel_main when `autoboot=gui` appears on the kernel cmdline.
+ * Tells shell_login_loop to launch the GUI desktop in the login session
+ * (the GUI boot menu entry; pairs with autologin=<user> for a desktop boot). */
+extern int g_boot_gui;
+
 /*
  * Minimal kernel REPL over VGA + PS/2 keyboard.
  *

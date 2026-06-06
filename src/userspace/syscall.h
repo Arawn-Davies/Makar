@@ -75,6 +75,12 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_GETCWD       215
 #define SYS_FB_INFO      216
 #define SYS_DRAW_LINE    217
+#define SYS_MOUSE_READ   256
+#define SYS_FB_PRESENT   257
+#define SYS_SURFACE_CREATE  259
+#define SYS_SURFACE_MAP     262
+#define SYS_SURFACE_INFO    263
+#define SYS_SURFACE_DESTROY 264
 #define SYS_CARET_STYLE  218
 /* Admin syscalls (privileged operations).  task_is_admin() gates each;
  * currently always-true (no user model).  Negative return = denied or
@@ -113,6 +119,9 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_NET_INFO    253
 #define SYS_NET_CTL     254
 #define SYS_WGET        255
+#define SYS_LOGOUT      260
+#define SYS_GUI_CLOSE   261
+#define SYS_LOGIN       266
 
 #define NET_CTL_DHCP_RELEASE 1
 #define NET_CTL_DHCP_RENEW   2
@@ -494,6 +503,44 @@ static inline int sys_draw_line(int x0, int y0, int x1, int y1, unsigned int rgb
     return (int)syscall3(SYS_DRAW_LINE, (long)xy0, (long)xy1, (long)rgb);
 }
 
+/* Pop one PS/2 mouse event.  0 when none, else packed: bit31=valid,
+ * bits0-2 buttons (bit0 L, bit1 R, bit2 M), bits8-15 dx int8, bits16-23 dy
+ * int8 (+y down). */
+static inline unsigned int sys_mouse_read(void)
+{
+    return (unsigned int)syscall1(SYS_MOUSE_READ, 0);
+}
+
+/* Blit a tightly-packed width*height 32-bpp back buffer full-frame to the
+ * framebuffer.  Returns 0 on success, -1 if no pixel FB / not focused. */
+static inline int sys_fb_present(const void *backbuf)
+{
+    return (int)syscall1(SYS_FB_PRESENT, (long)backbuf);
+}
+
+/* Shared pixel surfaces — the one shared-memory primitive (kernel/surface.h).
+ * surface_create reserves w*h*4 bytes of kernel frames and returns an id;
+ * surface_map maps that surface into the caller and returns its base address
+ * (NULL on failure); surface_info packs (w<<16)|h; surface_destroy drops the
+ * creator's reference.  A window manager creates + maps a surface, passes the
+ * id to a forked child which also maps it, and both share the pixels. */
+static inline int sys_surface_create(int w, int h)
+{
+    return (int)syscall2(SYS_SURFACE_CREATE, (long)w, (long)h);
+}
+static inline void *sys_surface_map(int id)
+{
+    return (void *)syscall1(SYS_SURFACE_MAP, (long)id);
+}
+static inline unsigned int sys_surface_info(int id)
+{
+    return (unsigned int)syscall1(SYS_SURFACE_INFO, (long)id);
+}
+static inline int sys_surface_destroy(int id)
+{
+    return (int)syscall1(SYS_SURFACE_DESTROY, (long)id);
+}
+
 /* Set the VESA caret style (0 = underline/line, 2 = flashing block).
  * Returns the previous style so callers can restore it on exit.  No-op
  * returning 0 in VGA-text mode. */
@@ -720,6 +767,19 @@ static inline int sys_reboot(void)
 static inline int sys_shutdown(void)
 {
     return (int)syscall1(SYS_SHUTDOWN, 0);
+}
+static inline int sys_logout(void)
+{
+    return (int)syscall1(SYS_LOGOUT, 0);
+}
+/* Verify credentials + set the session user.  0 = ok, -1 = bad credentials. */
+static inline int sys_login(const char *user, const char *pass)
+{
+    return (int)syscall2(SYS_LOGIN, (long)user, (long)pass);
+}
+static inline int sys_gui_close(void)
+{
+    return (int)syscall1(SYS_GUI_CLOSE, 0);
 }
 
 /* Display.  NULL/empty `arg` queries current state. */

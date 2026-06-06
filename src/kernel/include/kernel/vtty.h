@@ -48,10 +48,24 @@ int vtty_close_pid(int pid);
 void vtty_request_open(void);
 int  vtty_take_open_request(void);
 
-/* Global Alt+F5 request queue.  Consumed by userspace statusbar.elf (via
- * SYS_VT_CLOCK_REQUEST) to toggle the bottom status bar on/off. */
+/* Legacy Alt+F5 request queue.  Kept for old statusbar builds; new kernels
+ * handle Alt+F5/F6 directly as root text-console / GUI display switches. */
 void vtty_request_clock_toggle(void);
 int  vtty_take_clock_toggle_request(void);
+
+/* Root display mode switches.  Alt+F5 surfaces mak.sh0 + statusbar and gives
+ * keyboard focus back to the root shell.  Alt+F6 hides the statusbar and
+ * restores the running GUI foreground task, if one exists. */
+void vtty_register_root_gui(task_t *t);
+void vtty_register_root_text_task(task_t *t);
+void vtty_switch_root_text(void);
+void vtty_switch_root_gui(void);
+int  vtty_root_text_active(void);
+
+/* Called from task_terminate: if the dying task is the root GUI task, restore
+ * input + display to the root text session (so the keyboard isn't left dead). */
+void vtty_task_exited(task_t *t);
+int  vtty_logout_root_session(void);
 
 /* Returns the currently active TTY index. */
 int vtty_active(void);

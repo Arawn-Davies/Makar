@@ -13,6 +13,8 @@
 
 #include <kernel/auth.h>
 #include <kernel/vfs.h>
+#include <kernel/task.h>
+#include <kernel/vtty.h>
 #include <kernel/vesa_tty.h>
 #include <kernel/tty.h>
 #include <kernel/keyboard.h>
@@ -41,6 +43,29 @@
 static char s_current_user[64] = "user";
 
 const char *auth_current_user(void) { return s_current_user; }
+
+/* Clear the session user (logout).  shell_login_loop refuses to start a shell
+ * while this is empty, forcing a fresh login_screen() first. */
+void auth_clear_user(void) { s_current_user[0] = '\0'; }
+
+/* Verify + sign in (ring-3 GUI login via SYS_LOGIN).  Returns 0 / -1. */
+int auth_login(const char *username, const char *password)
+{
+    if (!username || !password) return -1;
+    if (shadow_verify(username, password) != 0) {
+        Serial_WriteString("[auth] gui login failed: ");
+        Serial_WriteString((char *)username);
+        Serial_WriteString("\n");
+        return -1;
+    }
+    size_t i = 0;
+    while (username[i] && i < sizeof(s_current_user) - 1) { s_current_user[i] = username[i]; i++; }
+    s_current_user[i] = '\0';
+    Serial_WriteString("[auth] gui login ok: ");
+    Serial_WriteString(s_current_user);
+    Serial_WriteString("\n");
+    return 0;
+}
 
 /* --------------------------------------------------------------------------
  * Geometry helpers (same pattern as installer.c)
@@ -215,8 +240,56 @@ static void read_plain(char *buf, size_t max,
 /* --------------------------------------------------------------------------
  * login_screen
  * --------------------------------------------------------------------------*/
+/* Edit one form field in place, resuming from its current contents.  Renders
+ * the field + cursor, then reads keys until Tab or Enter.
+ * Returns 1 on Enter, 0 on Tab.  `masked` shows '*' instead of the chars. */
+static int edit_field(char *buf, size_t *plen, size_t max,
+                      uint32_t col, uint32_t row, int masked)
+{
+    size_t len = *plen;
+    if (s_gui) {
+        char blank[32];
+        for (int i = 0; i < 20; i++) blank[i] = ' ';
+        blank[20] = '\0';
+        vesa_tty_paint_string_at(col, row, blank, C_FG, C_BG);
+        for (size_t i = 0; i < len && i < 20; i++) {
+            char ch[2] = { masked ? '*' : buf[i], '\0' };
+            vesa_tty_paint_string_at(col + (uint32_t)i, row, ch,
+                                     masked ? C_FG : C_INPUT, C_BG);
+        }
+        vesa_tty_set_cursor(col + (uint32_t)len, row);
+    }
+    for (;;) {
+        unsigned char c = keyboard_getchar();
+        if (c == '\t')              { buf[len] = '\0'; *plen = len; return 0; }
+        if (c == '\n' || c == '\r') { buf[len] = '\0'; *plen = len; return 1; }
+        if (c == '\b' || c == 127) {
+            if (len) {
+                len--;
+                if (s_gui) {
+                    vesa_tty_paint_string_at(col + (uint32_t)len, row, " ", C_FG, C_BG);
+                    vesa_tty_set_cursor(col + (uint32_t)len, row);
+                } else t_backspace();
+            }
+            continue;
+        }
+        if (c < 0x20 || c > 0x7E) continue;
+        if (len < max - 1) {
+            buf[len++] = (char)c;
+            if (s_gui) {
+                char ch[2] = { masked ? '*' : (char)c, '\0' };
+                vesa_tty_paint_string_at(col + (uint32_t)(len - 1), row, ch,
+                                         masked ? C_FG : C_INPUT, C_BG);
+                vesa_tty_set_cursor(col + (uint32_t)len, row);
+            } else t_putchar(masked ? '*' : (char)c);
+        }
+    }
+}
+
 void login_screen(void)
 {
+    /* The login screen owns the whole screen -- hide the shell status bar. */
+    vesa_tty_set_status_visible(0);
     login_geometry();
 
     char username[64];
@@ -250,34 +323,26 @@ void login_screen(void)
             t_writestring("Username: ");
         }
 
-        /* --- Read username --- */
-        username[0] = '\0';
-        if (s_gui) {
-            /* Clear the field area first */
-            char blank[32];
-            for (int i = 0; i < 20; i++) blank[i] = ' ';
-            blank[20] = '\0';
-            vesa_tty_paint_string_at(field_col, row_user, blank, C_FG, C_BG);
-            vesa_tty_set_cursor(field_col, row_user);
-        }
-        read_plain(username, sizeof(username), field_col, row_user, 20);
-
-        if (!s_gui) t_writestring("Password: ");
-
-        /* --- Read password --- */
-        password[0] = '\0';
-        if (s_gui) {
-            char blank[32];
-            for (int i = 0; i < 20; i++) blank[i] = ' ';
-            blank[20] = '\0';
-            vesa_tty_paint_string_at(field_col, row_pass, blank, C_FG, C_BG);
-            vesa_tty_set_cursor(field_col, row_pass);
-
-            /* Show hint label */
+        if (s_gui)
             tui_at(label_col, row_hint,
-                   "Press Enter to log in", C_DIM, C_BG);
+                   "Tab switches fields, Enter logs in", C_DIM, C_BG);
+
+        /* --- Two-field form: Tab switches user<->pass, Enter advances /
+         *     submits.  In VGA mode it degrades to sequential entry. --- */
+        username[0] = '\0'; password[0] = '\0';
+        size_t ulen = 0, plen = 0;
+        if (!s_gui) t_writestring("Password: ");
+        int field = 0;
+        for (;;) {
+            if (field == 0) {
+                edit_field(username, &ulen, sizeof(username), field_col, row_user, 0);
+                field = 1;                       /* Tab or Enter -> password   */
+            } else {
+                int r = edit_field(password, &plen, sizeof(password), field_col, row_pass, 1);
+                if (r == 1) break;               /* Enter on password = submit */
+                field = 0;                        /* Tab on password -> username */
+            }
         }
-        read_masked(password, sizeof(password), field_col, row_pass, 20);
 
         /* --- Verify --- */
         int ok = (shadow_verify(username, password) == 0);
@@ -300,6 +365,7 @@ void login_screen(void)
             Serial_WriteString("[auth] login ok: ");
             Serial_WriteString(username);
             Serial_WriteString("\n");
+            vesa_tty_set_status_visible(1);   /* restore the shell status bar */
             return;
         }
 
@@ -340,6 +406,120 @@ void auth_logout(void)
 {
     Serial_WriteString("[auth] logout\n");
     login_screen();
+}
+
+/* --------------------------------------------------------------------------
+ * cad_menu: Ctrl-Alt-Del menu (text/shell sessions only).  Two choices --
+ * Log off (ends the current session) or Change password (TUI).  Invoked from
+ * the keyboard layer when the focused text session is reading keys.  Esc
+ * cancels.  Runs in the calling task's context, so "Log off" task_exit()s it.
+ * --------------------------------------------------------------------------*/
+void cad_menu(void)
+{
+    login_geometry();
+    int prev_status = vesa_tty_status_enabled();
+    vesa_tty_set_status_visible(0);
+
+    int sel = 0;   /* 0 = log off, 1 = change password */
+    for (;;) {
+        paint_fill(C_BG);
+        tui_row(0, "Makar " MAKAR_VERSION, C_SELFG, C_TITLE);
+        tui_center(2, "System  (Ctrl-Alt-Del)", C_FG, C_BG);
+        uint32_t r = s_rows / 2;
+        tui_center(r - 1, sel == 0 ? "> Log off <" : "  Log off  ",
+                   sel == 0 ? C_OK : C_FG, C_BG);
+        tui_center(r + 1, sel == 1 ? "> Change password <" : "  Change password  ",
+                   sel == 1 ? C_OK : C_FG, C_BG);
+        tui_center(r + 3, "Up/Down + Enter   Esc cancels", C_DIM, C_BG);
+
+        unsigned char c = keyboard_getchar();
+        if (c == 27) break;                                      /* Esc cancel  */
+        else if (c == (unsigned char)KEY_ARROW_UP)   sel = 0;
+        else if (c == (unsigned char)KEY_ARROW_DOWN) sel = 1;
+        else if (c == '\n' || c == '\r') {
+            if (sel == 0) {                                      /* Log off     */
+                vesa_tty_set_status_visible(prev_status);
+                task_exit();                                     /* ends session */
+            }
+            passwd_screen(auth_current_user());                  /* Change pass */
+            break;
+        }
+    }
+    vesa_tty_set_status_visible(prev_status);
+    vtty_request_repaint(VTTY_ROOT_SLOT);   /* restore the shell screen */
+}
+
+/* --------------------------------------------------------------------------
+ * passwd_screen: full-screen TUI to change `user`'s password (login-like).
+ * New + Confirm fields with Tab/Enter; writes /etc/shadow.  Caller gates this
+ * to installed systems (writable rootfs).  Returns 0 on success, -1 otherwise.
+ * --------------------------------------------------------------------------*/
+int passwd_screen(const char *user)
+{
+    login_geometry();
+    vesa_tty_set_status_visible(0);
+
+    char p1[256], p2[256];
+    uint32_t mid_col = s_cols / 2, mid_row = s_rows / 2;
+    uint32_t box_w = 36;
+    uint32_t box_left = (mid_col > box_w / 2) ? mid_col - box_w / 2 : 2;
+    uint32_t label_col = box_left;
+    uint32_t field_col = box_left + 12;
+    uint32_t row_new = mid_row - 2, row_con = mid_row;
+    uint32_t row_hint = mid_row + 2, row_err = mid_row + 4;
+
+    for (;;) {
+        paint_fill(C_BG);
+        tui_row(0, "Makar " MAKAR_VERSION, C_SELFG, C_TITLE);
+        tui_center(2, "Change Password", C_FG, C_BG);
+        {
+            char ub[80]; size_t p = 0;
+            const char *pre = "User: ";
+            while (*pre && p < sizeof(ub) - 1) ub[p++] = *pre++;
+            for (const char *u = user; u && *u && p < sizeof(ub) - 1; u++) ub[p++] = *u;
+            ub[p] = '\0';
+            tui_center(4, ub, C_DIM, C_BG);
+        }
+
+        if (s_gui) {
+            tui_at(label_col, row_new, "New:        ", C_FG, C_BG);
+            tui_at(label_col, row_con, "Confirm:    ", C_FG, C_BG);
+            tui_at(label_col, row_hint, "Tab switches fields, Enter saves", C_DIM, C_BG);
+        } else {
+            t_writestring("New password: ");
+        }
+
+        p1[0] = '\0'; p2[0] = '\0';
+        size_t l1 = 0, l2 = 0; int field = 0;
+        for (;;) {
+            if (field == 0) {
+                edit_field(p1, &l1, sizeof(p1), field_col, row_new, 1);
+                field = 1;
+            } else {
+                int r = edit_field(p2, &l2, sizeof(p2), field_col, row_con, 1);
+                if (r == 1) break;
+                field = 0;
+            }
+        }
+
+        if (strcmp(p1, p2) != 0) {
+            if (s_gui) tui_at(label_col, row_err, "Passwords do not match.   ", C_WARN, C_BG);
+            else       t_writestring("\npasswd: passwords do not match.\n");
+            ksleep(100);
+            continue;
+        }
+
+        int ok = (shadow_set_password(user, p1) == 0);
+        if (s_gui)
+            tui_at(label_col, row_err,
+                   ok ? "Password updated.         " : "Update failed.            ",
+                   ok ? C_OK : C_WARN, C_BG);
+        else
+            t_writestring(ok ? "\npasswd: updated.\n" : "\npasswd: failed.\n");
+        if (s_gui) ksleep(80);
+        vesa_tty_set_status_visible(1);
+        return ok ? 0 : -1;
+    }
 }
 
 /* --------------------------------------------------------------------------

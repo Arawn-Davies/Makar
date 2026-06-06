@@ -41,3 +41,22 @@ vendor/tinycc/*.o
 vendor/tinycc/lib/*.o
 vendor/tinycc/lib/*.a
 vendor/tinycc/config.h
+
+# Vendored doomgeneric build artefacts
+vendor/doomgeneric/doomgeneric/*.o
+vendor/doomgeneric/doomgeneric/*.d
+
+# Doom WADs (copyrighted / large -- staged into ISO, never committed)
+wads/
+
+# Ephemeral handoff -- never commit
+HANDOFF.md
+
+# GUI smoke-test screendumps (run.sh guitest)
+gui-screendump.ppm
+gui-screendump.bmp
+
+# Vendored build artefacts (compiled from source per-build; were
+# accidentally committed in effbe90, breaking CI path resolution)
+vendor/lwip/**/*.o
+vendor/lwip/**/*.d

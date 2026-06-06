@@ -28,6 +28,16 @@ cp sysroot/boot/makar.kernel isodir/boot/makar.kernel
 # /etc/hostname mybox  from the rescue shell) to change the prompt.
 echo "makar" > isodir/etc/hostname
 
+# Default /etc/shadow for the live CD: one account `user` with password `user`.
+# Format: name:$mh$<16-hex-salt>$<16-hex-microhash(salt_hex++password)>:::::::
+# (microhash is the kernel's auth hash; this entry is precomputed against the
+#  canonical algorithm so `login` accepts user/user on a live boot, and the GUI
+#  Logout / shell `logout` flows return to a working login prompt.)
+{
+  echo 'root:$mh$fedcba9876543210$b0dc9b7e4dd3cae6:::::::'
+  echo 'user:$mh$0123456789abcdef$b9cdde36b9972a60:::::::'
+} > isodir/etc/shadow
+
 # Copy source tree and docs onto the ISO so they're readable via VIX.
 cp -r src/. isodir/src/
 cp -r docs/. isodir/docs/
@@ -127,11 +137,23 @@ fi
 # `live` on the cmdline tells kernel_main this is a live ISO session so the
 # login screen is skipped even if an installed HDD is auto-detected.
 cat > isodir/boot/grub/grub.cfg << EOF
-set default=0
+set default=${GRUB_DEFAULT:-1}
 set timeout=3
 
 menuentry "Makar OS" {
 	multiboot2 /boot/makar.kernel live${KERNEL_ARGS:+ $KERNEL_ARGS}
+}
+
+menuentry "Makar OS (GUI desktop)" {
+	multiboot2 /boot/makar.kernel live autoboot=gui
+}
+
+menuentry "Makar OS (rescue shell)" {
+	multiboot2 /boot/makar.kernel live shell=rescue
+}
+
+menuentry "Makar OS (serial console)" {
+	multiboot2 /boot/makar.kernel live console=ttyS0
 }
 
 menuentry "Next available device" {
@@ -161,11 +183,23 @@ EOF
     # Restore the interactive grub.cfg in the staged isodir so anyone
     # inspecting the staging dir doesn't see the test variant.
     cat > isodir/boot/grub/grub.cfg << EOF
-set default=0
+set default=${GRUB_DEFAULT:-1}
 set timeout=3
 
 menuentry "Makar OS" {
 	multiboot2 /boot/makar.kernel live${KERNEL_ARGS:+ $KERNEL_ARGS}
+}
+
+menuentry "Makar OS (GUI desktop)" {
+	multiboot2 /boot/makar.kernel live autoboot=gui
+}
+
+menuentry "Makar OS (rescue shell)" {
+	multiboot2 /boot/makar.kernel live shell=rescue
+}
+
+menuentry "Makar OS (serial console)" {
+	multiboot2 /boot/makar.kernel live console=ttyS0
 }
 
 menuentry "Next available device" {

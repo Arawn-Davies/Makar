@@ -13,10 +13,23 @@ CFLAGS:=$(CFLAGS) -std=c11 -ffreestanding -fno-stack-protector \
 
 LDFLAGS=-T link.ld -nostdlib
 
+# ---- doomgeneric (vendored) ----------------------------------------------
+# Core Doom + the generic glue; exclude every foreign platform backend and
+# use our own doomgeneric_makar.c.  Compiled against the hosted libc + headers.
+DOOM_DIR=../../vendor/doomgeneric/doomgeneric
+DOOM_PLATFORMS=allegro emscripten linuxvt sdl soso sosox win xlib
+DOOM_EXCL=$(addprefix $(DOOM_DIR)/doomgeneric_,$(addsuffix .c,$(DOOM_PLATFORMS)))
+# Sound/music backends: FEATURE_SOUND is off, so drop them (no stub needed).
+DOOM_EXCL_SND=$(addprefix $(DOOM_DIR)/,i_allegrosound.c i_allegromusic.c i_sdlsound.c i_sdlmusic.c)
+DOOM_SRC=$(filter-out $(DOOM_EXCL) $(DOOM_EXCL_SND),$(wildcard $(DOOM_DIR)/*.c))
+DOOM_OBJ=$(DOOM_SRC:.c=.o)
+DOOM_CFLAGS=$(CFLAGS) -I$(DOOM_DIR) -include stddef.h -Wno-unused \
+            -Wno-sign-compare -Wno-implicit-fallthrough -Wno-format -DNORMALUNIX
+
 DESTDIR?=
 ISODIR?=$(CURDIR)/../../isodir
 
-PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf lspci.elf maknetcfg.elf kbtester.elf makbox.elf makmux.elf statusbar.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf fdisk.elf cfdisk.elf basic.elf filetest.elf alloctest.elf sh.elf ar.elf microhash.elf sha256.elf md5.elf wget.elf ktest_uspace.elf
+PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf lspci.elf maknetcfg.elf kbtester.elf makbox.elf makmux.elf statusbar.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf fdisk.elf cfdisk.elf basic.elf filetest.elf alloctest.elf sh.elf ar.elf microhash.elf sha256.elf md5.elf wget.elf ktest_uspace.elf gui.elf doom.elf files.elf
 
 # libc.a -- single archive of the userspace shim (malloc + FILE* stdio +
 # setjmp/longjmp + string/memory helpers).  Shipped under /usr/lib on the
@@ -66,6 +79,23 @@ ktest_uspace.elf: crt0.o ktest_uspace.o
 
 vix.elf: crt0.o vix.o
 	$(LD) $(LDFLAGS) -o $@ $^
+
+gui.elf: crt0.o wm.o gui_gfx.o gui_ui.o
+	$(LD) $(LDFLAGS) -o $@ $^
+
+files.elf: crt0.o files.o
+	$(LD) $(LDFLAGS) -o $@ $^
+
+# Vendored Doom objects: own include path + relaxed warnings.
+$(DOOM_DIR)/%.o: $(DOOM_DIR)/%.c
+	$(CC) $(DOOM_CFLAGS) -c -o $@ $<
+
+doomgeneric_makar.o: doomgeneric_makar.c
+	$(CC) $(DOOM_CFLAGS) -c -o $@ $<
+
+# Link via the gcc driver so -lgcc (64-bit math helpers) resolves.
+doom.elf: crt0.o doomgeneric_makar.o $(DOOM_OBJ) libc.a
+	$(CC) $(LDFLAGS) -o $@ crt0.o doomgeneric_makar.o $(DOOM_OBJ) libc.a -lgcc
 
 ls.elf: crt0.o ls.o
 	$(LD) $(LDFLAGS) -o $@ $^
@@ -156,7 +186,8 @@ install: all
 	rm -f $(ISODIR)/apps/ls.elf $(ISODIR)/apps/cp.elf $(ISODIR)/apps/mv.elf \
 	      $(ISODIR)/apps/rm.elf $(ISODIR)/apps/echo.elf $(ISODIR)/apps/fsutil.elf
 	cp $(PROGS) $(ISODIR)/apps/
-	cp demo.sh incore.sh rebuild-kernel.sh kend.S $(ISODIR)/apps/
+	cp demo.sh incore.sh rebuild-kernel.sh kend.S getwad.sh $(ISODIR)/apps/
+	-cp ../../wads/*.WAD ../../wads/*.wad $(ISODIR)/apps/ 2>/dev/null || true
 	cp *.bas $(ISODIR)/apps/
 # /usr sysroot for the in-OS compiler (tcc) and any future hosted ports.
 # `crt0.o` is the C-runtime startup; `libc.a` the freestanding libc shim

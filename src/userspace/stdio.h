@@ -32,6 +32,8 @@ unsigned int fwrite(const void *p, unsigned int sz, unsigned int n, FILE *f);
 int   fflush(FILE *f);
 int   fputs (const char *s, FILE *f);
 int   fputc (int c, FILE *f);
+int   putchar(int c);
+int   puts  (const char *s);
 int   fgetc (FILE *f);
 int   feof  (FILE *f);
 int   fseek (FILE *f, long offset, int whence);
