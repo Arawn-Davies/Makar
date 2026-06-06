@@ -176,6 +176,13 @@ static void launch_icon(int ii)
     if (pid<0){ sys_close(op[0]); sys_close(op[1]); W[i].in_use=0; return; }
     if (pid==0){
         sys_close(op[0]);
+        /* Drop the inherited keyboard stdin: on execve the kernel hands keyboard
+         * focus to the new program if its fd 0 is the keyboard (the "thing you
+         * just exec'd takes the keyboard" rule).  A makx client reads input over
+         * IPC, not fd 0, so if it grabbed focus the real keys would route to its
+         * slot and never be drained -- the server would go deaf.  Closing fd 0
+         * leaves focus with the server (which forwards keys to us over IPC). */
+        sys_close(0);
         sys_dup2(op[1],1); sys_dup2(op[1],2);
         sys_close(op[1]);
         char pids[12]; u2s((unsigned)server_pid, pids);
@@ -678,10 +685,30 @@ int main(int argc, char **argv, char **envp)
      * statusbar, and hand the display back:
      *   Exit  -> sys_gui_close(): return to this session's CLI shell.
      *   LogOff-> sys_logout(): end the session; the login loop re-shows login. */
+    /* A client parked in an IPC sendrec to us cannot process SIGKILL while it is
+     * blocked, so a blocking wait4 here would deadlock (server frozen, last frame
+     * stuck on screen).  Instead unblock each client by replying MXEV_CLOSE to
+     * its in-flight request: it exits its loop, kills its own children, BYEs out,
+     * and we reap it with WNOHANG.  Keep servicing IPC + reaping in a bounded
+     * spin; SIGKILL + non-blocking reap any straggler that ignored CLOSE (it is
+     * no longer IPC-blocked once we stop replying, so SIGKILL can land). */
+    for(int i=0;i<MAXWIN;i++) if(W[i].in_use) win_push(&W[i],MXEV_CLOSE,0,0,0);
+    for(int spin=0; spin<4000; spin++){
+        ipc_msg_t m; int budget=4*MAXWIN;
+        while(budget-->0 && sys_ipc_nbrecv(IPC_ANY,&m)==0){
+            ipc_msg_t r; for(int k=0;k<IPC_MSG_DATA_WORDS;k++) r.data[k]=0; r.type=MXEV_CLOSE;
+            sys_ipc_send(m.src,&r);
+        }
+        int live=0;
+        for(int i=0;i<MAXWIN;i++) if(W[i].in_use && W[i].client>0){
+            int st; if(sys_wait4(W[i].client,&st,WNOHANG)==W[i].client) win_free(i); else live=1;
+        }
+        if(!live) break;
+        sys_yield();
+    }
     for(int i=0;i<MAXWIN;i++) if(W[i].in_use && W[i].client>0){
-        sys_kill(W[i].client,SIGKILL); int st; sys_wait4(W[i].client,&st,0);
-        if(W[i].sid>=0) sys_surface_destroy(W[i].sid);
-        if(W[i].out>=0) sys_close(W[i].out);
+        sys_kill(W[i].client,SIGKILL); int st; sys_wait4(W[i].client,&st,WNOHANG);
+        win_free(i);
     }
     sys_fcntl(0,F_SETFL,0);
     sys_statusbar_set(saved_status);
