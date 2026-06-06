@@ -560,6 +560,37 @@ static void draw_cursor(int cx,int cy)
         if(p=='X')gfx_px(&scr,cx+c,cy+r,0); else if(p=='.')gfx_px(&scr,cx+c,cy+r,0xFFFFFF); }
 }
 
+/* Cursor save-under: so the cursor can be moved without recompositing the whole
+ * scene (a full recompose blits every window surface, so its cost grows with the
+ * window count -- death by a thousand mouse moves).  We stash the scene pixels
+ * the cursor covers, then restore them before redrawing it elsewhere, and push
+ * only the small old/new boxes to the framebuffer via sys_fb_present_rect. */
+#define CURW 12
+#define CURH 16
+static gfx_u32 cur_save[CURW*CURH];
+static int     cur_sx=-1, cur_sy=-1;   /* where cur_save was captured (-1 = none) */
+
+static void cursor_capture(int x,int y){
+    for(int r=0;r<CURH;r++) for(int c=0;c<CURW;c++){
+        int px=x+c, py=y+r;
+        cur_save[r*CURW+c] = (px>=0&&px<(int)FBW&&py>=0&&py<(int)FBH) ? scr.px[py*scr.w+px] : 0;
+    }
+    cur_sx=x; cur_sy=y;
+}
+static void cursor_restore(void){
+    if(cur_sx<0) return;
+    for(int r=0;r<CURH;r++) for(int c=0;c<CURW;c++){
+        int px=cur_sx+c, py=cur_sy+r;
+        if(px>=0&&px<(int)FBW&&py>=0&&py<(int)FBH) scr.px[py*scr.w+px]=cur_save[r*CURW+c];
+    }
+}
+/* Push one clamped rect of the back buffer to the framebuffer. */
+static void present_rect(int x,int y,int w,int h){
+    if(x<0){w+=x;x=0;} if(y<0){h+=y;y=0;}
+    if(x+w>(int)FBW)w=(int)FBW-x; if(y+h>(int)FBH)h=(int)FBH-y;
+    if(w>0&&h>0) sys_fb_present_rect(scr.px,x,y,w,h);
+}
+
 /* ============================== self-tests ============================== */
 /* `gui.elf uitest` / `gui.elf fstest` are headless and run by shell-smoke.sh;
  * they keep the GUI-UITEST / GUI-FSTEST regression markers (no framebuffer is
@@ -699,7 +730,9 @@ int main(int argc, char **argv, char **envp)
             if(left&&!prev_left) mpressed=1;
             if(!left&&prev_left) mreleased=1;
             prev_left=left;
-            g_dirty=1;
+            /* NB: a pure cursor move does NOT dirty the scene -- it's handled by
+             * the cheap cursor-only path below.  Scene changes (clicks, drags,
+             * client repaints, focus) set g_dirty in their own handlers. */
         }
         int mdown=prev_left;
         int frame_key=-1;
@@ -764,19 +797,31 @@ int main(int argc, char **argv, char **envp)
         if (reap_clients()) g_dirty=1;
         { unsigned now=sys_uptime(); if (now-stat_up>=100u){ stat_up=now; g_dirty=1; } }
 
-        if (!g_dirty){ sys_yield(); continue; }
+        int cmoved = (cx!=cur_sx || cy!=cur_sy);
+        if (!g_dirty && !cmoved){ sys_yield(); continue; }
 
-        /* ---- compose (desktop + menu bar + dock are unconditional) ---- */
-        gfx_fill(&scr,0,0,(int)FBW,(int)FBH,COL_DESK);
-        gfx_str(&scr,8,MENU_H+6,"Makar desktop -- click an icon; drag a title bar; click a window to focus",RGB(0x90,0xa0,0xb5));
-        draw_icons();
-        for (int j=0;j<znum;j++){ int i=zorder[j]; if(!W[i].in_use || W[i].minimized) continue; draw_window_frame(i); }
-        draw_dock();
-        draw_menubar();
-        draw_cursor(cx,cy);
-        sys_fb_present(scr.px);
-        if (!announced){ sys_write_serial("GUI: READY\n", 11); announced=1; }
-        g_dirty=0;
+        if (g_dirty){
+            /* ---- full recompose (desktop + menu bar + dock unconditional) ---- */
+            gfx_fill(&scr,0,0,(int)FBW,(int)FBH,COL_DESK);
+            gfx_str(&scr,8,MENU_H+6,"Makar desktop -- click an icon; drag a title bar; click a window to focus",RGB(0x90,0xa0,0xb5));
+            draw_icons();
+            for (int j=0;j<znum;j++){ int i=zorder[j]; if(!W[i].in_use || W[i].minimized) continue; draw_window_frame(i); }
+            draw_dock();
+            draw_menubar();
+            cursor_capture(cx,cy);          /* stash scene under the cursor */
+            draw_cursor(cx,cy);
+            sys_fb_present(scr.px);          /* one full-frame flush */
+            if (!announced){ sys_write_serial("GUI: READY\n", 11); announced=1; }
+            g_dirty=0;
+        } else {
+            /* ---- cursor-only: O(cursor) regardless of window count ---- */
+            int ox=cur_sx, oy=cur_sy;
+            cursor_restore();                /* repaint scene under old cursor */
+            cursor_capture(cx,cy);           /* stash scene under new cursor   */
+            draw_cursor(cx,cy);
+            present_rect(ox,oy,CURW,CURH);   /* flush old + new boxes only     */
+            present_rect(cx,cy,CURW,CURH);
+        }
         sys_yield();
     }
 

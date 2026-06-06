@@ -931,6 +931,39 @@ void syscall_dispatch(registers_t *regs)
         break;
     }
 
+    /* ------------------------------------------------------------------
+     * SYS_FB_PRESENT_RECT(269): blit only a sub-rectangle of the full-frame
+     * user back buffer (same packed-32bpp layout as SYS_FB_PRESENT, pitch =
+     * fb->width*4).  EBX = back-buffer base, ECX = (x<<16)|y, EDX = (w<<16)|h.
+     * Lets the WM repaint just the cursor's old/new boxes instead of pushing
+     * the whole frame on every mouse move.  Clamped to the framebuffer.
+     * ------------------------------------------------------------------ */
+    case SYS_FB_PRESENT_RECT: {
+        const vesa_fb_t *fb = vesa_get_fb();
+        if (!fb || !vesa_tty_is_ready()) { regs->eax = (uint32_t)-1; break; }
+        if (!vtty_is_focused()) {
+            task_t *cur = task_current(); if (cur) cur->fb_touched = 1;
+            regs->eax = 0; break;
+        }
+        uint32_t rx = (regs->ecx >> 16) & 0xFFFFu, ry = regs->ecx & 0xFFFFu;
+        uint32_t rw = (regs->edx >> 16) & 0xFFFFu, rh = regs->edx & 0xFFFFu;
+        if (rx >= fb->width || ry >= fb->height) { regs->eax = 0; break; }
+        if (rx + rw > fb->width)  rw = fb->width  - rx;
+        if (ry + rh > fb->height) rh = fb->height - ry;
+        const uint8_t *src = (const uint8_t *)(uintptr_t)regs->ebx;
+        uint8_t *dst = (uint8_t *)fb->addr;
+        uint32_t fb_row = fb->width * 4u;            /* back-buffer stride */
+        uint32_t copy_bytes = rw * 4u;
+        for (uint32_t y = 0; y < rh; y++) {
+            uint32_t line = ry + y;
+            memcpy(dst + line * fb->pitch + rx * 4u,
+                   src + line * fb_row    + rx * 4u, copy_bytes);
+        }
+        { task_t *cur = task_current(); if (cur) cur->fb_touched = 1; }
+        regs->eax = 0;
+        break;
+    }
+
     case SYS_WRITE_SERIAL: {
         const char *buf = (const char *)(uintptr_t)regs->ebx;
         uint32_t    len = regs->ecx;

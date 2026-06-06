@@ -107,6 +107,9 @@ These support text-mode and framebuffer apps without a termios layer:
 - query terminal size
 - query framebuffer geometry
 - draw framebuffer lines
+- present a full-frame back buffer (`SYS_FB_PRESENT`, 257) or just a sub-rect of
+  it (`SYS_FB_PRESENT_RECT`, 269 — lets the compositor refresh the cursor box
+  without re-pushing the whole frame)
 - set caret style
 - clear using shell/default colors
 

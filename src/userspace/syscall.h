@@ -314,6 +314,17 @@ static inline int sys_fb_present(const void *backbuf)
     return (int)syscall1(SYS_FB_PRESENT, (long)backbuf);
 }
 
+/* Blit only the (x,y,w,h) sub-rect of the same full-frame back buffer.  Lets a
+ * compositor refresh a small region (e.g. the cursor) without re-pushing the
+ * whole frame.  Returns 0 on success, -1 if no pixel FB / not focused. */
+static inline int sys_fb_present_rect(const void *backbuf, int x, int y, int w, int h)
+{
+    if (w <= 0 || h <= 0) return 0;
+    return (int)syscall3(SYS_FB_PRESENT_RECT, (long)backbuf,
+                         ((long)(x & 0xFFFF) << 16) | (long)(y & 0xFFFF),
+                         ((long)(w & 0xFFFF) << 16) | (long)(h & 0xFFFF));
+}
+
 /* Shared pixel surfaces — the one shared-memory primitive (kernel/surface.h).
  * surface_create reserves w*h*4 bytes of kernel frames and returns an id;
  * surface_map maps that surface into the caller and returns its base address

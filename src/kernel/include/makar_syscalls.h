@@ -94,6 +94,10 @@
                                 * width*height*32bpp (pitch=width*4) user back
                                 * buffer full-frame to the framebuffer.  0 ok,
                                 * -1 if no pixel FB / not focused. */
+#define SYS_FB_PRESENT_RECT 269 /* int fb_present_rect(buf, (x<<16)|y, (w<<16)|h):
+                                * blit only that sub-rect of the full-frame back
+                                * buffer.  Lets the WM update the cursor without
+                                * re-pushing the whole frame.  0 ok, -1 as above. */
 
 /* Shared pixel surfaces (kernel/surface.h): the one shared-memory primitive.
  * A window manager creates a surface, a forked graphical child maps the same
