@@ -84,7 +84,22 @@ static int  zorder[MAXWIN];     /* back(0) -> front, holds window indices  */
 static int  znum;
 static int  focus = -1;
 static int  server_pid;
-static int  g_dirty = 1;
+static int  g_dirty = 1;          /* back buffer needs a recompose this frame   */
+
+/* Damage rectangle: the screen region that actually changed, so we present only
+ * that (never the whole framebuffer) -- what a real compositor does.  Recompose
+ * is cheap cacheable RAM; the framebuffer push is the cost (especially on VT-x
+ * hypervisors where it's write-combined MMIO), so scoping it to the damage rect
+ * makes a window repaint independent of how many other windows are open. */
+static int  dmg_v=0, dmg_x0,dmg_y0,dmg_x1,dmg_y1;
+static void damage(int x,int y,int w,int h){
+    int x1=x+w, y1=y+h;
+    if(!dmg_v){ dmg_x0=x; dmg_y0=y; dmg_x1=x1; dmg_y1=y1; dmg_v=1; }
+    else { if(x<dmg_x0)dmg_x0=x; if(y<dmg_y0)dmg_y0=y; if(x1>dmg_x1)dmg_x1=x1; if(y1>dmg_y1)dmg_y1=y1; }
+}
+/* Damage a window including its 3px decoration border. */
+static void damage_win(int i){ damage(W[i].x-4, W[i].y-4, W[i].w+8, W[i].h+8); }
+static void damage_full(void){ damage(0,0,(int)FBW,(int)FBH); }
 
 static int  client_x(swin *w){ return w->x + 1; }
 static int  client_y(swin *w){ return w->y + TH; }
@@ -130,7 +145,7 @@ static void set_focus(int i)
     if (focus>=0 && W[focus].in_use) win_push(&W[focus], MXEV_FOCUS, 0,0,0);
     focus=i;
     if (i>=0 && W[i].in_use) win_push(&W[i], MXEV_FOCUS, 1,0,0);
-    g_dirty=1;
+    g_dirty=1; damage_full();   /* both borders recolour: simplest to repaint all */
 }
 static void refocus(void){ set_focus(z_topmost()); }
 
@@ -143,7 +158,7 @@ static void win_free(int i)
     z_remove(i);
     W[i].in_use=0; W[i].client=-1; W[i].out=-1; W[i].sid=-1; W[i].surf.px=0;
     if (focus==i){ focus=-1; refocus(); }
-    g_dirty=1;
+    g_dirty=1; damage_full();   /* area behind the closed window must repaint */
 }
 
 /* ===================== desktop icons (client launchers) ================== */
@@ -170,7 +185,7 @@ static icon_t icons[ICON_N] = {
  * open, just raise it. */
 static void launch_icon(int ii)
 {
-    for(int i=0;i<MAXWIN;i++) if(W[i].in_use && W[i].icon==ii){ W[i].minimized=0; z_raise(i); set_focus(i); g_dirty=1; return; }
+    for(int i=0;i<MAXWIN;i++) if(W[i].in_use && W[i].icon==ii){ W[i].minimized=0; z_raise(i); set_focus(i); g_dirty=1; damage_full(); return; }
     int i=win_alloc(); if(i<0) return;
     int op[2];
     if (sys_pipe(op)<0){ W[i].in_use=0; return; }
@@ -200,7 +215,7 @@ static void launch_icon(int ii)
     scpy(W[i].title, icons[ii].label, sizeof W[i].title);
     W[i].w=icons[ii].winw; W[i].h=icons[ii].winh;
     W[i].x=120+(i*30)%220; W[i].y=MENU_H+24+(i*26)%150;
-    z_raise(i); set_focus(i); g_dirty=1;
+    z_raise(i); set_focus(i); g_dirty=1; damage_full();
 }
 
 /* Ask a resizable window's client to re-flow to the current client rect (it
@@ -251,7 +266,7 @@ static void serve_requests(void)
                 W[i].sid=sid; W[i].surf.px=(gfx_u32*)base; W[i].surf.w=w; W[i].surf.h=h; W[i].sw=w; W[i].sh=h;
                 W[i].resizable = (flags & MX_F_RESIZABLE) ? 1 : 0;
                 r.data[0]=(unsigned)i; r.data[1]=(unsigned)sid;
-                z_raise(i); set_focus(i); g_dirty=1;
+                z_raise(i); set_focus(i); g_dirty=1; damage_full();
                 /* A resizable client re-flows to fill: ask it to size its surface
                  * to the actual client rect (the window geometry, not the
                  * initial request) so the blit is exact 1:1 from the first frame. */
@@ -270,12 +285,12 @@ static void serve_requests(void)
                     sys_surface_unmap(old);    /* drop the server's mapping of the old one */
                     sys_surface_destroy(old);  /* drop creator ref (client still maps it until it unmaps) */
                     W[i].sid=ns; W[i].surf.px=(gfx_u32*)nb; W[i].surf.w=w; W[i].surf.h=h; W[i].sw=w; W[i].sh=h;
-                    r.data[0]=(unsigned)ns; g_dirty=1;
+                    r.data[0]=(unsigned)ns; g_dirty=1; damage_full();
                 }
             } else r.data[0]=(unsigned)-1;
         } else if (m.type==MX_PRESENT){
             int i=(int)m.data[0];
-            if (win_valid(i,src)){ g_dirty=1; win_pop(&W[i],&r); }
+            if (win_valid(i,src)){ g_dirty=1; damage_win(i); win_pop(&W[i],&r); }
             else r.type=MXEV_CLOSE;
         } else if (m.type==MX_POLL){
             int i=(int)m.data[0];
@@ -321,7 +336,7 @@ static void win_toggle_max(int i)
         w->maximized=0;
     }
     maybe_send_resize(i);   /* re-flow the client to the new client rect */
-    g_dirty=1;
+    g_dirty=1; damage_full();
 }
 
 static void draw_window_frame(int i)
@@ -736,18 +751,22 @@ int main(int argc, char **argv, char **envp)
         }
         int mdown=prev_left;
         int frame_key=-1;
-        { unsigned char b; if (sys_read(0,&b,1)==1){ frame_key=b; g_dirty=1; } }
+        /* A key only changes the screen via the focused client's repaint (which
+         * damages its own window); the WM chrome doesn't render keys, so this
+         * doesn't dirty the scene by itself. */
+        { unsigned char b; if (sys_read(0,&b,1)==1){ frame_key=b; } }
+        int cmoved = (cx!=cur_sx || cy!=cur_sy);  /* cursor moved this frame? */
 
         /* ---- window-management click handling ---- */
         if (mpressed){
             int dk;
             if (logoff_hit(cx,cy)) break;
             else if (exit_hit(cx,cy)){ exit_to_shell=1; break; }
-            else if (dock_hit(cx,cy,&dk)){ W[dk].minimized=0; z_raise(dk); set_focus(dk); g_dirty=1; }
+            else if (dock_hit(cx,cy,&dk)){ W[dk].minimized=0; z_raise(dk); set_focus(dk); g_dirty=1; damage_full(); }
             else {
                 int hk=hit_window(cx,cy);
                 if (hk>=0){
-                    z_raise(hk); set_focus(hk); g_dirty=1;
+                    z_raise(hk); set_focus(hk); g_dirty=1; damage_full();
                     if      (in_close(&W[hk],cx,cy)) win_push(&W[hk],MXEV_CLOSE,0,0,0);
                     else if (in_min(&W[hk],cx,cy)){ W[hk].minimized=1; focus=-1; refocus(); }
                     else if (in_max(&W[hk],cx,cy)) win_toggle_max(hk);
@@ -765,54 +784,66 @@ int main(int argc, char **argv, char **envp)
             dragging=0; resizing=0;
         }
         if (dragging && drag_win>=0 && W[drag_win].in_use){ swin *w=&W[drag_win];
+            damage_win(drag_win);                /* old position (erase trail) */
             w->x=cx-drag_dx; w->y=cy-drag_dy;
             if(w->x<0)w->x=0; if(w->y<MENU_H)w->y=MENU_H;
             if(w->x+w->w>(int)FBW)w->x=(int)FBW-w->w;
             if(w->y+w->h>(int)FBH-DOCK_H)w->y=(int)FBH-DOCK_H-w->h;
-            g_dirty=1;
+            g_dirty=1; damage_win(drag_win);     /* new position */
         }
         if (resizing && drag_win>=0 && W[drag_win].in_use){ swin *w=&W[drag_win];
+            damage_win(drag_win);                /* old size */
             w->w=cx-w->x; w->h=cy-w->y;
             if(w->w<220)w->w=220; if(w->h<120)w->h=120;
             if(w->x+w->w>(int)FBW)w->w=(int)FBW-w->x;
             if(w->y+w->h>(int)FBH-DOCK_H)w->h=(int)FBH-DOCK_H-w->y;
-            g_dirty=1;
+            g_dirty=1; damage_win(drag_win);     /* new size */
         }
 
         /* ---- forward input to the focused client over IPC ---- */
         if (focus>=0 && W[focus].in_use){
             swin *w=&W[focus];
             if (frame_key>=0) win_push(w, MXEV_KEY, frame_key,0,0);
-            /* mouse, in client-area-relative pixels, whenever it's over us */
-            if (in_client(w,cx,cy)){
-                int rx=cx-client_x(w), ry=cy-client_y(w);
-                win_push(w, MXEV_MOUSE, rx, ry, mdown?1:0);
-            } else if (mreleased){
-                win_push(w, MXEV_MOUSE, cx-client_x(w), cy-client_y(w), 0);
+            /* Only forward the pointer when it actually moved or a button
+             * changed -- a stationary cursor shouldn't keep waking the client
+             * (which would repaint and force a recompose every frame). */
+            if (cmoved || mpressed || mreleased){
+                if (in_client(w,cx,cy)){
+                    int rx=cx-client_x(w), ry=cy-client_y(w);
+                    win_push(w, MXEV_MOUSE, rx, ry, mdown?1:0);
+                } else if (mreleased){
+                    win_push(w, MXEV_MOUSE, cx-client_x(w), cy-client_y(w), 0);
+                }
             }
         }
 
         /* ---- service clients + reap exited ones ---- */
         serve_requests();
-        if (reap_clients()) g_dirty=1;
-        { unsigned now=sys_uptime(); if (now-stat_up>=100u){ stat_up=now; g_dirty=1; } }
+        if (reap_clients()){ g_dirty=1; damage_full(); }
+        { unsigned now=sys_uptime(); if (now-stat_up>=100u){ stat_up=now; g_dirty=1;
+            damage(0,0,(int)FBW,MENU_H);                       /* menu-bar clock */
+            damage(0,(int)FBH-DOCK_H,(int)FBW,DOCK_H); } }      /* dock stats     */
 
-        int cmoved = (cx!=cur_sx || cy!=cur_sy);
         if (!g_dirty && !cmoved){ sys_yield(); continue; }
 
         if (g_dirty){
-            /* ---- full recompose (desktop + menu bar + dock unconditional) ---- */
+            /* ---- recompose the WHOLE back buffer (cheap, cacheable RAM) ---- */
             gfx_fill(&scr,0,0,(int)FBW,(int)FBH,COL_DESK);
             gfx_str(&scr,8,MENU_H+6,"Makar desktop -- click an icon; drag a title bar; click a window to focus",RGB(0x90,0xa0,0xb5));
             draw_icons();
             for (int j=0;j<znum;j++){ int i=zorder[j]; if(!W[i].in_use || W[i].minimized) continue; draw_window_frame(i); }
             draw_dock();
             draw_menubar();
+            int ox=cur_sx, oy=cur_sy;
             cursor_capture(cx,cy);          /* stash scene under the cursor */
             draw_cursor(cx,cy);
-            sys_fb_present(scr.px);          /* one full-frame flush */
+            /* ---- but PUSH only the damaged region to the framebuffer ---- */
+            if (!dmg_v) damage_full();      /* safety net for any untracked change */
+            present_rect(dmg_x0,dmg_y0,dmg_x1-dmg_x0,dmg_y1-dmg_y0);
+            if (cmoved && ox>=0) present_rect(ox,oy,CURW,CURH);  /* erase old cursor */
+            present_rect(cx,cy,CURW,CURH);                       /* draw new cursor  */
             if (!announced){ sys_write_serial("GUI: READY\n", 11); announced=1; }
-            g_dirty=0;
+            g_dirty=0; dmg_v=0;
         } else {
             /* ---- cursor-only: O(cursor) regardless of window count ---- */
             int ox=cur_sx, oy=cur_sy;
