@@ -5,10 +5,13 @@
  * kernel; Linux-uapi style).  This file keeps the userspace wrappers + the libc-
  * facing types/flags. */
 #include <makar_syscalls.h>
+/* Typed ABI shared verbatim with the kernel: clockids, struct timeval/timespec/
+ * stat/dirent, tty_cell_t, open/fcntl flags, S_IF + DT_ bits.  Userspace-only bits
+ * (access modes, O_NONBLOCK, S_ISxxx, signal handlers, mmap/seek/vga) stay here. */
+#include <makar_abi.h>
+
 /* wait4 `options` flags */
 #define WNOHANG        1
-#define CLOCK_REALTIME    0
-#define CLOCK_MONOTONIC   1
 
 /* access(2) mode bits.  No permission model -- all four behave as F_OK. */
 #define F_OK 0
@@ -16,20 +19,6 @@
 #define W_OK 2
 #define R_OK 4
 
-/* Linux i386 layouts -- must match kernel/syscall.h.  Each struct has
- * its own guard macro so the userspace + kernel headers can coexist
- * when in-OS TCC rebuilds the kernel: kernel timer.h pulls in stdio.h
- * which pulls in this header, while kernel source also independently
- * includes kernel/syscall.h.  Whichever header is included first wins
- * the struct definition; the second skips. */
-#ifndef _MAKAR_STRUCT_TIMEVAL_DEFINED
-#define _MAKAR_STRUCT_TIMEVAL_DEFINED
-struct timeval  { int tv_sec; int tv_usec; };
-#endif
-#ifndef _MAKAR_STRUCT_TIMESPEC_DEFINED
-#define _MAKAR_STRUCT_TIMESPEC_DEFINED
-struct timespec { int tv_sec; int tv_nsec; };
-#endif
 /* Admin syscalls (privileged operations).  task_is_admin() gates each;
  * currently always-true (no user model).  Negative return = denied or
  * failed; helper-specific error code conventions in kernel/admin.h. */
@@ -37,25 +26,6 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define NET_CTL_DHCP_RELEASE 1
 #define NET_CTL_DHCP_RENEW   2
 #define NET_CTL_DNS_FLUSH    3
-
-/* dirent shape -- must match kernel struct dirent in kernel/syscall.h. */
-#define DIRENT_NAME_MAX 256
-#define DT_UNKNOWN 0
-#define DT_DIR     4
-#define DT_REG     8
-#ifndef _MAKAR_STRUCT_DIRENT_DEFINED
-#define _MAKAR_STRUCT_DIRENT_DEFINED
-struct dirent {
-    unsigned int   d_ino;
-    unsigned char  d_type;
-    unsigned char  __pad[3];
-    char           d_name[DIRENT_NAME_MAX];
-};
-#endif
-
-/* fcntl cmds */
-#define F_GETFL          3
-#define F_SETFL          4
 
 /* O_NONBLOCK for F_SETFL on stdin (fd 0).  Matches Linux i386 0x800. */
 #define O_NONBLOCK       0x800
@@ -72,45 +42,7 @@ typedef void (*sig_handler_t)(int);
 #define SIG_DFL  ((sig_handler_t)0)
 #define SIG_IGN  ((sig_handler_t)1)
 
-/* open() flags -- low 2 bits are access mode; the rest are status flags.
- * Values mirror Linux i386. */
-#define O_RDONLY    0
-#define O_WRONLY    1
-#define O_RDWR      2
-#define O_ACCMODE   3
-#define O_CREAT     0100
-#define O_TRUNC     01000
-#define O_APPEND    02000
-
-/* Linux i386 struct stat (must match kernel/syscall.h). */
-#ifndef _MAKAR_STRUCT_STAT_DEFINED
-#define _MAKAR_STRUCT_STAT_DEFINED
-struct stat {
-    unsigned int   st_dev;
-    unsigned int   st_ino;
-    unsigned short st_mode;
-    unsigned short st_nlink;
-    unsigned short st_uid;
-    unsigned short st_gid;
-    unsigned int   st_rdev;
-    unsigned int   st_size;
-    unsigned int   st_blksize;
-    unsigned int   st_blocks;
-    unsigned int   st_atime;
-    unsigned int   st_atime_nsec;
-    unsigned int   st_mtime;
-    unsigned int   st_mtime_nsec;
-    unsigned int   st_ctime;
-    unsigned int   st_ctime_nsec;
-    unsigned int   __unused4;
-    unsigned int   __unused5;
-};
-#endif
-#define S_IFMT   0170000
-#define S_IFREG  0100000
-#define S_IFDIR  0040000
-#define S_IFCHR  0020000
-#define S_IFBLK  0060000
+/* st_mode test macros (the S_IF* bits come from the shared makar_abi.h). */
 #define S_ISREG(m)  (((m) & S_IFMT) == S_IFREG)
 #define S_ISDIR(m)  (((m) & S_IFMT) == S_IFDIR)
 #define S_ISBLK(m)  (((m) & S_IFMT) == S_IFBLK)
@@ -140,8 +72,7 @@ struct stat {
 #define VGA_YELLOW       14
 #define VGA_WHITE        15
 
-/* One screen cell passed to sys_putch_at(). */
-typedef struct { unsigned char col, row, ch, clr; } tty_cell_t;
+/* (tty_cell_t for sys_putch_at() comes from the shared makar_abi.h.) */
 
 /* Key sentinels returned by sys_getkey(): the canonical list is the shared ABI
  * header (no longer hand-synced with the kernel). */

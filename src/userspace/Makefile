@@ -222,7 +222,7 @@ install: all
 # so a tcc-compiled program's <syscall.h> -> <makar_{syscalls,signals,keys}.h>
 # resolves in-OS (the kernel rebuild already gets them via /usr/include/kernel-build).
 	cp ../kernel/include/makar_syscalls.h ../kernel/include/makar_signals.h \
-	   ../kernel/include/makar_keys.h $(ISODIR)/usr/include/
+	   ../kernel/include/makar_keys.h ../kernel/include/makar_abi.h $(ISODIR)/usr/include/
 	cp hello-tcc.c $(ISODIR)/usr/share/examples/
 # tcc.elf rides along with the rest of the apps so PATH lookup resolves
 # `tcc` from the kernel shell.  Only present when build-tcc.sh has been
