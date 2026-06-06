@@ -12,6 +12,7 @@
  */
 
 #include <kernel/ide.h>
+#include <kernel/paging.h>
 #include <kernel/asm.h>
 #include <kernel/tty.h>
 #include <kernel/serial.h>
@@ -217,12 +218,16 @@ static void bm_setup(uint8_t ch, uint16_t nbytes, int to_mem)
 {
     uint16_t bm = (uint16_t)(s_bmide_base + ch * 8);
 
-    s_prdt[0].addr  = (uint32_t)(uintptr_t)s_dma_buf;  /* phys == virt */
+    /* The BMIDE engine addresses memory physically.  s_dma_buf and s_prdt are
+     * kernel statics linked high under the higher-half kernel, so hand it their
+     * PHYSICAL addresses (kvirt_to_phys); equals the virtual address on the
+     * low-half/identity TCC build. */
+    s_prdt[0].addr  = (uint32_t)kvirt_to_phys(s_dma_buf);
     s_prdt[0].count = nbytes;
     s_prdt[0].flags = 0x8000u;                         /* EOT */
 
     outb(bm + BM_REG_CMD, 0x00);                       /* stop engine */
-    outl(bm + BM_REG_PRDT, (uint32_t)(uintptr_t)s_prdt);
+    outl(bm + BM_REG_PRDT, (uint32_t)kvirt_to_phys(s_prdt));
     outb(bm + BM_REG_CMD, to_mem ? BM_CMD_TO_MEM : 0x00);
     outb(bm + BM_REG_STATUS, (uint8_t)(BM_SR_ERR | BM_SR_IRQ)); /* W1C */
 }
