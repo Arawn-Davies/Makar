@@ -596,15 +596,23 @@ static void copy_tree(const char *root)
                 rfs_mkdir(child);
                 q_push(child);
             } else {
-                copy_file(child, child);
-                files++;
-                if ((files % 10) == 0) {
+                /* Name the current file on the status line *before* copying it.
+                 * rfs_write is whole-file (no progress callback), so a large
+                 * file (e.g. the 12 MB DOOM.WAD) otherwise sits on a stale
+                 * "copied N files" line and looks frozen.  Showing the name
+                 * makes it visibly alive: the operator sees which file is in
+                 * flight even when one copy takes a while under emulation. */
+                {
                     char st[64];
-                    str_u(st, "  copied ", files);
-                    int so = (int)strlen(st);
-                    const char *f = " files"; while (*f) st[so++] = *f++; st[so] = '\0';
+                    int so = 0;
+                    const char *pre = "  copying "; while (*pre) st[so++] = *pre++;
+                    const char *nm = s_ents[i].name;
+                    while (*nm && so < (int)sizeof(st) - 6) st[so++] = *nm++;
+                    const char *e = " ..."; while (*e) st[so++] = *e++; st[so] = '\0';
                     tui_status(st);
                 }
+                copy_file(child, child);
+                files++;
             }
         }
     }
