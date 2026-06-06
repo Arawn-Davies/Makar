@@ -237,18 +237,52 @@ _host_gdb() {
     fi
 }
 
-# Emit "-accel kvm" when /dev/kvm is usable AND MAKAR_USE_KVM=1.  Disabled
-# by default because (a) the QEMU GDB stub's software breakpoints fail to
-# insert reliably under KVM (early-boot _start breakpoint never catches),
-# and (b) a yet-to-be-fixed kernel race surfaces under KVM's true-CPU
-# timing, manifesting as a page fault during ktest with a corrupted SS
-# selector.  Both issues are tracked separately; until they're addressed,
-# stick with TCG so CI is deterministic.
+# Emit "-accel kvm" when /dev/kvm is usable and KVM is wanted for this run.
+#
+# KVM stays OFF for the determinism-sensitive gates because (a) the QEMU GDB
+# stub's software breakpoints fail to insert reliably under KVM (early-boot
+# _start breakpoint never catches), and (b) a yet-to-be-fixed kernel race
+# surfaces under KVM's true-CPU timing, manifesting as a page fault during
+# ktest with a corrupted SS selector.  Both issues are tracked separately;
+# until they're addressed, the ktest / gdb / nettest gates and all of CI run
+# on TCG so results stay deterministic.
+#
+# Policy (default; `MAKAR_USE_KVM` in the env overrides either way):
+#   * Interactive / perf modes (iso boot, hdd boot, guitest) default KVM ON,
+#     gated on /dev/kvm being usable AND the run not being a CI invocation.
+#   * Everything else (ktest, gdb iso/hdd, nettest, …) defaults KVM OFF.
+# An explicit `MAKAR_USE_KVM=1` forces KVM on for any mode (still gated on
+# /dev/kvm usability); `MAKAR_USE_KVM=0` forces it off everywhere.
 _qemu_accel() {
-    [ "${MAKAR_USE_KVM:-0}" = "1" ] || return 0
+    local _want
+    if [ -n "${MAKAR_USE_KVM:-}" ]; then
+        # Explicit env override wins for any mode.
+        _want="$MAKAR_USE_KVM"
+    elif _qemu_accel_running_ci; then
+        # Never default-enable KVM in CI, even for interactive modes.
+        _want=0
+    else
+        case "${MODE:-}" in
+            "iso boot"|"hdd boot"|"guitest") _want=1 ;;
+            *)                               _want=0 ;;
+        esac
+    fi
+
+    [ "$_want" = "1" ] || return 0
     if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+        if [ -z "${_QEMU_ACCEL_NOTED:-}" ]; then
+            echo "==> KVM acceleration enabled" >&2
+            _QEMU_ACCEL_NOTED=1
+        fi
         printf -- '-accel kvm'
     fi
+}
+
+# True when this looks like a CI / automated-container invocation.  Detect via
+# the usual CI env vars and the container marker (/.dockerenv); KVM must never
+# default-on for these.
+_qemu_accel_running_ci() {
+    [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ] || [ -f /.dockerenv ]
 }
 
 # ── _drun: run a build command in the right context ───────────────────────────
@@ -333,13 +367,16 @@ _net_device_flag() {
 
 _run_qemu_interactive() {
     local _args="$1"
-    local _qemu
+    local _qemu _accel
     _qemu=$(_host_qemu)
+    # KVM (when usable & wanted) only applies to the host-QEMU path; the Docker
+    # fallback has no /dev/kvm passthrough wired up.
+    _accel=$(_qemu_accel)
 
     if [ -n "$_qemu" ]; then
         local _host_args="${_args//\/work\//$REPO_ROOT/}"
         # shellcheck disable=SC2086
-        "$_qemu" -m 64 $_host_args
+        "$_qemu" -m 64 $_accel $_host_args
     elif [ "$(_build_ctx)" = "docker" ]; then
         echo "==> Host QEMU not found - running QEMU in Docker (serial stdio)..."
         "$DOCKER_BIN" run --rm -it \
@@ -729,8 +766,9 @@ _run_guitest() {
     local _shot="$REPO_ROOT/gui-screendump.ppm"; rm -f "$_shot" "$REPO_ROOT/gui-screendump.bmp"
     local _fifo="$REPO_ROOT/.guimon.$$";         rm -f "$_fifo"; mkfifo "$_fifo"
     local _secs="${GUITEST_TIMEOUT:-150}"
+    local _accel; _accel=$(_qemu_accel)
     # shellcheck disable=SC2086
-    "$_qemu" -cdrom "$REPO_ROOT/makar.iso" -m 64 -vga std -display none \
+    "$_qemu" -cdrom "$REPO_ROOT/makar.iso" -m 64 $_accel -vga std -display none \
         -serial "file:$_log" -monitor stdio -no-reboot <"$_fifo" >/dev/null 2>&1 &
     local _qp=$!
     exec 9>"$_fifo"        # hold the FIFO open so QEMU's monitor stdin stays up
