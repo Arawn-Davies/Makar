@@ -31,12 +31,12 @@
 
 /* Preemptive scheduling quantum: yield every g_sched_quantum PIT ticks.
  * Runtime-tunable (slice 9 phase 3) via the `sched_quantum` shell builtin
- * or by writing the global directly.  Default 4 ticks @ 100 Hz = 40 ms
- * slice per task.  Clamped to [SCHED_QUANTUM_MIN, SCHED_QUANTUM_MAX] by
- * setters; the IRQ reads the global unsynchronised so don't bother with
- * atomics -- a torn 32-bit read is impossible on i386, and a stale read
- * just delays the new value by one tick. */
-volatile uint32_t g_sched_quantum = 4;
+ * or by writing the global directly.  Default 1 tick @ 250 Hz = a 4 ms base
+ * slice per task (scaled by task_t.sched_weight).  Clamped to
+ * [SCHED_QUANTUM_MIN, SCHED_QUANTUM_MAX] by setters; the IRQ reads the global
+ * unsynchronised so don't bother with atomics -- a torn 32-bit read is
+ * impossible on i386, and a stale read just delays the new value by one tick. */
+volatile uint32_t g_sched_quantum = 1;
 
 static volatile uint32_t tick = 0;
 
@@ -61,12 +61,25 @@ void timer_callback(registers_t *regs)
 	 * the EOI / yield so a task that gets preempted on this very tick
 	 * still gets credit for it.  task_current() returns NULL pre-
 	 * tasking_init, so guard. */
-	{
-		task_t *cur = task_current();
-		if (cur)
-			cur->kticks++;
+	task_t *cur = task_current();
+	if (cur)
+		cur->kticks++;
+
+	/* Preempt when the current task's *effective* quantum has elapsed.
+	 * Effective quantum = g_sched_quantum * sched_weight (0 ⇒ weight 1):
+	 * the GUI compositor gets a small boost so it can finish a frame
+	 * without being preempted mid-composite.  last_sched_tick is stamped
+	 * by schedule() when the task is switched in, so (tick - last_sched_tick)
+	 * is exactly how long this task has been running.  Pre-tasking
+	 * (cur == NULL) fall back to the plain modulo. */
+	int due;
+	if (cur) {
+		uint32_t w = cur->sched_weight ? cur->sched_weight : 1u;
+		due = (tick - cur->last_sched_tick) >= g_sched_quantum * w;
+	} else {
+		due = (tick % g_sched_quantum == 0);
 	}
-	if (tick % g_sched_quantum == 0) {
+	if (due) {
 		/* Send EOI to the master PIC before yielding so that the idle
 		   task's hlt can be woken by the next timer tick.  Without this
 		   the IRQ 0 in-service bit stays set, blocking all future timer
@@ -93,13 +106,16 @@ static inline uint64_t rdtsc(void)
 
 void ksleep(uint32_t ticks)
 {
-    /* 100 Hz PIT → each tick is 10 ms.  A modern CPU does ~1e9 cycles/s
-     * so 10 ms ≈ 10_000_000 cycles.  Allow 5× headroom (50 M cycles/tick)
-     * before declaring the timer stuck and panicking.  This never false-fires
-     * on real hardware; it only catches the case where the timer ISR has
-     * stopped delivering IRQ 0 entirely. */
-    uint32_t end = tick + ticks;
-    uint64_t tsc_limit = rdtsc() + (uint64_t)ticks * 50000000ULL;
+    /* `ticks` are legacy 100 Hz units (10 ms each); scale to real PIT ticks
+     * at TIMER_HZ so existing call sites keep their wall-clock duration after
+     * the rate change.  e.g. ksleep(100) = 1 s = 250 real ticks @ 250 Hz. */
+    uint32_t real = (uint32_t)(((uint64_t)ticks * TIMER_HZ) / 100u);
+
+    /* Generous tsc safety valve: ~50 M cycles per real tick before declaring
+     * the timer stuck (only false-fires above ~12 GHz, so never in practice).
+     * Catches a fully stalled IRQ 0 rather than spinning forever. */
+    uint32_t end = tick + real;
+    uint64_t tsc_limit = rdtsc() + (uint64_t)real * 50000000ULL;
     while (tick < end) {
         if (rdtsc() > tsc_limit)
             KPANIC("ksleep: timer ISR appears stuck (PIT IRQ 0 not firing)");

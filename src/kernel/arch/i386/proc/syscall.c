@@ -690,13 +690,14 @@ void syscall_dispatch(registers_t *regs)
         break;
 
     /* ------------------------------------------------------------------
-     * SYS_UPTIME(214): return the kernel tick counter (100 Hz).
-     * Apps that need wall-clock duration (kbtester's hold-Esc, future
-     * `clock` widget) can compute (uptime - t0) instead of counting
-     * input events whose rate depends on PS/2 typematic settings.
+     * SYS_UPTIME(214): return the kernel tick counter in USER_HZ (100 Hz)
+     * units -- stable across the internal PIT rate (see timer.h USER_HZ).
+     * Apps that need wall-clock duration (kbtester's hold-Esc, the `clock`
+     * widget) can compute (uptime - t0) instead of counting input events
+     * whose rate depends on PS/2 typematic settings.
      * ------------------------------------------------------------------ */
     case SYS_UPTIME:
-        regs->eax = timer_get_ticks();
+        regs->eax = timer_user_ticks();
         break;
 
     /* ------------------------------------------------------------------
@@ -779,7 +780,7 @@ void syscall_dispatch(registers_t *regs)
         uint32_t secs = 0;
         if (rtc_unix_time(&secs) != 0) { regs->eax = (uint32_t)-1; break; }
         tv->tv_sec  = (int32_t)secs;
-        tv->tv_usec = (int32_t)((timer_get_ticks() % 100u) * 10000u);
+        tv->tv_usec = (int32_t)((timer_get_ticks() % TIMER_HZ) * (1000000u / TIMER_HZ));
         regs->eax = 0;
         break;
     }
@@ -798,11 +799,11 @@ void syscall_dispatch(registers_t *regs)
             uint32_t secs = 0;
             if (rtc_unix_time(&secs) != 0) { regs->eax = (uint32_t)-1; break; }
             ts->tv_sec  = (int32_t)secs;
-            ts->tv_nsec = (int32_t)((timer_get_ticks() % 100u) * 10000000u);
+            ts->tv_nsec = (int32_t)((timer_get_ticks() % TIMER_HZ) * (1000000000u / TIMER_HZ));
         } else if (clk == CLOCK_MONOTONIC) {
             uint32_t ticks = timer_get_ticks();
-            ts->tv_sec  = (int32_t)(ticks / 100u);
-            ts->tv_nsec = (int32_t)((ticks % 100u) * 10000000u);
+            ts->tv_sec  = (int32_t)(ticks / TIMER_HZ);
+            ts->tv_nsec = (int32_t)((ticks % TIMER_HZ) * (1000000000u / TIMER_HZ));
         } else {
             regs->eax = (uint32_t)-1;
             break;

@@ -1846,6 +1846,22 @@ static void test_rtc_unix_time(void)
     syscall_dispatch(&regs);
     KTEST_ASSERT_EQ((int)regs.eax, -1);
 
+    /* USER_HZ contract: the internal PIT runs at TIMER_HZ (250) but
+     * SYS_UPTIME reports in fixed 100 Hz user-ticks (timer_user_ticks).
+     * Over a ksleep(20) delay (0.2 s in legacy 100 Hz units) uptime must
+     * advance by ~20 user-ticks -- guards both the rate and the scaling so
+     * a future rate change can't silently skew wall-clock-facing apps. */
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_UPTIME;
+    syscall_dispatch(&regs);
+    uint32_t up0 = regs.eax;
+    ksleep(20);
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_UPTIME;
+    syscall_dispatch(&regs);
+    uint32_t dup = regs.eax - up0;
+    KTEST_ASSERT(dup >= 16u && dup <= 24u);   /* ~20 user-ticks, ±20% */
+
     ktest_summary();
 }
 

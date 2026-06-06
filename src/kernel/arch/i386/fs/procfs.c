@@ -276,7 +276,9 @@ static void render_tasks(pf_writer_t *w)
         if (t->tty < 0) pf_putc(w, '-');
         else            pf_putu(w, (uint32_t)t->tty);
         pf_putc(w, ' ');
-        pf_putu(w, t->kticks);
+        /* CPU time in USER_HZ (100 Hz) units -- stable across TIMER_HZ and
+         * unit-matched to SYS_UPTIME so maktop's CPU% ratio is correct. */
+        pf_putu(w, timer_to_user_ticks(t->kticks));
         pf_putc(w, ' ');
         /* Per-task memory (KiB): every task owns an 8 KiB kernel stack;
          * ring-3 tasks additionally have their resident user pages.  So
@@ -298,7 +300,7 @@ static void render_uname(pf_writer_t *w)
 {
     pf_puts(w, "Makar " MAKAR_VERSION " (i386) built " __DATE__ " " __TIME__ "\n");
     pf_puts(w, "uptime ticks: ");
-    pf_putu(w, timer_get_ticks());
+    pf_putu(w, timer_user_ticks());
     pf_puts(w, " (100 Hz)\n");
 }
 

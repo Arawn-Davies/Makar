@@ -330,9 +330,9 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 		}
 	}
 
-	t_writestring("Starting timer (100 Hz)");
+	t_writestring("Starting timer (250 Hz)");
 	kprint_ok();
-	init_timer(100);
+	init_timer(TIMER_HZ);
 	/* Subscribe the display's periodic widgets to the timer rather than
 	 * having the timer IRQ reach into the display layer directly. */
 	timer_register_tick_hook(t_spinner_tick);

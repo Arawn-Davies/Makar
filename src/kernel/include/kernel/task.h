@@ -124,10 +124,20 @@ typedef struct task {
     /* --- tick accounting ---
      * Cumulative PIT ticks (100 Hz) during which this task was the
      * current_task at IRQ 0 time.  Incremented by timer_callback before
-     * the preemptive yield.  Rolls every ~497 days at 100 Hz; that's
+     * the preemptive yield.  Rolls every ~199 days at 250 Hz; that's
      * fine for diagnostics, replace with uint64_t if real uptime SLAs
      * ever appear.  Read via /proc/tasks. */
     uint32_t      kticks;
+
+    /* --- scheduling weight (250 Hz responsiveness) ---
+     * Relative time-slice multiplier: effective quantum = g_sched_quantum *
+     * sched_weight PIT ticks (0 is treated as 1).  The GUI compositor
+     * (vtty_register_root_gui) gets a small boost so it can finish a frame
+     * without being preempted mid-composite.  last_sched_tick is the tick at
+     * which this task was last switched in; the timer IRQ preempts it once its
+     * effective quantum has elapsed since then. */
+    uint8_t       sched_weight;
+    uint32_t      last_sched_tick;
 
     /* --- exec hand-off ---
      * Pointer to a heap-allocated exec_params_t set up by shell_exec_elf

@@ -275,6 +275,9 @@ int vtty_close_pid(int pid)
 void vtty_register_root_gui(task_t *t)
 {
     if (!t) return;
+    /* Give the compositor a larger time-slice so it can finish a frame
+     * without being preempted mid-composite (see task_t.sched_weight). */
+    t->sched_weight = 3;
     __atomic_store_n(&vtty_root_gui_task, t, __ATOMIC_RELEASE);
     /* Remember who launched the GUI so leaving it returns focus to that live
      * reader (the sh.elf the user typed `gui` in), not the login-loop. */
