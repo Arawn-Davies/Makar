@@ -774,7 +774,13 @@ static uint32_t build_limine_conf(char *buf, uint32_t cap, const char *autologin
         for (int i = 0; autologin_user[i] && o < cap - 1; i++) buf[o++] = autologin_user[i];
         if (o < cap - 1) buf[o++] = ' ';
     }
-    const char *tail = "autoboot=gui\n";
+    const char *tail =
+        "autoboot=gui\n"
+        "\n"
+        "/Makar OS (rescue shell)\n"
+        "    protocol: multiboot2\n"
+        "    path: boot():/boot/makar.kernel\n"
+        "    cmdline: shell=rescue\n";
     for (int i = 0; tail[i] && o < cap - 1; i++) buf[o++] = tail[i];
     buf[o] = '\0';
     return o;

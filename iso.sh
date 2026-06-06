@@ -148,6 +148,14 @@ menuentry "Makar OS (GUI desktop)" {
 	multiboot2 /boot/makar.kernel live autoboot=gui${KERNEL_ARGS:+ $KERNEL_ARGS}
 }
 
+menuentry "Makar OS (rescue shell)" {
+	multiboot2 /boot/makar.kernel live shell=rescue${KERNEL_ARGS:+ $KERNEL_ARGS}
+}
+
+menuentry "Makar OS (serial console)" {
+	multiboot2 /boot/makar.kernel live console=ttyS0${KERNEL_ARGS:+ $KERNEL_ARGS}
+}
+
 menuentry "Next available device" {
 	exit
 }
@@ -184,6 +192,14 @@ menuentry "Makar OS" {
 
 menuentry "Makar OS (GUI desktop)" {
 	multiboot2 /boot/makar.kernel live autoboot=gui${KERNEL_ARGS:+ $KERNEL_ARGS}
+}
+
+menuentry "Makar OS (rescue shell)" {
+	multiboot2 /boot/makar.kernel live shell=rescue${KERNEL_ARGS:+ $KERNEL_ARGS}
+}
+
+menuentry "Makar OS (serial console)" {
+	multiboot2 /boot/makar.kernel live console=ttyS0${KERNEL_ARGS:+ $KERNEL_ARGS}
 }
 
 menuentry "Next available device" {
