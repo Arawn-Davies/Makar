@@ -374,7 +374,14 @@ task_t *task_fork(registers_t *parent_regs)
     t->exit_status = 0;
     t->kticks      = 0;
     t->unkillable  = 0;
-    t->fb_touched  = current_task->fb_touched;
+    /* A freshly forked child has drawn nothing yet, so it must NOT inherit the
+     * parent's fb_touched: when a parent reaps a child, SYS_WAIT4 repaints the
+     * text VT over the framebuffer if the child's fb_touched is set ("fullscreen
+     * app exited, clear its frame").  The makx display server fb_presents every
+     * frame (its fb_touched is always 1), so an inherited flag made every client
+     * it reaped -- doom, terminal, etc. -- flash the blue text VT through on
+     * close.  A child that actually draws sets its own flag. */
+    t->fb_touched  = 0;
     t->fd_table    = child_fds;
     t->exec_params = NULL;
     t->script_vars = NULL;  /* child gets fresh scripting state; non-POSIX

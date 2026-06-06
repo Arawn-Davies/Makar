@@ -424,6 +424,15 @@ done:
 
 /* ---------- readline with tab cycle ---------- */
 
+/* The interactive REPL prompt lives here (not on main's stack) so readline can
+ * rebuild it on KEY_FOCUS_GAIN: when the GUI hands control back after a
+ * graphical login set the session user, the prompt built *before* the GUI ran
+ * is stale (it showed `@host` with no user) -- rebuilding picks up the live
+ * user.  Other readline callers (e.g. the `more` pager) pass their own prompt,
+ * which we leave untouched. */
+static char g_prompt[VFS_PATH_MAX + 64];
+static void build_prompt(char *out, unsigned int outsz);
+
 /* readline result: 0+ = length, -1 = EOF/Ctrl-D, -2 = Ctrl-C aborted. */
 static int readline(const char *prompt, char *buf)
 {
@@ -500,6 +509,9 @@ static int readline(const char *prompt, char *buf)
          * screen was owned by whoever had focus, so redraw the prompt + the
          * in-progress line.  Without this you land on a bare cursor, no prompt. */
         if (ch == KEY_FOCUS_GAIN) {
+            /* Refresh the REPL prompt: a GUI login that ran while we were blocked
+             * here may have changed the session user.  Only our own g_prompt. */
+            if (prompt == g_prompt) build_prompt(g_prompt, sizeof g_prompt);
             put_c('\n'); put_s(prompt);
             if (len > 0) sys_write(1, buf, len);
             for (unsigned int i = len; i > cur; i--) put_c('\b');
@@ -1992,7 +2004,6 @@ int main(int argc, char **argv, char **envp)
     }
 
     char line[LINE_MAX];
-    char prompt[VFS_PATH_MAX + 64];
 
     for (;;) {
         unsigned int pos = sys_cursor_pos();
@@ -2004,8 +2015,8 @@ int main(int argc, char **argv, char **envp)
          * prompt, so existing scenarios work unchanged.  No-op unless
          * g_serial_verbose is on (kernel-side gate). */
         sys_shell_ready();
-        build_prompt(prompt, sizeof(prompt));
-        int n = readline(prompt, line);
+        build_prompt(g_prompt, sizeof(g_prompt));
+        int n = readline(g_prompt, line);
         if (n == -1) {
             put_c('\n');
             if (g_login) { put_s("(use `shutdown` or `reboot` to power off)\n"); continue; }

@@ -145,7 +145,7 @@ menuentry "Makar OS" {
 }
 
 menuentry "Makar OS (GUI desktop)" {
-	multiboot2 /boot/makar.kernel live autoboot=gui
+	multiboot2 /boot/makar.kernel live autoboot=gui autologin=user
 }
 
 menuentry "Makar OS (rescue shell)" {
@@ -195,7 +195,7 @@ menuentry "Makar OS" {
 }
 
 menuentry "Makar OS (GUI desktop)" {
-	multiboot2 /boot/makar.kernel live autoboot=gui
+	multiboot2 /boot/makar.kernel live autoboot=gui autologin=user
 }
 
 menuentry "Makar OS (rescue shell)" {

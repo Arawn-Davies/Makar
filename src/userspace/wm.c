@@ -176,14 +176,16 @@ static void launch_icon(int ii)
     if (pid<0){ sys_close(op[0]); sys_close(op[1]); W[i].in_use=0; return; }
     if (pid==0){
         sys_close(op[0]);
-        /* Drop the inherited keyboard stdin: on execve the kernel hands keyboard
-         * focus to the new program if its fd 0 is the keyboard (the "thing you
-         * just exec'd takes the keyboard" rule).  A makx client reads input over
-         * IPC, not fd 0, so if it grabbed focus the real keys would route to its
-         * slot and never be drained -- the server would go deaf.  Closing fd 0
-         * leaves focus with the server (which forwards keys to us over IPC). */
-        sys_close(0);
-        sys_dup2(op[1],1); sys_dup2(op[1],2);
+        /* Redirect stdin off the inherited keyboard: on execve the kernel hands
+         * keyboard focus to the new program if its fd 0 is the keyboard (the
+         * "thing you just exec'd takes the keyboard" rule).  A makx client reads
+         * input over IPC, not fd 0, so if it grabbed focus the real keys would
+         * route to its slot and never be drained -- the server would go deaf.
+         * We point fd 0 at the drain pipe (a pipe, not the keyboard -> no focus
+         * grab) rather than CLOSING it: a closed fd 0 gets reused by the next
+         * sys_pipe(), and a client that forks a child over pipes (mxterm) would
+         * then close its child's real stdin by accident. */
+        sys_dup2(op[1],0); sys_dup2(op[1],1); sys_dup2(op[1],2);
         sys_close(op[1]);
         char pids[12]; u2s((unsigned)server_pid, pids);
         char *av[4]={ (char*)icons[ii].cmd, "-makx", pids, 0 };
