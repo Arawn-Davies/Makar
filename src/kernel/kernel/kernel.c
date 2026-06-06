@@ -42,6 +42,10 @@ int g_live_boot = 0;
  * empty = not set.  Read by shell_login_loop -> auth_try_autologin. */
 char g_autologin_user[64] = {0};
 
+/* Set to 1 when `autoboot=gui` is on the kernel cmdline (the GUI boot menu
+ * entry).  shell_login_loop launches the desktop in the login session. */
+int g_boot_gui = 0;
+
 /*
  * Column at which "[ OK ]" starts, counting from 0.
  * "[ OK ]" is 6 characters wide, so it occupies columns 74–79 on an
@@ -421,6 +425,16 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 							g_autologin_user[j++] = *ap++;
 						}
 						g_autologin_user[j] = '\0';
+					}
+					/* autoboot=<target> -- auto-start <target> in the login
+					 * session.  Only "gui" is recognised (the GUI desktop boot
+					 * entry); pairs with autologin=<user> to land on a desktop. */
+					const char *bp = strstr(cmd->string, "autoboot=");
+					if (bp) {
+						bp += 9;
+						if (bp[0] == 'g' && bp[1] == 'u' && bp[2] == 'i' &&
+						    (bp[3] == '\0' || bp[3] == ' ' || bp[3] == '\t'))
+							g_boot_gui = 1;
 					}
 					/* test=<comma-list> -- which test-mode scripts to run. */
 					const char *tp = strstr(cmd->string, "test=");

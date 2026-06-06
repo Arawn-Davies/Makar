@@ -100,6 +100,17 @@ The dock carries a **Log Off** button: it tears down the WM's children
 end the underlying login session, and exits — returning to the login screen with
 `mak.sh0` intact. All of the above use only existing syscalls (no new ABI).
 
+### Booting straight to the desktop
+
+A `autoboot=gui` kernel cmdline token makes `shell_login_loop` pass
+`--autostart=gui` to the login `sh.elf`, which runs `gui` after sourcing
+`~/.makshrc` — so the desktop comes up inside the login session (the session
+stays the GUI's parent, so Log Off returns to it cleanly). Bootloader entries:
+the live ISO's GRUB menu gains **"Makar OS (GUI desktop)"** (`live autoboot=gui`),
+and the installer writes a second Limine entry **"/Makar OS (GUI desktop)"** whose
+cmdline is `autologin=<user> autoboot=gui` (the configured autologin user) — pick
+it to boot straight to a desktop as that user.
+
 ### Reusable file browser + headless coverage
 
 The Files window and the Editor's Open/Save dialog share one `browser` model

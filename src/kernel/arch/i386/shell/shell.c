@@ -1310,8 +1310,18 @@ void shell_login_loop(void)
                                   ? "/mnt/cdrom/apps/sh.elf"
                                   : "/apps/sh.elf";
 
-            const char *argv[4] = { "sh.elf", "--login", user_arg, NULL };
-            shell_exec_elf(sh_path, 3, (char **)argv);
+            /* `gui` on the cmdline -> tell the login shell to auto-launch the
+             * GUI desktop after sourcing rc.  Running it *inside* the session
+             * (rather than exec'ing gui.elf directly) keeps this sh.elf as the
+             * GUI's parent, so Log Off / exit hands control back here cleanly. */
+            const char *argv[5];
+            int ac = 0;
+            argv[ac++] = "sh.elf";
+            argv[ac++] = "--login";
+            argv[ac++] = user_arg;
+            if (g_boot_gui) argv[ac++] = "--autostart=gui";
+            argv[ac] = NULL;
+            shell_exec_elf(sh_path, ac, (char **)argv);
         }
 
         /* shell_exec_elf blocks until the child dies, then returns here.

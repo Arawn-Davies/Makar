@@ -144,6 +144,10 @@ menuentry "Makar OS" {
 	multiboot2 /boot/makar.kernel live${KERNEL_ARGS:+ $KERNEL_ARGS}
 }
 
+menuentry "Makar OS (GUI desktop)" {
+	multiboot2 /boot/makar.kernel live autoboot=gui${KERNEL_ARGS:+ $KERNEL_ARGS}
+}
+
 menuentry "Next available device" {
 	exit
 }
@@ -176,6 +180,10 @@ set timeout=3
 
 menuentry "Makar OS" {
 	multiboot2 /boot/makar.kernel live${KERNEL_ARGS:+ $KERNEL_ARGS}
+}
+
+menuentry "Makar OS (GUI desktop)" {
+	multiboot2 /boot/makar.kernel live autoboot=gui${KERNEL_ARGS:+ $KERNEL_ARGS}
 }
 
 menuentry "Next available device" {

@@ -48,6 +48,7 @@
 
 /* ---------- mode flags ---------- */
 static int   g_login        = 0;  /* --login: don't exit on Ctrl-D / `exit` */
+static int   g_autostart_gui = 0; /* --autostart=gui: run `gui` after rc      */
 static int   g_quiet_start  = 0;
 static char  g_hostname[HOST_MAX] = "makar";
 static char  g_username[USER_MAX] = "root";
@@ -1871,6 +1872,7 @@ int main(int argc, char **argv, char **envp)
     const char *cmd_string  = (const char *)0;   /* sh -c "<string>" */
     for (int i = 1; i < argc; i++) {
         if (s_eq(argv[i], "--login")) g_login = 1;
+        else if (s_eq(argv[i], "--autostart=gui")) g_autostart_gui = 1;
         else if (s_eq(argv[i], "--makmux")) g_quiet_start = 1;
         else if (s_eq(argv[i], "-c")) {
             /* Consume the next arg as the command string so it isn't
@@ -1957,6 +1959,11 @@ int main(int argc, char **argv, char **envp)
     if (!g_login && !g_quiet_start) {
         put_s("sh.elf: ring-3 shell (Ctrl-D or `exit` to quit)\n");
     }
+
+    /* autoboot=gui: launch the desktop now, exactly as if the user had typed
+     * `gui`.  It spawns in the background (is_gui_path) so this login session
+     * stays alive as the GUI's parent and resumes the prompt on Log Off. */
+    if (g_autostart_gui) run_script_buf("gui\n");
 
     char line[LINE_MAX];
     char prompt[VFS_PATH_MAX + 64];
