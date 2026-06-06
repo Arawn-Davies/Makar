@@ -3,6 +3,26 @@
 
 #include <stdint.h>
 
+/* Higher-half kernel virtual base (must match KERNEL_VBASE in linker.ld,
+ * boot.S, paging.c and vmm.c).  The in-OS TCC rebuild links the kernel
+ * low-half (identity), so KERNEL_VBASE is 0 there. */
+#ifdef __TINYC__
+#define KERNEL_VBASE   0x00000000u
+#else
+#define KERNEL_VBASE   0xC0000000u
+#endif
+
+/* Physical address of a kernel pointer.  Kernel statics are linked high
+ * (>= KERNEL_VBASE) and mapped 0xC0000000->0x0, so their physical address is
+ * (virt - KERNEL_VBASE); anything already below KERNEL_VBASE is in the
+ * permanent low identity window (phys == virt).  Use this for any value handed
+ * to hardware that does physical addressing -- e.g. DMA PRD / PRDT entries. */
+static inline uintptr_t kvirt_to_phys(const void *p)
+{
+    uintptr_t a = (uintptr_t)p;
+    return (a >= KERNEL_VBASE) ? (a - KERNEL_VBASE) : a;
+}
+
 /* Set up paging:
  *   - enable CR4.PSE (Page Size Extensions)
  *   - identity-map the first 256 MiB using 4 MiB large pages (PS bit set),

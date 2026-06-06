@@ -118,7 +118,10 @@ static void buddy_free(uint32_t f, uint32_t order)
 
 void pmm_init(uint32_t magic, multiboot2_info_t *mbi)
 {
-	extern uint32_t _kernel_end;
+	/* The kernel is linked higher-half; _kernel_phys_end is the PHYSICAL end
+	 * of the loaded image (linker.ld computes it as _kernel_end - KERNEL_VBASE).
+	 * Use it directly so the kernel reservation lands in low physical frames. */
+	extern uint32_t _kernel_phys_end;
 
 	/* Everything starts reserved: a zeroed descriptor table means refcount 0,
 	 * no PG_BUDDY, off every free list -- i.e. not allocatable until freed. */
@@ -160,7 +163,7 @@ void pmm_init(uint32_t magic, multiboot2_info_t *mbi)
 	 * null page (guards NULL derefs) and the whole kernel image, which on
 	 * this build includes mem_map[] itself (static BSS below _kernel_end). */
 	uint32_t kstart = 0x100000 / PMM_FRAME_SIZE;
-	uint32_t kend   = ((uint32_t)&_kernel_end + PMM_FRAME_SIZE - 1) / PMM_FRAME_SIZE;
+	uint32_t kend   = ((uint32_t)&_kernel_phys_end + PMM_FRAME_SIZE - 1) / PMM_FRAME_SIZE;
 
 	/* Free every usable frame within the managed window into the buddy pool.
 	 * Ascending order lets even/odd pairs coalesce as we go. */
