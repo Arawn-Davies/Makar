@@ -142,8 +142,51 @@ jobs:
             ktest.log
           if-no-files-found: warn
 
+  # ── GUI smoke test (window server boots + draws) ───────────────────────────
+  # Boots straight into the GUI desktop (autoboot=gui + autologin), waits for
+  # gui.elf's "GUI: READY" serial marker, captures a QEMU screendump (uploaded
+  # as a BMP artifact), then shuts down.  The marker is the pass gate.
+  guitest:
+    name: guitest
+    needs: build
+    runs-on: ubuntu-latest
+    container:
+      image: arawn780/gcc-cross-i686-elf:fast
+    defaults:
+      run:
+        shell: bash
+    env:
+      GUITEST_TIMEOUT: 300
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: makar-build
+
+      - name: Run guitest
+        run: |
+          mkdir -p ci-logs
+          set -o pipefail
+          ./run.sh guitest 2>&1 | tee ci-logs/guitest-run.log
+
+      - name: Upload guitest artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guitest-screendump
+          path: |
+            ci-logs/
+            guitest.log
+            gui-screendump.bmp
+            gui-screendump.ppm
+          if-no-files-found: warn
+
   # ── GDB ISO boot-checkpoint test ───────────────────────────────────────────
-  # Boots makar.iso (interactive grub.cfg, default entry 0) under the QEMU
+  # Boots makar.iso (interactive grub.cfg; the GUI desktop is the default
+  # entry) under the QEMU
   # GDB stub and verifies Multiboot 2 magic, boot checkpoints, hardware
   # state, VESA TTY init, background ktest result, and CD-ROM content.
   gdb-iso:
