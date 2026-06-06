@@ -8,12 +8,13 @@
  * the keyboard target; the window under the cursor gets mouse input.  See
  * docs/gui.md.
  *
- * Window kinds:
+ * Window kinds (interim built-ins; the makx split migrates these to clients):
  *   - Terminal   : hosts sh.elf over pipes (the byte stream is drawn as a grid)
  *   - Editor     : native text editor built on the gui_ui widgets + file I/O
  *   - Files      : native file browser (sys_readdir)
  *   - Tasks      : native task manager (/proc/tasks + SYS_KILL)
- *   - Doom       : doom.elf rendering into a shared surface the WM composites
+ *   - App        : a GENERIC surface-backed external program (e.g. doom.elf);
+ *                  the server names no app -- the program is launcher data
  *
  * Assumes a 32-bpp XRGB8888 framebuffer (QEMU Bochs VBE default).
  */
@@ -51,7 +52,11 @@ static int   seq(const char *a, const char *b){ int i=0; while(a[i]&&a[i]==b[i])
 
 /* ---- window model -------------------------------------------------------- */
 
-enum { W_TERMINAL, W_EDITOR, W_FILES, W_TASKS, W_DOOM, W_COUNT };
+/* Window kinds the server composites.  W_APP is a *generic* surface-backed
+ * external application (no app baked in -- the program path is launcher data,
+ * not server logic); terminal/editor/files/tasks are interim built-ins the
+ * makx split will migrate out to clients too. */
+enum { W_TERMINAL, W_EDITOR, W_FILES, W_TASKS, W_APP, W_COUNT };
 
 typedef struct {
     int    open;
@@ -543,66 +548,86 @@ static void tasks_draw_and_input(window *w, ui_ctx *u)
     ui_listbox(u,&scr,lx,ly,lw,lh,tk_ptr,tk_n,&tk_sel,&tk_scroll);
 }
 
-/* ===================== Doom window (shared surface) ===================== */
+/* ============== Generic surface-backed application window =============== */
+/* The server knows nothing about any specific app.  An app window forks a
+ * program with "-surface <id>" + a stdin pipe (forwarded input) and a stdout
+ * pipe the server drains, maps the shared surface the program renders into,
+ * composites it, and reaps the child.  The program path + surface size are
+ * launcher *data* (icons[]), not server logic.  (Interim: server-launched;
+ * the makx split makes the client connect over IPC and ask for its window.) */
+typedef struct {
+    int          pid, in, out, sid, w, h;
+    gfx_surface  surf;
+} appwin;
 
-#define DOOM_W 640
-#define DOOM_H 400
-static int        doom_pid=-1, doom_in=-1, doom_sid=-1;
-static gfx_surface doom_surf;
+static appwin      g_app = { -1, -1, -1, -1, 0, 0, {0} };
+static const char *g_app_cmd = 0;       /* program for the open W_APP window  */
+static int         g_app_w = 0, g_app_h = 0;
 
-static void doom_launch(void)
+static void appwin_launch(appwin *a, const char *path, int w, int h)
 {
-    if (doom_pid>0) return;
-    doom_sid = sys_surface_create(DOOM_W, DOOM_H);
-    if (doom_sid<0){ scpy(wins[W_DOOM].title,"Doom (no surface)",sizeof wins[W_DOOM].title); return; }
-    void *base = sys_surface_map(doom_sid);
-    if (!base){ sys_surface_destroy(doom_sid); doom_sid=-1; return; }
-    doom_surf.px=(gfx_u32*)base; doom_surf.w=DOOM_W; doom_surf.h=DOOM_H;
+    if (!path || a->pid>0) return;
+    a->w=w; a->h=h;
+    a->sid = sys_surface_create(w, h);
+    if (a->sid<0) return;
+    void *base = sys_surface_map(a->sid);
+    if (!base){ sys_surface_destroy(a->sid); a->sid=-1; return; }
+    a->surf.px=(gfx_u32*)base; a->surf.w=w; a->surf.h=h;
 
-    int ip[2];
-    if (sys_pipe(ip)<0){ sys_surface_destroy(doom_sid); doom_sid=-1; return; }
+    /* ip = server->client input (client stdin); op = client stdout/stderr the
+     * server drains, so the client's console output can't bleed onto the text
+     * VT and the pipe never fills (which would block the client). */
+    int ip[2], op[2];
+    if (sys_pipe(ip)<0){ sys_surface_destroy(a->sid); a->sid=-1; return; }
+    if (sys_pipe(op)<0){ sys_close(ip[0]); sys_close(ip[1]); sys_surface_destroy(a->sid); a->sid=-1; return; }
     int pid=sys_fork();
-    if (pid<0){ sys_close(ip[0]); sys_close(ip[1]); sys_surface_destroy(doom_sid); doom_sid=-1; return; }
+    if (pid<0){ sys_close(ip[0]); sys_close(ip[1]); sys_close(op[0]); sys_close(op[1]); sys_surface_destroy(a->sid); a->sid=-1; return; }
     if (pid==0){
-        sys_close(ip[1]);
-        sys_dup2(ip[0],0); sys_close(ip[0]);
-        char ids[12]; u2s((unsigned)doom_sid, ids);
-        char *av[4]={ "doom.elf", "-surface", ids, 0 };
-        sys_execve("/apps/doom.elf", av, (char *const*)0);
+        sys_close(ip[1]); sys_close(op[0]);
+        sys_dup2(ip[0],0); sys_dup2(op[1],1); sys_dup2(op[1],2);
+        sys_close(ip[0]); sys_close(op[1]);
+        char ids[12]; u2s((unsigned)a->sid, ids);
+        char *av[4]={ (char*)path, "-surface", ids, 0 };
+        sys_execve(path, av, (char *const*)0);
         sys_exit(127);
     }
-    doom_pid=pid; doom_in=ip[1]; sys_close(ip[0]);
-    sys_fcntl(doom_in, F_SETFL, O_NONBLOCK);
+    a->pid=pid; a->in=ip[1]; a->out=op[0];
+    sys_close(ip[0]); sys_close(op[1]);
+    sys_fcntl(a->in,  F_SETFL, O_NONBLOCK);
+    sys_fcntl(a->out, F_SETFL, O_NONBLOCK);
 }
-static void doom_stop(void)
+static void appwin_stop(appwin *a)
 {
-    if (doom_pid>0){ sys_kill(doom_pid,SIGKILL); int st=0; sys_wait4(doom_pid,&st,0); }
-    if (doom_in>=0) sys_close(doom_in);
-    if (doom_sid>=0) sys_surface_destroy(doom_sid);
-    doom_pid=-1; doom_in=-1; doom_sid=-1; doom_surf.px=0;
+    /* Only kill+reap a live child.  The self-exit path clears a->pid (after its
+     * own wait4) before calling this, so we never SIGKILL a recycled pid or
+     * block in wait4 on an already-reaped child (that hung the server). */
+    if (a->pid>0){ sys_kill(a->pid,SIGKILL); int st=0; sys_wait4(a->pid,&st,0); }
+    if (a->in>=0)  sys_close(a->in);
+    if (a->out>=0) sys_close(a->out);
+    if (a->sid>=0) sys_surface_destroy(a->sid);
+    a->pid=-1; a->in=-1; a->out=-1; a->sid=-1; a->surf.px=0;
 }
-static void doom_key(int k)
+static void appwin_key(appwin *a, int k)
 {
-    if (doom_in<0) return;
-    /* forward a make-code byte for the key; doom's windowed backend maps
-     * these ASCII/sentinel bytes to Doom keys. */
-    unsigned char b=(unsigned char)k; sys_write(doom_in,&b,1);
+    if (a->in<0) return;
+    unsigned char b=(unsigned char)k; sys_write(a->in,&b,1);
 }
-static void doom_draw(window *w)
+static void appwin_draw(appwin *a, window *w)
 {
     int cx=client_x(w), cy=client_y(w), cw=client_w(w), ch=client_h(w);
     gfx_fill(&scr, cx, cy, cw, ch, 0);
-    if (doom_pid>0){ int st=0; if (sys_wait4(doom_pid,&st,WNOHANG)==doom_pid){ doom_stop(); wins[W_DOOM].open=0; return; } }
-    if (doom_surf.px){
-        /* Fast path: when the window can hold DOOM's 640x400 1:1, copy straight
-         * (no per-frame nearest-neighbour scale) and centre it -- a real speed
-         * win under TCG.  Only scale when the window is smaller than the frame. */
-        if (cw>=DOOM_W && ch>=DOOM_H)
-            gfx_blit(&scr, cx+(cw-DOOM_W)/2, cy+(ch-DOOM_H)/2, &doom_surf, 0,0, DOOM_W, DOOM_H);
+    /* drain the client's stdout/stderr (prevents text-VT bleed + a full pipe) */
+    if (a->out>=0){ unsigned char b[128]; while (sys_read(a->out,b,sizeof b)>0){} }
+    /* reap a self-exited client: clear a->pid FIRST so appwin_stop doesn't
+     * kill+blocking-wait an already-reaped pid. */
+    if (a->pid>0){ int st=0; if (sys_wait4(a->pid,&st,WNOHANG)==a->pid){ a->pid=-1; appwin_stop(a); wins[W_APP].open=0; return; } }
+    if (a->surf.px){
+        if (cw>=a->w && ch>=a->h)
+            gfx_blit(&scr, cx+(cw-a->w)/2, cy+(ch-a->h)/2, &a->surf, 0,0, a->w, a->h);
         else
-            gfx_blit_scaled(&scr, cx, cy, cw, ch, &doom_surf);
+            gfx_blit_scaled(&scr, cx, cy, cw, ch, &a->surf);
     }
-    else gfx_str(&scr, cx+8, cy+8, "doom: not running", COL_TEXT);
+    else gfx_str(&scr, cx+8, cy+8, "(application not running)", COL_TEXT);
 }
 
 /* ===================== window chrome + compositor ======================= */
@@ -648,9 +673,13 @@ static void draw_window_frame(int kind)
     gfx_round(&scr, btn_min_x(w),   by, BTN_D, BTN_D, focused?RGB(0xfe,0xbc,0x2e):RGB(0x5e,0x57,0x40), COL_BORDER);
     gfx_round(&scr, btn_max_x(w),   by, BTN_D, BTN_D, focused?RGB(0x28,0xc8,0x40):RGB(0x46,0x5a,0x46), COL_BORDER);
     gfx_round(&scr, btn_close_x(w), by, BTN_D, BTN_D, focused?RGB(0xff,0x5f,0x57):RGB(0x6a,0x4a,0x48), COL_BORDER);
-    /* resize grip: a couple of ticks at the bottom-right corner. */
-    gfx_fill(&scr, w->x+w->w-4, w->y+w->h-10, 2, 8, COL_TITLE2);
-    gfx_fill(&scr, w->x+w->w-10, w->y+w->h-4, 8, 2, COL_TITLE2);
+    /* resize grip: a solid corner wedge (bottom-right) so it's an obvious drag
+     * target -- brighter when focused.  Grab area is in_resize (larger). */
+    {
+        gfx_u32 grip = focused ? UI_COL_BTN_ACT : RGB(0x4a,0x5a,0x74);
+        for (int r=0; r<14; r++)
+            gfx_fill(&scr, w->x+w->w-1-r, w->y+w->h-1-r, r+1, 1, grip);
+    }
 }
 
 static int in_rect(int px,int py,int x,int y,int w,int h){ return px>=x&&px<x+w&&py>=y&&py<y+h; }
@@ -661,7 +690,7 @@ static int in_close(window *w,int px,int py){ return in_btn(btn_close_x(w),btn_y
 /* drag region = title bar left of the buttons */
 static int in_titlebar(window *w,int px,int py){ return in_rect(px,py,w->x,w->y,btn_min_x(w)-w->x,TH); }
 /* resize grab = bottom-right corner */
-static int in_resize(window *w,int px,int py){ return in_rect(px,py,w->x+w->w-14,w->y+w->h-14,16,16); }
+static int in_resize(window *w,int px,int py){ return in_rect(px,py,w->x+w->w-18,w->y+w->h-18,20,20); }
 
 /* topmost open, non-minimised window under (px,py); -1 if none */
 static int hit_window(int px,int py)
@@ -678,20 +707,23 @@ static void window_content(int kind, ui_ctx *u)
         case W_EDITOR:   ed_draw_and_input(&wins[kind], u); break;
         case W_FILES:    files_draw_and_input(&wins[kind], u); break;
         case W_TASKS:    tasks_draw_and_input(&wins[kind], u); break;
-        case W_DOOM:     doom_draw(&wins[kind]); break;
+        case W_APP:      appwin_draw(&g_app, &wins[kind]); break;
     }
 }
 
 /* ===================== desktop icons + dock ============================= */
 
-typedef struct { int x,y,w,h; const char *label; int kind; gfx_u32 tint; } icon_t;
+/* For W_APP icons, cmd/aw/ah are the launcher data (program + surface size) the
+ * server hands to the generic app window -- the only place an app is named. */
+typedef struct { int x,y,w,h; const char *label; int kind; gfx_u32 tint;
+                 const char *cmd; int aw, ah; } icon_t;
 #define ICON_N 5
 static icon_t icons[ICON_N] = {
-    { 24,  40, 96,70, "Terminal", W_TERMINAL, RGB(0x4c,0x8d,0xff) },
-    { 24, 124, 96,70, "Files",    W_FILES,    RGB(0xf0,0xa8,0x30) },
-    { 24, 208, 96,70, "Editor",   W_EDITOR,   RGB(0x35,0xc7,0x59) },
-    { 24, 292, 96,70, "Tasks",    W_TASKS,    RGB(0x9b,0x6c,0xff) },
-    { 24, 376, 96,70, "Doom",     W_DOOM,     RGB(0xc0,0x40,0x40) },
+    { 24,  40, 96,70, "Terminal", W_TERMINAL, RGB(0x4c,0x8d,0xff), 0,0,0 },
+    { 24, 124, 96,70, "Files",    W_FILES,    RGB(0xf0,0xa8,0x30), 0,0,0 },
+    { 24, 208, 96,70, "Editor",   W_EDITOR,   RGB(0x35,0xc7,0x59), 0,0,0 },
+    { 24, 292, 96,70, "Tasks",    W_TASKS,    RGB(0x9b,0x6c,0xff), 0,0,0 },
+    { 24, 376, 96,70, "Doom",     W_APP,      RGB(0xc0,0x40,0x40), "/apps/doom.elf",640,400 },
 };
 static void draw_icons(void)
 {
@@ -701,7 +733,8 @@ static void draw_icons(void)
         gfx_str(&scr,c->x+(c->w-gfx_text_w(c->label))/2,c->y+c->h-16,c->label,0xFFFFFF);
     }
 }
-static int icon_hit(int px,int py){ for(int i=0;i<ICON_N;i++){icon_t*c=&icons[i]; if(in_rect(px,py,c->x,c->y,c->w,c->h)) return c->kind;} return -1; }
+/* returns the icon INDEX under (px,py), or -1 (caller reads icons[i].kind/cmd) */
+static int icon_hit(int px,int py){ for(int i=0;i<ICON_N;i++){icon_t*c=&icons[i]; if(in_rect(px,py,c->x,c->y,c->w,c->h)) return i;} return -1; }
 
 static const char *kind_short(int k){ return k==W_TERMINAL?"sh":k==W_EDITOR?"ed":k==W_FILES?"fs":k==W_TASKS?"ps":"dm"; }
 
@@ -789,7 +822,7 @@ static const char *kind_name(int k)
 {
     switch(k){ case W_TERMINAL:return "Terminal"; case W_EDITOR:return "Editor";
                case W_FILES:return "Files"; case W_TASKS:return "Tasks";
-               case W_DOOM:return "Doom"; default:return "Desktop"; }
+               case W_APP:return wins[W_APP].title; default:return "Desktop"; }
 }
 #define LOGOFF_W 70
 #define EXIT_W   54
@@ -847,7 +880,7 @@ static void open_window(int kind)
     window *w=&wins[kind];
     if (!w->open){
         w->open=1;
-        if (kind==W_DOOM && doom_pid<0) doom_launch();
+        if (kind==W_APP && g_app.pid<0) appwin_launch(&g_app, g_app_cmd, g_app_w, g_app_h);
         if (kind==W_TERMINAL && term_pid<0){ term_clear(); term_spawn(); }
     }
     w->minimized=0;          /* a dock/icon click restores a minimised window */
@@ -856,7 +889,7 @@ static void open_window(int kind)
 static void close_window(int kind)
 {
     wins[kind].open=0;
-    if (kind==W_DOOM) doom_stop();
+    if (kind==W_APP) appwin_stop(&g_app);
     if (kind==W_TERMINAL) term_kill();
     if (focus_kind==kind){ focus_kind=-1; for(int i=W_COUNT-1;i>=0;i--){int k=zlist[i]; if(wins[k].open&&!wins[k].minimized){focus_kind=k;break;}} }
 }
@@ -1001,11 +1034,12 @@ int main(int argc, char **argv, char **envp)
 
     /* initial window geometry + z-order */
     for(int k=0;k<W_COUNT;k++) zlist[k]=k;
-    wins[W_TERMINAL]=(window){0,160,90,560,360,"Terminal",{0}};
-    wins[W_EDITOR]  =(window){0,220,120,640,420,"Editor",{0}};
-    wins[W_FILES]   =(window){0,200,110,560,380,"Files",{0}};
-    wins[W_TASKS]   =(window){0,260,140,560,360,"Tasks",{0}};
-    wins[W_DOOM]    =(window){0,260,80,660,440,"Doom",{0}};
+    /* order: open,x,y,w,h, minimized,maximized,sx,sy,sw,sh, title, ui */
+    wins[W_TERMINAL]=(window){0,160, 90,560,360, 0,0,0,0,0,0, "Terminal",{0}};
+    wins[W_EDITOR]  =(window){0,220,120,640,420, 0,0,0,0,0,0, "Editor",{0}};
+    wins[W_FILES]   =(window){0,200,110,560,380, 0,0,0,0,0,0, "Files",{0}};
+    wins[W_TASKS]   =(window){0,260,140,560,360, 0,0,0,0,0,0, "Tasks",{0}};
+    wins[W_APP]     =(window){0,260, 80,660,440, 0,0,0,0,0,0, "App",{0}};
 
     open_window(W_TERMINAL);
 
@@ -1054,8 +1088,17 @@ int main(int argc, char **argv, char **envp)
                     else if (in_titlebar(&wins[hk],cx,cy)){ dragging=1; drag_kind=hk; drag_dx=cx-wins[hk].x; drag_dy=cy-wins[hk].y; wins[hk].maximized=0; }
                     else client_click_kind=hk;     /* client area -> widgets   */
                 } else {
-                    int ik=icon_hit(cx,cy);
-                    if (ik>=0){ open_window(ik); dirty=1; }
+                    int ii=icon_hit(cx,cy);
+                    if (ii>=0){
+                        /* W_APP: take the launcher data (program/size/title)
+                         * from the clicked icon -- the only place an app is
+                         * named -- then open the generic app window. */
+                        if (icons[ii].kind==W_APP){
+                            g_app_cmd=icons[ii].cmd; g_app_w=icons[ii].aw; g_app_h=icons[ii].ah;
+                            scpy(wins[W_APP].title, icons[ii].label, sizeof wins[W_APP].title);
+                        }
+                        open_window(icons[ii].kind); dirty=1;
+                    }
                 }
             }
         }
@@ -1080,14 +1123,14 @@ int main(int argc, char **argv, char **envp)
         /* ---- keyboard routing to the focused window ---- */
         if (frame_key>=0 && focus_kind>=0){
             if (focus_kind==W_TERMINAL) term_key(frame_key);
-            else if (focus_kind==W_DOOM) doom_key(frame_key);
+            else if (focus_kind==W_APP) appwin_key(&g_app, frame_key);
             /* editor/files/tasks consume the key via their ui pass below */
         }
 
         /* ---- terminal / doom liveness pumps (always, even if unfocused) ---- */
         if (wins[W_TERMINAL].open && term_pump()) dirty=1;
         if (wins[W_TASKS].open) dirty=1;           /* tasks auto-refresh ticks */
-        if (wins[W_DOOM].open) dirty=1;            /* doom animates            */
+        if (wins[W_APP].open) dirty=1;             /* surface app animates     */
         { unsigned now=sys_uptime(); if (now-stat_up>=100u){ stat_up=now; dirty=1; } } /* ~1s: refresh dock stats */
 
         if (!dirty){ sys_yield(); continue; }
@@ -1109,7 +1152,7 @@ int main(int argc, char **argv, char **envp)
                      live?mdown:0,
                      wk_pressed,
                      live?mreleased:0,
-                     (live && k!=W_TERMINAL && k!=W_DOOM) ? frame_key : -1);
+                     (live && k!=W_TERMINAL && k!=W_APP) ? frame_key : -1);
             window_content(k, u);
         }
 
@@ -1134,7 +1177,7 @@ int main(int argc, char **argv, char **envp)
      *              re-shows the (GUI) login.
      * The GUI shell is a forked sh.elf on a private pipe, so a Ctrl-C/Ctrl-D in
      * it only ever closed that terminal window -- mak.sh0 is never in range. */
-    term_kill(); doom_stop();
+    term_kill(); appwin_stop(&g_app);
     sys_fcntl(0,F_SETFL,0);
     sys_statusbar_set(saved_status);
     if (exit_to_shell) sys_gui_close();
