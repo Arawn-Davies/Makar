@@ -38,6 +38,8 @@ static gfx_surface   scr;              /* the WM back buffer (scr.px == bb)   */
 
 #define TH       20          /* title-bar height        */
 #define DOCK_H   34
+#define MENU_H   22          /* top menu bar height     */
+#define COL_MENU RGB(0x0c,0x10,0x18)
 
 /* ---- small libc ---------------------------------------------------------- */
 
@@ -669,15 +671,34 @@ static void draw_dock(void)
         gfx_str(&scr,bx+(36-gfx_text_w(kind_short(k)))/2, y0+(DOCK_H-8)/2, kind_short(k), 0xFFFFFF);
         slot++;
     }
-    /* Log Off button, pinned to the right edge of the dock. */
-    int lx=(int)FBW-78;
-    gfx_round(&scr,lx,y0+5,70,DOCK_H-10, COL_CLOSE, RGB(0x12,0x16,0x1e));
-    gfx_str(&scr,lx+(70-gfx_text_w("Log Off"))/2, y0+(DOCK_H-8)/2, "Log Off", 0xFFFFFF);
+}
+
+/* The top menu bar.  Drawn on every composited frame (after the windows, so it
+ * is always visible) -- the GUI is never chromeless: desktop + menu bar + dock
+ * are unconditional.  Carries the "Makar" brand, the focused window's name, and
+ * a right-aligned Log Off item. */
+static const char *kind_name(int k)
+{
+    switch(k){ case W_TERMINAL:return "Terminal"; case W_EDITOR:return "Editor";
+               case W_FILES:return "Files"; case W_TASKS:return "Tasks";
+               case W_DOOM:return "Doom"; default:return "Desktop"; }
+}
+#define LOGOFF_W 70
+static void draw_menubar(void)
+{
+    gfx_fill(&scr,0,0,(int)FBW,MENU_H,COL_MENU);
+    gfx_fill(&scr,0,MENU_H-1,(int)FBW,1,RGB(0x28,0x32,0x44));
+    gfx_str(&scr,8,(MENU_H-8)/2,"Makar",RGB(0x8a,0xe2,0x34));
+    gfx_str(&scr,64,(MENU_H-8)/2, kind_name(focus_kind), RGB(0x90,0xa0,0xb5));
+    /* Log Off item, right-aligned. */
+    int lx=(int)FBW-LOGOFF_W-4;
+    gfx_fill(&scr,lx,2,LOGOFF_W,MENU_H-4,COL_CLOSE);
+    gfx_str(&scr,lx+(LOGOFF_W-gfx_text_w("Log Off"))/2,(MENU_H-8)/2,"Log Off",0xFFFFFF);
 }
 static int logoff_hit(int px,int py)
 {
-    int y0=(int)FBH-DOCK_H, lx=(int)FBW-78;
-    return in_rect(px,py,lx,y0+5,70,DOCK_H-10);
+    int lx=(int)FBW-LOGOFF_W-4;
+    return in_rect(px,py,lx,2,LOGOFF_W,MENU_H-4);
 }
 static int dock_hit(int px,int py,int *out_kind)
 {
@@ -861,7 +882,7 @@ int main(int argc, char **argv, char **envp)
         if (dragging && drag_kind>=0){
             wins[drag_kind].x=cx-drag_dx; wins[drag_kind].y=cy-drag_dy;
             if(wins[drag_kind].x<0)wins[drag_kind].x=0;
-            if(wins[drag_kind].y<0)wins[drag_kind].y=0;
+            if(wins[drag_kind].y<MENU_H)wins[drag_kind].y=MENU_H;  /* keep clear of the menu bar */
             if(wins[drag_kind].x+wins[drag_kind].w>(int)FBW)wins[drag_kind].x=(int)FBW-wins[drag_kind].w;
             if(wins[drag_kind].y+wins[drag_kind].h>(int)FBH-DOCK_H)wins[drag_kind].y=(int)FBH-DOCK_H-wins[drag_kind].h;
             dirty=1;
@@ -881,9 +902,9 @@ int main(int argc, char **argv, char **envp)
 
         if (!dirty){ sys_yield(); continue; }
 
-        /* ---- compose ---- */
+        /* ---- compose (desktop + menu bar + dock are unconditional) ---- */
         gfx_fill(&scr,0,0,(int)FBW,(int)FBH,COL_DESK);
-        gfx_str(&scr,8,8,"Makar desktop -- click an icon; drag a title bar; click a window to focus",RGB(0x90,0xa0,0xb5));
+        gfx_str(&scr,8,MENU_H+6,"Makar desktop -- click an icon; drag a title bar; click a window to focus",RGB(0x90,0xa0,0xb5));
         draw_icons();
 
         for (int i=0;i<W_COUNT;i++){
@@ -903,6 +924,7 @@ int main(int argc, char **argv, char **envp)
         }
 
         draw_dock();
+        draw_menubar();
         draw_cursor(cx,cy);
         sys_fb_present(scr.px);
         dirty=0;
