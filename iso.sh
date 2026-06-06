@@ -140,6 +140,13 @@ cat > isodir/boot/grub/grub.cfg << EOF
 set default=${GRUB_DEFAULT:-1}
 set timeout=3
 
+# Ask GRUB for the best mode the firmware actually offers, highest first.  The
+# kernel adopts whatever LFB it's handed (no DISPI on Hyper-V/VMware), so this is
+# how those platforms get a decent resolution.  Hyper-V Gen1's VBE has no 16:9
+# modes, so 1024x768 is the realistic fallback there (beats the 800x600 default).
+insmod all_video
+set gfxpayload=1280x720x32,1024x768x32,800x600x32
+
 menuentry "Makar OS" {
 	multiboot2 /boot/makar.kernel live${KERNEL_ARGS:+ $KERNEL_ARGS}
 }
@@ -189,6 +196,13 @@ EOF
     cat > isodir/boot/grub/grub.cfg << EOF
 set default=${GRUB_DEFAULT:-1}
 set timeout=3
+
+# Ask GRUB for the best mode the firmware actually offers, highest first.  The
+# kernel adopts whatever LFB it's handed (no DISPI on Hyper-V/VMware), so this is
+# how those platforms get a decent resolution.  Hyper-V Gen1's VBE has no 16:9
+# modes, so 1024x768 is the realistic fallback there (beats the 800x600 default).
+insmod all_video
+set gfxpayload=1280x720x32,1024x768x32,800x600x32
 
 menuentry "Makar OS" {
 	multiboot2 /boot/makar.kernel live${KERNEL_ARGS:+ $KERNEL_ARGS}
