@@ -496,6 +496,16 @@ static int readline(const char *prompt, char *buf)
             continue;
         }
 
+        /* Regained the keyboard (e.g. the GUI 'Exit' handed control back): the
+         * screen was owned by whoever had focus, so redraw the prompt + the
+         * in-progress line.  Without this you land on a bare cursor, no prompt. */
+        if (ch == KEY_FOCUS_GAIN) {
+            put_c('\n'); put_s(prompt);
+            if (len > 0) sys_write(1, buf, len);
+            for (unsigned int i = len; i > cur; i--) put_c('\b');
+            continue;
+        }
+
         /* ---- Tab completion ---- */
         if (ch == '\t') {
             /* Only complete at end-of-line (matches kernel shell). */
