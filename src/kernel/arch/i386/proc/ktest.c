@@ -36,6 +36,7 @@
 #include <kernel/asm.h>
 #include <kernel/keyboard.h>
 #include <kernel/surface.h>
+#include <kernel/ide.h>
 #include <lwip/ip_addr.h>
 #include <lwip/pbuf.h>
 #include <lwip/tcp.h>
@@ -1147,6 +1148,92 @@ static void test_surface(void)
     KTEST_ASSERT(surface_create(0, 8) == -1);
     KTEST_ASSERT(surface_info(-1) == (uint32_t)-1);
 
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
+ * Suite: IDE block I/O (DMA + PIO round-trip)
+ *
+ * Exercises the exact path the installer's file copy uses:
+ * ide_write_sectors() -> ide_read_sectors() through the public API, which
+ * prefers bus-master DMA and silently falls back to PIO (the whole point of
+ * the Hyper-V/VMware/VBox/legacy resilience work).  The transfer is 128
+ * sectors = 64 KiB, spanning TWO 32 KiB DMA bounce-buffer chunks, so a
+ * chunk-loop / boundary bug corrupts the second half and the memcmp catches
+ * it.  Non-destructive: the target sectors are read and saved first, then
+ * restored, so this is safe even when ktest runs against a real installed
+ * disk (HDD boot) and not just the scratch image the harness attaches.
+ *
+ * Skips cleanly (one guard assert only) when no writable ATA drive exists,
+ * so CD-only boots and the GDB iso-test still pass.
+ * ------------------------------------------------------------------------- */
+static void test_ide_dma(void)
+{
+    ktest_begin("ide_dma", "block I/O: 64 KiB write/read round-trip (DMA->PIO), multi-chunk, non-destructive");
+
+    /* Out-of-range guard works regardless of attached hardware. */
+    KTEST_ASSERT(ide_get_drive(IDE_MAX_DRIVES) == NULL);
+
+    /* Find the first writable ATA disk big enough for the test window. */
+    const uint32_t SECS = 128;                  /* 64 KiB = 2 DMA chunks */
+    int idx = -1;
+    for (uint8_t i = 0; i < IDE_MAX_DRIVES; i++) {
+        const ide_drive_t *d = ide_get_drive(i);
+        if (d && d->present && d->type == IDE_TYPE_ATA && d->size > SECS + 4096) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx < 0) {
+        Serial_WriteString("[ktest]   ide_dma: no writable ATA disk attached, skipping round-trip\n");
+        ktest_summary();
+        return;
+    }
+
+    const ide_drive_t *drv = ide_get_drive((uint8_t)idx);
+    /* Land the window a little below the end of the disk, clear of any
+     * partition table / FS metadata the harness or installer cares about. */
+    uint32_t lba   = drv->size - SECS - 2048;
+    uint32_t bytes = SECS * 512u;
+
+    uint8_t *save     = (uint8_t *)kmalloc(bytes);
+    uint8_t *pattern  = (uint8_t *)kmalloc(bytes);
+    uint8_t *readback = (uint8_t *)kmalloc(bytes);
+    KTEST_ASSERT(save && pattern && readback);
+    if (!save || !pattern || !readback) {
+        kfree(save); kfree(pattern); kfree(readback);
+        ktest_summary();
+        return;
+    }
+
+    /* Preserve the original contents so the test leaves the disk untouched. */
+    KTEST_ASSERT(ide_read_sectors((uint8_t)idx, lba, (uint8_t)SECS, save) == 0);
+
+    /* A per-byte-distinct pattern that varies across the 32 KiB chunk
+     * boundary (byte 32768), so a second-chunk LBA/offset bug is visible. */
+    for (uint32_t i = 0; i < bytes; i++)
+        pattern[i] = (uint8_t)((i * 131u + lba) ^ (i >> 7));
+
+    KTEST_ASSERT(ide_write_sectors((uint8_t)idx, lba, (uint8_t)SECS, pattern) == 0);
+
+    memset(readback, 0, bytes);
+    KTEST_ASSERT(ide_read_sectors((uint8_t)idx, lba, (uint8_t)SECS, readback) == 0);
+    KTEST_ASSERT(memcmp(readback, pattern, bytes) == 0);   /* core: write==read */
+
+    /* Single-sector round-trip exercises the count==1 (sub-chunk) path. */
+    pattern[0] ^= 0xFFu;
+    KTEST_ASSERT(ide_write_sectors((uint8_t)idx, lba, 1, pattern) == 0);
+    memset(readback, 0, 512);
+    KTEST_ASSERT(ide_read_sectors((uint8_t)idx, lba, 1, readback) == 0);
+    KTEST_ASSERT(memcmp(readback, pattern, 512) == 0);
+
+    /* Restore the original sectors and confirm the disk is as we found it. */
+    KTEST_ASSERT(ide_write_sectors((uint8_t)idx, lba, (uint8_t)SECS, save) == 0);
+    memset(readback, 0, bytes);
+    KTEST_ASSERT(ide_read_sectors((uint8_t)idx, lba, (uint8_t)SECS, readback) == 0);
+    KTEST_ASSERT(memcmp(readback, save, bytes) == 0);
+
+    kfree(save); kfree(pattern); kfree(readback);
     ktest_summary();
 }
 
@@ -3337,6 +3424,10 @@ int ktest_run_all(void)
     total_fail += ktest_fail_count;
 
     test_surface();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_ide_dma();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 

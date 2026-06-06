@@ -393,10 +393,19 @@ _run_ktest() {
     if   command -v timeout  >/dev/null 2>&1; then _tmo="timeout $_ktest_secs"
     elif command -v gtimeout >/dev/null 2>&1; then _tmo="gtimeout $_ktest_secs"
     fi
+    # Scratch ATA disk attached as primary master (index=0) so the in-kernel
+    # ide_dma ktest can exercise the bus-master DMA write/read round-trip (the
+    # path the installer's file copy uses).  The test is non-destructive and
+    # skips cleanly if the disk is absent, so a stale/missing image is harmless.
+    local _scratch="$REPO_ROOT/ktest-scratch.img"
+    rm -f "$_scratch"
+    truncate -s 16M "$_scratch" 2>/dev/null || dd if=/dev/zero of="$_scratch" bs=1M count=16 2>/dev/null
+
     if [ -n "$_qemu" ]; then
         # shellcheck disable=SC2086
         $_tmo "$_qemu" \
             -cdrom "$REPO_ROOT/$_iso" \
+            -drive "file=$_scratch,format=raw,if=ide,index=0" \
             -serial stdio \
             -display none \
             -no-reboot \
@@ -409,6 +418,7 @@ _run_ktest() {
         _drun --as-root --env "QEMU_ACCEL=$_accel" --env "KTEST_ISO_NAME=$_iso" --env "KTEST_TIMEOUT=$_ktest_secs" --env "NET_DEVICE=${NET_DEVICE:-virtio}" -- \
             'timeout "$KTEST_TIMEOUT" qemu-system-i386 \
                  -cdrom /work/$KTEST_ISO_NAME \
+                 -drive file=/work/ktest-scratch.img,format=raw,if=ide,index=0 \
                  -m 64 \
                  -serial stdio \
                  -display none \
