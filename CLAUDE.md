@@ -37,8 +37,10 @@ build/test toolchain — no host cross-compiler required.
 - **Single kernel, two ISOs**: one `makar.kernel`; `iso.sh` packages `makar.iso`
   (interactive) and `makar-test.iso` (`test_mode` cmdline). No compile-time test
   flag. `build.sh` uses `-j$(nproc)` + ccache (`CCACHE=0` to disable).
-- KVM is off by default (`MAKAR_USE_KVM=1` to force); it broke GDB breakpoints +
-  masked a ktest fault under TCG. Leave off.
+- KVM: default ON for interactive/perf runs (`iso`/`hdd boot`, `guitest`) when
+  `/dev/kvm` is usable and not in CI; forced OFF (TCG) for the correctness gates
+  (`ktest`, `gdb`, `nettest`) and all CI, because it broke GDB breakpoints +
+  masked a ktest fault under TCG. `MAKAR_USE_KVM=1`/`=0` overrides either way.
 
 ## Testing — in-guest and headless only
 
