@@ -1,35 +1,12 @@
 #ifndef _USERSPACE_SYSCALL_H
 #define _USERSPACE_SYSCALL_H
 
-/* Syscall numbers - Linux i386 ABI subset + Makar extensions. */
-#define SYS_EXIT       1
-#define SYS_FORK       2
-#define SYS_READ       3
-#define SYS_EXECVE     11
-#define SYS_CHDIR      12
-#define SYS_WAIT4      114
+/* Syscall NUMBERS come from the shared ABI header (one source of truth with the
+ * kernel; Linux-uapi style).  This file keeps the userspace wrappers + the libc-
+ * facing types/flags. */
+#include <makar_syscalls.h>
 /* wait4 `options` flags */
 #define WNOHANG        1
-#define SYS_WRITE      4
-#define SYS_OPEN       5
-#define SYS_CLOSE      6
-#define SYS_LSEEK      19
-#define SYS_GETPID     20
-#define SYS_DUP        41
-#define SYS_PIPE       42
-#define SYS_DUP2       63
-#define SYS_KILL       37
-#define SYS_RENAME     38
-#define SYS_MKDIR      39
-#define SYS_RMDIR      40
-#define SYS_UNLINK     10
-#define SYS_BRK        45
-#define SYS_MUNMAP     91
-#define SYS_MMAP2     192
-#define SYS_SIGNAL     48
-#define SYS_GETPPID    64
-#define SYS_GETTIMEOFDAY 78
-#define SYS_CLOCK_GETTIME 265
 #define CLOCK_REALTIME    0
 #define CLOCK_MONOTONIC   1
 
@@ -53,79 +30,9 @@ struct timeval  { int tv_sec; int tv_usec; };
 #define _MAKAR_STRUCT_TIMESPEC_DEFINED
 struct timespec { int tv_sec; int tv_nsec; };
 #endif
-#define SYS_SIGRETURN  119
-#define SYS_DEBUG      100
-#define SYS_YIELD      158
-#define SYS_GETKEY     200
-#define SYS_PUTCH_AT   201
-#define SYS_SET_CURSOR 202
-#define SYS_TTY_CLEAR  203
-#define SYS_TERM_SIZE  204
-#define SYS_WRITE_FILE 205
-#define SYS_LS_DIR     206
-#define SYS_DISK_INFO    207
-#define SYS_PCI_INFO     239
-#define SYS_DELETE_FILE  208
-#define SYS_RENAME_FILE  209
-#define SYS_DELETE_DIR   210
-#define SYS_WRITE_SERIAL 211
-#define SYS_KEYBOARD_RAW 212
-#define SYS_SHELL_CLEAR  213
-#define SYS_UPTIME       214
-#define SYS_GETCWD       215
-#define SYS_FB_INFO      216
-#define SYS_DRAW_LINE    217
-#define SYS_MOUSE_READ   256
-#define SYS_FB_PRESENT   257
-#define SYS_SURFACE_CREATE  259
-#define SYS_SURFACE_MAP     262
-#define SYS_SURFACE_INFO    263
-#define SYS_SURFACE_DESTROY 264
-#define SYS_IPC_SEND        249
-#define SYS_IPC_RECV        250
-#define SYS_IPC_SENDREC     251
-#define SYS_IPC_NBRECV      267
-#define SYS_CARET_STYLE  218
 /* Admin syscalls (privileged operations).  task_is_admin() gates each;
  * currently always-true (no user model).  Negative return = denied or
  * failed; helper-specific error code conventions in kernel/admin.h. */
-#define SYS_REBOOT        219
-#define SYS_SHUTDOWN      220
-#define SYS_SETMODE       221
-#define SYS_FGCOL         222
-#define SYS_BGCOL         223
-#define SYS_EJECT         224
-#define SYS_INSTALL       238
-#define SYS_MOUNT         225
-#define SYS_UMOUNT        226
-#define SYS_MKFS          227
-#define SYS_SCHED_QUANTUM 228
-#define SYS_VERBOSE       229
-#define SYS_GETHOSTNAME   230
-#define SYS_WHOAMI        247   /* moved off 240 (Linux futex) */
-#define SYS_STATUSBAR     241
-#define SYS_VT_OPEN_APP   242
-#define SYS_VT_TAKE_APP   248   /* moved off 243 (Linux set_thread_area) */
-#define SYS_VT_SETNAME    244
-#define SYS_VT_GETNAME    245
-#define SYS_STATFS        246
-#define SYS_SHELL_READY   231
-#define SYS_CURSOR_POS    232
-#define SYS_VT_ENTER      233
-#define SYS_VT_CLOSE      234
-#define SYS_VT_OPEN_REQUEST 235
-#define SYS_VT_STATE      236
-#define SYS_VT_CLOCK_REQUEST 237
-#define SYS_FCNTL        55
-#define SYS_STAT        106
-#define SYS_FSTAT       108
-#define SYS_READDIR     141
-#define SYS_NET_INFO    253
-#define SYS_NET_CTL     254
-#define SYS_WGET        255
-#define SYS_LOGOUT      260
-#define SYS_GUI_CLOSE   261
-#define SYS_LOGIN       266
 
 #define NET_CTL_DHCP_RELEASE 1
 #define NET_CTL_DHCP_RENEW   2

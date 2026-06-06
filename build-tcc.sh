@@ -265,6 +265,7 @@ RUN "cd vendor/tinycc && \
         -nostdlib \
         -I. -I build-stubs \
         -I ../../src/userspace \
+        -I ../../src/kernel/include \
         $COMMON_DEFS \
         -c tcc.c -o tcc.o 2>&1 | tee build-tcc.log | tail -20" || true
 
