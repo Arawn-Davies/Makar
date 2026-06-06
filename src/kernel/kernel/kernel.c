@@ -52,6 +52,10 @@ int g_boot_gui = 0;
  * login but a CLI `logout` re-shows the text login. */
 int g_gui_session = 0;
 
+/* `verbose` on the cmdline: skip the boot loading screen/progress bar so the
+ * boot log + background ktest output stay visible instead. */
+int g_verbose_boot = 0;
+
 /*
  * Column at which "[ OK ]" starts, counting from 0.
  * "[ OK ]" is 6 characters wide, so it occupies columns 74–79 on an
@@ -391,6 +395,8 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 				if (tag->type == MULTIBOOT2_TAG_TYPE_CMDLINE) {
 					multiboot2_tag_cmdline_t *cmd =
 						(multiboot2_tag_cmdline_t *)tag;
+					if (strstr(cmd->string, "verbose"))
+						g_verbose_boot = 1;
 					if (strstr(cmd->string, "test_mode"))
 						test_mode = 1;
 					if (strstr(cmd->string, "live"))

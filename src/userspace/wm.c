@@ -662,7 +662,13 @@ static void draw_window_frame(int kind)
 {
     window *w=&wins[kind];
     int focused = (focus_kind==kind);
-    gfx_outline(&scr, w->x-1, w->y-1, w->w+2, w->h+2, COL_BORDER);
+    /* Clear, distinctly-coloured 2px border so the window stands out against the
+     * desktop (bright accent when focused, muted when not), with a thin dark
+     * outer line for definition. */
+    gfx_u32 border = focused ? UI_COL_BTN_ACT : RGB(0x3a,0x4e,0x6e);
+    gfx_outline(&scr, w->x-3, w->y-3, w->w+6, w->h+6, COL_BORDER);
+    gfx_outline(&scr, w->x-2, w->y-2, w->w+4, w->h+4, border);
+    gfx_outline(&scr, w->x-1, w->y-1, w->w+2, w->h+2, border);
     gfx_fill(&scr, w->x, w->y, w->w, w->h, COL_WIN);
     gfx_fill(&scr, w->x, w->y, w->w, TH, focused?COL_TITLE:COL_TITLE_U);
     gfx_fill(&scr, w->x, w->y+TH-2, w->w, 2, COL_TITLE2);
@@ -964,12 +970,15 @@ static int fstest(void)
  * GUI is the focused root task so sys_fb_present works.  NOTE: when the GUI is
  * split into a display server + client .elfs, this lifts wholesale into a
  * standalone login.elf -- see docs/gui.md. */
-static void do_login(void)
+static void do_login(const char *prefill_user)
 {
     char user[64]={0}, pass[64]={0}, err[40]={0};
+    /* Pre-fill the username from the suggested (autologin) user, if any --
+     * respects autologin=<user> without hardcoding; focus the password. */
+    if (prefill_user && prefill_user[0]) scpy(user, prefill_user, sizeof user);
     int cx=(int)FBW/2, cy=(int)FBH/2, prev_left=0, dirty=1;
     ui_ctx u; for(unsigned i=0;i<sizeof u/sizeof(int);i++) ((int*)&u)[i]=0;
-    u.focus=1;                 /* start with the username field focused */
+    u.focus = user[0] ? 2 : 1;   /* prefilled username -> focus password */
 
     for(;;){
         int mpressed=0,mreleased=0; unsigned int ev;
@@ -1017,6 +1026,7 @@ int main(int argc, char **argv, char **envp)
     if (argc>1 && seq(argv[1],"uitest")) return uitest();
     if (argc>1 && seq(argv[1],"fstest")) return fstest();
     int want_login = (argc>1 && seq(argv[1],"login"));
+    const char *login_user = (want_login && argc>2) ? argv[2] : 0;   /* suggested user */
 
     unsigned info=sys_fb_info();
     if(!info){ const char*e="gui: no pixel framebuffer (VGA-only)\n"; sys_write(2,e,36); return 1; }
@@ -1030,7 +1040,7 @@ int main(int argc, char **argv, char **envp)
     sys_statusbar_set(0);
     sys_signal(SIGINT,SIG_IGN);
 
-    if (want_login) do_login();     /* graphical login before the desktop */
+    if (want_login) do_login(login_user);   /* graphical login before the desktop */
 
     /* initial window geometry + z-order */
     for(int k=0;k<W_COUNT;k++) zlist[k]=k;

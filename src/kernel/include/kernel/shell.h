@@ -21,6 +21,10 @@ extern int g_boot_gui;
  * shell_login_loop uses it to pick GUI vs text login on re-login. */
 extern int g_gui_session;
 
+/* `verbose` on the cmdline: skip the boot loading screen so the boot log /
+ * background ktest output stays on screen instead of the progress bar. */
+extern int g_verbose_boot;
+
 /*
  * Minimal kernel REPL over VGA + PS/2 keyboard.
  *

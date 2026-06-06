@@ -1980,7 +1980,16 @@ int main(int argc, char **argv, char **envp)
      * `gui`.  It spawns in the background (is_gui_path) so this login session
      * stays alive as the GUI's parent and resumes the prompt on Log Off. */
     if (g_autostart_gui == 1)      run_script_buf("gui\n");
-    else if (g_autostart_gui == 2) run_script_buf("gui login\n");
+    else if (g_autostart_gui == 2) {
+        /* `gui login [user]` -- pass the suggested (autologin) username so the
+         * graphical login can pre-fill it.  g_username is the --user= value the
+         * login loop handed us (the autologin user when one is configured). */
+        char line[80]; unsigned int o=0;
+        const char *p="gui login "; while(*p) line[o++]=*p++;
+        for (unsigned int i=0; g_username[i] && o<sizeof(line)-2; i++) line[o++]=g_username[i];
+        line[o++]='\n'; line[o]='\0';
+        run_script_buf(line);
+    }
 
     char line[LINE_MAX];
     char prompt[VFS_PATH_MAX + 64];

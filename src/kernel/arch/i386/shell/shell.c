@@ -982,8 +982,12 @@ int shell_enter_slot(int with_loading_screen)
          * the VGA fallback also blocks the REPL until ktest_bg_done = 1.
          * On VESA we draw a 30-cell ASCII bar two rows below the logo; on
          * VGA we just yield silently (progress prints already go to serial
-         * via ktest_bg_task's RUN macro). */
-        if (vesa_tty_is_ready()) {
+         * via ktest_bg_task's RUN macro).
+         *
+         * `verbose` boot skips the splash/bar entirely: the boot log left on
+         * screen (and ktest output) stays visible while we still wait for
+         * ktest_bg_done below. */
+        if (!g_verbose_boot && vesa_tty_is_ready()) {
             vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
             vesa_tty_clear();
             vesa_blit_logo(SHELL_FG_RGB, SHELL_BG_RGB);
@@ -1307,9 +1311,13 @@ void shell_login_loop(void)
 
         /* --- Spawn sh.elf --login --user=<name> --- */
         {
-            /* Build --user=<name> into a stack buffer so it outlives the call. */
+            /* Build --user=<name> into a stack buffer so it outlives the call.
+             * For the GUI login (no one authenticated yet) pass the configured
+             * autologin user as the *suggested* name so the graphical login can
+             * pre-fill it -- respecting autologin=<user> without hardcoding. */
             static char user_arg[48];
-            const char *u = auth_current_user();
+            const char *u = (gui_login && g_autologin_user[0])
+                          ? g_autologin_user : auth_current_user();
             size_t i = 0;
             const char *pfx = "--user=";
             while (*pfx) user_arg[i++] = *pfx++;

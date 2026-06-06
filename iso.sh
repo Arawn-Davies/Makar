@@ -152,6 +152,10 @@ menuentry "Makar OS (rescue shell)" {
 	multiboot2 /boot/makar.kernel live shell=rescue
 }
 
+menuentry "Makar OS (verbose boot)" {
+	multiboot2 /boot/makar.kernel live verbose
+}
+
 menuentry "Makar OS (serial console)" {
 	multiboot2 /boot/makar.kernel live console=ttyS0
 }
@@ -196,6 +200,10 @@ menuentry "Makar OS (GUI desktop)" {
 
 menuentry "Makar OS (rescue shell)" {
 	multiboot2 /boot/makar.kernel live shell=rescue
+}
+
+menuentry "Makar OS (verbose boot)" {
+	multiboot2 /boot/makar.kernel live verbose
 }
 
 menuentry "Makar OS (serial console)" {
