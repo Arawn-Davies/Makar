@@ -1224,13 +1224,20 @@ void shell_login_loop(void)
 {
     int first_boot = 1;
     for (;;) {
-        /* gui_login: with autoboot=gui, gui.elf draws its OWN graphical login
+        /* gui_login: with a GUI session, gui.elf draws its OWN graphical login
          * (do_login -> SYS_LOGIN), so the kernel must NOT show the text
          * login_screen or insist on a pre-authenticated user.  Otherwise the
-         * normal text-login getty flow applies. */
+         * normal text-login getty flow applies.
+         *
+         * g_gui_session tracks whether the *current* session is GUI or CLI
+         * (init = autoboot=gui; set to 1 when the GUI registers, 0 on Exit to
+         * Shell / SYS_GUI_CLOSE).  So a GUI Log Off re-shows the GUI login,
+         * while a `logout` typed at the CLI after Exit to Shell re-shows the
+         * text login -- "logout where you are". */
+        if (first_boot) g_gui_session = g_boot_gui;
         int gui_login = 0;
 
-        if (g_boot_gui) {
+        if (g_gui_session) {
             /* The GUI owns authentication.  Autologin only on first boot
              * (cmdline autologin=<user> / /etc/autologin); if that doesn't sign
              * anyone in, hand off to the GUI login.  On re-login (after Log Off)
@@ -1325,7 +1332,7 @@ void shell_login_loop(void)
             argv[ac++] = "sh.elf";
             argv[ac++] = "--login";
             argv[ac++] = user_arg;
-            if (g_boot_gui)
+            if (g_gui_session)
                 argv[ac++] = gui_login ? "--autostart=gui-login" : "--autostart=gui";
             argv[ac] = NULL;
             shell_exec_elf(sh_path, ac, (char **)argv);

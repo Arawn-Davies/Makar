@@ -361,6 +361,7 @@ void syscall_dispatch(registers_t *regs)
             if (me && me->tty == VTTY_ROOT_SLOT &&
                 (strcmp(base, "gui.elf") == 0 || strcmp(base, "gui") == 0)) {
                 vtty_register_root_gui(me);
+                g_gui_session = 1;          /* this session is now a GUI one */
             }
         }
 
@@ -760,6 +761,7 @@ void syscall_dispatch(registers_t *regs)
 
     case SYS_GUI_CLOSE: {
         vtty_switch_root_text();
+        g_gui_session = 0;          /* Exit to Shell: this session is now CLI */
         regs->eax = 0;
         break;
     }
