@@ -63,27 +63,9 @@ struct dirent {
 /* read(2) errno-style return for "no data and non-blocking". */
 #define EAGAIN           11
 
-/* Signal numbers (Linux i386 ABI subset).  Mirrors <kernel/signal.h>;
- * kept in sync by hand since the userspace build doesn't see kernel
- * headers. */
-#define SIGHUP    1
-#define SIGINT    2
-#define SIGQUIT   3
-#define SIGILL    4
-#define SIGTRAP   5
-#define SIGABRT   6
-#define SIGFPE    8
-#define SIGKILL   9
-#define SIGUSR1  10
-#define SIGSEGV  11
-#define SIGUSR2  12
-#define SIGPIPE  13
-#define SIGALRM  14
-#define SIGTERM  15
-#define SIGCHLD  17
-#define SIGCONT  18
-#define SIGSTOP  19
-#define SIGTSTP  20
+/* Signal numbers: the canonical list is the shared ABI header (no longer
+ * hand-synced with the kernel). */
+#include <makar_signals.h>
 
 /* sig_handler_t function pointer + SIG_DFL/SIG_IGN sentinels (POSIX). */
 typedef void (*sig_handler_t)(int);
@@ -161,37 +143,9 @@ struct stat {
 /* One screen cell passed to sys_putch_at(). */
 typedef struct { unsigned char col, row, ch, clr; } tty_cell_t;
 
-/* Key sentinels returned by sys_getkey() (unsigned byte values).  Mirrors
- * <kernel/keyboard.h> KEY_* - kept in sync by hand because the userspace
- * build doesn't see kernel headers. */
-#define KEY_ARROW_UP    0x80
-#define KEY_ARROW_DOWN  0x81
-#define KEY_ARROW_LEFT  0x82
-#define KEY_ARROW_RIGHT 0x83
-#define KEY_F1          0x84
-#define KEY_F2          0x85
-#define KEY_F3          0x86
-#define KEY_F4          0x87
-#define KEY_FOCUS_GAIN  0x88
-#define KEY_F5          0x89
-#define KEY_F6          0x8A
-#define KEY_F7          0x8B
-#define KEY_F8          0x8C
-#define KEY_F9          0x8D
-#define KEY_F10         0x8E
-#define KEY_F11         0x8F
-#define KEY_F12         0x90
-#define KEY_SHIFT_DOWN  0x91
-#define KEY_CTRL_DOWN   0x92
-#define KEY_ALT_DOWN    0x93
-#define KEY_CAPS_TOGGLE 0x94
-#define KEY_SUPER_DOWN  0x95
-#define KEY_MENU_DOWN   0x96
-#define KEY_PAGE_UP     0x97
-#define KEY_PAGE_DOWN   0x98
-#define KEY_CTRL_S      0x13
-#define KEY_CTRL_Q      0x11
-#define KEY_CTRL_C      0x03
+/* Key sentinels returned by sys_getkey(): the canonical list is the shared ABI
+ * header (no longer hand-synced with the kernel). */
+#include <makar_keys.h>
 
 /* Raw syscall stubs. */
 static inline long syscall0(long nr)

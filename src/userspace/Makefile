@@ -218,10 +218,11 @@ install: all
 	mkdir -p $(ISODIR)/usr/lib $(ISODIR)/usr/include $(ISODIR)/usr/share/examples
 	cp crt0.o libc.a $(ISODIR)/usr/lib/
 	cp $(SYSROOT_HEADERS) $(ISODIR)/usr/include/
-# The shared syscall-number ABI header lives in the kernel tree; ship it to
-# /usr/include too so a tcc-compiled program's <syscall.h> -> <makar_syscalls.h>
-# resolves in-OS (the kernel rebuild already gets it via /usr/include/kernel-build).
-	cp ../kernel/include/makar_syscalls.h $(ISODIR)/usr/include/
+# The shared ABI headers live in the kernel tree; ship them to /usr/include too
+# so a tcc-compiled program's <syscall.h> -> <makar_{syscalls,signals,keys}.h>
+# resolves in-OS (the kernel rebuild already gets them via /usr/include/kernel-build).
+	cp ../kernel/include/makar_syscalls.h ../kernel/include/makar_signals.h \
+	   ../kernel/include/makar_keys.h $(ISODIR)/usr/include/
 	cp hello-tcc.c $(ISODIR)/usr/share/examples/
 # tcc.elf rides along with the rest of the apps so PATH lookup resolves
 # `tcc` from the kernel shell.  Only present when build-tcc.sh has been
