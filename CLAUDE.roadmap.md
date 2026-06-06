@@ -27,8 +27,45 @@ files, editor, tasks, doom are client `.elf`s over IPC + shared surfaces; see
   `mxedit -open <path>` (needs a `MX_SPAWN` protocol message so the *server*
   stays the parent and reaps it).
 - **Resize that re-lays-out clients** — currently the server scales/1:1-blits a
-  fixed client surface; a `MXEV_RESIZE` + surface realloc would let text clients
-  re-flow crisply at any size.
+  fixed client surface; a `MXEV_RESIZE` + surface realloc lets text clients
+  re-flow crisply at any size (terminal grows in rows/cols, not text size).
+  [Being implemented — `MX_F_RESIZABLE` flag + `SYS_SURFACE_UNMAP`.]
+- **Proper desktop icons** — replace the flat coloured-square launcher glyphs
+  with real per-app icon bitmaps (a small RGBA/1-bpp icon baked per app, drawn
+  by `draw_icons`). Could also drive a future drag-and-drop GUI designer.
+- **`mxabout`** — shipped: About window (copyright + live system specs).
+
+### OS-specific cross toolchain (`i686-makar`)
+
+Per the OSDev wiki (https://wiki.osdev.org/OS_Specific_Toolchain and
+https://wiki.osdev.org/Creating_an_Operating_System — both currently 403 to
+automated fetches, so consult in a browser). Today the build uses a generic
+`i686-elf` cross-compiler. A Makar-targeted toolchain is the "proper" path and
+the foundation for a real libc port:
+
+- **binutils:** add `i686-makar` to `config.sub` (a `-makar` OS), build
+  `--target=i686-makar`.
+- **gcc:** add the target to `gcc/config.gcc` with a `gcc/config/makar.h`
+  (defines `__makar__`, sets the default `crt0`/lib search + `-D` builtins,
+  `STARTFILE_SPEC`/`ENDFILE_SPEC`/`LIB_SPEC`), build gcc + **libgcc** against it.
+- **sysroot:** `--with-sysroot` so `<...>` headers + libs resolve under the
+  Makar tree; lets `i686-makar-gcc` Just Work without per-invocation `-I/-L`.
+- **payoff:** unblocks a hosted **newlib** or **musl** port (the consolidated
+  `makar_*` ABI headers are the kernel-side contract it targets), and lets ports
+  build with a normal `./configure --host=i686-makar`.
+
+### Compatibility layers (research / longer-term)
+
+- **ELKS compatibility** (shim layer) — run ELKS (Embeddable Linux Kernel
+  Subset, 16-bit/8086) binaries via a translation/shim. Large: ELKS is real-mode
+  8086 with its own syscall ABI; needs a v86/emulation path or a static recompile
+  shim. Research-grade.
+- **NX windowing system** (ELKS's Nano-X/microwindows-style GUI) compat — a
+  compatibility layer mapping NX/Nano-X client calls onto the makx protocol, so
+  Nano-X apps render as makx clients.
+- **DOS compatibility layer** — run simple DOS (MZ/.COM) programs via a v86-mode
+  or interpreter shim implementing the INT 21h DOS API subset. Large; scope to a
+  minimal subset (file I/O + console) first.
 
 ### Slice queue (`feat/tty-multitasking` → follow-ups)
 
