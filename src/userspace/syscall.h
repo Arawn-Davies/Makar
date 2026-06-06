@@ -81,6 +81,10 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_SURFACE_MAP     262
 #define SYS_SURFACE_INFO    263
 #define SYS_SURFACE_DESTROY 264
+#define SYS_IPC_SEND        249
+#define SYS_IPC_RECV        250
+#define SYS_IPC_SENDREC     251
+#define SYS_IPC_NBRECV      267
 #define SYS_CARET_STYLE  218
 /* Admin syscalls (privileged operations).  task_is_admin() gates each;
  * currently always-true (no user model).  Negative return = denied or
@@ -539,6 +543,36 @@ static inline unsigned int sys_surface_info(int id)
 static inline int sys_surface_destroy(int id)
 {
     return (int)syscall1(SYS_SURFACE_DESTROY, (long)id);
+}
+
+/* Synchronous message-passing IPC (MINIX-style; kernel/ipc.h).  Endpoints are
+ * task pids; messages are fixed 32-byte structs.  send/recv block until the
+ * peer rendezvouses; sendrec is an atomic send-then-await-reply RPC; nbrecv is
+ * a non-blocking poll (returns -EAGAIN, i.e. -11, when nothing is queued) so a
+ * server can interleave client requests with hardware-input polling. */
+#define IPC_MSG_DATA_WORDS 6
+#define IPC_ANY  (-1)
+typedef struct {
+    int           src;     /* sender pid; filled in by the kernel on receive */
+    int           type;    /* caller-defined opcode                          */
+    unsigned int  data[IPC_MSG_DATA_WORDS];
+} ipc_msg_t;               /* 32 bytes -- must match kernel/ipc.h            */
+
+static inline int sys_ipc_send(int dst, const ipc_msg_t *m)
+{
+    return (int)syscall2(SYS_IPC_SEND, (long)dst, (long)m);
+}
+static inline int sys_ipc_recv(int from, ipc_msg_t *m)
+{
+    return (int)syscall2(SYS_IPC_RECV, (long)from, (long)m);
+}
+static inline int sys_ipc_sendrec(int dst, ipc_msg_t *m)
+{
+    return (int)syscall2(SYS_IPC_SENDREC, (long)dst, (long)m);
+}
+static inline int sys_ipc_nbrecv(int from, ipc_msg_t *m)
+{
+    return (int)syscall2(SYS_IPC_NBRECV, (long)from, (long)m);
 }
 
 /* Set the VESA caret style (0 = underline/line, 2 = flashing block).

@@ -5,6 +5,7 @@
 
 /* errno-style return codes (matches the small negatives used elsewhere). */
 #define IPC_ESRCH   (-3)    /* no such / dead destination task */
+#define IPC_EAGAIN  (-11)   /* nbrecv: nothing queued right now */
 #define IPC_EFAULT  (-14)   /* bad message pointer             */
 #define IPC_EINVAL  (-22)   /* invalid argument (e.g. self-send) */
 
@@ -190,4 +191,43 @@ int ipc_sendrec(int dst, ipc_msg_t *msg)
         return rc;
     /* Await the reply specifically from dst, overwriting the request. */
     return ipc_recv(dst, msg);
+}
+
+int ipc_nbrecv(int from, ipc_msg_t *out)
+{
+    task_t *cur = task_current();
+    if (!cur)  return IPC_EINVAL;
+    if (!out)  return IPC_EFAULT;
+
+    uint32_t fl = ipc_irq_save();
+
+    /* Identical match scan to ipc_recv's fast path -- but if nothing is queued
+     * we return -EAGAIN instead of blocking, so a polling server stays live. */
+    task_t *prev = NULL, *s = cur->ipc_sender_q;
+    while (s) {
+        if (from == IPC_ANY || s->pid == from)
+            break;
+        prev = s;
+        s = s->ipc_sq_next;
+    }
+    if (!s) {
+        ipc_irq_restore(fl);
+        return IPC_EAGAIN;
+    }
+
+    if (prev) prev->ipc_sq_next = s->ipc_sq_next;
+    else      cur->ipc_sender_q = s->ipc_sq_next;
+    s->ipc_sq_next = NULL;
+
+    memcpy(&cur->ipc_buf, &s->ipc_buf, sizeof(ipc_msg_t));
+
+    s->ipc_rc      = 0;
+    s->ipc_state   = IPC_STATE_IDLE;
+    s->ipc_partner = 0;
+    if (s->state == TASK_BLOCKED)
+        s->state = TASK_READY;
+
+    ipc_irq_restore(fl);
+    memcpy(out, &cur->ipc_buf, sizeof(ipc_msg_t));   /* our context */
+    return 0;
 }

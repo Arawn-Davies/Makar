@@ -174,6 +174,7 @@
 #define SYS_IPC_SEND       249  /* int ipc_send(int dst, const ipc_msg_t *)        */
 #define SYS_IPC_RECV       250  /* int ipc_recv(int from, ipc_msg_t *)             */
 #define SYS_IPC_SENDREC    251  /* int ipc_sendrec(int dst, ipc_msg_t *)           */
+#define SYS_IPC_NBRECV     267  /* int ipc_nbrecv(int from, ipc_msg_t *) -> 0/-EAGAIN */
 #define SYS_NET_INFO       253  /* int net_info(char *buf, uint32_t bufsz)         */
 #define SYS_NET_CTL        254  /* int net_ctl(int cmd)                            */
 #define SYS_WGET           255  /* int wget(const char *url, const char *outpath)

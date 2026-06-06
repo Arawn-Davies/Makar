@@ -52,4 +52,10 @@ int ipc_send   (int dst,  const ipc_msg_t *msg);
 int ipc_recv   (int from, ipc_msg_t *out);
 int ipc_sendrec(int dst,  ipc_msg_t *msg);   /* in: request -> out: reply */
 
+/* Non-blocking receive: deliver a queued message from `from` (or anyone) if one
+ * is already waiting, else return -EAGAIN immediately without blocking.  Lets a
+ * server (e.g. the makx display server) drain client requests in the same loop
+ * it polls hardware input, instead of parking in a blocking ipc_recv. */
+int ipc_nbrecv (int from, ipc_msg_t *out);
+
 #endif /* _KERNEL_IPC_H */

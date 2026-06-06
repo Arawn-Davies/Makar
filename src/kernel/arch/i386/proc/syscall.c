@@ -2258,6 +2258,11 @@ void syscall_dispatch(registers_t *regs)
                                           (ipc_msg_t *)(uintptr_t)regs->ecx);
         break;
 
+    case SYS_IPC_NBRECV:
+        regs->eax = (uint32_t)ipc_nbrecv((int)regs->ebx,
+                                         (ipc_msg_t *)(uintptr_t)regs->ecx);
+        break;
+
     /* ------------------------------------------------------------------
      * Shared pixel surfaces.  EBX/ECX carry the args; see kernel/surface.h.
      * SURFACE_MAP returns a userspace address (0 == failure, like mmap-ish

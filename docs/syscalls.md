@@ -134,6 +134,26 @@ has it mapped; its frames are reclaimed once neither holds. On task teardown
 the kernel unmaps the dying task's surface pages **before** its page directory
 is torn down, so the shared frames are never double-freed.
 
+### IPC (synchronous message passing)
+
+MINIX-style rendezvous: endpoints are task pids, messages are fixed 32-byte
+`ipc_msg_t` (a `type` opcode + 6 data words), transfer is synchronous (a send
+blocks until the destination is in a matching receive). `ebx` = endpoint pid (or
+`IPC_ANY = -1` for receive), `ecx` = `ipc_msg_t *`. See `kernel/ipc.h`. This is
+the control channel for the makx display server/client split (pixels go over a
+shared surface); `docs/gui.md` describes the makx protocol layered on top.
+
+| Number | Name | Arguments | Returns |
+| --- | --- | --- | --- |
+| 249 | `SYS_IPC_SEND` | `dst, msg` | `0` ok, `-ESRCH`/`-EINVAL`/`-EFAULT` |
+| 250 | `SYS_IPC_RECV` | `from, out` | `0` ok (blocks until a sender), or `-err` |
+| 251 | `SYS_IPC_SENDREC` | `dst, msg` | atomic send-then-await-reply (RPC) |
+| 267 | `SYS_IPC_NBRECV` | `from, out` | `0` if a message was queued, else `-EAGAIN` (`-11`); never blocks |
+
+`SYS_IPC_NBRECV` lets a server (the makx display server) drain queued client
+requests in the same loop it polls hardware input, instead of parking in a
+blocking `ipc_recv`.
+
 ### Keyboard
 
 Keyboard syscalls expose:
