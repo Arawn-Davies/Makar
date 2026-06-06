@@ -704,6 +704,9 @@ _build_iso() {
     # GRUB_DEFAULT selects the auto-booted menuentry (default: the GUI desktop).
     # The kbtest/guitest harnesses pin it to 0 (the KERNEL_ARGS-bearing entry).
     [ -n "${GRUB_DEFAULT:-}" ] && _kenv+=(--env "GRUB_DEFAULT=$GRUB_DEFAULT")
+    # VERBOSE/V stream the full tcc.c compile (build-tcc.sh) instead of the tail.
+    [ -n "${VERBOSE:-}" ] && _kenv+=(--env "VERBOSE=$VERBOSE")
+    [ -n "${V:-}" ]       && _kenv+=(--env "V=$V")
     _drun "${_kenv[@]}" -- "${_flags:+$_flags }bash iso.sh"
 }
 

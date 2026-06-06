@@ -55,6 +55,18 @@ else
     exit 1
 fi
 
+# Verbose build: stream the full tcc.c compiler output live instead of only the
+# last 20 lines after it finishes.  tcc.c is one big -O2 compile that's silent
+# for a while, so set VERBOSE=1 (or V=1) when it looks stuck.  Works both
+# standalone and via `VERBOSE=1 ./run.sh iso build`.
+if [ "${VERBOSE:-0}" = "1" ] || [ "${V:-0}" = "1" ]; then
+    TCC_LOG_FILTER="cat"      # pass the whole stream through
+    TCC_GCC_V="-v"            # gcc driver phases -> proves it's alive, not hung
+else
+    TCC_LOG_FILTER="tail -20" # quiet: keep the full log, show only the tail
+    TCC_GCC_V=""
+fi
+
 # ── config.h ─────────────────────────────────────────────────────────────────
 # Upstream's ./configure assumes a hosted Linux environment; we supply all
 # CONFIG_* values via -D flags instead.
@@ -256,9 +268,9 @@ if [ -n "$TCC_SKIP_BUILD" ]; then
 else
 
 # ── Compile tcc.o ────────────────────────────────────────────────────────────
-echo "==> Compiling tcc.c ..."
+echo "==> Compiling tcc.c ... (one big -O2 compile; set VERBOSE=1 for live output)"
 RUN "cd vendor/tinycc && \
-    i686-elf-gcc -O2 -g -std=gnu99 -ffreestanding -fno-stack-protector \
+    i686-elf-gcc $TCC_GCC_V -O2 -g -std=gnu99 -ffreestanding -fno-stack-protector \
         -Wall -Wno-unused-parameter -Wno-pointer-sign -Wno-pointer-to-int-cast \
         -Wno-int-to-pointer-cast -Wno-format -Wno-missing-field-initializers \
         -Wno-unused-function \
@@ -267,7 +279,7 @@ RUN "cd vendor/tinycc && \
         -I ../../src/userspace \
         -I ../../src/kernel/include \
         $COMMON_DEFS \
-        -c tcc.c -o tcc.o 2>&1 | tee build-tcc.log | tail -20" || true
+        -c tcc.c -o tcc.o 2>&1 | tee build-tcc.log | $TCC_LOG_FILTER" || true
 
 if ! RUN "test -f vendor/tinycc/tcc.o"; then
     echo "ERROR: tcc.c failed to compile.  See vendor/tinycc/build-tcc.log." >&2
