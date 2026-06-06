@@ -1702,19 +1702,28 @@ uint32_t keyboard_test_mod_state(void)
     return v;
 }
 
+/* Service a pending Ctrl-Alt-Del in the active root text session's context.
+ * The flag is cleared *before* calling cad_menu so its own key reads don't
+ * re-enter here.  Ctrl-Alt-Del sets the flag from the IRQ but pushes no key,
+ * so this MUST be polled inside the blocking read loops below -- a shell
+ * parked in keyboard_getchar waiting for input would otherwise never notice
+ * (the entry check alone fired only if getchar was re-entered after a later
+ * keypress).  No-op outside the root text session (e.g. under the GUI). */
+static void kb_service_cad(void)
+{
+    if (__atomic_load_n(&kb_cad_pending, __ATOMIC_ACQUIRE) && vtty_root_text_active()) {
+        __atomic_store_n(&kb_cad_pending, 0, __ATOMIC_RELEASE);
+        cad_menu();
+    }
+}
+
 unsigned char keyboard_getchar(void)
 {
     /* Apply any pending vtty_switch repaint deferred from IRQ context.
      * Cheap when nothing is pending; the cost only lands here, in task
      * context, so the keyboard IRQ stays short. */
     vtty_drain_pending();
-
-    /* Service a pending Ctrl-Alt-Del in the active text session's context.
-     * Cleared before the call so cad_menu's own key reads don't re-enter. */
-    if (__atomic_load_n(&kb_cad_pending, __ATOMIC_ACQUIRE) && vtty_root_text_active()) {
-        __atomic_store_n(&kb_cad_pending, 0, __ATOMIC_RELEASE);
-        cad_menu();
-    }
+    kb_service_cad();
 
     int s = slot_for_current();
     if (s >= 0) {
@@ -1723,6 +1732,7 @@ unsigned char keyboard_getchar(void)
             vesa_tty_caret_blink_tick(timer_get_ticks());
             task_yield();
             vtty_drain_pending();
+            kb_service_cad();
             asm volatile("pause");
         }
         return slot_pop(slot);
@@ -1731,6 +1741,7 @@ unsigned char keyboard_getchar(void)
         vesa_tty_caret_blink_tick(timer_get_ticks());
         task_yield();
         vtty_drain_pending();
+        kb_service_cad();
         asm volatile("pause");
     }
     return buf_pop();
