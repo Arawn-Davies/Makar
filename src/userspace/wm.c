@@ -56,6 +56,9 @@ enum { W_TERMINAL, W_EDITOR, W_FILES, W_TASKS, W_DOOM, W_COUNT };
 typedef struct {
     int    open;
     int    x, y, w, h;          /* outer rect                                */
+    int    minimized;           /* hidden (still in the dock)                */
+    int    maximized;           /* filling the work area                     */
+    int    sx, sy, sw, sh;      /* geometry saved before maximise            */
     char   title[40];
     ui_ctx ui;                  /* persistent immediate-mode state           */
 } window;
@@ -590,13 +593,45 @@ static void doom_draw(window *w)
     int cx=client_x(w), cy=client_y(w), cw=client_w(w), ch=client_h(w);
     gfx_fill(&scr, cx, cy, cw, ch, 0);
     if (doom_pid>0){ int st=0; if (sys_wait4(doom_pid,&st,WNOHANG)==doom_pid){ doom_stop(); wins[W_DOOM].open=0; return; } }
-    if (doom_surf.px) gfx_blit_scaled(&scr, cx, cy, cw, ch, &doom_surf);
+    if (doom_surf.px){
+        /* Fast path: when the window can hold DOOM's 640x400 1:1, copy straight
+         * (no per-frame nearest-neighbour scale) and centre it -- a real speed
+         * win under TCG.  Only scale when the window is smaller than the frame. */
+        if (cw>=DOOM_W && ch>=DOOM_H)
+            gfx_blit(&scr, cx+(cw-DOOM_W)/2, cy+(ch-DOOM_H)/2, &doom_surf, 0,0, DOOM_W, DOOM_H);
+        else
+            gfx_blit_scaled(&scr, cx, cy, cw, ch, &doom_surf);
+    }
     else gfx_str(&scr, cx+8, cy+8, "doom: not running", COL_TEXT);
 }
 
 /* ===================== window chrome + compositor ======================= */
 
 static const char *win_title(int kind){ return wins[kind].title; }
+
+/* Title-bar buttons: three small dots, right-aligned.  Order L->R is
+ * minimise, maximise, close. */
+#define BTN_D   11
+#define BTN_GAP 7
+static int btn_close_x(window *w){ return w->x + w->w - 8 - BTN_D; }
+static int btn_max_x  (window *w){ return btn_close_x(w) - (BTN_D + BTN_GAP); }
+static int btn_min_x  (window *w){ return btn_max_x(w)   - (BTN_D + BTN_GAP); }
+static int btn_y      (window *w){ return w->y + (TH - BTN_D) / 2; }
+
+/* Toggle maximise: fill the work area (below the menu bar, above the dock),
+ * saving the previous geometry so the next click restores it. */
+static void win_toggle_max(int kind)
+{
+    window *w=&wins[kind];
+    if (!w->maximized){
+        w->sx=w->x; w->sy=w->y; w->sw=w->w; w->sh=w->h;
+        w->x=0; w->y=MENU_H; w->w=(int)FBW; w->h=(int)FBH-MENU_H-DOCK_H;
+        w->maximized=1;
+    } else {
+        w->x=w->sx; w->y=w->sy; w->w=w->sw; w->h=w->sh;
+        w->maximized=0;
+    }
+}
 
 static void draw_window_frame(int kind)
 {
@@ -606,19 +641,33 @@ static void draw_window_frame(int kind)
     gfx_fill(&scr, w->x, w->y, w->w, w->h, COL_WIN);
     gfx_fill(&scr, w->x, w->y, w->w, TH, focused?COL_TITLE:COL_TITLE_U);
     gfx_fill(&scr, w->x, w->y+TH-2, w->w, 2, COL_TITLE2);
-    gfx_str_clip(&scr, w->x+6, w->y+6, win_title(kind), 0xFFFFFF, w->x+w->w-TH);
-    gfx_fill(&scr, w->x+w->w-TH, w->y, TH, TH, COL_CLOSE);
-    gfx_str(&scr, w->x+w->w-TH+6, w->y+6, "x", 0xFFFFFF);
+    gfx_str_clip(&scr, w->x+10, w->y+(TH-8)/2, win_title(kind), 0xFFFFFF, btn_min_x(w)-6);
+    /* small macOS-style dots: minimise (amber) / maximise (green) / close (red),
+     * dimmed when the window is unfocused. */
+    int by=btn_y(w);
+    gfx_round(&scr, btn_min_x(w),   by, BTN_D, BTN_D, focused?RGB(0xfe,0xbc,0x2e):RGB(0x5e,0x57,0x40), COL_BORDER);
+    gfx_round(&scr, btn_max_x(w),   by, BTN_D, BTN_D, focused?RGB(0x28,0xc8,0x40):RGB(0x46,0x5a,0x46), COL_BORDER);
+    gfx_round(&scr, btn_close_x(w), by, BTN_D, BTN_D, focused?RGB(0xff,0x5f,0x57):RGB(0x6a,0x4a,0x48), COL_BORDER);
+    /* resize grip: a couple of ticks at the bottom-right corner. */
+    gfx_fill(&scr, w->x+w->w-4, w->y+w->h-10, 2, 8, COL_TITLE2);
+    gfx_fill(&scr, w->x+w->w-10, w->y+w->h-4, 8, 2, COL_TITLE2);
 }
 
 static int in_rect(int px,int py,int x,int y,int w,int h){ return px>=x&&px<x+w&&py>=y&&py<y+h; }
-static int in_titlebar(window *w,int px,int py){ return in_rect(px,py,w->x,w->y,w->w-TH,TH); }
-static int in_close(window *w,int px,int py){ return in_rect(px,py,w->x+w->w-TH,w->y,TH,TH); }
+static int in_btn(int bx,int by,int px,int py){ return in_rect(px,py,bx-2,by-2,BTN_D+4,BTN_D+4); }
+static int in_min  (window *w,int px,int py){ return in_btn(btn_min_x(w),  btn_y(w),px,py); }
+static int in_max  (window *w,int px,int py){ return in_btn(btn_max_x(w),  btn_y(w),px,py); }
+static int in_close(window *w,int px,int py){ return in_btn(btn_close_x(w),btn_y(w),px,py); }
+/* drag region = title bar left of the buttons */
+static int in_titlebar(window *w,int px,int py){ return in_rect(px,py,w->x,w->y,btn_min_x(w)-w->x,TH); }
+/* resize grab = bottom-right corner */
+static int in_resize(window *w,int px,int py){ return in_rect(px,py,w->x+w->w-14,w->y+w->h-14,16,16); }
 
-/* topmost open window under (px,py); -1 if none */
+/* topmost open, non-minimised window under (px,py); -1 if none */
 static int hit_window(int px,int py)
 {
-    for (int i=W_COUNT-1;i>=0;i--){ int k=zlist[i]; if(wins[k].open && in_rect(px,py,wins[k].x-1,wins[k].y-1,wins[k].w+2,wins[k].h+2)) return k; }
+    for (int i=W_COUNT-1;i>=0;i--){ int k=zlist[i];
+        if(wins[k].open && !wins[k].minimized && in_rect(px,py,wins[k].x-1,wins[k].y-1,wins[k].w+2,wins[k].h+2)) return k; }
     return -1;
 }
 
@@ -801,6 +850,7 @@ static void open_window(int kind)
         if (kind==W_DOOM && doom_pid<0) doom_launch();
         if (kind==W_TERMINAL && term_pid<0){ term_clear(); term_spawn(); }
     }
+    w->minimized=0;          /* a dock/icon click restores a minimised window */
     z_raise(kind);
 }
 static void close_window(int kind)
@@ -808,7 +858,7 @@ static void close_window(int kind)
     wins[kind].open=0;
     if (kind==W_DOOM) doom_stop();
     if (kind==W_TERMINAL) term_kill();
-    if (focus_kind==kind){ focus_kind=-1; for(int i=W_COUNT-1;i>=0;i--){int k=zlist[i]; if(wins[k].open){focus_kind=k;break;}} }
+    if (focus_kind==kind){ focus_kind=-1; for(int i=W_COUNT-1;i>=0;i--){int k=zlist[i]; if(wins[k].open&&!wins[k].minimized){focus_kind=k;break;}} }
 }
 
 /* ============================== uitest ================================== */
@@ -960,7 +1010,7 @@ int main(int argc, char **argv, char **envp)
     open_window(W_TERMINAL);
 
     int cx=(int)FBW/2, cy=(int)FBH/2, prev_left=0;
-    int dragging=0, drag_kind=-1, drag_dx=0, drag_dy=0;
+    int dragging=0, resizing=0, drag_kind=-1, drag_dx=0, drag_dy=0;
     int dirty=1, announced=0, exit_to_shell=0;
     unsigned stat_up=0;
 
@@ -996,8 +1046,12 @@ int main(int argc, char **argv, char **envp)
                 int hk=hit_window(cx,cy);
                 if (hk>=0){
                     z_raise(hk); dirty=1;
-                    if (in_close(&wins[hk],cx,cy)) close_window(hk);
-                    else if (in_titlebar(&wins[hk],cx,cy)){ dragging=1; drag_kind=hk; drag_dx=cx-wins[hk].x; drag_dy=cy-wins[hk].y; }
+                    if      (in_close(&wins[hk],cx,cy)) close_window(hk);
+                    else if (in_min(&wins[hk],cx,cy)){ wins[hk].minimized=1;
+                             focus_kind=-1; for(int i=W_COUNT-1;i>=0;i--){int k=zlist[i]; if(wins[k].open&&!wins[k].minimized){focus_kind=k;break;}} }
+                    else if (in_max(&wins[hk],cx,cy)) win_toggle_max(hk);
+                    else if (in_resize(&wins[hk],cx,cy)){ resizing=1; drag_kind=hk; wins[hk].maximized=0; }
+                    else if (in_titlebar(&wins[hk],cx,cy)){ dragging=1; drag_kind=hk; drag_dx=cx-wins[hk].x; drag_dy=cy-wins[hk].y; wins[hk].maximized=0; }
                     else client_click_kind=hk;     /* client area -> widgets   */
                 } else {
                     int ik=icon_hit(cx,cy);
@@ -1005,13 +1059,21 @@ int main(int argc, char **argv, char **envp)
                 }
             }
         }
-        if (mreleased) dragging=0;
+        if (mreleased){ dragging=0; resizing=0; }
         if (dragging && drag_kind>=0){
             wins[drag_kind].x=cx-drag_dx; wins[drag_kind].y=cy-drag_dy;
             if(wins[drag_kind].x<0)wins[drag_kind].x=0;
             if(wins[drag_kind].y<MENU_H)wins[drag_kind].y=MENU_H;  /* keep clear of the menu bar */
             if(wins[drag_kind].x+wins[drag_kind].w>(int)FBW)wins[drag_kind].x=(int)FBW-wins[drag_kind].w;
             if(wins[drag_kind].y+wins[drag_kind].h>(int)FBH-DOCK_H)wins[drag_kind].y=(int)FBH-DOCK_H-wins[drag_kind].h;
+            dirty=1;
+        }
+        if (resizing && drag_kind>=0){
+            window *w=&wins[drag_kind];
+            w->w=cx-w->x; w->h=cy-w->y;
+            if(w->w<220)w->w=220; if(w->h<120)w->h=120;            /* minimum size */
+            if(w->x+w->w>(int)FBW)w->w=(int)FBW-w->x;
+            if(w->y+w->h>(int)FBH-DOCK_H)w->h=(int)FBH-DOCK_H-w->y;
             dirty=1;
         }
 
@@ -1036,7 +1098,7 @@ int main(int argc, char **argv, char **envp)
         draw_icons();
 
         for (int i=0;i<W_COUNT;i++){
-            int k=zlist[i]; if(!wins[k].open) continue;
+            int k=zlist[i]; if(!wins[k].open || wins[k].minimized) continue;
             draw_window_frame(k);
             /* build this window's input context: only the focused window gets
              * live mouse buttons / keys (others draw but don't react). */
