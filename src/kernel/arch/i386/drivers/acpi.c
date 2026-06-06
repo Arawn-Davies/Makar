@@ -95,6 +95,8 @@ static uint16_t pm1a_cnt_port  = 0;
 static uint16_t pm1b_cnt_port  = 0;
 static uint16_t slp_typa       = 0;
 static uint16_t slp_typb       = 0;
+static uint16_t smi_cmd_port   = 0;   /* FADT SMI_CMD port (0 if HW-reduced) */
+static uint8_t  acpi_enable_val = 0;  /* value to write to SMI_CMD to enable  */
 
 /* Cached for reboot: raw FADT pointer and its length. */
 static const uint8_t *fadt_raw  = NULL;
@@ -195,6 +197,32 @@ static int aml_read_const(const uint8_t *d, uint32_t *pj, uint32_t end, uint32_t
 }
 
 /*
+ * s5_has_nameop – verify the "_S5_" at d[i] is introduced by a NameOp (0x08).
+ *
+ * The AML NameString grammar permits a RootChar '\' (0x5C) or one-or-more
+ * ParentPrefixChar '^' (0x5E) between the NameOp and the NameSeg:
+ *
+ *   QEMU/SeaBIOS:  Name(_S5_,  ...)  =>  08 5F 53 35 5F ...
+ *   Hyper-V:       Name(\_S5_, ...)  =>  08 5C 5F 53 35 5F ...
+ *
+ * The original check only accepted a NameOp *immediately* before the name, so
+ * Hyper-V's leading RootChar made it reject a perfectly valid \_S5_ and soft-
+ * off silently fell through to the QEMU-only I/O ports (machine hung).  Walk
+ * back over any ParentPrefix run and an optional RootChar, then require 0x08.
+ */
+static int s5_has_nameop(const uint8_t *d, uint32_t i)
+{
+    if (i == 0) return 0;
+    uint32_t p = i - 1;
+    while (p > 0 && d[p] == 0x5E) p--;          /* ParentPrefixChar(s) '^'   */
+    if (d[p] == 0x5C) {                          /* optional RootChar '\'     */
+        if (p == 0) return 0;
+        p--;
+    }
+    return d[p] == 0x08;                          /* NameOp                    */
+}
+
+/*
  * scan_s5 – search a DSDT byte stream for the \_S5_ AML package and extract the
  * SLP_TYPa/b values written to PM1{a,b}_CNT for soft-off.
  *
@@ -217,9 +245,10 @@ static int scan_s5(const uint8_t *dsdt_data, uint32_t dsdt_len,
     for (uint32_t i = 36; i + 8 < dsdt_len; i++) {
         if (memcmp(dsdt_data + i, "_S5_", 4) != 0)
             continue;
-        /* The definition is introduced by NameOp (0x08); a bare "_S5_" not so
+        /* The definition is introduced by NameOp (0x08), possibly with a
+         * RootChar/ParentPrefix between it and the NameSeg; a bare "_S5_" not so
          * preceded is a reference, not the package we want. */
-        if (i < 1 || dsdt_data[i - 1] != 0x08)
+        if (!s5_has_nameop(dsdt_data, i))
             continue;
 
         uint32_t j = i + 4;                       /* past "_S5_" */
@@ -329,8 +358,10 @@ int acpi_init(void)
         return 0;
     }
 
-    pm1a_cnt_port = (uint16_t)fadt->pm1a_cnt_blk;
-    pm1b_cnt_port = (uint16_t)fadt->pm1b_cnt_blk;
+    pm1a_cnt_port  = (uint16_t)fadt->pm1a_cnt_blk;
+    pm1b_cnt_port  = (uint16_t)fadt->pm1b_cnt_blk;
+    smi_cmd_port   = (uint16_t)fadt->smi_cmd;
+    acpi_enable_val = fadt->acpi_enable;
 
     /* Cache raw FADT bytes for acpi_reboot(). */
     fadt_raw = (const uint8_t *)fadt;
@@ -395,6 +426,8 @@ static void acpi_diag(void)
     t_writestring(" dsdt=");   t_hex((uint32_t)(uintptr_t)diag_dsdt);
     t_writestring(" len=");    t_hex(diag_dsdt_len);
     t_writestring(" enabled="); t_dec(acpi_enabled);
+    t_writestring(" smi=");    t_hex(smi_cmd_port);
+    t_writestring(" sci_en="); t_dec(pm1a_cnt_port ? (inw(pm1a_cnt_port) & 0x1) : 0);
     t_writestring("\n");
     if (diag_dsdt && diag_dsdt_len) {
         int found = 0;
@@ -413,12 +446,36 @@ static void acpi_diag(void)
     }
 }
 
+/*
+ * acpi_enable_mode – bring the platform into ACPI mode if firmware left it in
+ * legacy/SMM mode (SCI_EN, bit 0 of PM1a_CNT, clear).  Mirrors Linux's
+ * acpi_enable(): write the FADT ACPI_ENABLE value to SMI_CMD and poll SCI_EN.
+ *
+ * Hyper-V Gen1 boots in legacy mode, so the S5 SLP write to PM1a_CNT is ignored
+ * until this handshake completes; QEMU/Bochs/VMware/VirtualBox boot with ACPI
+ * already enabled (and hardware-reduced platforms have no SMI_CMD), so this is a
+ * no-op there.
+ */
+static void acpi_enable_mode(void)
+{
+    if (!pm1a_cnt_port)             return;     /* nothing to drive            */
+    if (inw(pm1a_cnt_port) & 0x1)   return;     /* SCI_EN already set          */
+    if (!smi_cmd_port || !acpi_enable_val) return; /* HW-reduced / not needed  */
+
+    outb(smi_cmd_port, acpi_enable_val);
+    for (int t = 0; t < 1000000; t++) {
+        if (inw(pm1a_cnt_port) & 0x1) break;    /* SCI_EN came up              */
+        asm volatile("pause");
+    }
+}
+
 __attribute__((noreturn)) void acpi_shutdown(void)
 {
     t_writestring("System shutting down...\n");
 
     /* 1. Full ACPI S5 power-off. */
     if (acpi_enabled) {
+        acpi_enable_mode();   /* enter ACPI mode first (Hyper-V Gen1 needs it) */
         outw(pm1a_cnt_port, slp_typa | (uint16_t)SLP_EN);
         if (pm1b_cnt_port)
             outw(pm1b_cnt_port, slp_typb | (uint16_t)SLP_EN);
