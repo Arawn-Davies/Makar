@@ -167,6 +167,15 @@ menuentry "Makar OS (serial console)" {
 	multiboot2 /boot/makar.kernel live console=ttyS0
 }
 
+menuentry "Show video modes (Hyper-V/VMware resolution diagnostic)" {
+	videoinfo
+	echo ""
+	echo "Photograph the 'Adapter ... modes' list above -- note which widths"
+	echo "(1024x768, 1280x720...) appear and at what bit depths.  That tells us"
+	echo "what gfxpayload can ask for.  Returning to the menu in 60s..."
+	sleep --verbose --interruptible 60
+}
+
 menuentry "Next available device" {
 	exit
 }
@@ -222,6 +231,15 @@ menuentry "Makar OS (verbose boot)" {
 
 menuentry "Makar OS (serial console)" {
 	multiboot2 /boot/makar.kernel live console=ttyS0
+}
+
+menuentry "Show video modes (Hyper-V/VMware resolution diagnostic)" {
+	videoinfo
+	echo ""
+	echo "Photograph the 'Adapter ... modes' list above -- note which widths"
+	echo "(1024x768, 1280x720...) appear and at what bit depths.  That tells us"
+	echo "what gfxpayload can ask for.  Returning to the menu in 60s..."
+	sleep --verbose --interruptible 60
 }
 
 menuentry "Next available device" {
