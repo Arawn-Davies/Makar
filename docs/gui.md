@@ -122,6 +122,20 @@ exited clients (`reap_clients`, draining their stdout to prevent text-VT bleed);
 then composites desktop → windows back-to-front (chrome + the client surface,
 1:1 or `gfx_blit_scaled`) → dock → menu bar → cursor, and presents once.
 
+**Compositing is damage-tracked.** Recompositing the scene is cheap (it lands in
+a cacheable RAM back buffer), but *presenting* — copying to the framebuffer — is
+the expensive step on a write-combining LFB, especially on VT-x hypervisors. So
+the server accumulates a **damage rectangle** from the frame's actual changes
+(a window moved/resized/redrew, a chrome/dock/menu band updated) and presents
+**only that rect** via `SYS_FB_PRESENT_RECT` (269) instead of the whole screen.
+The cursor is handled by a **save-under** fast path: on plain pointer motion with
+nothing else dirty, the server restores the pixels under the old cursor box and
+blits it at the new position — two tiny rect presents, no recomposite. And
+**plain pointer motion is not forwarded to clients** at all (only clicks and
+drags are), so idle hover over a window never makes that client repaint. Together
+these keep multiple windows + Doom responsive on WC-framebuffer hosts, where a
+full-screen present per mouse move was the bottleneck.
+
 The server contains **no application logic** — it is a pure window server. It
 launches a client by forking and `execve`-ing the icon's `.elf` with
 `-makx <pid>` and a drained stdout/stderr pipe; the client's HELLO fills in the
