@@ -804,10 +804,15 @@ int main(int argc, char **argv, char **envp)
         if (focus>=0 && W[focus].in_use){
             swin *w=&W[focus];
             if (frame_key>=0) win_push(w, MXEV_KEY, frame_key,0,0);
-            /* Only forward the pointer when it actually moved or a button
-             * changed -- a stationary cursor shouldn't keep waking the client
-             * (which would repaint and force a recompose every frame). */
-            if (cmoved || mpressed || mreleased){
+            /* Forward the pointer only on a button transition or while a button
+             * is held (a drag -- e.g. a slider).  PLAIN hover motion is NOT
+             * forwarded: the cursor is the WM's own overlay, so moving it over a
+             * window must not wake the client into repainting (which would push
+             * a whole window's worth of pixels to the framebuffer every move --
+             * the real source of the two-window lag, brutal on a slow VT-x FB).
+             * No current client needs raw motion; a future one that does can opt
+             * in via a HELLO flag. */
+            if (mpressed || mreleased || (mdown && cmoved)){
                 if (in_client(w,cx,cy)){
                     int rx=cx-client_x(w), ry=cy-client_y(w);
                     win_push(w, MXEV_MOUSE, rx, ry, mdown?1:0);
