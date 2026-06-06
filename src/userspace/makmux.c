@@ -1,16 +1,19 @@
 /*
- * makmux.c -- userspace VT multiplexer scaffold.
+ * makmux.c -- userspace VT multiplexer (tmux-style).
  *
- * mak.sh0 starts this explicitly with `makmux`.  The mux process stays
- * alive on the root tty and owns the child login shells mak.sh1..mak.sh4.
- * Each child attaches itself to one of the four kernel VT slots, then execs
- * the normal userspace shell.  Keep this freestanding: in-OS TCC must be
- * able to rebuild it from /src/userspace/makmux.c.
+ * mak.sh0 starts this explicitly with `makmux`.  The mux process stays alive
+ * on the root tty and owns the child login shells.  Like tmux, exactly ONE
+ * shell exists by default; further tabs are created on demand via Alt+T
+ * (SYS_VT_OPEN_REQUEST), up to CHILD_COUNT (the nine kernel VT slots, exposed
+ * as /dev/tty1../dev/tty9).  Each child attaches itself to one kernel VT slot
+ * then execs the normal userspace shell.  Keep this freestanding: in-OS TCC
+ * must be able to rebuild it from /src/userspace/makmux.c.
  */
 
 #include "syscall.h"
 
-#define CHILD_COUNT 4
+/* Up to nine VT shells (kernel slots 0..8 == tty1..tty9). */
+#define CHILD_COUNT 9
 
 static int s_child_pids[CHILD_COUNT];
 static int s_child_focus = 0;
@@ -86,7 +89,7 @@ static int spawn_child(int idx, int focus)
  * the 4 VT shells.  The kernel queues a launch (vtty_open_app, after a
  * switch-if-exists check); makmux drains it here and forks a child that takes
  * a fresh VT slot, names it after the app, and execs it. */
-#define APP_MAX 4
+#define APP_MAX 9
 static int s_app_pids[APP_MAX];
 
 static void child_app(const char *path)
@@ -173,20 +176,16 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    put_s("makmux: starting mak.sh1-4\n");
+    put_s("makmux: starting mak.sh1 (tmux-style: one tab; Alt+T adds more)\n");
 
-    int ok = 1;
-    for (int i = 0; i < CHILD_COUNT; i++) {
-        if (spawn_child(i, 0) != 0) {
-            put_s("makmux: fork failed for mak.sh");
-            put_dec(i + 1);
-            put_s("\n");
-            ok = 0;
-        }
+    /* tmux model: open exactly one shell at startup.  Focus it so the user
+     * lands on VT1 immediately; Alt+T opens further tabs on demand. */
+    if (spawn_child(0, 1) != 0) {
+        put_s("makmux: fork failed for mak.sh1\n");
+        return 1;
     }
 
-    put_s("makmux: use Alt+F1..Alt+F4 for mak.sh1..mak.sh4\n");
-    if (!ok) put_s("makmux: one or more child shells failed to start\n");
+    put_s("makmux: Alt+T = new tab, Alt+F1..Alt+F4 / Alt+Tab = switch\n");
 
     /* makmux now only manages the VT children.  The bottom status bar
      * (hostname + VT tabs + clock) is drawn by the kernel statusbar task,
