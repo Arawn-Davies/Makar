@@ -199,6 +199,14 @@ Admin/session helpers include:
 There is no permission model yet, so privilege checks are structural rather
 than user/credential based.
 
+| Syscall | Args | Returns |
+|---|---|---|
+| 260 `SYS_LOGOUT` | — | end the root login session; `0` ok, `-1` |
+| 266 `SYS_LOGIN` | `user, pass` | `shadow_verify` + set session user; `0` ok, `-1` bad creds |
+
+`SYS_LOGIN` backs the GUI graphical login (`gui.elf`'s `do_login`); see
+`docs/gui.md`.
+
 ### Virtual Terminals and makmux
 
 VT/app-tab syscalls support the userspace multiplexer:

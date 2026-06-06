@@ -168,6 +168,8 @@ case "${1:-}" in
         else
             MODE="kbtest"; shift 1
         fi ;;
+    guitest)
+        MODE="guitest"; shift 1 ;;
     gui)
         # `gui <suite>` boots an in-guest test suite in a visible QEMU
         # window so the operator can watch the script driver run inside
@@ -661,7 +663,10 @@ _build_iso() {
     # Forward KERNEL_ARGS (extra GRUB cmdline, e.g. `kbtest`) into the build
     # container; iso.sh appends it to the interactive menuentry.
     local _kenv=()
-    [ -n "${KERNEL_ARGS:-}" ] && _kenv=(--env "KERNEL_ARGS=$KERNEL_ARGS")
+    [ -n "${KERNEL_ARGS:-}" ] && _kenv+=(--env "KERNEL_ARGS=$KERNEL_ARGS")
+    # GRUB_DEFAULT selects the auto-booted menuentry (default: the GUI desktop).
+    # The kbtest/guitest harnesses pin it to 0 (the KERNEL_ARGS-bearing entry).
+    [ -n "${GRUB_DEFAULT:-}" ] && _kenv+=(--env "GRUB_DEFAULT=$GRUB_DEFAULT")
     _drun "${_kenv[@]}" -- "${_flags:+$_flags }bash iso.sh"
 }
 
@@ -704,6 +709,58 @@ _build_kernel() {
     local _flags="${1:-}"
     echo "==> Building kernel${_flags:+ ($_flags)}..."
     _drun -- "${_flags:+$_flags }bash build.sh"
+}
+
+# GUI smoke test: boot straight into the GUI desktop (autoboot=gui + autologin),
+# wait for gui.elf's "GUI: READY" serial marker (proves the window server came
+# up and presented a frame), grab a QEMU screendump as a viewable BMP artifact,
+# then shut down.  The marker is the pass gate; the screendump is best-effort so
+# a missing image-tool never fails the test.  Needs host qemu (headless + the
+# QEMU monitor on stdio fed from a FIFO -- no python/socat dependency for the
+# control channel).
+_run_guitest() {
+    echo "==> GUI smoke test (boot desktop -> GUI: READY -> screendump -> shutdown)..."
+    local _qemu; _qemu=$(_host_qemu)
+    if [ -z "$_qemu" ]; then echo "==> guitest needs host qemu-system-i386"; return 1; fi
+    # Auto-log-in so the boot lands on the desktop rather than the GUI login;
+    # pin GRUB to entry 0 (the KERNEL_ARGS-bearing entry).
+    GRUB_DEFAULT=0 KERNEL_ARGS="autoboot=gui autologin=user" _build_iso "CFLAGS='-O0 -g3'"
+    local _log="$REPO_ROOT/guitest.log";        rm -f "$_log"
+    local _shot="$REPO_ROOT/gui-screendump.ppm"; rm -f "$_shot" "$REPO_ROOT/gui-screendump.bmp"
+    local _fifo="$REPO_ROOT/.guimon.$$";         rm -f "$_fifo"; mkfifo "$_fifo"
+    local _secs="${GUITEST_TIMEOUT:-150}"
+    # shellcheck disable=SC2086
+    "$_qemu" -cdrom "$REPO_ROOT/makar.iso" -m 64 -vga std -display none \
+        -serial "file:$_log" -monitor stdio -no-reboot <"$_fifo" >/dev/null 2>&1 &
+    local _qp=$!
+    exec 9>"$_fifo"        # hold the FIFO open so QEMU's monitor stdin stays up
+    local _i=0 _ok=0
+    while [ "$_i" -lt "$_secs" ]; do
+        grep -q "GUI: READY" "$_log" 2>/dev/null && { _ok=1; break; }
+        kill -0 "$_qp" 2>/dev/null || break
+        sleep 1; _i=$((_i + 1))
+    done
+    if [ "$_ok" = 1 ]; then
+        printf 'screendump %s\n' "$_shot" >&9    # HMP screendump -> PPM
+        sleep 2
+    fi
+    printf 'quit\n' >&9 2>/dev/null || true       # graceful QEMU shutdown
+    exec 9>&-
+    sleep 1; kill "$_qp" 2>/dev/null || true; wait "$_qp" 2>/dev/null || true
+    rm -f "$_fifo"
+    # Best-effort PPM -> BMP for a viewable artifact.
+    if [ -f "$_shot" ] && command -v python3 >/dev/null 2>&1; then
+        python3 "$REPO_ROOT/tests/ppm2bmp.py" "$_shot" "$REPO_ROOT/gui-screendump.bmp" 2>/dev/null || true
+    fi
+    echo "--- guitest serial ---"
+    grep -aE "GUI: READY|\[auth\]|panic|PAGE FAULT|KPANIC" "$_log" | tail -8 || true
+    if [ "$_ok" = 1 ]; then
+        local _art="$_shot"; [ -f "$REPO_ROOT/gui-screendump.bmp" ] && _art="$REPO_ROOT/gui-screendump.bmp"
+        [ -f "$_shot" ] && echo "==> guitest PASS (GUI: READY; screendump: $_art)" \
+                        || echo "==> guitest PASS (GUI: READY; screendump unavailable)"
+        return 0
+    fi
+    echo "==> guitest FAIL (no GUI: READY marker; see $_log)"; return 1
 }
 
 # ── modes ──────────────────────────────────────────────────────────────────────
@@ -844,13 +901,20 @@ nettest)
 # `kbtest` on the cmdline (the kernel injects keys, no host typing) and asserts
 # on serial KBTEST markers.
 "kbtest")
-    KERNEL_ARGS="kbtest${KERNEL_ARGS:+ $KERNEL_ARGS}" _build_iso "CFLAGS='-O0 -g3'"
+    GRUB_DEFAULT=0 KERNEL_ARGS="kbtest${KERNEL_ARGS:+ $KERNEL_ARGS}" _build_iso "CFLAGS='-O0 -g3'"
     _run_kbtest
     ;;
 
 "kbtest gui")
-    KERNEL_ARGS="kbtest${KERNEL_ARGS:+ $KERNEL_ARGS}" _build_iso "CFLAGS='-O0 -g3'"
+    GRUB_DEFAULT=0 KERNEL_ARGS="kbtest${KERNEL_ARGS:+ $KERNEL_ARGS}" _build_iso "CFLAGS='-O0 -g3'"
     _run_kbtest gui
+    ;;
+
+# ── guitest ──────────────────────────────────────────────────────────────────
+# GUI smoke test: boot into the desktop, assert gui.elf's "GUI: READY" serial
+# marker, capture a screendump (PPM + BMP), then shut down.  Builds its own ISO.
+"guitest")
+    _run_guitest
     ;;
 
 # ── ktest graphical ──────────────────────────────────────────────────────────

@@ -65,6 +65,10 @@ int  ui_slider(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
 int  ui_textbox(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
                 char *buf, int cap);
 
+/* Like ui_textbox but renders each character as '*' (password entry). */
+int  ui_password(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
+                 char *buf, int cap);
+
 /* Static text. */
 void ui_label(ui_ctx *c, gfx_surface *s, int x, int y, const char *str,
               gfx_u32 fg);

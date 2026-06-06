@@ -48,6 +48,25 @@ const char *auth_current_user(void) { return s_current_user; }
  * while this is empty, forcing a fresh login_screen() first. */
 void auth_clear_user(void) { s_current_user[0] = '\0'; }
 
+/* Verify + sign in (ring-3 GUI login via SYS_LOGIN).  Returns 0 / -1. */
+int auth_login(const char *username, const char *password)
+{
+    if (!username || !password) return -1;
+    if (shadow_verify(username, password) != 0) {
+        Serial_WriteString("[auth] gui login failed: ");
+        Serial_WriteString((char *)username);
+        Serial_WriteString("\n");
+        return -1;
+    }
+    size_t i = 0;
+    while (username[i] && i < sizeof(s_current_user) - 1) { s_current_user[i] = username[i]; i++; }
+    s_current_user[i] = '\0';
+    Serial_WriteString("[auth] gui login ok: ");
+    Serial_WriteString(s_current_user);
+    Serial_WriteString("\n");
+    return 0;
+}
+
 /* --------------------------------------------------------------------------
  * Geometry helpers (same pattern as installer.c)
  * --------------------------------------------------------------------------*/

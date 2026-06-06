@@ -137,7 +137,7 @@ fi
 # `live` on the cmdline tells kernel_main this is a live ISO session so the
 # login screen is skipped even if an installed HDD is auto-detected.
 cat > isodir/boot/grub/grub.cfg << EOF
-set default=0
+set default=${GRUB_DEFAULT:-1}
 set timeout=3
 
 menuentry "Makar OS" {
@@ -145,15 +145,15 @@ menuentry "Makar OS" {
 }
 
 menuentry "Makar OS (GUI desktop)" {
-	multiboot2 /boot/makar.kernel live autoboot=gui${KERNEL_ARGS:+ $KERNEL_ARGS}
+	multiboot2 /boot/makar.kernel live autoboot=gui
 }
 
 menuentry "Makar OS (rescue shell)" {
-	multiboot2 /boot/makar.kernel live shell=rescue${KERNEL_ARGS:+ $KERNEL_ARGS}
+	multiboot2 /boot/makar.kernel live shell=rescue
 }
 
 menuentry "Makar OS (serial console)" {
-	multiboot2 /boot/makar.kernel live console=ttyS0${KERNEL_ARGS:+ $KERNEL_ARGS}
+	multiboot2 /boot/makar.kernel live console=ttyS0
 }
 
 menuentry "Next available device" {
@@ -183,7 +183,7 @@ EOF
     # Restore the interactive grub.cfg in the staged isodir so anyone
     # inspecting the staging dir doesn't see the test variant.
     cat > isodir/boot/grub/grub.cfg << EOF
-set default=0
+set default=${GRUB_DEFAULT:-1}
 set timeout=3
 
 menuentry "Makar OS" {
@@ -191,15 +191,15 @@ menuentry "Makar OS" {
 }
 
 menuentry "Makar OS (GUI desktop)" {
-	multiboot2 /boot/makar.kernel live autoboot=gui${KERNEL_ARGS:+ $KERNEL_ARGS}
+	multiboot2 /boot/makar.kernel live autoboot=gui
 }
 
 menuentry "Makar OS (rescue shell)" {
-	multiboot2 /boot/makar.kernel live shell=rescue${KERNEL_ARGS:+ $KERNEL_ARGS}
+	multiboot2 /boot/makar.kernel live shell=rescue
 }
 
 menuentry "Makar OS (serial console)" {
-	multiboot2 /boot/makar.kernel live console=ttyS0${KERNEL_ARGS:+ $KERNEL_ARGS}
+	multiboot2 /boot/makar.kernel live console=ttyS0
 }
 
 menuentry "Next available device" {

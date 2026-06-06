@@ -751,6 +751,13 @@ void syscall_dispatch(registers_t *regs)
         break;
     }
 
+    case SYS_LOGIN: {
+        const char *user = (const char *)(uintptr_t)regs->ebx;
+        const char *pass = (const char *)(uintptr_t)regs->ecx;
+        regs->eax = (uint32_t)(auth_login(user, pass) == 0 ? 0 : -1);
+        break;
+    }
+
     case SYS_GUI_CLOSE: {
         vtty_switch_root_text();
         regs->eax = 0;

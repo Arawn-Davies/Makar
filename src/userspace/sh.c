@@ -1873,6 +1873,7 @@ int main(int argc, char **argv, char **envp)
     for (int i = 1; i < argc; i++) {
         if (s_eq(argv[i], "--login")) g_login = 1;
         else if (s_eq(argv[i], "--autostart=gui")) g_autostart_gui = 1;
+        else if (s_eq(argv[i], "--autostart=gui-login")) g_autostart_gui = 2;
         else if (s_eq(argv[i], "--makmux")) g_quiet_start = 1;
         else if (s_eq(argv[i], "-c")) {
             /* Consume the next arg as the command string so it isn't
@@ -1963,7 +1964,8 @@ int main(int argc, char **argv, char **envp)
     /* autoboot=gui: launch the desktop now, exactly as if the user had typed
      * `gui`.  It spawns in the background (is_gui_path) so this login session
      * stays alive as the GUI's parent and resumes the prompt on Log Off. */
-    if (g_autostart_gui) run_script_buf("gui\n");
+    if (g_autostart_gui == 1)      run_script_buf("gui\n");
+    else if (g_autostart_gui == 2) run_script_buf("gui login\n");
 
     char line[LINE_MAX];
     char prompt[VFS_PATH_MAX + 64];

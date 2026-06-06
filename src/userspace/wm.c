@@ -806,11 +806,66 @@ static int fstest(void)
 
 /* ============================== main ==================================== */
 
+/* ============================ GUI login ================================= */
+/* Graphical login screen, shown before the desktop when gui.elf is launched
+ * with `login` (the kernel passes it when no user is auto-logged-in).  Blocks
+ * until sys_login() accepts the credentials.  Drawn on the WM back buffer; the
+ * GUI is the focused root task so sys_fb_present works.  NOTE: when the GUI is
+ * split into a display server + client .elfs, this lifts wholesale into a
+ * standalone login.elf -- see docs/gui.md. */
+static void do_login(void)
+{
+    char user[64]={0}, pass[64]={0}, err[40]={0};
+    int cx=(int)FBW/2, cy=(int)FBH/2, prev_left=0, dirty=1;
+    ui_ctx u; for(unsigned i=0;i<sizeof u/sizeof(int);i++) ((int*)&u)[i]=0;
+    u.focus=1;                 /* start with the username field focused */
+
+    for(;;){
+        int mpressed=0,mreleased=0; unsigned int ev;
+        while((ev=sys_mouse_read())!=0){
+            cx+=(int)(signed char)((ev>>8)&0xFF); cy+=(int)(signed char)((ev>>16)&0xFF);
+            if(cx<0)cx=0; if(cx>=(int)FBW)cx=(int)FBW-1;
+            if(cy<0)cy=0; if(cy>=(int)FBH)cy=(int)FBH-1;
+            int left=ev&1; if(left&&!prev_left)mpressed=1; if(!left&&prev_left)mreleased=1;
+            prev_left=left; dirty=1;
+        }
+        int mdown=prev_left, key=-1;
+        { unsigned char b; if(sys_read(0,&b,1)==1){ key=b; dirty=1; } }
+        if(!dirty){ sys_yield(); continue; }
+
+        gfx_fill(&scr,0,0,(int)FBW,(int)FBH,COL_DESK);
+        int pw=340,ph=190,px=(int)FBW/2-pw/2,py=(int)FBH/2-ph/2;
+        gfx_round(&scr,px,py,pw,ph,COL_WIN,COL_BORDER);
+        gfx_fill(&scr,px,py,pw,26,COL_TITLE);
+        gfx_str(&scr,px+(pw-gfx_text_w("Makar -- sign in"))/2,py+9,"Makar -- sign in",0xFFFFFF);
+        gfx_str(&scr,px+24,py+54,"User:",COL_TEXT);
+        gfx_str(&scr,px+24,py+92,"Pass:",COL_TEXT);
+
+        ui_begin(&u,cx,cy,mdown,mpressed,mreleased,
+                 (key=='\t'||key=='\n'||key=='\r')?-1:key);  /* Tab/Enter are control */
+        ui_textbox(&u,&scr,px+72,py+48,pw-96,22,user,(int)sizeof user);
+        ui_password(&u,&scr,px+72,py+86,pw-96,22,pass,(int)sizeof pass);
+        int login_c=ui_button(&u,&scr,px+pw/2-44,py+128,88,28,"Log in");
+        if(err[0]) gfx_str(&scr,px+24,py+ph-22,err,COL_CLOSE);
+
+        if(key=='\t') u.focus = (u.focus==1)?2:1;     /* Tab toggles user/pass */
+        if(login_c || key=='\n' || key=='\r'){
+            if(user[0] && sys_login(user,pass)==0) return;   /* authenticated  */
+            scpy(err,"Incorrect credentials",sizeof err);
+            pass[0]=0; u.focus=2;
+        }
+        draw_cursor(cx,cy);
+        sys_fb_present(scr.px);
+        dirty=0; sys_yield();
+    }
+}
+
 int main(int argc, char **argv, char **envp)
 {
     (void)envp;
     if (argc>1 && seq(argv[1],"uitest")) return uitest();
     if (argc>1 && seq(argv[1],"fstest")) return fstest();
+    int want_login = (argc>1 && seq(argv[1],"login"));
 
     unsigned info=sys_fb_info();
     if(!info){ const char*e="gui: no pixel framebuffer (VGA-only)\n"; sys_write(2,e,36); return 1; }
@@ -824,6 +879,8 @@ int main(int argc, char **argv, char **envp)
     sys_statusbar_set(0);
     sys_signal(SIGINT,SIG_IGN);
 
+    if (want_login) do_login();     /* graphical login before the desktop */
+
     /* initial window geometry + z-order */
     for(int k=0;k<W_COUNT;k++) zlist[k]=k;
     wins[W_TERMINAL]=(window){0,160,90,560,360,"Terminal",{0}};
@@ -836,7 +893,7 @@ int main(int argc, char **argv, char **envp)
 
     int cx=(int)FBW/2, cy=(int)FBH/2, prev_left=0;
     int dragging=0, drag_kind=-1, drag_dx=0, drag_dy=0;
-    int dirty=1;
+    int dirty=1, announced=0;
 
     for(;;){
         /* ---- gather input ---- */
@@ -927,6 +984,10 @@ int main(int argc, char **argv, char **envp)
         draw_menubar();
         draw_cursor(cx,cy);
         sys_fb_present(scr.px);
+        /* One-shot readiness marker: the desktop has composited and presented
+         * its first frame.  The guitest harness waits for this, then screendumps
+         * and shuts down.  See run.sh `guitest`. */
+        if (!announced){ sys_write_serial("GUI: READY\n", 11); announced=1; }
         dirty=0;
         sys_yield();
     }

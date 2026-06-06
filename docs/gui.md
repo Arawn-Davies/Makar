@@ -95,21 +95,49 @@ runs a headless widget self-test emitting `GUI-UITEST: PASS`.
 - **Doom** forks `doom.elf -surface <id>`; the WM maps the shared surface and
   `gfx_blit_scaled`s it into the window, forwarding keys over the child's stdin.
 
-The dock carries a **Log Off** button: it tears down the WM's children
-(terminal / doom), restores terminal + statusbar state, calls `sys_logout()` to
-end the underlying login session, and exits — returning to the login screen with
-`mak.sh0` intact. All of the above use only existing syscalls (no new ABI).
+An always-on **top menu bar** (drawn after the windows every frame, so it is
+never occluded) carries the Makar brand, the focused window's name, and the
+**Log Off** item. Log Off tears down the WM's children (terminal / doom),
+restores terminal + statusbar state, calls `sys_logout()` to end the underlying
+login session, and exits — returning to the login screen with `mak.sh0` intact.
+Desktop + menu bar + dock are unconditional: the GUI is never chromeless.
 
-### Booting straight to the desktop
+### Graphical login
 
-A `autoboot=gui` kernel cmdline token makes `shell_login_loop` pass
-`--autostart=gui` to the login `sh.elf`, which runs `gui` after sourcing
-`~/.makshrc` — so the desktop comes up inside the login session (the session
-stays the GUI's parent, so Log Off returns to it cleanly). Bootloader entries:
-the live ISO's GRUB menu gains **"Makar OS (GUI desktop)"** (`live autoboot=gui`),
-and the installer writes a second Limine entry **"/Makar OS (GUI desktop)"** whose
-cmdline is `autologin=<user> autoboot=gui` (the configured autologin user) — pick
-it to boot straight to a desktop as that user.
+Launched as `gui login` (the kernel does this when no user is auto-logged-in),
+`gui.elf` shows a graphical login (`do_login`): username + masked password
+(`ui_password`) + a Log In button. Submit calls **`SYS_LOGIN`** (`sys_login`,
+syscall 266) → `auth_login` → `shadow_verify` + set the session user; on success
+it falls through to the desktop. This is the only new syscall in the GUI work;
+when the GUI is split into a display server + clients (next PR), `do_login`
+lifts wholesale into a standalone `login.elf`.
+
+### Booting straight to the desktop / login
+
+The `autoboot=gui` kernel cmdline token makes `shell_login_loop` hand
+authentication to the GUI: it tries autologin once, then passes
+`--autostart=gui` (auto-logged-in → desktop) or `--autostart=gui-login` (→ the
+graphical login) to the login `sh.elf`, which runs `gui` / `gui login` after
+sourcing `~/.makshrc`. The desktop runs inside the login session (which stays
+the GUI's parent, so Log Off returns to it cleanly).
+
+Bootloader entries:
+- **GRUB (live ISO):** `Makar OS` / `Makar OS (GUI desktop)` (`live autoboot=gui`,
+  the **default** entry) / `rescue shell` / `serial console`. `GRUB_DEFAULT`
+  overrides the auto-selected entry (the kbtest/guitest harnesses pin it to 0).
+- **Limine (installed):** the installer builds `limine.conf` with a
+  `/Makar OS (GUI desktop)` entry whose cmdline embeds the configured autologin
+  user (`autologin=<user> autoboot=gui`), plus a rescue entry.
+
+### Testing the GUI boots: `./run.sh guitest`
+
+Boots straight into the desktop (autologin), waits for `gui.elf`'s `GUI: READY`
+serial marker (emitted after the first composited frame is presented), captures
+a QEMU **screendump** (PPM → `gui-screendump.bmp` via `tests/ppm2bmp.py`), then
+shuts down. The marker is the pass gate; the screendump is a best-effort viewable
+artifact. This is the end-to-end "the window server actually starts and draws"
+check that the headless `uitest`/`fstest` (which never touch the framebuffer)
+cannot give.
 
 ### Reusable file browser + headless coverage
 
@@ -154,10 +182,14 @@ that on real Linux are device files + ioctl (`/dev/fb0`, `/dev/input/*`), `getui
 those idioms is the next "proper kernel" PR; GUI changes here were kept
 syscall-neutral so that rework isn't pre-empted.
 
-## Not yet verified interactively
+## Verification status
 
-Navigation logic is now headlessly proven (`gui fstest`), but the **pixel-level**
-rendering/focus interaction still has not been driven in a live QEMU session
-(the harness is headless/serial-only). Next session: `./run.sh iso boot`,
-exercise each window, click-to-focus, the Files browser + Editor Save-As dialog,
-Log Off, and the Doom surface blit; watch the task manager across open/close.
+- **Navigation** (Files / Editor dialog) is headlessly proven by `gui fstest`.
+- **Widgets** by `gui uitest`.
+- **The desktop boots and draws** by `./run.sh guitest` — `GUI: READY` plus a
+  1280×720 screendump whose colours are exactly the WM palette (desktop bg,
+  window, title bar, menu bar, icons).
+
+Still wanting a human pass (inherently interactive): click-to-focus *feel*, the
+Editor Save-As dialog, the graphical login keyboard flow, and the Doom surface
+blit/playability. `./run.sh iso boot` and pick **Makar OS (GUI desktop)**.

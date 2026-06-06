@@ -51,3 +51,7 @@ wads/
 
 # Ephemeral handoff -- never commit
 HANDOFF.md
+
+# GUI smoke-test screendumps (run.sh guitest)
+gui-screendump.ppm
+gui-screendump.bmp

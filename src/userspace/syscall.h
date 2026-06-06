@@ -121,6 +121,7 @@ struct timespec { int tv_sec; int tv_nsec; };
 #define SYS_WGET        255
 #define SYS_LOGOUT      260
 #define SYS_GUI_CLOSE   261
+#define SYS_LOGIN       266
 
 #define NET_CTL_DHCP_RELEASE 1
 #define NET_CTL_DHCP_RENEW   2
@@ -770,6 +771,11 @@ static inline int sys_shutdown(void)
 static inline int sys_logout(void)
 {
     return (int)syscall1(SYS_LOGOUT, 0);
+}
+/* Verify credentials + set the session user.  0 = ok, -1 = bad credentials. */
+static inline int sys_login(const char *user, const char *pass)
+{
+    return (int)syscall2(SYS_LOGIN, (long)user, (long)pass);
 }
 static inline int sys_gui_close(void)
 {

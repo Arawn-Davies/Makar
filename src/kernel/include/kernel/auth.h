@@ -37,6 +37,10 @@ const char *auth_current_user(void);
  * until a login sets it again. */
 void auth_clear_user(void);
 
+/* Verify credentials and, on success, set the session user.  Returns 0 on
+ * success, -1 on failure.  Backs SYS_LOGIN for the ring-3 GUI login screen. */
+int auth_login(const char *username, const char *password);
+
 /* Re-enter the login prompt (call from `logout` shell command). */
 void auth_logout(void);
 

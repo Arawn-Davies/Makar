@@ -73,8 +73,8 @@ int ui_slider(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
     return changed;
 }
 
-int ui_textbox(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
-               char *buf, int cap)
+static int ui_textbox_impl(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
+                           char *buf, int cap, int masked)
 {
     int id  = ++c->cur_id;
     int hot = pt_in(c, x, y, w, h);
@@ -98,16 +98,30 @@ int ui_textbox(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
 
     int tx = x + 4, ty = y + (h - 8) / 2;
     int len = ui_strlen(buf);
-    /* show the tail that fits */
     int maxchars = (w - 8) / 8;
-    const char *show = buf;
-    if (len > maxchars) show = buf + (len - maxchars);
-    gfx_str_clip(s, tx, ty, show, UI_COL_TEXT, x + w - 2);
-    if (focused) {
-        int cw = ui_strlen(show) * 8;
-        gfx_fill(s, tx + cw, ty, 2, 8, UI_COL_TEXT);    /* caret */
+    int shown = len > maxchars ? maxchars : len;   /* tail that fits */
+    if (masked) {
+        for (int i = 0; i < shown; i++) gfx_char(s, tx + i * 8, ty, '*', UI_COL_TEXT);
+    } else {
+        const char *show = buf;
+        if (len > maxchars) show = buf + (len - maxchars);
+        gfx_str_clip(s, tx, ty, show, UI_COL_TEXT, x + w - 2);
     }
+    if (focused)
+        gfx_fill(s, tx + shown * 8, ty, 2, 8, UI_COL_TEXT);    /* caret */
     return changed;
+}
+
+int ui_textbox(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
+               char *buf, int cap)
+{
+    return ui_textbox_impl(c, s, x, y, w, h, buf, cap, 0);
+}
+
+int ui_password(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
+                char *buf, int cap)
+{
+    return ui_textbox_impl(c, s, x, y, w, h, buf, cap, 1);
 }
 
 int ui_listbox(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,

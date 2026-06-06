@@ -44,6 +44,7 @@
 #define SYS_SET_TID_ADDRESS 258 /* int set_tid_address(int *tidptr) -> tid          */
 #define SYS_LOGOUT          260 /* int logout(void) - end root login session        */
 #define SYS_GUI_CLOSE       261 /* int gui_close(void) - return to root text mode   */
+#define SYS_LOGIN           266 /* int login(const char *user, const char *pass)    */
 #define SYS_SIGNAL     48   /* sig_handler_t signal(int signo, sig_handler_t)   */
 #define SYS_STAT      106   /* int stat(const char *path, struct stat *st)      */
 #define SYS_FSTAT     108   /* int fstat(int fd, struct stat *st)               */

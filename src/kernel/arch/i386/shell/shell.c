@@ -1224,33 +1224,39 @@ void shell_login_loop(void)
 {
     int first_boot = 1;
     for (;;) {
-        /* --- Authenticate ---
-         * Initial boot (first_boot): require login only on an installed system
-         *   (not live, disk rootfs, /etc/shadow present) -- live ISO sessions
-         *   start straight at the shell.
-         * Re-login (any later iteration = a session that ended via logout/exit):
-         *   ALWAYS show the login prompt, like a getty.  login_screen() works
-         *   on live too (no /etc/shadow -> accepts root with an empty password),
-         *   so `logout` reliably returns to the login screen everywhere. */
-        if (first_boot) {
-            if (!g_live_boot && vfs_rootfs_is_disk() && vfs_file_exists("/etc/shadow")) {
-                /* Try auto-login first (cmdline autologin=<user>, else
-                 * /etc/autologin); fall through to the prompt otherwise. */
-                if (!auth_try_autologin(g_autologin_user[0] ? g_autologin_user : (const char *)0))
-                    login_screen();
-            }
-        } else {
-            login_screen();
-        }
-        first_boot = 0;
+        /* gui_login: with autoboot=gui, gui.elf draws its OWN graphical login
+         * (do_login -> SYS_LOGIN), so the kernel must NOT show the text
+         * login_screen or insist on a pre-authenticated user.  Otherwise the
+         * normal text-login getty flow applies. */
+        int gui_login = 0;
 
-        /* Invariant: never start a shell without an authenticated user.  If the
-         * session user is empty (logout cleared it, or a login was dismissed),
-         * keep prompting -- the shell only starts once someone is logged in. */
-        {
+        if (g_boot_gui) {
+            /* The GUI owns authentication.  Autologin only on first boot
+             * (cmdline autologin=<user> / /etc/autologin); if that doesn't sign
+             * anyone in, hand off to the GUI login.  On re-login (after Log Off)
+             * always show the GUI login. */
+            int authed = 0;
+            if (first_boot)
+                authed = auth_try_autologin(g_autologin_user[0] ? g_autologin_user : (const char *)0);
+            gui_login = !authed;
+            if (gui_login) auth_clear_user();   /* drop the default user; GUI sets the real one */
+        } else {
+            /* --- Authenticate (text getty) ---
+             * Initial boot: require login only on an installed system (not live,
+             * disk rootfs, /etc/shadow present).  Re-login: always prompt. */
+            if (first_boot) {
+                if (!g_live_boot && vfs_rootfs_is_disk() && vfs_file_exists("/etc/shadow")) {
+                    if (!auth_try_autologin(g_autologin_user[0] ? g_autologin_user : (const char *)0))
+                        login_screen();
+                }
+            } else {
+                login_screen();
+            }
+            /* Invariant: never start a text shell without an authenticated user. */
             const char *u = auth_current_user();
             while (!u || !u[0]) { login_screen(); u = auth_current_user(); }
         }
+        first_boot = 0;
 
         /* --- Session start: clear to the shell's own palette and print
          *     the build-info banner, matching the pre-login-flow UX. --- */
@@ -1319,7 +1325,8 @@ void shell_login_loop(void)
             argv[ac++] = "sh.elf";
             argv[ac++] = "--login";
             argv[ac++] = user_arg;
-            if (g_boot_gui) argv[ac++] = "--autostart=gui";
+            if (g_boot_gui)
+                argv[ac++] = gui_login ? "--autostart=gui-login" : "--autostart=gui";
             argv[ac] = NULL;
             shell_exec_elf(sh_path, ac, (char **)argv);
         }
