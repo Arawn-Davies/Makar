@@ -7,7 +7,11 @@
  * Everything about *what* the bar shows lives here (Linux/tmux model).
  *
  * Layout + widgets are configured by ~/.sbrc (re-read live so edits + the
- * post-login user change are picked up).  Each non-comment line is:
+ * post-login user change are picked up).  The bar is PER-TAB: each VT can own
+ * its layout via ~/.sbrc.tty<N> (the /dev/ttyN number; root console = tty0),
+ * which overrides the shared ~/.sbrc for that tab.  The active tab is read
+ * from sys_vt_state, so switching VTs re-renders that tab's own bar -- no new
+ * syscall surface.  Each non-comment line is:
  *
  *     <section> <widget> [<widget> ...]        section = left | center | right
  *
@@ -249,24 +253,30 @@ static void set_default_layout(void)
     o=0; s_cat(g_right,&o,SEC_MAX,"cpu mem rootfs time");
 }
 
-/* Build "/home/<user>/.sbrc" (root -> /root/.sbrc) into path. */
-static void sbrc_path(char *path,unsigned int cap)
+/* Build "/home/<user>/.sbrc" (root -> /root/.sbrc) into path, optionally with
+ * a per-tab suffix ".ttyN" so each VT can carry its OWN status-bar layout.
+ * suffix_tty < 0 selects the shared ~/.sbrc; >= 0 selects ~/.sbrc.tty<N>. */
+static void sbrc_path(char *path,unsigned int cap,int suffix_tty)
 {
     unsigned int o=0;
     if(s_eq(g_user,"root")){ s_cat(path,&o,cap,"/root"); }
     else { s_cat(path,&o,cap,"/home/"); s_cat(path,&o,cap,g_user); }
     s_cat(path,&o,cap,"/.sbrc");
+    if(suffix_tty>=0){
+        char num[12]; sb_uitoa((unsigned int)suffix_tty,num);
+        s_cat(path,&o,cap,".tty");
+        s_cat(path,&o,cap,num);
+    }
 }
 
-static void load_sbrc(void)
+/* Parse one ~/.sbrc-format file at `path` into the section lists.  Returns 1
+ * if the file existed and was read, 0 otherwise (caller keeps defaults). */
+static int load_sbrc_file(const char *path)
 {
-    set_default_layout();
-
-    char path[80]; sbrc_path(path,sizeof(path));
     int fd=sys_open(path,O_RDONLY);
-    if(fd<0) return;                 /* no config -> keep defaults */
+    if(fd<0) return 0;               /* no config -> keep defaults */
     char buf[RC_MAX]; long r=sys_read(fd,buf,sizeof(buf)-1); sys_close(fd);
-    if(r<=0) return;
+    if(r<=0) return 0;
     buf[r]='\0';
 
     int saw_any=0;
@@ -295,6 +305,23 @@ static void load_sbrc(void)
         unsigned int o=0; dst[0]='\0';
         s_cat(dst,&o,SEC_MAX,p);
     }
+    return 1;
+}
+
+/* Load the layout for the currently-active tab.  Each VT can own its bar:
+ * ~/.sbrc.tty<N> overrides the shared ~/.sbrc for tab N; if neither exists the
+ * built-in default layout is used.  tty<N> is 1-based (the /dev/ttyN number);
+ * the root console (tab 0) uses ~/.sbrc.tty0.  Picking the file off the active
+ * tab is what makes the bar per-tab without any new syscall surface. */
+static void load_sbrc(int active_tty)
+{
+    set_default_layout();
+
+    char path[96];
+    sbrc_path(path,sizeof(path),active_tty);   /* per-tab override first */
+    if(load_sbrc_file(path)) return;
+    sbrc_path(path,sizeof(path),-1);           /* fall back to shared ~/.sbrc */
+    load_sbrc_file(path);
 }
 
 /* Render a section's widget list into out[] (widgets joined by "  "). */
@@ -413,6 +440,15 @@ static void draw(void)
     sys_putch_at(cells,n);
 }
 
+/* Active VT slot -> /dev/ttyN number: root slot (9) is tty0, the nine user
+ * slots 0..8 are tty1..tty9.  This is the per-tab config key. */
+static int active_tty_num(void)
+{
+    unsigned int active=((unsigned int)sys_vt_state()>>16)&0xFFFFu;
+    if(active==9u) return 0;            /* VTTY_ROOT_SLOT -> tty0 */
+    return (int)active+1;              /* slot N -> tty(N+1) */
+}
+
 int main(void)
 {
     if(sys_gethostname(g_host,sizeof(g_host))<=0){
@@ -423,12 +459,16 @@ int main(void)
 
     unsigned int last=sys_uptime();
     unsigned int rc_next=0;             /* force an immediate ~/.sbrc load */
+    int last_tty=-2;                    /* force a reload on the first frame */
     for(;;){
-        /* Re-read user + ~/.sbrc every ~3 s (picks up login + edits). */
+        /* Reload the layout when the active tab changes (so each VT shows its
+         * own bar) and every ~3 s otherwise (picks up login + ~/.sbrc edits). */
         unsigned int now=sys_uptime();
-        if(now>=rc_next){
+        int tty=active_tty_num();
+        if(now>=rc_next || tty!=last_tty){
             if(sys_whoami(g_user,sizeof(g_user))<=0){ g_user[0]='u';g_user[1]='s';g_user[2]='e';g_user[3]='r';g_user[4]='\0'; }
-            load_sbrc();
+            load_sbrc(tty);
+            last_tty=tty;
             rc_next=now+300u;           /* 3 s at 100 Hz */
         }
 
