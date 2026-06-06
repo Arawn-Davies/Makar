@@ -184,6 +184,10 @@ cat > "$MNT/boot/grub/grub.cfg" << GCFG
 set default=0
 set timeout=3
 
+# Best mode the firmware offers, highest first (see iso.sh for the rationale).
+insmod all_video
+set gfxpayload=1280x720x32,1024x768x32,800x600x32
+
 menuentry "Makar OS" {
     multiboot2 /boot/makar.kernel${KERNEL_ARGS:+ $KERNEL_ARGS}
     boot

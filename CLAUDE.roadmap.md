@@ -5,6 +5,80 @@ day-to-day work — consult when planning new features or asked about direction.
 
 ## Future roadmap
 
+### makx GUI follow-ups (after the server/client split)
+
+The display server/client split has landed (`gui.elf` = makx server; terminal,
+files, editor, tasks, doom are client `.elf`s over IPC + shared surfaces; see
+`docs/gui.md`). Natural next steps, now that the protocol + client lib exist:
+
+- **More makx clients** — each is a small single-file client using `makx.c` +
+  `gui_gfx`/`gui_ui`:
+  - **`mxweb`** — a lynx/links/dillo-style **text web browser** (no JS): fetch
+    over the existing `SYS_WGET` / HTTP path, render plain text / very simple
+    HTML into the window. The cleanest demonstration client.
+  - **`mximg`** — an **image viewer** for BMP/PNG/JPEG/GIF (BMP is trivial; PNG
+    via the existing `inflate.c`; JPEG/GIF need small decoders).
+  - **`mxpaint`** — a simple **paint** app drawing into its surface.
+- **Panel + login as clients (Phase 6b)** — lift the dock + menu bar out to an
+  always-on-top panel client, and `do_login` out to a fullscreen `login.elf` the
+  server composites before opening the desktop. Removes the last built-in app
+  logic from the server.
+- **Cross-client launch** — e.g. Files "Open" a file → ask the server to spawn
+  `mxedit -open <path>` (needs a `MX_SPAWN` protocol message so the *server*
+  stays the parent and reaps it).
+- **Resize that re-lays-out clients** — currently the server scales/1:1-blits a
+  fixed client surface; a `MXEV_RESIZE` + surface realloc lets text clients
+  re-flow crisply at any size (terminal grows in rows/cols, not text size).
+  [Being implemented — `MX_F_RESIZABLE` flag + `SYS_SURFACE_UNMAP`.]
+- **Proper desktop icons** — replace the flat coloured-square launcher glyphs
+  with real per-app icon bitmaps (a small RGBA/1-bpp icon baked per app, drawn
+  by `draw_icons`). Could also drive a future drag-and-drop GUI designer.
+- **`mxabout`** — shipped: About window (copyright + live system specs).
+
+### OS-specific cross toolchain (`i686-makar`)
+
+Per the OSDev wiki (https://wiki.osdev.org/OS_Specific_Toolchain and
+https://wiki.osdev.org/Creating_an_Operating_System — both 403 to automated
+fetches, read in a browser). Today the build uses a generic `i686-elf` cross-
+compiler. A Makar-targeted `i686-makar` toolchain is the "proper" path and the
+foundation for a real libc port. Needs autoconf 2.69 + automake 1.15.1 (match
+the binutils/gcc vintage). Exact file checklist (swap `myos`→`makar`):
+
+- **binutils:** `config.sub` (accept `-makar*`); `bfd/config.bfd`
+  (`i[3-7]86-*-makar*` → `i386_elf32_vec`); `gas/configure.tgt`
+  (`i386-*-makar*` fmt=elf, use `em=gnu` so `/` isn't a comment);
+  `ld/configure.tgt` (`targ_emul=elf_i386_makar`); new
+  `ld/emulparams/elf_i386_makar.sh` (source `elf_i386.sh`, set `TEXT_START_ADDR`);
+  add `eelf_i386_makar.c` to `ld/Makefile.am` `ALL_EMULATION_SOURCES` (then
+  re-run automake in `ld/`).
+- **gcc:** `config.sub`; `gcc/config.gcc` — a generic `*-*-makar*` case
+  (`gas=yes gnu_ld=yes default_use_cxa_atexit=yes use_gcc_stdint=provide`) and an
+  arch case adding `makar.h gnu-user.h` to `tm_file`; new `gcc/config/makar.h`
+  (`LIB_SPEC "-lc"`, `STARTFILE_SPEC "crt0.o%s crti.o%s crtbegin.o%s"`,
+  `ENDFILE_SPEC "crtend.o%s crtn.o%s"`, `TARGET_OS_CPP_BUILTINS` →
+  `__makar__`/`__unix__`); `libgcc/config.host` (crt parts + `t-crtstuff*`);
+  `fixincludes/mkfixinc.sh` (disable for `*-makar*`); `libstdc++-v3/crossconfig.m4`
+  if C++ wanted (re-run autoconf there).
+- **sysroot:** `--with-sysroot=/path` on both configures; install libc headers
+  into the sysroot BEFORE building gcc (libgcc must believe a libc exists).
+- **payoff:** `i686-makar-gcc hello.c` Just Works; freestanding kernel/libk
+  build with it too; unblocks a hosted **newlib**/**musl** port (the consolidated
+  `makar_*` ABI headers are the kernel-side contract), and ports build with a
+  normal `./configure --host=i686-makar`.
+
+### Compatibility layers (research / longer-term)
+
+- **ELKS compatibility** (shim layer) — run ELKS (Embeddable Linux Kernel
+  Subset, 16-bit/8086) binaries via a translation/shim. Large: ELKS is real-mode
+  8086 with its own syscall ABI; needs a v86/emulation path or a static recompile
+  shim. Research-grade.
+- **NX windowing system** (ELKS's Nano-X/microwindows-style GUI) compat — a
+  compatibility layer mapping NX/Nano-X client calls onto the makx protocol, so
+  Nano-X apps render as makx clients.
+- **DOS compatibility layer** — run simple DOS (MZ/.COM) programs via a v86-mode
+  or interpreter shim implementing the INT 21h DOS API subset. Large; scope to a
+  minimal subset (file I/O + console) first.
+
 ### Slice queue (`feat/tty-multitasking` → follow-ups)
 
 Tracked here, pulled into branches one at a time so each PR stays focused.
@@ -137,7 +211,8 @@ Plan:
 - Test with `-machine q35` (modern PCIe chipset model) vs. the default `-machine pc` (i440FX, classic ISA/PCI). `q35` exposes PCIe root ports and an ICH9 southbridge instead of PIIX3 — `lspci` output will differ and the SATA/AHCI path matters for disk access.
 
 **Medium-term (kernel-visible UEFI differences):**
-1. **GOP framebuffer** — on UEFI/OVMF, Bochs VBE I/O ports (`0x01CE`/`0x01CF`) may be absent; the framebuffer is a GOP linear framebuffer whose address is in the Multiboot 2 framebuffer tag. As of PR #190 the kernel **already handles the no-DISPI case**: when `bochs_vbe_available()` is false but the bootloader supplied an LFB, `kernel_main` adopts that linear framebuffer and brings `vesa_tty` up on it (this also fixed the Hyper-V Gen 1 black screen). What remains is runtime mode-setting: `setmode` still can't switch resolutions without DISPI — proper fix is GRUB's `videoinfo`/`set gfxmode` or a virtio-GPU device. (The FB is also mapped write-combining via PAT so it's usable-fast on real hardware.)
+1. **GOP framebuffer** — on UEFI/OVMF, Bochs VBE I/O ports (`0x01CE`/`0x01CF`) may be absent; the framebuffer is a GOP linear framebuffer whose address is in the Multiboot 2 framebuffer tag. As of PR #190 the kernel **already handles the no-DISPI case**: when `bochs_vbe_available()` is false but the bootloader supplied an LFB, `kernel_main` adopts that linear framebuffer and brings `vesa_tty` up on it (this also fixed the Hyper-V Gen 1 black screen). What remains is runtime mode-setting: `setmode` still can't switch resolutions without DISPI — proper fix is GRUB's `videoinfo`/`set gfxmode` or a virtio-GPU device. (The FB is also mapped write-combining via PAT **and a WC MTRR** — PR after #196 — so it's usable-fast on real hardware / VT-x hypervisors where PAT-WC alone can't beat a UC MTRR.)
+   - **Hyper-V Gen1 resolution cap:** its pre-OS VBE exposes only 4:3/5:4 32bpp modes (max `1024x768x32` / `1152x864x32`; 1280x1024+ are 16bpp only) and won't honour `gfxpayload` for a multiboot2 kernel (falls back to EDID-preferred 800x600). The kernel now *requests* `1024x768x32` in its MB2 framebuffer tag (`vesa_config.h`) so Hyper-V/VMware get that. Going higher (or runtime mode changes) on Hyper-V needs a **synthetic-video driver** — the `hyperv_fb`/`synthvid` VMBus protocol Linux uses (`drivers/video/fbdev/hyperv_fb.c`): negotiate over VMBus, send a `SYNTHVID_RESOLUTION_REQUEST`. Sizeable (needs a VMBus transport first); tracked here.
 2. **ACPI RSDP on UEFI** — firmware places the RSDP in EFI config tables rather than the EBDA/BIOS ROM scan range. GRUB copies the RSDP pointer into the Multiboot 2 ACPI tag. `acpi.c` currently scans EBDA/ROM; add a fast-path that reads the MB2 ACPI v1/v2 tag first (OSDev: tag type 14/15), falls back to memory scan only on BIOS boots. This also surfaces the **MCFG** table needed for PCIe extended config space.
 3. **q35 / ICH9 differences** — q35 uses an AHCI SATA controller (PCI class 01:06, prog_if 01) rather than legacy IDE. `ide.c` speaks to the legacy 0x1F0/0x170 I/O ports which won't exist on q35. Need an AHCI driver (or fall back to the CD-ROM path for live boots). Disk writes only matter for HDD install flows. (Note: `ide.c` now does bus-master DMA on the legacy PIIX controller — PR #190 — but that's the IDE/PIIX path, not AHCI; q35 still needs a separate AHCI driver.)
 

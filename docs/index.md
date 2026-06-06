@@ -30,6 +30,7 @@ and [kernel rebuild guide](rebuild-kernel.md)).
 - **[TinyCC in Makar](tcc.md)** — shipped in-OS compiler, sysroot, supported workflows, and limits
 - **[Rebuilding the kernel inside Makar](rebuild-kernel.md)** — `/apps/rebuild-kernel.sh`, build-origin banners, installing the freshly built kernel
 - **[Makar × Medli](makar-medli.md)** — sibling-project co-operation roadmap and VIX→VICS history
+- **[Glossary](glossary.md)** — every abbreviation (PAT, MTRR, WC, ACPI, DISPI, VBE…) defined
 - **[Repo on GitHub](https://github.com/Arawn-Davies/makar)**
 
 ## What works today

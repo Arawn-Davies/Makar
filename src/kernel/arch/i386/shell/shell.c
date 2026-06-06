@@ -971,6 +971,11 @@ int shell_enter_slot(int with_loading_screen)
          * the REPL takes over. */
         terminal_set_colorscheme(SHELL_COLOR_VGA);
 
+        /* Keep background ktest text off the framebuffer for the loading screen
+         * (it draws the bar via vesa_tty_put_at, which is unaffected).  Verbose
+         * boot wants the boot log shown, so it leaves painting enabled. */
+        if (!g_verbose_boot) g_boot_loading = 1;
+
         /* Hide the tmux-style VT status bar for the duration of the
          * loading screen: nothing's registered yet on most slots, and
          * the half-populated bar looks broken next to the logo + bar
@@ -982,8 +987,12 @@ int shell_enter_slot(int with_loading_screen)
          * the VGA fallback also blocks the REPL until ktest_bg_done = 1.
          * On VESA we draw a 30-cell ASCII bar two rows below the logo; on
          * VGA we just yield silently (progress prints already go to serial
-         * via ktest_bg_task's RUN macro). */
-        if (vesa_tty_is_ready()) {
+         * via ktest_bg_task's RUN macro).
+         *
+         * `verbose` boot skips the splash/bar entirely: the boot log left on
+         * screen (and ktest output) stays visible while we still wait for
+         * ktest_bg_done below. */
+        if (!g_verbose_boot && vesa_tty_is_ready()) {
             vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
             vesa_tty_clear();
             vesa_blit_logo(SHELL_FG_RGB, SHELL_BG_RGB);
@@ -1034,6 +1043,7 @@ int shell_enter_slot(int with_loading_screen)
         while (!ktest_bg_done)
             task_yield();
         while (keyboard_poll()) {}
+        g_boot_loading = 0;   /* loading over -- framebuffer text painting resumes */
 
         /* Loading is over.  Enable the kernel status bar (statusbar_task
          * owns the bottom row from here on); Alt+F5 toggles it off. */
@@ -1151,7 +1161,15 @@ void shell_enter_root_tty(void)
     vtty_register_root();
 
     terminal_set_colorscheme(SHELL_COLOR_VGA);
-    if (vesa_tty_is_ready()) {
+    /* Hold background ktest text off the framebuffer for the loading screen so it
+     * can't bleed over the logo/bar (the bar uses vesa_tty_put_at, unaffected).
+     * Verbose boot wants the boot log on screen, so it leaves painting enabled. */
+    if (!g_verbose_boot) g_boot_loading = 1;
+    /* `verbose` boot skips the splash + logo + progress bar entirely so the
+     * boot log (and serial ktest output) left on screen stays visible; we still
+     * wait for ktest_bg_done below.  This is mak.sh0's loading screen -- the
+     * matching gate in shell_enter_slot() only covers the non-root VT slots. */
+    if (!g_verbose_boot && vesa_tty_is_ready()) {
         vesa_tty_set_status_visible(0);
         vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
         vesa_tty_clear();
@@ -1195,16 +1213,21 @@ void shell_enter_root_tty(void)
     while (!ktest_bg_done)
         task_yield();
     while (keyboard_poll()) {}
+    g_boot_loading = 0;   /* loading over -- framebuffer text painting resumes */
 
     /* Boot splash done: enable the kernel status bar (statusbar_task owns
      * the bottom row from here; Alt+F5 toggles it). */
     vesa_tty_set_status_visible(1);
     terminal_set_colorscheme(SHELL_COLOR_VGA);
-    if (vesa_tty_is_ready()) {
-        vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
-        vesa_tty_clear();
-    } else {
-        t_fill(SHELL_COLOR_VGA);
+    /* Verbose boot leaves the boot log on screen (the login prompt prints
+     * below it); normal boot clears the splash to the VT background first. */
+    if (!g_verbose_boot) {
+        if (vesa_tty_is_ready()) {
+            vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
+            vesa_tty_clear();
+        } else {
+            t_fill(SHELL_COLOR_VGA);
+        }
     }
     /* Boot splash ends here; the login prompt follows in shell_login_loop. */
 }
@@ -1307,9 +1330,13 @@ void shell_login_loop(void)
 
         /* --- Spawn sh.elf --login --user=<name> --- */
         {
-            /* Build --user=<name> into a stack buffer so it outlives the call. */
+            /* Build --user=<name> into a stack buffer so it outlives the call.
+             * For the GUI login (no one authenticated yet) pass the configured
+             * autologin user as the *suggested* name so the graphical login can
+             * pre-fill it -- respecting autologin=<user> without hardcoding. */
             static char user_arg[48];
-            const char *u = auth_current_user();
+            const char *u = (gui_login && g_autologin_user[0])
+                          ? g_autologin_user : auth_current_user();
             size_t i = 0;
             const char *pfx = "--user=";
             while (*pfx) user_arg[i++] = *pfx++;

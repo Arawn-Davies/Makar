@@ -23,7 +23,14 @@
  *                     separately so shell-only changes don't move the
  *                     kernel version and vice versa.
  */
-#define MAKAR_VERSION "0.9.5"
-#define SHELL_VERSION "0.8.0"
+/* 0.10 -- the makx milestone: GUI re-architected into an X11-style display
+ *         server + client apps over IPC + shared surfaces; syscall ABI
+ *         consolidated into one source of truth; hypervisor detection +
+ *         per-platform fixes (Hyper-V mouse, VMware/Hyper-V 720p, ACPI soft-off);
+ *         windowed clients re-flow on resize. */
+#define MAKAR_VERSION "0.10.0"
+/* 0.9 -- ring-3 shell driving the makx desktop session (GUI login hand-off,
+ *        focus-gain prompt rebuild, autostart). */
+#define SHELL_VERSION "0.9.0"
 
 #endif /* _KERNEL_VERSION_H */

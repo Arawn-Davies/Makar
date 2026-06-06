@@ -1,0 +1,78 @@
+/*
+ * vm.c -- hypervisor / VM detection (see kernel/vm.h).
+ */
+#include <kernel/vm.h>
+#include <kernel/asm.h>
+#include <stdint.h>
+#include <string.h>
+
+static enum vm_kind s_kind = VM_BAREMETAL;
+static const char  *s_name = "bare metal";
+
+static inline void cpuid(uint32_t leaf, uint32_t *a, uint32_t *b,
+                         uint32_t *c, uint32_t *d)
+{
+    __asm__ volatile("cpuid"
+                     : "=a"(*a), "=b"(*b), "=c"(*c), "=d"(*d)
+                     : "a"(leaf), "c"(0));
+}
+
+/* QEMU's fw_cfg device: select the signature item (0x0000) on the selector
+ * port, then read 4 bytes from the data port.  QEMU returns "QEMU"; other
+ * platforms leave the port floating / unimplemented (reads !=  "QEMU"). */
+static int qemu_fwcfg_present(void)
+{
+    outw(0x510, 0x0000);            /* FW_CFG_SIGNATURE */
+    char s[4];
+    for (int i = 0; i < 4; i++) s[i] = (char)inb(0x511);
+    return s[0]=='Q' && s[1]=='E' && s[2]=='M' && s[3]=='U';
+}
+
+/* Bochs/QEMU VBE (DISPI) id register: index 0 at 0x1CE, value at 0x1CF.
+ * A real adapter answers 0xB0C0..0xB0CF.  Used only as a Bochs tie-breaker
+ * after QEMU/other hypervisors have been ruled out. */
+static int bochs_vbe_present(void)
+{
+    outw(0x1CE, 0x0000);
+    uint16_t id = inw(0x1CF);
+    return id >= 0xB0C0 && id <= 0xB0CF;
+}
+
+void vm_detect(void)
+{
+    uint32_t a, b, c, d;
+    cpuid(1, &a, &b, &c, &d);
+    int hv_present = (c >> 31) & 1;
+
+    if (hv_present) {
+        char v[13];
+        cpuid(0x40000000, &a, &b, &c, &d);
+        memcpy(v + 0, &b, 4);
+        memcpy(v + 4, &c, 4);
+        memcpy(v + 8, &d, 4);
+        v[12] = '\0';
+
+        if      (!memcmp(v, "Microsoft Hv", 12)) { s_kind = VM_HYPERV;     s_name = "hyperv"; }
+        else if (!memcmp(v, "VMwareVMware", 12)) { s_kind = VM_VMWARE;     s_name = "vmware"; }
+        else if (!memcmp(v, "VBoxVBoxVBox", 12)) { s_kind = VM_VIRTUALBOX; s_name = "virtualbox"; }
+        else if (!memcmp(v, "XenVMMXenVMM", 12)) { s_kind = VM_XEN;        s_name = "xen"; }
+        else if (!memcmp(v, "TCGTCGTCGTCG", 12)) { s_kind = VM_QEMU;       s_name = "qemu"; }
+        else if (!memcmp(v, "KVMKVMKVM", 9)) {
+            /* KVM accelerator -- QEMU when its fw_cfg is present, else a bare
+             * KVM-based VMM. */
+            if (qemu_fwcfg_present()) { s_kind = VM_QEMU; s_name = "qemu"; }
+            else                      { s_kind = VM_KVM;  s_name = "kvm"; }
+        } else {
+            s_kind = VM_UNKNOWN_HV; s_name = "hypervisor";
+        }
+        return;
+    }
+
+    /* No hypervisor CPUID bit: QEMU with the bit hidden, Bochs, or bare metal. */
+    if (qemu_fwcfg_present())      { s_kind = VM_QEMU;  s_name = "qemu"; }
+    else if (bochs_vbe_present())  { s_kind = VM_BOCHS; s_name = "bochs"; }
+    else                           { s_kind = VM_BAREMETAL; s_name = "bare metal"; }
+}
+
+enum vm_kind vm_kind(void) { return s_kind; }
+const char  *vm_name(void) { return s_name; }

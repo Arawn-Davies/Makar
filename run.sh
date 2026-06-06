@@ -704,6 +704,9 @@ _build_iso() {
     # GRUB_DEFAULT selects the auto-booted menuentry (default: the GUI desktop).
     # The kbtest/guitest harnesses pin it to 0 (the KERNEL_ARGS-bearing entry).
     [ -n "${GRUB_DEFAULT:-}" ] && _kenv+=(--env "GRUB_DEFAULT=$GRUB_DEFAULT")
+    # VERBOSE/V stream the full tcc.c compile (build-tcc.sh) instead of the tail.
+    [ -n "${VERBOSE:-}" ] && _kenv+=(--env "VERBOSE=$VERBOSE")
+    [ -n "${V:-}" ]       && _kenv+=(--env "V=$V")
     _drun "${_kenv[@]}" -- "${_flags:+$_flags }bash iso.sh"
 }
 
@@ -810,11 +813,19 @@ fi
 case "$MODE" in
 
 # ── iso build ────────────────────────────────────────────────────────────────
-# Incremental kernel + makar.iso + makar-test.iso build.  Used by CI's
-# build job (artifacts feed the parallel ktest / gdb / ui jobs).
+# Incremental kernel + makar.iso build (the interactive ISO only -- one
+# grub-mkrescue pass).  The test ISO differs from makar.iso solely in its
+# grub.cfg (a zero-timeout test_mode entry), and the test targets (`ktest`,
+# `iso test`, ...) rebuild their own makar-test.iso anyway, so local builds
+# don't need it.  Set TEST_ISO=1 to additionally emit makar-test.iso (CI's
+# build job does, so its uploaded artifacts are unchanged).
 "iso build")
-    _build_iso "CFLAGS='-O0 -g3' TEST_ISO=1"
-    echo "==> Artifacts: makar.iso, makar-test.iso, src/kernel/makar.kernel"
+    _build_iso "CFLAGS='-O0 -g3'${TEST_ISO:+ TEST_ISO=$TEST_ISO}"
+    if [ "${TEST_ISO:-0}" = "1" ]; then
+        echo "==> Artifacts: makar.iso, makar-test.iso, src/kernel/makar.kernel"
+    else
+        echo "==> Artifacts: makar.iso, src/kernel/makar.kernel"
+    fi
     ;;
 
 # ── iso boot ──────────────────────────────────────────────────────────────────

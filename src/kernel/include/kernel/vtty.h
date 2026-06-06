@@ -63,6 +63,8 @@ void vtty_register_root_text_task(task_t *t);
 void vtty_switch_root_text(void);
 void vtty_switch_root_gui(void);
 int  vtty_root_text_active(void);
+/* 1 when the root GUI owns scanout (direct-to-framebuffer painters must defer). */
+int  vtty_root_gui_active(void);
 
 /* Called from task_terminate: if the dying task is the root GUI task, restore
  * input + display to the root text session (so the keyboard isn't left dead). */

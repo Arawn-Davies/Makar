@@ -327,6 +327,13 @@ int vtty_root_text_active(void)
     return vtty_display_mode == VTTY_DISPLAY_ROOT_TEXT;
 }
 
+/* The GUI owns scanout: callers that paint the framebuffer directly (e.g. the
+ * disk-I/O status spinner) must hold off so they don't bleed over the desktop. */
+int vtty_root_gui_active(void)
+{
+    return vtty_display_mode == VTTY_DISPLAY_ROOT_GUI;
+}
+
 /* Called from task_terminate for every dying task.  If the root GUI task
  * exits (Exit GUI, crash, or kill), hand input + display back to the root
  * text session -- otherwise kb_focused is left dangling and mak.sh0 gets no

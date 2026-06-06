@@ -1,30 +1,42 @@
 /*
- * wm.c -- gui.elf: a small multi-window manager / compositor for Makar.
+ * wm.c -- gui.elf: the Makar display server ("makx").
  *
- * The WM owns the framebuffer (it is the single focused root-GUI task) and is
- * the sole compositor: every window renders into the WM's back buffer and the
- * whole frame is presented once via SYS_FB_PRESENT.  Keyboard + mouse focus is
- * managed entirely inside the WM -- clicking a window raises it and makes it
- * the keyboard target; the window under the cursor gets mouse input.  See
- * docs/gui.md.
+ * This process owns the framebuffer (it is the single focused root-GUI task,
+ * the only one the kernel lets call SYS_FB_PRESENT), the keyboard and the
+ * mouse.  It draws the desktop chrome -- window borders, the dock, the top menu
+ * bar, the cursor -- and *composites* application windows.  Applications are no
+ * longer built in: each one is a separate client process that talks to this
+ * server over the kernel's synchronous IPC for control (makx.h) and a shared
+ * pixel surface for pixels (kernel/surface.h).  Control over the message
+ * channel, bulk pixels over shared memory -- the division X11 draws between its
+ * protocol socket and MIT-SHM.  See docs/gui.md.
  *
- * Window kinds:
- *   - Terminal   : hosts sh.elf over pipes (the byte stream is drawn as a grid)
- *   - Editor     : native text editor built on the gui_ui widgets + file I/O
- *   - Files      : native file browser (sys_readdir)
- *   - Tasks      : native task manager (/proc/tasks + SYS_KILL)
- *   - Doom       : doom.elf rendering into a shared surface the WM composites
+ * The server is purely *reactive* to client requests + hardware input: it never
+ * sends a client an unsolicited message.  Each client HELLO/PRESENT/POLL is a
+ * sendrec; the reply carries at most one queued input event for that window
+ * plus a "still pending" count, so a client drains its events by polling until
+ * the count is zero.  The server interleaves draining client requests
+ * (non-blocking sys_ipc_nbrecv) with polling the keyboard/mouse and compositing
+ * -- it never parks in a blocking receive.
+ *
+ * Still built into the server (deliberately, for this cut): the desktop, dock,
+ * menu bar and window chrome (a compositor-owned panel + WM, like many simple
+ * stacks), and the graphical login screen (it is tied to the session/auth
+ * handshake).  Migrating the panel + login out to their own clients is the
+ * remaining step noted in docs/gui.md.
  *
  * Assumes a 32-bpp XRGB8888 framebuffer (QEMU Bochs VBE default).
  */
 #include "syscall.h"
 #include "gui_gfx.h"
 #include "gui_ui.h"
+#include "gui_browser.h"
+#include "makx.h"
 
 /* ---- framebuffer / back buffer ----------------------------------------- */
 
 static unsigned int  FBW, FBH;
-static gfx_surface   scr;              /* the WM back buffer (scr.px == bb)   */
+static gfx_surface   scr;              /* the server back buffer (scr.px==bb) */
 
 #define RGB GFX_RGB
 #define COL_DESK    RGB(0x1e,0x29,0x3b)
@@ -42,619 +54,407 @@ static gfx_surface   scr;              /* the WM back buffer (scr.px == bb)   */
 #define COL_MENU RGB(0x0c,0x10,0x18)
 
 /* ---- small libc ---------------------------------------------------------- */
-
 static int   slen(const char *s){ int n=0; while(s[n]) n++; return n; }
 static void  scpy(char *d, const char *s, int max){ int i=0; while(s[i]&&i<max-1){d[i]=s[i];i++;} d[i]=0; }
 static char *u2s(unsigned int v, char *out){ char t[12]; int i=0; if(!v)t[i++]='0'; while(v){t[i++]=(char)('0'+v%10u);v/=10u;} int j=0; while(i)out[j++]=t[--i]; out[j]=0; return out+j; }
-static char *scat(char *d, const char *s){ while(*d)d++; while(*s)*d++=*s++; *d=0; return d; }
 static int   seq(const char *a, const char *b){ int i=0; while(a[i]&&a[i]==b[i])i++; return a[i]==b[i]; }
 
-/* ---- window model -------------------------------------------------------- */
+/* ===================== window table (client-backed) ===================== */
 
-enum { W_TERMINAL, W_EDITOR, W_FILES, W_TASKS, W_DOOM, W_COUNT };
-
+#define MAXWIN 8
+#define EVQ    32
+typedef struct { int type, d0, d1, d2; } mxev;
 typedef struct {
-    int    open;
-    int    x, y, w, h;          /* outer rect                                */
-    char   title[40];
-    ui_ctx ui;                  /* persistent immediate-mode state           */
-} window;
+    int          in_use;
+    int          client;        /* client pid                              */
+    int          out;           /* client stdout/stderr pipe we drain (-1) */
+    int          icon;          /* launching icon index (-1 if none)       */
+    int          sid;           /* shared surface id (-1 until HELLO)       */
+    gfx_surface  surf;          /* our mapping of the client surface        */
+    int          x, y, w, h;    /* outer rect                              */
+    int          minimized, maximized;
+    int          resizable;     /* MX_F_RESIZABLE: re-flow (blit 1:1) vs scale */
+    int          sx, sy, sw, sh;/* geometry saved before maximise          */
+    char         title[40];
+    mxev         ev[EVQ]; int eh, et;     /* per-window event queue        */
+} swin;
 
-static window wins[W_COUNT];
-static int    zlist[W_COUNT];   /* back (0) -> front (W_COUNT-1), holds kinds */
-static int    focus_kind = -1;
+static swin W[MAXWIN];
+static int  zorder[MAXWIN];     /* back(0) -> front, holds window indices  */
+static int  znum;
+static int  focus = -1;
+static int  server_pid;
+static int  g_dirty = 1;          /* back buffer needs a recompose this frame   */
 
-static int client_x(window *w){ return w->x + 1; }
-static int client_y(window *w){ return w->y + TH; }
-static int client_w(window *w){ return w->w - 2; }
-static int client_h(window *w){ return w->h - TH - 1; }
+/* Damage rectangle: the screen region that actually changed, so we present only
+ * that (never the whole framebuffer) -- what a real compositor does.  Recompose
+ * is cheap cacheable RAM; the framebuffer push is the cost (especially on VT-x
+ * hypervisors where it's write-combined MMIO), so scoping it to the damage rect
+ * makes a window repaint independent of how many other windows are open. */
+static int  dmg_v=0, dmg_x0,dmg_y0,dmg_x1,dmg_y1;
+static void damage(int x,int y,int w,int h){
+    int x1=x+w, y1=y+h;
+    if(!dmg_v){ dmg_x0=x; dmg_y0=y; dmg_x1=x1; dmg_y1=y1; dmg_v=1; }
+    else { if(x<dmg_x0)dmg_x0=x; if(y<dmg_y0)dmg_y0=y; if(x1>dmg_x1)dmg_x1=x1; if(y1>dmg_y1)dmg_y1=y1; }
+}
+/* Damage a window including its 3px decoration border. */
+static void damage_win(int i){ damage(W[i].x-4, W[i].y-4, W[i].w+8, W[i].h+8); }
+static void damage_full(void){ damage(0,0,(int)FBW,(int)FBH); }
 
-/* z-order helpers ---------------------------------------------------------- */
-static void z_raise(int kind)
-{
-    int i = 0; while (i < W_COUNT && zlist[i] != kind) i++;
-    if (i >= W_COUNT) return;
-    for (; i < W_COUNT - 1; i++) zlist[i] = zlist[i + 1];
-    zlist[W_COUNT - 1] = kind;
-    focus_kind = kind;
-}
+static int  client_x(swin *w){ return w->x + 1; }
+static int  client_y(swin *w){ return w->y + TH; }
+static int  client_w(swin *w){ return w->w - 2; }
+static int  client_h(swin *w){ return w->h - TH - 1; }
 
-/* ================= Terminal window (sh.elf over pipes) =================== */
+/* z-order ------------------------------------------------------------------ */
+static void z_remove(int i){ int j=0; while(j<znum && zorder[j]!=i) j++; if(j>=znum) return; for(;j<znum-1;j++) zorder[j]=zorder[j+1]; znum--; }
+static void z_raise(int i){ z_remove(i); zorder[znum++]=i; }
+static int  z_topmost(void){ for(int j=znum-1;j>=0;j--){ int i=zorder[j]; if(W[i].in_use && !W[i].minimized) return i; } return -1; }
 
-#define TCOLS 96
-#define TROWS 44
-static char term[TROWS][TCOLS];
-static int  t_cols, t_rows, t_cr, t_cc;
-static int  term_pid = -1, term_in = -1, term_out = -1;
-
-static void term_clear(void){ for(int r=0;r<TROWS;r++)for(int c=0;c<TCOLS;c++)term[r][c]=' '; t_cr=t_cc=0; }
-static void term_newline(void)
+/* per-window event queue --------------------------------------------------- */
+static int  evq_pending(swin *s){ return (s->eh - s->et + EVQ) % EVQ; }
+static void win_push(swin *s, int type, int d0, int d1, int d2)
 {
-    t_cc = 0;
-    if (++t_cr >= t_rows) {
-        for (int r=0;r<t_rows-1;r++) for(int c=0;c<TCOLS;c++) term[r][c]=term[r+1][c];
-        for (int c=0;c<TCOLS;c++) term[t_rows-1][c]=' ';
-        t_cr = t_rows-1;
-    }
-}
-static void term_putc(char ch)
-{
-    if (ch=='\n'){ term_newline(); return; }
-    if (ch=='\r'){ t_cc=0; return; }
-    if (ch==8||ch==127){ if(t_cc>0){t_cc--; term[t_cr][t_cc]=' ';} return; }
-    if (ch<32) return;
-    if (t_cc>=t_cols) term_newline();
-    if (t_cr<TROWS && t_cc<TCOLS) term[t_cr][t_cc++]=ch;
-}
-static void term_spawn(void)
-{
-    if (term_pid > 0) return;
-    int ip[2], op[2];
-    if (sys_pipe(ip)<0 || sys_pipe(op)<0){ const char*m="terminal: pipe failed\n"; for(int i=0;m[i];i++)term_putc(m[i]); return; }
-    int pid = sys_fork();
-    if (pid<0){ const char*m="terminal: fork failed\n"; for(int i=0;m[i];i++)term_putc(m[i]); return; }
-    if (pid==0){
-        sys_close(ip[1]); sys_close(op[0]);
-        sys_dup2(ip[0],0); sys_dup2(op[1],1); sys_dup2(op[1],2);
-        sys_close(ip[0]); sys_close(op[1]);
-        char user[48], uarg[64]; char *av[3]={ "sh.elf", 0, 0 };
-        if (sys_whoami(user,sizeof user)>0){ scpy(uarg,"--user=",sizeof uarg); scat(uarg,user); av[1]=uarg; }
-        sys_execve("/apps/sh.elf", av, (char *const*)0);
-        sys_exit(127);
-    }
-    term_pid=pid; term_in=ip[1]; term_out=op[0];
-    sys_close(ip[0]); sys_close(op[1]);
-    sys_fcntl(term_out, F_SETFL, O_NONBLOCK);
-    sys_fcntl(term_in,  F_SETFL, O_NONBLOCK);
-}
-static void term_kill(void)
-{
-    if (term_pid>0){ sys_kill(term_pid, SIGKILL); int st=0; sys_wait4(term_pid,&st,0); }
-    if (term_in>=0) sys_close(term_in);
-    if (term_out>=0) sys_close(term_out);
-    term_pid=-1; term_in=-1; term_out=-1;
-}
-static int term_pump(void)
-{
-    if (term_out<0) return 0;
-    unsigned char b[128]; int dirty=0;
-    for(;;){ long n=sys_read(term_out,b,sizeof b); if(n<=0) break; for(long i=0;i<n;i++)term_putc((char)b[i]); dirty=1; if(n<(long)sizeof b) break; }
-    if (term_pid>0){ int st=0; if (sys_wait4(term_pid,&st,WNOHANG)==term_pid){ term_pid=-1; const char*m="\n[shell exited]\n"; for(int i=0;m[i];i++)term_putc(m[i]); dirty=1; } }
-    return dirty;
-}
-static void term_key(int k)
-{
-    if (term_in<0) return;
-    unsigned char b=(unsigned char)k; if(b=='\r')b='\n';
-    sys_write(term_in,&b,1);
-}
-static void term_draw(window *w)
-{
-    int cx=client_x(w), cy=client_y(w), cw=client_w(w), ch=client_h(w);
-    gfx_fill(&scr, cx, cy, cw, ch, RGB(0x0e,0x12,0x18));
-    t_cols = (cw-8)/8; if(t_cols>TCOLS)t_cols=TCOLS;
-    t_rows = (ch-8)/8; if(t_rows>TROWS)t_rows=TROWS;
-    int bx=cx+4, by=cy+4;
-    for(int r=0;r<t_rows;r++)
-        for(int c=0;c<t_cols;c++)
-            if(term[r][c]!=' ') gfx_char(&scr, bx+c*8, by+r*8, (unsigned char)term[r][c], COL_TEXT);
-    if (t_cr<t_rows && t_cc<t_cols && focus_kind==W_TERMINAL)
-        gfx_fill(&scr, bx+t_cc*8, by+t_cr*8, 8, 8, RGB(0x8a,0xe2,0x34));
-}
-
-/* ================= Reusable file browser (model) ======================== */
-/* A small directory-navigation model shared by the Files window and the
- * Editor's open/save dialog.  It keeps its OWN cwd string and re-establishes
- * it via sys_chdir before every read, so two browsers (Files + a dialog) can
- * be open at once without fighting over the process-wide cwd.  All filesystem
- * access is via the existing chdir/readdir/getcwd syscalls -- no new ABI. */
-#define FZ_MAX  256
-#define FZ_NAMW 64
-typedef struct {
-    char          cwd[256];
-    char          name[FZ_MAX][FZ_NAMW];   /* display names; dirs end with '/' */
-    unsigned char type[FZ_MAX];
-    const char   *ptr[FZ_MAX];             /* listbox item pointers            */
-    int           n, sel, scroll, loaded;
-} browser;
-
-static void br_load(browser *b)
-{
-    if (!b->cwd[0]) scpy(b->cwd, "/", sizeof b->cwd);
-    sys_chdir(b->cwd);                      /* make this browser's cwd current  */
-    b->n = 0;
-    struct dirent de;
-    for (unsigned i=0; b->n<FZ_MAX; i++){
-        if (sys_readdir(".", i, &de)!=1) break;
-        /* hide "." and ".." -- the Up button handles parent navigation */
-        if (de.d_name[0]=='.' && (de.d_name[1]==0 || (de.d_name[1]=='.'&&de.d_name[2]==0))) continue;
-        scpy(b->name[b->n], de.d_name, FZ_NAMW);
-        if (de.d_type==DT_DIR){ int l=slen(b->name[b->n]); if(l<FZ_NAMW-2){b->name[b->n][l]='/';b->name[b->n][l+1]=0;} }
-        b->type[b->n]=de.d_type;
-        b->n++;
-    }
-    sys_getcwd(b->cwd, sizeof b->cwd);       /* normalised absolute cwd          */
-    for (int i=0;i<b->n;i++) b->ptr[i]=b->name[i];
-    if (b->sel>=b->n) b->sel = b->n?b->n-1:0;
-    b->loaded=1;
-}
-static int  br_sel_isdir(browser *b){ return b->sel>=0 && b->sel<b->n && b->type[b->sel]==DT_DIR; }
-/* Navigate then capture the resulting absolute cwd back into b->cwd *before*
- * reloading -- otherwise br_load's own sys_chdir(b->cwd) would snap us back to
- * the pre-navigation directory (this was the "Files does nothing" bug). */
-static void br_up(browser *b)
-{
-    sys_chdir(b->cwd); sys_chdir("..");
-    sys_getcwd(b->cwd, sizeof b->cwd);
-    b->sel=b->scroll=0; br_load(b);
-}
-static void br_enter_sel(browser *b)
-{
-    if (!br_sel_isdir(b)) return;
-    char nm[FZ_NAMW]; scpy(nm, b->name[b->sel], FZ_NAMW);
-    int l=slen(nm); if(l>0 && nm[l-1]=='/') nm[l-1]=0;
-    sys_chdir(b->cwd); sys_chdir(nm);
-    sys_getcwd(b->cwd, sizeof b->cwd);
-    b->sel=b->scroll=0; br_load(b);
-}
-/* Build the absolute path of the current selection (file or dir) into out. */
-static void br_sel_path(browser *b, char *out, int max)
-{
-    scpy(out, b->cwd, max);
-    int l=slen(out); if(l>0 && out[l-1]!='/' && l<max-2){ out[l]='/'; out[l+1]=0; }
-    char nm[FZ_NAMW]; scpy(nm, (b->sel>=0&&b->sel<b->n)?b->name[b->sel]:"", FZ_NAMW);
-    int nl=slen(nm); if(nl>0 && nm[nl-1]=='/') nm[nl-1]=0;
-    scat(out, nm);
-}
-/* Build cwd/<leaf> for an arbitrary leaf name (used by Save-As). */
-static void br_join(browser *b, const char *leaf, char *out, int max)
-{
-    scpy(out, b->cwd, max);
-    int l=slen(out); if(l>0 && out[l-1]!='/' && l<max-2){ out[l]='/'; out[l+1]=0; }
-    scat(out, leaf);
-}
-
-/* ===================== Editor window (native) =========================== */
-
-#define ED_MAX  (32*1024)
-static char ed_buf[ED_MAX];
-static char ed_path[128];
-static int  ed_len, ed_caret, ed_top;     /* caret = byte index, top = first row */
-static int  ed_dirty_flag;
-static char ed_status[80];
-
-/* Open/Save-As dialog: 0 = none, 1 = open, 2 = save-as.  ed_brz is the dialog's
- * own file browser; ed_savename is the Save-As filename field. */
-static int     ed_dlg;
-static browser ed_brz;
-static char    ed_savename[FZ_NAMW];
-
-/* Copy the directory part of an absolute path into out (defaults to "/"). */
-static void path_dir(const char *path, char *out, int max)
-{
-    int last=-1; for(int i=0; path[i]; i++) if(path[i]=='/') last=i;
-    if (last<=0){ scpy(out,"/",max); return; }
-    int n = last<max-1?last:max-1; for(int i=0;i<n;i++) out[i]=path[i]; out[n]=0;
-}
-/* Copy the file part (after the last '/') of a path into out. */
-static void path_base(const char *path, char *out, int max)
-{
-    int last=-1; for(int i=0; path[i]; i++) if(path[i]=='/') last=i;
-    scpy(out, path+last+1, max);
-}
-
-static void ed_new(void){ ed_buf[0]=0; ed_len=0; ed_caret=0; ed_top=0; ed_dirty_flag=0; scpy(ed_status,"new buffer",sizeof ed_status); }
-static void ed_load(const char *path)
-{
-    scpy(ed_path, path, sizeof ed_path);
-    int fd = sys_open(path, O_RDONLY);
-    if (fd<0){ ed_new(); scpy(ed_status,"open failed",sizeof ed_status); return; }
-    long n = sys_read(fd, ed_buf, ED_MAX-1); sys_close(fd);
-    if (n<0) n=0; ed_buf[n]=0; ed_len=(int)n; ed_caret=0; ed_top=0; ed_dirty_flag=0;
-    scpy(ed_status,"loaded ",sizeof ed_status); scat(ed_status,path);
-}
-static void ed_save(void)
-{
-    if (!ed_path[0]){ scpy(ed_status,"no path",sizeof ed_status); return; }
-    int rc = sys_write_file(ed_path, ed_buf, (unsigned)ed_len);
-    scpy(ed_status, rc<0 ? "save FAILED" : "saved ", sizeof ed_status);
-    if (rc>=0){ scat(ed_status, ed_path); ed_dirty_flag=0; }
-}
-static void ed_insert(char ch)
-{
-    if (ed_len >= ED_MAX-1) return;
-    for (int i=ed_len; i>ed_caret; i--) ed_buf[i]=ed_buf[i-1];
-    ed_buf[ed_caret++]=ch; ed_len++; ed_buf[ed_len]=0; ed_dirty_flag=1;
-}
-static void ed_backspace(void)
-{
-    if (ed_caret<=0) return;
-    for (int i=ed_caret-1; i<ed_len; i++) ed_buf[i]=ed_buf[i+1];
-    ed_caret--; ed_len--; ed_dirty_flag=1;
-}
-/* caret row/col by scanning newlines */
-static void ed_rowcol(int idx, int *row, int *col)
-{
-    int r=0,c=0; for(int i=0;i<idx && i<ed_len;i++){ if(ed_buf[i]=='\n'){r++;c=0;} else c++; } *row=r; *col=c;
-}
-static int ed_index_of(int row, int col)
-{
-    int r=0,c=0; int i=0;
-    for(; i<ed_len; i++){
-        if (r==row && c==col) return i;
-        if (ed_buf[i]=='\n'){ if(r==row) return i; r++; c=0; } else c++;
-    }
-    return ed_len;
-}
-/* Open the dialog: mode 1 = open, 2 = save-as.  Seeds the browser at the
- * directory of the current file (or "/") and, for save-as, the filename field
- * with the current base name. */
-static void ed_open_dialog(int mode)
-{
-    ed_dlg = mode;
-    path_dir(ed_path[0]?ed_path:"/", ed_brz.cwd, sizeof ed_brz.cwd);
-    ed_brz.sel = ed_brz.scroll = 0; ed_brz.loaded = 0;
-    br_load(&ed_brz);
-    if (mode==2){ if(ed_path[0]) path_base(ed_path, ed_savename, sizeof ed_savename);
-                  else scpy(ed_savename, "untitled.txt", sizeof ed_savename); }
-}
-
-/* The open/save browser, drawn in the editor's text-area rect while ed_dlg!=0.
- * Returns having fully handled this frame's input. */
-static void ed_dialog(int tax, int tay, int taw, int tah, ui_ctx *u)
-{
-    gfx_fill(&scr, tax, tay, taw, tah, UI_COL_FIELD);
-    gfx_outline(&scr, tax, tay, taw, tah, UI_COL_BTN_ACT);
-
-    int bx=tax+6, by=tay+6;
-    int up_c  = ui_button(u,&scr,bx,by,52,20,"Up");
-    int act_c = ui_button(u,&scr,bx+60,by,76,20, ed_dlg==1?"Open":"Save");
-    int can_c = ui_button(u,&scr,bx+144,by,72,20,"Cancel");
-    gfx_str_clip(&scr, bx+224, by+6, ed_brz.cwd, UI_COL_MUTED, tax+taw-4);
-
-    if (up_c)  br_up(&ed_brz);
-    if (can_c){ ed_dlg=0; return; }
-
-    /* save-as filename field sits on its own row */
-    int rowy = by+26, listy = rowy;
-    if (ed_dlg==2){
-        ui_label(u,&scr,bx,rowy+4,"Name:",UI_COL_MUTED);
-        ui_textbox(u,&scr,bx+48,rowy,taw-60-90,20, ed_savename, FZ_NAMW);
-        listy = rowy+26;
-    }
-
-    int lx=tax+6, ly=listy, lw=taw-12, lh=(tay+tah)-listy-6;
-    int prev=ed_brz.sel;
-    ui_listbox(u,&scr,lx,ly,lw,lh,ed_brz.ptr,ed_brz.n,&ed_brz.sel,&ed_brz.scroll);
-
-    /* A click on the already-selected row, Enter, or "Open" descends a dir or
-     * (open mode) loads the file.  In save-as, picking a file copies its name
-     * into the field so you can overwrite it. */
-    int activate = act_c
-        || (u->key=='\n')
-        || (u->mpressed && prev==ed_brz.sel && u->mx>=lx && u->mx<lx+lw && u->my>=ly && u->my<ly+lh);
-
-    if (ed_dlg==1){
-        if (activate){
-            if (br_sel_isdir(&ed_brz)) br_enter_sel(&ed_brz);
-            else if (ed_brz.n>0){ char full[256]; br_sel_path(&ed_brz, full, sizeof full); ed_load(full); ed_dlg=0; }
-        }
-    } else { /* save-as */
-        if (br_sel_isdir(&ed_brz) && activate && act_c==0) br_enter_sel(&ed_brz);
-        else if (!br_sel_isdir(&ed_brz) && (u->mpressed && prev==ed_brz.sel)) path_base(ed_brz.name[ed_brz.sel], ed_savename, sizeof ed_savename);
-        if (act_c && ed_savename[0]){
-            char full[256]; br_join(&ed_brz, ed_savename, full, sizeof full);
-            scpy(ed_path, full, sizeof ed_path); ed_save(); ed_dlg=0;
+    /* coalesce a run of mouse events that share the same button state -- keeps
+     * pure cursor moves from flooding the queue while preserving transitions. */
+    if (type==MXEV_MOUSE && s->eh!=s->et){
+        int last=(s->eh-1+EVQ)%EVQ;
+        if (s->ev[last].type==MXEV_MOUSE && s->ev[last].d2==d2){
+            s->ev[last].d0=d0; s->ev[last].d1=d1; return;
         }
     }
+    int nh=(s->eh+1)%EVQ;
+    if (nh==s->et) s->et=(s->et+1)%EVQ;        /* full: drop oldest */
+    s->ev[s->eh].type=type; s->ev[s->eh].d0=d0; s->ev[s->eh].d1=d1; s->ev[s->eh].d2=d2;
+    s->eh=nh;
+}
+static void win_pop(swin *s, ipc_msg_t *r)
+{
+    for(int i=0;i<IPC_MSG_DATA_WORDS;i++) r->data[i]=0;
+    if (s->et==s->eh){ r->type=MXEV_NONE; return; }
+    mxev e=s->ev[s->et]; s->et=(s->et+1)%EVQ;
+    r->type=e.type; r->data[0]=(unsigned)e.d0; r->data[1]=(unsigned)e.d1; r->data[2]=(unsigned)e.d2;
+    r->data[MX_PENDING]=(unsigned)evq_pending(s);
 }
 
-static void ed_draw_and_input(window *w, ui_ctx *u)
+static int win_alloc(void){ for(int i=0;i<MAXWIN;i++) if(!W[i].in_use){ for(unsigned b=0;b<sizeof W[i];b++)((unsigned char*)&W[i])[b]=0; W[i].in_use=1; W[i].client=-1; W[i].out=-1; W[i].icon=-1; W[i].sid=-1; return i; } return -1; }
+
+static void set_focus(int i)
 {
-    int cx=client_x(w), cy=client_y(w), cw=client_w(w), ch=client_h(w);
-    /* toolbar */
-    int bx=cx+6, by=cy+6;
-    int open_c = ui_button(u,&scr,bx,by,60,20,"Open");
-    int save_c = ui_button(u,&scr,bx+66,by,60,20,"Save");
-    int saveas_c = ui_button(u,&scr,bx+132,by,76,20,"Save As");
-    int new_c  = ui_button(u,&scr,bx+216,by,52,20,"New");
-    ui_label(u,&scr,bx+276,by+6, ed_path[0]?ed_path:"(unsaved)", UI_COL_MUTED);
+    if (focus==i) return;
+    if (focus>=0 && W[focus].in_use) win_push(&W[focus], MXEV_FOCUS, 0,0,0);
+    focus=i;
+    if (i>=0 && W[i].in_use) win_push(&W[i], MXEV_FOCUS, 1,0,0);
+    g_dirty=1; damage_full();   /* both borders recolour: simplest to repaint all */
+}
+static void refocus(void){ set_focus(z_topmost()); }
 
-    if (new_c)    { ed_new(); ed_dlg=0; }
-    if (open_c)   ed_open_dialog(1);
-    if (saveas_c) ed_open_dialog(2);
-    if (save_c)   { if (ed_path[0]) ed_save(); else ed_open_dialog(2); }
-
-    /* text area (or the open/save browser overlay when a dialog is active) */
-    int tax=cx+6, tay=cy+34, taw=cw-12, tah=ch-34-18;
-    if (ed_dlg){
-        ed_dialog(tax, tay, taw, tah, u);
-        gfx_str_clip(&scr, tax+4, tay+tah+6, ed_status, UI_COL_MUTED, tax+taw);
-        return;
-    }
-    gfx_fill(&scr, tax, tay, taw, tah, UI_COL_FIELD);
-    gfx_outline(&scr, tax, tay, taw, tah, (focus_kind==W_EDITOR)?UI_COL_BTN_ACT:COL_BORDER);
-
-    int vis_rows = (tah-4)/10;
-    int caret_row, caret_col; ed_rowcol(ed_caret, &caret_row, &caret_col);
-
-    /* click to position the caret */
-    int focused = (focus_kind==W_EDITOR);
-    if (focused && u->mpressed && u->mx>=tax && u->mx<tax+taw && u->my>=tay && u->my<tay+tah){
-        int row = ed_top + (u->my-tay-2)/10;
-        int col = (u->mx-tax-4)/8; if(col<0)col=0;
-        ed_caret = ed_index_of(row, col);
-        ed_rowcol(ed_caret,&caret_row,&caret_col);
-        u->got_input=1;
-    }
-    /* keyboard editing */
-    if (focused && u->key>=0){
-        int k=u->key;
-        if (k==8||k==127) ed_backspace();
-        else if (k=='\r'||k=='\n') ed_insert('\n');
-        else if (k==KEY_ARROW_LEFT){ if(ed_caret>0)ed_caret--; }
-        else if (k==KEY_ARROW_RIGHT){ if(ed_caret<ed_len)ed_caret++; }
-        else if (k==KEY_ARROW_UP){ if(caret_row>0) ed_caret=ed_index_of(caret_row-1,caret_col); }
-        else if (k==KEY_ARROW_DOWN) ed_caret=ed_index_of(caret_row+1,caret_col);
-        else if (k>=32 && k<127) ed_insert((char)k);
-        ed_rowcol(ed_caret,&caret_row,&caret_col);
-        u->got_input=1;
-    }
-    /* scroll to keep caret visible */
-    if (caret_row < ed_top) ed_top = caret_row;
-    if (caret_row >= ed_top + vis_rows) ed_top = caret_row - vis_rows + 1;
-    if (ed_top<0) ed_top=0;
-
-    /* render visible lines */
-    int row=0, col=0, scr_row=0;
-    for (int i=0; i<=ed_len && scr_row<vis_rows; i++){
-        if (row>=ed_top && row<ed_top+vis_rows) scr_row = row-ed_top;
-        char ch2 = ed_buf[i];
-        if (row>=ed_top && (ch2 && ch2!='\n') && col*8 < taw-8)
-            gfx_char(&scr, tax+4+col*8, tay+2+(row-ed_top)*10, (unsigned char)ch2, COL_TEXT);
-        if (i==ed_caret && focused && row>=ed_top && row<ed_top+vis_rows)
-            gfx_fill(&scr, tax+4+col*8, tay+2+(row-ed_top)*10, 2, 8, RGB(0xff,0xe0,0x60));
-        if (ch2=='\n'){ row++; col=0; } else col++;
-        if (row>=ed_top+vis_rows) break;
-    }
-    gfx_str_clip(&scr, tax+4, tay+tah+6, ed_status, UI_COL_MUTED, tax+taw);
+/* free a window slot whose client has gone (reaped) or been told to close */
+static void win_free(int i)
+{
+    if (!W[i].in_use) return;
+    if (W[i].sid>=0) sys_surface_destroy(W[i].sid);
+    if (W[i].out>=0) sys_close(W[i].out);
+    z_remove(i);
+    W[i].in_use=0; W[i].client=-1; W[i].out=-1; W[i].sid=-1; W[i].surf.px=0;
+    if (focus==i){ focus=-1; refocus(); }
+    g_dirty=1; damage_full();   /* area behind the closed window must repaint */
 }
 
-/* ====================== Files window (native) =========================== */
+/* ===================== desktop icons (client launchers) ================== */
+/* Each icon names a client *.elf and the default outer window geometry.  The
+ * program path is launcher data -- the server bakes in no application. */
+typedef struct { int x,y,w,h; const char *label; gfx_u32 tint; const char *cmd; int winw, winh; } icon_t;
+#define ICON_N 6
+/* winw/winh are sized so each client's fixed surface (mxterm 640x400, mxfiles
+ * 560x380, mxedit 620x420, mxtasks 560x360, doom 640x400, mxabout 560x430) fits
+ * the window's client rect 1:1 (client_w = winw-2, client_h = winh-TH-1). */
+static icon_t icons[ICON_N] = {
+    { 24,  40, 96,70, "Terminal", RGB(0x4c,0x8d,0xff), "/apps/mxterm.elf",  648,424 },
+    { 24, 124, 96,70, "Files",    RGB(0xf0,0xa8,0x30), "/apps/mxfiles.elf", 568,404 },
+    { 24, 208, 96,70, "Editor",   RGB(0x35,0xc7,0x59), "/apps/mxedit.elf",  628,444 },
+    { 24, 292, 96,70, "Tasks",    RGB(0x9b,0x6c,0xff), "/apps/mxtasks.elf", 568,384 },
+    { 24, 376, 96,70, "Doom",     RGB(0xc0,0x40,0x40), "/apps/doom.elf",    648,424 },
+    { 24, 460, 96,70, "About",    RGB(0x35,0x6a,0xa8), "/apps/mxabout.elf", 568,454 },
+};
 
-static browser g_files;
-static char    files_pathbox[256];     /* type an absolute path + Go         */
-
-static void files_open_sel(void)
+/* Fork+exec a client, handing it `-makx <server-pid>` and a stdout/stderr pipe
+ * the server drains (so client console noise can't bleed onto the text VT and a
+ * full pipe never blocks the client).  A window slot is reserved immediately;
+ * the client's HELLO fills in the surface.  If the icon's window is already
+ * open, just raise it. */
+static void launch_icon(int ii)
 {
-    if (g_files.sel<0 || g_files.sel>=g_files.n) return;
-    if (br_sel_isdir(&g_files)) { br_enter_sel(&g_files); return; }
-    /* a regular file -> open it in the Editor window */
-    char full[256]; br_sel_path(&g_files, full, sizeof full);
-    ed_load(full);
-    wins[W_EDITOR].open=1; z_raise(W_EDITOR);
-}
-static void files_draw_and_input(window *w, ui_ctx *u)
-{
-    if (!g_files.loaded){ scpy(g_files.cwd,"/",sizeof g_files.cwd); br_load(&g_files); }
-    int cx=client_x(w), cy=client_y(w), cw=client_w(w), ch=client_h(w);
-    int bx=cx+6, by=cy+6;
-    int up_c = ui_button(u,&scr,bx,by,52,20,"Up");
-    int op_c = ui_button(u,&scr,bx+60,by,64,20,"Open");
-    int rf_c = ui_button(u,&scr,bx+132,by,72,20,"Refresh");
-    /* path box + Go: jump straight to a typed absolute path */
-    int pbx=bx+212, pbw=cw-12-(pbx-cx)-52; if (pbw<60) pbw=60;
-    ui_textbox(u,&scr,pbx,by,pbw,20, files_pathbox, (int)sizeof files_pathbox);
-    int go_c = ui_button(u,&scr,pbx+pbw+4,by,48,20,"Go");
-
-    if (up_c) br_up(&g_files);
-    if (rf_c) br_load(&g_files);
-    if (go_c && files_pathbox[0]){ scpy(g_files.cwd, files_pathbox, sizeof g_files.cwd); g_files.sel=g_files.scroll=0; br_load(&g_files); }
-
-    ui_label(u,&scr,bx,by+24, g_files.cwd, UI_COL_MUTED);
-
-    int lx=cx+6, ly=cy+50, lw=cw-12, lh=ch-56;
-    int prev=g_files.sel;
-    ui_listbox(u,&scr,lx,ly,lw,lh,g_files.ptr,g_files.n,&g_files.sel,&g_files.scroll);
-    /* Open via button, Enter, or a second click on the already-selected row. */
-    if (op_c) files_open_sel();
-    else if (focus_kind==W_FILES && u->key=='\n') files_open_sel();
-    else if (focus_kind==W_FILES && u->mpressed && prev==g_files.sel &&
-             u->mx>=lx && u->mx<lx+lw && u->my>=ly && u->my<ly+lh) files_open_sel();
-}
-
-/* ====================== Tasks window (native) =========================== */
-
-#define TK_MAX 64
-static char tk_row[TK_MAX][72];
-static const char *tk_ptr[TK_MAX];
-static int  tk_pid[TK_MAX];
-static int  tk_n, tk_sel, tk_scroll;
-static int  tk_interval = 1;             /* refresh seconds (slider)         */
-static unsigned tk_next;
-static char tk_buf[4096];
-
-static void tasks_load(void)
-{
-    int fd = sys_open("/proc/tasks", O_RDONLY);
-    tk_n=0;
-    if (fd<0) return;
-    long n = sys_read(fd, tk_buf, sizeof tk_buf-1); sys_close(fd);
-    if (n<0) n=0; tk_buf[n]=0;
-    /* skip header line, then one row per line; first integer is the pid */
-    char *p=tk_buf; int line=0;
-    while (*p && tk_n<TK_MAX){
-        char *e=p; while(*e && *e!='\n') e++;
-        int len=(int)(e-p);
-        if (line>0 && len>0){
-            int copy = len<71?len:71;
-            for(int i=0;i<copy;i++) tk_row[tk_n][i]=p[i];
-            tk_row[tk_n][copy]=0;
-            /* parse leading pid */
-            int v=0; char *q=p; while(*q==' ')q++; while(*q>='0'&&*q<='9'){v=v*10+(*q-'0');q++;}
-            tk_pid[tk_n]=v;
-            tk_ptr[tk_n]=tk_row[tk_n];
-            tk_n++;
-        }
-        if(!*e) break; p=e+1; line++;
-    }
-    if (tk_sel>=tk_n) tk_sel=tk_n?tk_n-1:0;
-}
-static void tasks_draw_and_input(window *w, ui_ctx *u)
-{
-    unsigned now = sys_uptime();
-    if (tk_n==0 || (int)(now-tk_next)>=0){ tasks_load(); tk_next = now + (unsigned)(tk_interval<1?1:tk_interval)*100u; }
-
-    int cx=client_x(w), cy=client_y(w), cw=client_w(w), ch=client_h(w);
-    int bx=cx+6, by=cy+6;
-    int kill_c = ui_button(u,&scr,bx,by,72,20,"Kill");
-    int rf_c   = ui_button(u,&scr,bx+80,by,72,20,"Refresh");
-    ui_label(u,&scr,bx+164,by+6,"refresh(s)",UI_COL_MUTED);
-    ui_slider(u,&scr,bx+252,by,120,20,&tk_interval,1,10);
-    { char t[8]; u2s((unsigned)tk_interval,t); ui_label(u,&scr,bx+380,by+6,t,COL_TEXT); }
-
-    if (rf_c) tasks_load();
-    if (kill_c && tk_sel>=0 && tk_sel<tk_n && tk_pid[tk_sel]>0){ sys_kill(tk_pid[tk_sel], SIGKILL); tasks_load(); }
-
-    int lx=cx+6, ly=cy+34, lw=cw-12, lh=ch-40;
-    ui_listbox(u,&scr,lx,ly,lw,lh,tk_ptr,tk_n,&tk_sel,&tk_scroll);
-}
-
-/* ===================== Doom window (shared surface) ===================== */
-
-#define DOOM_W 640
-#define DOOM_H 400
-static int        doom_pid=-1, doom_in=-1, doom_sid=-1;
-static gfx_surface doom_surf;
-
-static void doom_launch(void)
-{
-    if (doom_pid>0) return;
-    doom_sid = sys_surface_create(DOOM_W, DOOM_H);
-    if (doom_sid<0){ scpy(wins[W_DOOM].title,"Doom (no surface)",sizeof wins[W_DOOM].title); return; }
-    void *base = sys_surface_map(doom_sid);
-    if (!base){ sys_surface_destroy(doom_sid); doom_sid=-1; return; }
-    doom_surf.px=(gfx_u32*)base; doom_surf.w=DOOM_W; doom_surf.h=DOOM_H;
-
-    int ip[2];
-    if (sys_pipe(ip)<0){ sys_surface_destroy(doom_sid); doom_sid=-1; return; }
+    for(int i=0;i<MAXWIN;i++) if(W[i].in_use && W[i].icon==ii){ W[i].minimized=0; z_raise(i); set_focus(i); g_dirty=1; damage_full(); return; }
+    int i=win_alloc(); if(i<0) return;
+    int op[2];
+    if (sys_pipe(op)<0){ W[i].in_use=0; return; }
     int pid=sys_fork();
-    if (pid<0){ sys_close(ip[0]); sys_close(ip[1]); sys_surface_destroy(doom_sid); doom_sid=-1; return; }
+    if (pid<0){ sys_close(op[0]); sys_close(op[1]); W[i].in_use=0; return; }
     if (pid==0){
-        sys_close(ip[1]);
-        sys_dup2(ip[0],0); sys_close(ip[0]);
-        char ids[12]; u2s((unsigned)doom_sid, ids);
-        char *av[4]={ "doom.elf", "-surface", ids, 0 };
-        sys_execve("/apps/doom.elf", av, (char *const*)0);
+        sys_close(op[0]);
+        /* Redirect stdin off the inherited keyboard: on execve the kernel hands
+         * keyboard focus to the new program if its fd 0 is the keyboard (the
+         * "thing you just exec'd takes the keyboard" rule).  A makx client reads
+         * input over IPC, not fd 0, so if it grabbed focus the real keys would
+         * route to its slot and never be drained -- the server would go deaf.
+         * We point fd 0 at the drain pipe (a pipe, not the keyboard -> no focus
+         * grab) rather than CLOSING it: a closed fd 0 gets reused by the next
+         * sys_pipe(), and a client that forks a child over pipes (mxterm) would
+         * then close its child's real stdin by accident. */
+        sys_dup2(op[1],0); sys_dup2(op[1],1); sys_dup2(op[1],2);
+        sys_close(op[1]);
+        char pids[12]; u2s((unsigned)server_pid, pids);
+        char *av[4]={ (char*)icons[ii].cmd, "-makx", pids, 0 };
+        sys_execve(icons[ii].cmd, av, (char *const*)0);
         sys_exit(127);
     }
-    doom_pid=pid; doom_in=ip[1]; sys_close(ip[0]);
-    sys_fcntl(doom_in, F_SETFL, O_NONBLOCK);
+    sys_close(op[1]);
+    sys_fcntl(op[0], F_SETFL, O_NONBLOCK);
+    W[i].client=pid; W[i].out=op[0]; W[i].icon=ii; W[i].sid=-1;
+    scpy(W[i].title, icons[ii].label, sizeof W[i].title);
+    W[i].w=icons[ii].winw; W[i].h=icons[ii].winh;
+    W[i].x=120+(i*30)%220; W[i].y=MENU_H+24+(i*26)%150;
+    z_raise(i); set_focus(i); g_dirty=1; damage_full();
 }
-static void doom_stop(void)
+
+/* Ask a resizable window's client to re-flow to the current client rect (it
+ * reallocates its surface via MX_RESIZE).  No-op for fixed (scaled) clients or
+ * when the surface already matches.  Sent on connect + every geometry change. */
+static void maybe_send_resize(int i)
 {
-    if (doom_pid>0){ sys_kill(doom_pid,SIGKILL); int st=0; sys_wait4(doom_pid,&st,0); }
-    if (doom_in>=0) sys_close(doom_in);
-    if (doom_sid>=0) sys_surface_destroy(doom_sid);
-    doom_pid=-1; doom_in=-1; doom_sid=-1; doom_surf.px=0;
+    if (i < 0 || !W[i].in_use || !W[i].resizable) return;
+    int cw = client_w(&W[i]), ch = client_h(&W[i]);
+    if (cw < 1) cw = 1; if (ch < 1) ch = 1;
+    if (cw != W[i].sw || ch != W[i].sh)
+        win_push(&W[i], MXEV_RESIZE, cw, ch, 0);
 }
-static void doom_key(int k)
+
+/* ===================== client request servicing ========================== */
+static int win_valid(int i, int src){ return i>=0 && i<MAXWIN && W[i].in_use && W[i].client==src; }
+
+static void serve_requests(void)
 {
-    if (doom_in<0) return;
-    /* forward a make-code byte for the key; doom's windowed backend maps
-     * these ASCII/sentinel bytes to Doom keys. */
-    unsigned char b=(unsigned char)k; sys_write(doom_in,&b,1);
+    /* Drain at most a bounded number of client requests per server frame, then
+     * return so the loop composites and yields.  Clients busy-poll (a POLL
+     * sendrec every frame), so an unbounded "while there's a message" drain
+     * would spin forever on a couple of live clients and starve everything else
+     * -- including not-yet-connected clients waiting to send their first HELLO.
+     * The cap guarantees forward progress for all tasks; deferred requests are
+     * simply served on the next frame (clients block harmlessly until then). */
+    int budget = 4 * MAXWIN;
+    ipc_msg_t m;
+    while (budget-- > 0 && sys_ipc_nbrecv(IPC_ANY, &m) == 0){
+        int src=m.src;
+        ipc_msg_t r; for(int i=0;i<IPC_MSG_DATA_WORDS;i++) r.data[i]=0; r.type=MXEV_NONE;
+
+        if (m.type==MX_HELLO){
+            int w=(int)m.data[0], h=(int)m.data[1], flags=(int)m.data[2];
+            int i=-1;
+            for(int k=0;k<MAXWIN;k++) if(W[k].in_use && W[k].client==src && W[k].sid<0){ i=k; break; }
+            if (i<0){ /* a client we didn't reserve: give it a default window */
+                i=win_alloc();
+                if (i>=0){ W[i].client=src; W[i].w=w<160?160:w; W[i].h=h<120?120:h;
+                           W[i].x=140; W[i].y=MENU_H+40; scpy(W[i].title,"App",sizeof W[i].title); }
+            }
+            int sid = (i>=0) ? sys_surface_create(w,h) : -1;
+            void *base = (sid>=0) ? sys_surface_map(sid) : 0;
+            if (i<0 || sid<0 || !base){
+                if (sid>=0) sys_surface_destroy(sid);
+                r.data[0]=(unsigned)-1; r.data[1]=(unsigned)-1;
+            } else {
+                W[i].sid=sid; W[i].surf.px=(gfx_u32*)base; W[i].surf.w=w; W[i].surf.h=h; W[i].sw=w; W[i].sh=h;
+                W[i].resizable = (flags & MX_F_RESIZABLE) ? 1 : 0;
+                r.data[0]=(unsigned)i; r.data[1]=(unsigned)sid;
+                z_raise(i); set_focus(i); g_dirty=1; damage_full();
+                /* A resizable client re-flows to fill: ask it to size its surface
+                 * to the actual client rect (the window geometry, not the
+                 * initial request) so the blit is exact 1:1 from the first frame. */
+                maybe_send_resize(i);
+            }
+        } else if (m.type==MX_RESIZE){
+            int i=(int)m.data[0], w=(int)m.data[1], h=(int)m.data[2];
+            if (win_valid(i,src) && w>0 && h>0){
+                int ns = sys_surface_create(w,h);
+                void *nb = (ns>=0) ? sys_surface_map(ns) : 0;
+                if (ns<0 || !nb){            /* keep the old surface on failure */
+                    if (ns>=0) sys_surface_destroy(ns);
+                    r.data[0]=(unsigned)-1;
+                } else {
+                    int old = W[i].sid;
+                    sys_surface_unmap(old);    /* drop the server's mapping of the old one */
+                    sys_surface_destroy(old);  /* drop creator ref (client still maps it until it unmaps) */
+                    W[i].sid=ns; W[i].surf.px=(gfx_u32*)nb; W[i].surf.w=w; W[i].surf.h=h; W[i].sw=w; W[i].sh=h;
+                    r.data[0]=(unsigned)ns; g_dirty=1; damage_full();
+                }
+            } else r.data[0]=(unsigned)-1;
+        } else if (m.type==MX_PRESENT){
+            int i=(int)m.data[0];
+            if (win_valid(i,src)){ g_dirty=1; damage_win(i); win_pop(&W[i],&r); }
+            else r.type=MXEV_CLOSE;
+        } else if (m.type==MX_POLL){
+            int i=(int)m.data[0];
+            if (win_valid(i,src)) win_pop(&W[i],&r);
+            else r.type=MXEV_CLOSE;
+        } else if (m.type==MX_BYE){
+            /* The client acks then exits; the reap loop frees the slot. */
+            r.type=MXEV_NONE;
+        }
+        sys_ipc_send(src, &r);
+    }
 }
-static void doom_draw(window *w)
+
+/* Reap exited client children; drain their stdout so it never bleeds/blocks. */
+static int reap_clients(void)
 {
-    int cx=client_x(w), cy=client_y(w), cw=client_w(w), ch=client_h(w);
-    gfx_fill(&scr, cx, cy, cw, ch, 0);
-    if (doom_pid>0){ int st=0; if (sys_wait4(doom_pid,&st,WNOHANG)==doom_pid){ doom_stop(); wins[W_DOOM].open=0; return; } }
-    if (doom_surf.px) gfx_blit_scaled(&scr, cx, cy, cw, ch, &doom_surf);
-    else gfx_str(&scr, cx+8, cy+8, "doom: not running", COL_TEXT);
+    int changed=0;
+    for(int i=0;i<MAXWIN;i++){
+        if(!W[i].in_use || W[i].client<=0) continue;
+        if(W[i].out>=0){ unsigned char b[128]; while(sys_read(W[i].out,b,sizeof b)>0){} }
+        int st; if(sys_wait4(W[i].client,&st,WNOHANG)==W[i].client){ W[i].client=-1; win_free(i); changed=1; }
+    }
+    return changed;
 }
 
 /* ===================== window chrome + compositor ======================= */
+#define BTN_D   11
+#define BTN_GAP 7
+static int btn_close_x(swin *w){ return w->x + w->w - 8 - BTN_D; }
+static int btn_max_x  (swin *w){ return btn_close_x(w) - (BTN_D + BTN_GAP); }
+static int btn_min_x  (swin *w){ return btn_max_x(w)   - (BTN_D + BTN_GAP); }
+static int btn_y      (swin *w){ return w->y + (TH - BTN_D) / 2; }
 
-static const char *win_title(int kind){ return wins[kind].title; }
-
-static void draw_window_frame(int kind)
+static void win_toggle_max(int i)
 {
-    window *w=&wins[kind];
-    int focused = (focus_kind==kind);
-    gfx_outline(&scr, w->x-1, w->y-1, w->w+2, w->h+2, COL_BORDER);
+    swin *w=&W[i];
+    if (!w->maximized){
+        w->sx=w->x; w->sy=w->y; w->sw=w->w; w->sh=w->h;
+        w->x=0; w->y=MENU_H; w->w=(int)FBW; w->h=(int)FBH-MENU_H-DOCK_H;
+        w->maximized=1;
+    } else {
+        w->x=w->sx; w->y=w->sy; w->w=w->sw; w->h=w->sh;
+        w->maximized=0;
+    }
+    maybe_send_resize(i);   /* re-flow the client to the new client rect */
+    g_dirty=1; damage_full();
+}
+
+static void draw_window_frame(int i)
+{
+    swin *w=&W[i];
+    int focused=(focus==i);
+    gfx_u32 border = focused ? UI_COL_BTN_ACT : RGB(0x3a,0x4e,0x6e);
+    gfx_outline(&scr, w->x-3, w->y-3, w->w+6, w->h+6, COL_BORDER);
+    gfx_outline(&scr, w->x-2, w->y-2, w->w+4, w->h+4, border);
+    gfx_outline(&scr, w->x-1, w->y-1, w->w+2, w->h+2, border);
     gfx_fill(&scr, w->x, w->y, w->w, w->h, COL_WIN);
     gfx_fill(&scr, w->x, w->y, w->w, TH, focused?COL_TITLE:COL_TITLE_U);
     gfx_fill(&scr, w->x, w->y+TH-2, w->w, 2, COL_TITLE2);
-    gfx_str_clip(&scr, w->x+6, w->y+6, win_title(kind), 0xFFFFFF, w->x+w->w-TH);
-    gfx_fill(&scr, w->x+w->w-TH, w->y, TH, TH, COL_CLOSE);
-    gfx_str(&scr, w->x+w->w-TH+6, w->y+6, "x", 0xFFFFFF);
-}
-
-static int in_rect(int px,int py,int x,int y,int w,int h){ return px>=x&&px<x+w&&py>=y&&py<y+h; }
-static int in_titlebar(window *w,int px,int py){ return in_rect(px,py,w->x,w->y,w->w-TH,TH); }
-static int in_close(window *w,int px,int py){ return in_rect(px,py,w->x+w->w-TH,w->y,TH,TH); }
-
-/* topmost open window under (px,py); -1 if none */
-static int hit_window(int px,int py)
-{
-    for (int i=W_COUNT-1;i>=0;i--){ int k=zlist[i]; if(wins[k].open && in_rect(px,py,wins[k].x-1,wins[k].y-1,wins[k].w+2,wins[k].h+2)) return k; }
-    return -1;
-}
-
-static void window_content(int kind, ui_ctx *u)
-{
-    switch(kind){
-        case W_TERMINAL: term_draw(&wins[kind]); break;
-        case W_EDITOR:   ed_draw_and_input(&wins[kind], u); break;
-        case W_FILES:    files_draw_and_input(&wins[kind], u); break;
-        case W_TASKS:    tasks_draw_and_input(&wins[kind], u); break;
-        case W_DOOM:     doom_draw(&wins[kind]); break;
+    gfx_str_clip(&scr, w->x+10, w->y+(TH-8)/2, w->title, 0xFFFFFF, btn_min_x(w)-6);
+    int by=btn_y(w);
+    gfx_round(&scr, btn_min_x(w),   by, BTN_D, BTN_D, focused?RGB(0xfe,0xbc,0x2e):RGB(0x5e,0x57,0x40), COL_BORDER);
+    gfx_round(&scr, btn_max_x(w),   by, BTN_D, BTN_D, focused?RGB(0x28,0xc8,0x40):RGB(0x46,0x5a,0x46), COL_BORDER);
+    gfx_round(&scr, btn_close_x(w), by, BTN_D, BTN_D, focused?RGB(0xff,0x5f,0x57):RGB(0x6a,0x4a,0x48), COL_BORDER);
+    {   /* resize grip: a solid corner wedge (bottom-right) */
+        gfx_u32 grip = focused ? UI_COL_BTN_ACT : RGB(0x4a,0x5a,0x74);
+        for (int r=0;r<14;r++) gfx_fill(&scr, w->x+w->w-1-r, w->y+w->h-1-r, r+1, 1, grip);
+    }
+    /* client area: blit the client's surface so it always FILLS the window --
+     * 1:1 only when the surface exactly matches the client rect, otherwise
+     * nearest-neighbour scale to fill (so a resized window doesn't leave the
+     * content sitting at its original size in the corner). */
+    int cx=client_x(w), cy=client_y(w), cw=client_w(w), ch=client_h(w);
+    if (W[i].sid>=0 && W[i].surf.px){
+        if (W[i].resizable){
+            /* re-flow client: its surface tracks the window, so blit 1:1.  Clip
+             * to the overlap for the brief frame between a window resize and the
+             * client's MX_RESIZE re-alloc landing (content stays native size,
+             * the window just reveals more/less -- normal resize behaviour). */
+            int bw = cw < W[i].sw ? cw : W[i].sw;
+            int bh = ch < W[i].sh ? ch : W[i].sh;
+            gfx_blit(&scr, cx, cy, &W[i].surf, 0,0, bw, bh);
+        } else if (cw>=W[i].sw && ch>=W[i].sh){
+            /* fixed-size client (e.g. doom): 1:1 centred when it fits (no scaling
+             * cost) -- only scale when the window is smaller than the surface. */
+            gfx_blit(&scr, cx+(cw-W[i].sw)/2, cy+(ch-W[i].sh)/2, &W[i].surf, 0,0, W[i].sw, W[i].sh);
+        } else {
+            gfx_blit_scaled(&scr, cx, cy, cw, ch, &W[i].surf);
+        }
+    } else {
+        gfx_fill(&scr, cx, cy, cw, ch, RGB(0x0e,0x12,0x18));
+        gfx_str(&scr, cx+8, cy+8, "starting...", UI_COL_MUTED);
     }
 }
 
-/* ===================== desktop icons + dock ============================= */
+static int in_rect(int px,int py,int x,int y,int w,int h){ return px>=x&&px<x+w&&py>=y&&py<y+h; }
+static int in_btn(int bx,int by,int px,int py){ return in_rect(px,py,bx-2,by-2,BTN_D+4,BTN_D+4); }
+static int in_min  (swin *w,int px,int py){ return in_btn(btn_min_x(w),  btn_y(w),px,py); }
+static int in_max  (swin *w,int px,int py){ return in_btn(btn_max_x(w),  btn_y(w),px,py); }
+static int in_close(swin *w,int px,int py){ return in_btn(btn_close_x(w),btn_y(w),px,py); }
+static int in_titlebar(swin *w,int px,int py){ return in_rect(px,py,w->x,w->y,btn_min_x(w)-w->x,TH); }
+static int in_resize(swin *w,int px,int py){ return in_rect(px,py,w->x+w->w-18,w->y+w->h-18,20,20); }
+static int in_client(swin *w,int px,int py){ return in_rect(px,py,client_x(w),client_y(w),client_w(w),client_h(w)); }
 
-typedef struct { int x,y,w,h; const char *label; int kind; gfx_u32 tint; } icon_t;
-#define ICON_N 5
-static icon_t icons[ICON_N] = {
-    { 24,  40, 96,70, "Terminal", W_TERMINAL, RGB(0x4c,0x8d,0xff) },
-    { 24, 124, 96,70, "Files",    W_FILES,    RGB(0xf0,0xa8,0x30) },
-    { 24, 208, 96,70, "Editor",   W_EDITOR,   RGB(0x35,0xc7,0x59) },
-    { 24, 292, 96,70, "Tasks",    W_TASKS,    RGB(0x9b,0x6c,0xff) },
-    { 24, 376, 96,70, "Doom",     W_DOOM,     RGB(0xc0,0x40,0x40) },
-};
+static int hit_window(int px,int py)
+{
+    for (int j=znum-1;j>=0;j--){ int i=zorder[j];
+        if(W[i].in_use && !W[i].minimized && in_rect(px,py,W[i].x-1,W[i].y-1,W[i].w+2,W[i].h+2)) return i; }
+    return -1;
+}
+
+/* Draw a recognisable per-app glyph in a ~32x26 box at (gx,gy).  Pixel art via
+ * primitives -- no bitmap pipeline -- matched to each launcher by index. */
+static void icon_glyph(int idx, int gx, int gy)
+{
+    gfx_u32 bg = RGB(0x2a,0x38,0x50);
+    switch (idx) {
+    case 0: /* Terminal: dark screen + green prompt + cursor */
+        gfx_round(&scr,gx,gy,32,26,RGB(0x10,0x16,0x20),bg);
+        gfx_outline(&scr,gx,gy,32,26,RGB(0x4c,0x8d,0xff));
+        gfx_str(&scr,gx+4,gy+5,">",RGB(0x8a,0xe2,0x34));
+        gfx_fill(&scr,gx+14,gy+5,7,7,RGB(0x8a,0xe2,0x34));
+        break;
+    case 1: /* Files: folder with a tab */
+        gfx_fill(&scr,gx+1,gy+2,13,6,RGB(0xc8,0x8a,0x20));
+        gfx_round(&scr,gx,gy+6,32,20,RGB(0xf0,0xa8,0x30),bg);
+        gfx_fill(&scr,gx,gy+9,32,2,RGB(0xc8,0x8a,0x20));
+        break;
+    case 2: /* Editor: page with text lines + folded corner */
+        gfx_fill(&scr,gx+5,gy,22,26,RGB(0xe6,0xea,0xf0));
+        gfx_fill(&scr,gx+21,gy,6,6,bg);             /* folded corner */
+        for(int k=0;k<4;k++) gfx_fill(&scr,gx+8,gy+6+k*5,15,2,RGB(0x90,0xa0,0xb5));
+        gfx_outline(&scr,gx+5,gy,22,26,RGB(0x35,0xc7,0x59));
+        break;
+    case 3: { /* Tasks: a little bar chart */
+        gfx_round(&scr,gx,gy,32,26,RGB(0x1b,0x22,0x2e),bg);
+        static const int w[3]={24,15,20};
+        for(int k=0;k<3;k++) gfx_fill(&scr,gx+3,gy+4+k*7,w[k],5,RGB(0x9b,0x6c,0xff));
+        break; }
+    case 4: /* Doom: angry red face */
+        gfx_round(&scr,gx,gy,32,26,RGB(0xc0,0x40,0x40),bg);
+        gfx_fill(&scr,gx+7,gy+8,5,6,RGB(0x20,0x06,0x06));
+        gfx_fill(&scr,gx+20,gy+8,5,6,RGB(0x20,0x06,0x06));
+        gfx_fill(&scr,gx+10,gy+18,12,3,RGB(0x20,0x06,0x06));
+        break;
+    case 5: /* About: info 'i' on a disc */
+        gfx_round(&scr,gx+2,gy,28,26,RGB(0x35,0x6a,0xa8),bg);
+        gfx_fill(&scr,gx+15,gy+5,3,3,0xFFFFFF);
+        gfx_fill(&scr,gx+15,gy+10,3,11,0xFFFFFF);
+        break;
+    default:
+        gfx_round(&scr,gx,gy,32,26,RGB(0x4c,0x8d,0xff),bg);
+        break;
+    }
+}
 static void draw_icons(void)
 {
     for(int i=0;i<ICON_N;i++){ icon_t *c=&icons[i];
         gfx_round(&scr,c->x,c->y,c->w,c->h,RGB(0x2a,0x38,0x50),COL_DESK);
-        gfx_round(&scr,c->x+c->w/2-16,c->y+10,32,30,c->tint,RGB(0x2a,0x38,0x50));
+        icon_glyph(i, c->x+c->w/2-16, c->y+9);
         gfx_str(&scr,c->x+(c->w-gfx_text_w(c->label))/2,c->y+c->h-16,c->label,0xFFFFFF);
     }
 }
-static int icon_hit(int px,int py){ for(int i=0;i<ICON_N;i++){icon_t*c=&icons[i]; if(in_rect(px,py,c->x,c->y,c->w,c->h)) return c->kind;} return -1; }
-
-static const char *kind_short(int k){ return k==W_TERMINAL?"sh":k==W_EDITOR?"ed":k==W_FILES?"fs":k==W_TASKS?"ps":"dm"; }
+static int icon_hit(int px,int py){ for(int i=0;i<ICON_N;i++){icon_t*c=&icons[i]; if(in_rect(px,py,c->x,c->y,c->w,c->h)) return i;} return -1; }
 
 /* ---- system stats for the right of the dock (CPU% + RAM%) --------------- */
 static unsigned dock_meminfo_kb(const char *label)
@@ -670,7 +470,6 @@ static unsigned dock_meminfo_kb(const char *label)
     }
     return 0;
 }
-/* Sum of TICKS across all tasks except idle (pid 1) -- maktop's CPU% basis. */
 static unsigned dock_busy_ticks(void)
 {
     char buf[1024]; int fd=sys_open("/proc/tasks",O_RDONLY); if(fd<0) return 0;
@@ -685,19 +484,18 @@ static unsigned dock_busy_ticks(void)
             if(nt<6){tok[nt][tl]=0;nt++;}
         }
         if(i<r)i++;
-        if(line++==0)continue;                       /* header */
+        if(line++==0)continue;
         if(nt<5)continue;
         if(tok[0][0]=='1'&&tok[0][1]==0)continue;     /* skip idle (pid 1) */
         unsigned v=0; for(int k=0;tok[4][k];k++)v=v*10u+(unsigned)(tok[4][k]-'0'); sum+=v;
     }
     return sum;
 }
-/* "CPU n%  RAM n%" into out; recomputed ~once/sec, cached between. */
 static void dock_stats(char *out)
 {
     static unsigned last_busy=0,last_up=0,cpu=0,ram=0; static int have=0;
     unsigned up=sys_uptime();
-    if(!have || (up-last_up)>=100u){             /* ~1s at 100 Hz */
+    if(!have || (up-last_up)>=100u){
         unsigned busy=dock_busy_ticks();
         if(have && up>last_up){ unsigned dt=up-last_up, db=(busy>last_busy)?busy-last_busy:0u;
                                 cpu=db*100u/dt; if(cpu>100u)cpu=100u; }
@@ -712,36 +510,42 @@ static void dock_stats(char *out)
     out[o]=0;
 }
 
-/* taskbar button rects live here so click handling and drawing agree */
-static int dock_btn_x(int slot){ return 8 + slot*42; }
+/* dock: one tile per open window (kind/icon order for stable positions) */
+static int dock_order[MAXWIN], dock_n;
+static void dock_rebuild(void)
+{
+    dock_n=0;
+    for(int ii=0;ii<ICON_N;ii++) for(int i=0;i<MAXWIN;i++) if(W[i].in_use && W[i].icon==ii) dock_order[dock_n++]=i;
+    for(int i=0;i<MAXWIN;i++) if(W[i].in_use && W[i].icon<0) dock_order[dock_n++]=i;
+}
+static int dock_btn_x(int slot){ return 8 + slot*60; }
+static void dock_short(int i, char *out)
+{
+    /* first 3 chars of the title, lower-ish -- a compact tab label */
+    int j=0; for(; j<3 && W[i].title[j]; j++) out[j]=W[i].title[j]; out[j]=0;
+}
 static void draw_dock(void)
 {
     int y0=(int)FBH-DOCK_H;
     gfx_fill(&scr,0,y0,(int)FBW,DOCK_H,RGB(0x12,0x16,0x1e));
     gfx_fill(&scr,0,y0,(int)FBW,1,RGB(0x28,0x32,0x44));
-    int slot=0;
-    /* draw a tile per open window (in kind order for stable positions) */
-    for(int k=0;k<W_COUNT;k++){ if(!wins[k].open) continue;
-        int bx=dock_btn_x(slot); int active=(focus_kind==k);
-        gfx_round(&scr,bx,y0+5,36,DOCK_H-10, active?UI_COL_BTN_ACT:UI_COL_BTN, RGB(0x12,0x16,0x1e));
-        gfx_str(&scr,bx+(36-gfx_text_w(kind_short(k)))/2, y0+(DOCK_H-8)/2, kind_short(k), 0xFFFFFF);
-        slot++;
+    dock_rebuild();
+    for(int s=0;s<dock_n;s++){ int i=dock_order[s]; int bx=dock_btn_x(s); int active=(focus==i);
+        gfx_round(&scr,bx,y0+5,54,DOCK_H-10, active?UI_COL_BTN_ACT:UI_COL_BTN, RGB(0x12,0x16,0x1e));
+        char lbl[8]; dock_short(i,lbl);
+        gfx_str(&scr,bx+(54-gfx_text_w(lbl))/2, y0+(DOCK_H-8)/2, lbl, 0xFFFFFF);
     }
-    /* CPU / RAM stats, right-aligned. */
-    { char st[32]; dock_stats(st);
-      gfx_str(&scr,(int)FBW-gfx_text_w(st)-10, y0+(DOCK_H-8)/2, st, RGB(0x90,0xa0,0xb5)); }
+    char st[32]; dock_stats(st);
+    gfx_str(&scr,(int)FBW-gfx_text_w(st)-10, y0+(DOCK_H-8)/2, st, RGB(0x90,0xa0,0xb5));
+}
+static int dock_hit(int px,int py,int *out_win)
+{
+    int y0=(int)FBH-DOCK_H; if(py<y0) return 0;
+    for(int s=0;s<dock_n;s++){ int bx=dock_btn_x(s); if(in_rect(px,py,bx,y0+5,54,DOCK_H-10)){ *out_win=dock_order[s]; return 1; } }
+    return 0;
 }
 
-/* The top menu bar.  Drawn on every composited frame (after the windows, so it
- * is always visible) -- the GUI is never chromeless: desktop + menu bar + dock
- * are unconditional.  Carries the "Makar" brand, the focused window's name, and
- * a right-aligned Log Off item. */
-static const char *kind_name(int k)
-{
-    switch(k){ case W_TERMINAL:return "Terminal"; case W_EDITOR:return "Editor";
-               case W_FILES:return "Files"; case W_TASKS:return "Tasks";
-               case W_DOOM:return "Doom"; default:return "Desktop"; }
-}
+/* top menu bar -------------------------------------------------------------- */
 #define LOGOFF_W 70
 #define EXIT_W   54
 static void draw_menubar(void)
@@ -749,8 +553,7 @@ static void draw_menubar(void)
     gfx_fill(&scr,0,0,(int)FBW,MENU_H,COL_MENU);
     gfx_fill(&scr,0,MENU_H-1,(int)FBW,1,RGB(0x28,0x32,0x44));
     gfx_str(&scr,8,(MENU_H-8)/2,"Makar",RGB(0x8a,0xe2,0x34));
-    gfx_str(&scr,64,(MENU_H-8)/2, kind_name(focus_kind), RGB(0x90,0xa0,0xb5));
-    /* Right-aligned: [ Exit ] [ Log Off ]. */
+    gfx_str(&scr,64,(MENU_H-8)/2, (focus>=0&&W[focus].in_use)?W[focus].title:"Desktop", RGB(0x90,0xa0,0xb5));
     int lx=(int)FBW-LOGOFF_W-4;
     gfx_fill(&scr,lx,2,LOGOFF_W,MENU_H-4,COL_CLOSE);
     gfx_str(&scr,lx+(LOGOFF_W-gfx_text_w("Log Off"))/2,(MENU_H-8)/2,"Log Off",0xFFFFFF);
@@ -758,28 +561,8 @@ static void draw_menubar(void)
     gfx_fill(&scr,ex,2,EXIT_W,MENU_H-4,UI_COL_BTN);
     gfx_str(&scr,ex+(EXIT_W-gfx_text_w("Exit"))/2,(MENU_H-8)/2,"Exit",0xFFFFFF);
 }
-static int exit_hit(int px,int py)
-{
-    int ex=(int)FBW-LOGOFF_W-4-EXIT_W-4;
-    return in_rect(px,py,ex,2,EXIT_W,MENU_H-4);
-}
-static int logoff_hit(int px,int py)
-{
-    int lx=(int)FBW-LOGOFF_W-4;
-    return in_rect(px,py,lx,2,LOGOFF_W,MENU_H-4);
-}
-static int dock_hit(int px,int py,int *out_kind)
-{
-    int y0=(int)FBH-DOCK_H;
-    if (py<y0) return 0;
-    int slot=0;
-    for(int k=0;k<W_COUNT;k++){ if(!wins[k].open) continue;
-        int bx=dock_btn_x(slot);
-        if (in_rect(px,py,bx,y0+5,36,DOCK_H-10)){ *out_kind=k; return 1; }
-        slot++;
-    }
-    return 0;
-}
+static int exit_hit(int px,int py){ int ex=(int)FBW-LOGOFF_W-4-EXIT_W-4; return in_rect(px,py,ex,2,EXIT_W,MENU_H-4); }
+static int logoff_hit(int px,int py){ int lx=(int)FBW-LOGOFF_W-4; return in_rect(px,py,lx,2,LOGOFF_W,MENU_H-4); }
 
 /* ---- mouse cursor ------------------------------------------------------- */
 static const char *CURSOR[16]={
@@ -792,29 +575,42 @@ static void draw_cursor(int cx,int cy)
         if(p=='X')gfx_px(&scr,cx+c,cy+r,0); else if(p=='.')gfx_px(&scr,cx+c,cy+r,0xFFFFFF); }
 }
 
-/* ---- window default geometry ------------------------------------------- */
-static void open_window(int kind)
-{
-    window *w=&wins[kind];
-    if (!w->open){
-        w->open=1;
-        if (kind==W_DOOM && doom_pid<0) doom_launch();
-        if (kind==W_TERMINAL && term_pid<0){ term_clear(); term_spawn(); }
+/* Cursor save-under: so the cursor can be moved without recompositing the whole
+ * scene (a full recompose blits every window surface, so its cost grows with the
+ * window count -- death by a thousand mouse moves).  We stash the scene pixels
+ * the cursor covers, then restore them before redrawing it elsewhere, and push
+ * only the small old/new boxes to the framebuffer via sys_fb_present_rect. */
+#define CURW 12
+#define CURH 16
+static gfx_u32 cur_save[CURW*CURH];
+static int     cur_sx=-1, cur_sy=-1;   /* where cur_save was captured (-1 = none) */
+
+static void cursor_capture(int x,int y){
+    for(int r=0;r<CURH;r++) for(int c=0;c<CURW;c++){
+        int px=x+c, py=y+r;
+        cur_save[r*CURW+c] = (px>=0&&px<(int)FBW&&py>=0&&py<(int)FBH) ? scr.px[py*scr.w+px] : 0;
     }
-    z_raise(kind);
+    cur_sx=x; cur_sy=y;
 }
-static void close_window(int kind)
-{
-    wins[kind].open=0;
-    if (kind==W_DOOM) doom_stop();
-    if (kind==W_TERMINAL) term_kill();
-    if (focus_kind==kind){ focus_kind=-1; for(int i=W_COUNT-1;i>=0;i--){int k=zlist[i]; if(wins[k].open){focus_kind=k;break;}} }
+static void cursor_restore(void){
+    if(cur_sx<0) return;
+    for(int r=0;r<CURH;r++) for(int c=0;c<CURW;c++){
+        int px=cur_sx+c, py=cur_sy+r;
+        if(px>=0&&px<(int)FBW&&py>=0&&py<(int)FBH) scr.px[py*scr.w+px]=cur_save[r*CURW+c];
+    }
+}
+/* Push one clamped rect of the back buffer to the framebuffer. */
+static void present_rect(int x,int y,int w,int h){
+    if(x<0){w+=x;x=0;} if(y<0){h+=y;y=0;}
+    if(x+w>(int)FBW)w=(int)FBW-x; if(y+h>(int)FBH)h=(int)FBH-y;
+    if(w>0&&h>0) sys_fb_present_rect(scr.px,x,y,w,h);
 }
 
-/* ============================== uitest ================================== */
-/* Headless self-test of the widget framework: drive a button, a slider and a
- * textbox through synthetic input and emit a serial marker.  Invoked as
- * `gui uitest`; mirrors the old corner-test harness. */
+/* ============================== self-tests ============================== */
+/* `gui.elf uitest` / `gui.elf fstest` are headless and run by shell-smoke.sh;
+ * they keep the GUI-UITEST / GUI-FSTEST regression markers (no framebuffer is
+ * touched -- they return before sys_fb_info).  The widget + browser code they
+ * exercise is the same gui_ui / gui_browser the clients use. */
 static void emit(const char *m){ int n=0; while(m[n])n++; sys_write_serial(m,n); }
 static int uitest(void)
 {
@@ -822,71 +618,47 @@ static int uitest(void)
     gfx_surface s={ px, 64, 64 };
     ui_ctx u; for (unsigned i=0;i<sizeof u/sizeof(int);i++) ((int*)&u)[i]=0;
     int val=0; char box[16]; box[0]=0; int ok=1;
-
-    /* press + release inside the button rect -> click */
     ui_begin(&u,10,10,1,1,0,-1); ui_button(&u,&s,0,0,40,20,"B");
     ui_begin(&u,10,10,0,0,1,-1); int clicked=ui_button(&u,&s,0,0,40,20,"B");
     if (!clicked) ok=0;
-
-    /* slider drag to the right edge -> max value */
     ui_begin(&u,0,30,1,1,0,-1);  ui_slider(&u,&s,0,24,40,12,&val,0,100);
     ui_begin(&u,40,30,1,0,0,-1); ui_slider(&u,&s,0,24,40,12,&val,0,100);
     if (val<90) ok=0;
-
-    /* focus the textbox then type 'Z' */
     ui_begin(&u,10,46,1,1,0,-1); ui_textbox(&u,&s,0,40,40,12,box,16);
     ui_begin(&u,10,46,0,0,1,'Z'); ui_textbox(&u,&s,0,40,40,12,box,16);
     if (box[0]!='Z') ok=0;
-
     emit(ok? "GUI-UITEST: PASS\n" : "GUI-UITEST: FAIL\n");
     return ok?0:1;
 }
-
-/* Headless self-test of the reusable file-browser navigation against the real
- * VFS (the chdir/readdir/getcwd path the Files window + editor dialog use).
- * Invoked as `gui fstest`; emits GUI-FSTEST.  This is the coverage that proves
- * "Files actually moves about the filesystem" without needing pixels. */
 static int seq2(const char *a, const char *b){ int i=0; while(a[i]&&a[i]==b[i])i++; return a[i]==b[i]; }
 static int fstest(void)
 {
     static browser b; int ok=1;
     scpy(b.cwd, "/", sizeof b.cwd); b.sel=b.scroll=0; b.loaded=0;
     br_load(&b);
-    if (b.n<=0) ok=0;                         /* root must enumerate */
-    if (!seq2(b.cwd, "/")) ok=0;              /* normalised to "/"   */
-
-    /* descend into the first directory entry, confirm cwd deepened, climb back */
+    if (b.n<=0) ok=0;
+    if (!seq2(b.cwd, "/")) ok=0;
     int di=-1; for(int i=0;i<b.n;i++) if(b.type[i]==DT_DIR){ di=i; break; }
     if (di>=0){
         b.sel=di; br_enter_sel(&b);
-        if (seq2(b.cwd, "/")) ok=0;           /* cwd must have changed off "/" */
+        if (seq2(b.cwd, "/")) ok=0;
         if (b.n<0) ok=0;
         br_up(&b);
-        if (!seq2(b.cwd, "/")) ok=0;          /* ".." from depth-1 returns "/" */
-    } else { ok=0; }                          /* root with no subdir is wrong  */
-
-    /* getcwd round-trips an explicit chdir target */
+        if (!seq2(b.cwd, "/")) ok=0;
+    } else { ok=0; }
     scpy(b.cwd, "/", sizeof b.cwd); b.sel=b.scroll=0; b.loaded=0; br_load(&b);
-
     emit(ok? "GUI-FSTEST: PASS\n" : "GUI-FSTEST: FAIL\n");
     return ok?0:1;
 }
 
-/* ============================== main ==================================== */
-
 /* ============================ GUI login ================================= */
-/* Graphical login screen, shown before the desktop when gui.elf is launched
- * with `login` (the kernel passes it when no user is auto-logged-in).  Blocks
- * until sys_login() accepts the credentials.  Drawn on the WM back buffer; the
- * GUI is the focused root task so sys_fb_present works.  NOTE: when the GUI is
- * split into a display server + client .elfs, this lifts wholesale into a
- * standalone login.elf -- see docs/gui.md. */
-static void do_login(void)
+static void do_login(const char *prefill_user)
 {
     char user[64]={0}, pass[64]={0}, err[40]={0};
+    if (prefill_user && prefill_user[0]) scpy(user, prefill_user, sizeof user);
     int cx=(int)FBW/2, cy=(int)FBH/2, prev_left=0, dirty=1;
     ui_ctx u; for(unsigned i=0;i<sizeof u/sizeof(int);i++) ((int*)&u)[i]=0;
-    u.focus=1;                 /* start with the username field focused */
+    u.focus = user[0] ? 2 : 1;
 
     for(;;){
         int mpressed=0,mreleased=0; unsigned int ev;
@@ -910,15 +682,15 @@ static void do_login(void)
         gfx_str(&scr,px+24,py+92,"Pass:",COL_TEXT);
 
         ui_begin(&u,cx,cy,mdown,mpressed,mreleased,
-                 (key=='\t'||key=='\n'||key=='\r')?-1:key);  /* Tab/Enter are control */
+                 (key=='\t'||key=='\n'||key=='\r')?-1:key);
         ui_textbox(&u,&scr,px+72,py+48,pw-96,22,user,(int)sizeof user);
         ui_password(&u,&scr,px+72,py+86,pw-96,22,pass,(int)sizeof pass);
         int login_c=ui_button(&u,&scr,px+pw/2-44,py+128,88,28,"Log in");
         if(err[0]) gfx_str(&scr,px+24,py+ph-22,err,COL_CLOSE);
 
-        if(key=='\t') u.focus = (u.focus==1)?2:1;     /* Tab toggles user/pass */
+        if(key=='\t') u.focus = (u.focus==1)?2:1;
         if(login_c || key=='\n' || key=='\r'){
-            if(user[0] && sys_login(user,pass)==0) return;   /* authenticated  */
+            if(user[0] && sys_login(user,pass)==0) return;
             scpy(err,"Incorrect credentials",sizeof err);
             pass[0]=0; u.focus=2;
         }
@@ -928,12 +700,14 @@ static void do_login(void)
     }
 }
 
+/* =============================== main =================================== */
 int main(int argc, char **argv, char **envp)
 {
     (void)envp;
     if (argc>1 && seq(argv[1],"uitest")) return uitest();
     if (argc>1 && seq(argv[1],"fstest")) return fstest();
     int want_login = (argc>1 && seq(argv[1],"login"));
+    const char *login_user = (want_login && argc>2) ? argv[2] : 0;
 
     unsigned info=sys_fb_info();
     if(!info){ const char*e="gui: no pixel framebuffer (VGA-only)\n"; sys_write(2,e,36); return 1; }
@@ -942,30 +716,24 @@ int main(int argc, char **argv, char **envp)
     if (bb==(gfx_u32*)MAP_FAILED || !bb){ const char*e="gui: back-buffer mmap failed\n"; sys_write(2,e,29); return 1; }
     scr.px=bb; scr.w=(int)FBW; scr.h=(int)FBH;
 
+    server_pid=sys_getpid();
     sys_fcntl(0,F_SETFL,O_NONBLOCK);
     int saved_status=sys_statusbar_enabled();
     sys_statusbar_set(0);
     sys_signal(SIGINT,SIG_IGN);
 
-    if (want_login) do_login();     /* graphical login before the desktop */
+    if (want_login) do_login(login_user);
 
-    /* initial window geometry + z-order */
-    for(int k=0;k<W_COUNT;k++) zlist[k]=k;
-    wins[W_TERMINAL]=(window){0,160,90,560,360,"Terminal",{0}};
-    wins[W_EDITOR]  =(window){0,220,120,640,420,"Editor",{0}};
-    wins[W_FILES]   =(window){0,200,110,560,380,"Files",{0}};
-    wins[W_TASKS]   =(window){0,260,140,560,360,"Tasks",{0}};
-    wins[W_DOOM]    =(window){0,260,80,660,440,"Doom",{0}};
-
-    open_window(W_TERMINAL);
+    znum=0; focus=-1;
+    launch_icon(0);             /* open a terminal client on the desktop */
 
     int cx=(int)FBW/2, cy=(int)FBH/2, prev_left=0;
-    int dragging=0, drag_kind=-1, drag_dx=0, drag_dy=0;
-    int dirty=1, announced=0, exit_to_shell=0;
+    int dragging=0, resizing=0, drag_win=-1, drag_dx=0, drag_dy=0;
+    int announced=0, exit_to_shell=0;
     unsigned stat_up=0;
 
     for(;;){
-        /* ---- gather input ---- */
+        /* ---- gather hardware input ---- */
         int mpressed=0, mreleased=0;
         unsigned int ev;
         while((ev=sys_mouse_read())!=0){
@@ -977,102 +745,151 @@ int main(int argc, char **argv, char **envp)
             if(left&&!prev_left) mpressed=1;
             if(!left&&prev_left) mreleased=1;
             prev_left=left;
-            dirty=1;
+            /* NB: a pure cursor move does NOT dirty the scene -- it's handled by
+             * the cheap cursor-only path below.  Scene changes (clicks, drags,
+             * client repaints, focus) set g_dirty in their own handlers. */
         }
         int mdown=prev_left;
-
-        /* one key per frame */
         int frame_key=-1;
-        { unsigned char b; if (sys_read(0,&b,1)==1){ frame_key=b; dirty=1; } }
+        /* A key only changes the screen via the focused client's repaint (which
+         * damages its own window); the WM chrome doesn't render keys, so this
+         * doesn't dirty the scene by itself. */
+        { unsigned char b; if (sys_read(0,&b,1)==1){ frame_key=b; } }
+        int cmoved = (cx!=cur_sx || cy!=cur_sy);  /* cursor moved this frame? */
 
         /* ---- window-management click handling ---- */
-        int client_click_kind=-1;
         if (mpressed){
             int dk;
-            if (logoff_hit(cx,cy)) break;     /* Log Off: clean up + end session */
-            else if (exit_hit(cx,cy)){ exit_to_shell=1; break; }   /* Exit to CLI shell */
-            else if (dock_hit(cx,cy,&dk)){ open_window(dk); dirty=1; }
+            if (logoff_hit(cx,cy)) break;
+            else if (exit_hit(cx,cy)){ exit_to_shell=1; break; }
+            else if (dock_hit(cx,cy,&dk)){ W[dk].minimized=0; z_raise(dk); set_focus(dk); g_dirty=1; damage_full(); }
             else {
                 int hk=hit_window(cx,cy);
                 if (hk>=0){
-                    z_raise(hk); dirty=1;
-                    if (in_close(&wins[hk],cx,cy)) close_window(hk);
-                    else if (in_titlebar(&wins[hk],cx,cy)){ dragging=1; drag_kind=hk; drag_dx=cx-wins[hk].x; drag_dy=cy-wins[hk].y; }
-                    else client_click_kind=hk;     /* client area -> widgets   */
+                    z_raise(hk); set_focus(hk); g_dirty=1; damage_full();
+                    if      (in_close(&W[hk],cx,cy)) win_push(&W[hk],MXEV_CLOSE,0,0,0);
+                    else if (in_min(&W[hk],cx,cy)){ W[hk].minimized=1; focus=-1; refocus(); }
+                    else if (in_max(&W[hk],cx,cy)) win_toggle_max(hk);
+                    else if (in_resize(&W[hk],cx,cy)){ resizing=1; drag_win=hk; W[hk].maximized=0; }
+                    else if (in_titlebar(&W[hk],cx,cy)){ dragging=1; drag_win=hk; drag_dx=cx-W[hk].x; drag_dy=cy-W[hk].y; W[hk].maximized=0; }
                 } else {
-                    int ik=icon_hit(cx,cy);
-                    if (ik>=0){ open_window(ik); dirty=1; }
+                    int ii=icon_hit(cx,cy);
+                    if (ii>=0) launch_icon(ii);
                 }
             }
         }
-        if (mreleased) dragging=0;
-        if (dragging && drag_kind>=0){
-            wins[drag_kind].x=cx-drag_dx; wins[drag_kind].y=cy-drag_dy;
-            if(wins[drag_kind].x<0)wins[drag_kind].x=0;
-            if(wins[drag_kind].y<MENU_H)wins[drag_kind].y=MENU_H;  /* keep clear of the menu bar */
-            if(wins[drag_kind].x+wins[drag_kind].w>(int)FBW)wins[drag_kind].x=(int)FBW-wins[drag_kind].w;
-            if(wins[drag_kind].y+wins[drag_kind].h>(int)FBH-DOCK_H)wins[drag_kind].y=(int)FBH-DOCK_H-wins[drag_kind].h;
-            dirty=1;
+        if (mreleased){
+            /* On finishing a resize drag, re-flow the client to the new size. */
+            if (resizing && drag_win>=0) maybe_send_resize(drag_win);
+            dragging=0; resizing=0;
+        }
+        if (dragging && drag_win>=0 && W[drag_win].in_use){ swin *w=&W[drag_win];
+            damage_win(drag_win);                /* old position (erase trail) */
+            w->x=cx-drag_dx; w->y=cy-drag_dy;
+            if(w->x<0)w->x=0; if(w->y<MENU_H)w->y=MENU_H;
+            if(w->x+w->w>(int)FBW)w->x=(int)FBW-w->w;
+            if(w->y+w->h>(int)FBH-DOCK_H)w->y=(int)FBH-DOCK_H-w->h;
+            g_dirty=1; damage_win(drag_win);     /* new position */
+        }
+        if (resizing && drag_win>=0 && W[drag_win].in_use){ swin *w=&W[drag_win];
+            damage_win(drag_win);                /* old size */
+            w->w=cx-w->x; w->h=cy-w->y;
+            if(w->w<220)w->w=220; if(w->h<120)w->h=120;
+            if(w->x+w->w>(int)FBW)w->w=(int)FBW-w->x;
+            if(w->y+w->h>(int)FBH-DOCK_H)w->h=(int)FBH-DOCK_H-w->y;
+            g_dirty=1; damage_win(drag_win);     /* new size */
         }
 
-        /* ---- keyboard routing to the focused window ---- */
-        if (frame_key>=0 && focus_kind>=0){
-            if (focus_kind==W_TERMINAL) term_key(frame_key);
-            else if (focus_kind==W_DOOM) doom_key(frame_key);
-            /* editor/files/tasks consume the key via their ui pass below */
+        /* ---- forward input to the focused client over IPC ---- */
+        if (focus>=0 && W[focus].in_use){
+            swin *w=&W[focus];
+            if (frame_key>=0) win_push(w, MXEV_KEY, frame_key,0,0);
+            /* Forward the pointer only on a button transition or while a button
+             * is held (a drag -- e.g. a slider).  PLAIN hover motion is NOT
+             * forwarded: the cursor is the WM's own overlay, so moving it over a
+             * window must not wake the client into repainting (which would push
+             * a whole window's worth of pixels to the framebuffer every move --
+             * the real source of the two-window lag, brutal on a slow VT-x FB).
+             * No current client needs raw motion; a future one that does can opt
+             * in via a HELLO flag. */
+            if (mpressed || mreleased || (mdown && cmoved)){
+                if (in_client(w,cx,cy)){
+                    int rx=cx-client_x(w), ry=cy-client_y(w);
+                    win_push(w, MXEV_MOUSE, rx, ry, mdown?1:0);
+                } else if (mreleased){
+                    win_push(w, MXEV_MOUSE, cx-client_x(w), cy-client_y(w), 0);
+                }
+            }
         }
 
-        /* ---- terminal / doom liveness pumps (always, even if unfocused) ---- */
-        if (wins[W_TERMINAL].open && term_pump()) dirty=1;
-        if (wins[W_TASKS].open) dirty=1;           /* tasks auto-refresh ticks */
-        if (wins[W_DOOM].open) dirty=1;            /* doom animates            */
-        { unsigned now=sys_uptime(); if (now-stat_up>=100u){ stat_up=now; dirty=1; } } /* ~1s: refresh dock stats */
+        /* ---- service clients + reap exited ones ---- */
+        serve_requests();
+        if (reap_clients()){ g_dirty=1; damage_full(); }
+        { unsigned now=sys_uptime(); if (now-stat_up>=100u){ stat_up=now; g_dirty=1;
+            damage(0,0,(int)FBW,MENU_H);                       /* menu-bar clock */
+            damage(0,(int)FBH-DOCK_H,(int)FBW,DOCK_H); } }      /* dock stats     */
 
-        if (!dirty){ sys_yield(); continue; }
+        if (!g_dirty && !cmoved){ sys_yield(); continue; }
 
-        /* ---- compose (desktop + menu bar + dock are unconditional) ---- */
-        gfx_fill(&scr,0,0,(int)FBW,(int)FBH,COL_DESK);
-        gfx_str(&scr,8,MENU_H+6,"Makar desktop -- click an icon; drag a title bar; click a window to focus",RGB(0x90,0xa0,0xb5));
-        draw_icons();
-
-        for (int i=0;i<W_COUNT;i++){
-            int k=zlist[i]; if(!wins[k].open) continue;
-            draw_window_frame(k);
-            /* build this window's input context: only the focused window gets
-             * live mouse buttons / keys (others draw but don't react). */
-            ui_ctx *u=&wins[k].ui;
-            int live = (k==focus_kind);
-            int wk_pressed = (live && client_click_kind==k) ? 1 : 0;
-            ui_begin(u, cx, cy,
-                     live?mdown:0,
-                     wk_pressed,
-                     live?mreleased:0,
-                     (live && k!=W_TERMINAL && k!=W_DOOM) ? frame_key : -1);
-            window_content(k, u);
+        if (g_dirty){
+            /* ---- recompose the WHOLE back buffer (cheap, cacheable RAM) ---- */
+            gfx_fill(&scr,0,0,(int)FBW,(int)FBH,COL_DESK);
+            gfx_str(&scr,8,MENU_H+6,"Makar desktop -- click an icon; drag a title bar; click a window to focus",RGB(0x90,0xa0,0xb5));
+            draw_icons();
+            for (int j=0;j<znum;j++){ int i=zorder[j]; if(!W[i].in_use || W[i].minimized) continue; draw_window_frame(i); }
+            draw_dock();
+            draw_menubar();
+            int ox=cur_sx, oy=cur_sy;
+            cursor_capture(cx,cy);          /* stash scene under the cursor */
+            draw_cursor(cx,cy);
+            /* ---- but PUSH only the damaged region to the framebuffer ---- */
+            if (!dmg_v) damage_full();      /* safety net for any untracked change */
+            present_rect(dmg_x0,dmg_y0,dmg_x1-dmg_x0,dmg_y1-dmg_y0);
+            if (cmoved && ox>=0) present_rect(ox,oy,CURW,CURH);  /* erase old cursor */
+            present_rect(cx,cy,CURW,CURH);                       /* draw new cursor  */
+            if (!announced){ sys_write_serial("GUI: READY\n", 11); announced=1; }
+            g_dirty=0; dmg_v=0;
+        } else {
+            /* ---- cursor-only: O(cursor) regardless of window count ---- */
+            int ox=cur_sx, oy=cur_sy;
+            cursor_restore();                /* repaint scene under old cursor */
+            cursor_capture(cx,cy);           /* stash scene under new cursor   */
+            draw_cursor(cx,cy);
+            present_rect(ox,oy,CURW,CURH);   /* flush old + new boxes only     */
+            present_rect(cx,cy,CURW,CURH);
         }
-
-        draw_dock();
-        draw_menubar();
-        draw_cursor(cx,cy);
-        sys_fb_present(scr.px);
-        /* One-shot readiness marker: the desktop has composited and presented
-         * its first frame.  The guitest harness waits for this, then screendumps
-         * and shuts down.  See run.sh `guitest`. */
-        if (!announced){ sys_write_serial("GUI: READY\n", 11); announced=1; }
-        dirty=0;
         sys_yield();
     }
 
-    /* Reached on Log Off or Exit.  Either way tear down our children so no
-     * forked shell / doom leaks and restore terminal + statusbar state.  Then:
-     *   - Exit  -> sys_gui_close(): hand the display + keyboard back to the CLI
-     *              shell of *this* session (same login), and mark the session
-     *              CLI so a later `logout` re-shows the text login.
-     *   - LogOff-> sys_logout(): end the login session entirely; the login loop
-     *              re-shows the (GUI) login.
-     * The GUI shell is a forked sh.elf on a private pipe, so a Ctrl-C/Ctrl-D in
-     * it only ever closed that terminal window -- mak.sh0 is never in range. */
-    term_kill(); doom_stop();
+    /* Reached on Log Off or Exit.  Tear down every client child, restore the
+     * statusbar, and hand the display back:
+     *   Exit  -> sys_gui_close(): return to this session's CLI shell.
+     *   LogOff-> sys_logout(): end the session; the login loop re-shows login. */
+    /* A client parked in an IPC sendrec to us cannot process SIGKILL while it is
+     * blocked, so a blocking wait4 here would deadlock (server frozen, last frame
+     * stuck on screen).  Instead unblock each client by replying MXEV_CLOSE to
+     * its in-flight request: it exits its loop, kills its own children, BYEs out,
+     * and we reap it with WNOHANG.  Keep servicing IPC + reaping in a bounded
+     * spin; SIGKILL + non-blocking reap any straggler that ignored CLOSE (it is
+     * no longer IPC-blocked once we stop replying, so SIGKILL can land). */
+    for(int i=0;i<MAXWIN;i++) if(W[i].in_use) win_push(&W[i],MXEV_CLOSE,0,0,0);
+    for(int spin=0; spin<4000; spin++){
+        ipc_msg_t m; int budget=4*MAXWIN;
+        while(budget-->0 && sys_ipc_nbrecv(IPC_ANY,&m)==0){
+            ipc_msg_t r; for(int k=0;k<IPC_MSG_DATA_WORDS;k++) r.data[k]=0; r.type=MXEV_CLOSE;
+            sys_ipc_send(m.src,&r);
+        }
+        int live=0;
+        for(int i=0;i<MAXWIN;i++) if(W[i].in_use && W[i].client>0){
+            int st; if(sys_wait4(W[i].client,&st,WNOHANG)==W[i].client) win_free(i); else live=1;
+        }
+        if(!live) break;
+        sys_yield();
+    }
+    for(int i=0;i<MAXWIN;i++) if(W[i].in_use && W[i].client>0){
+        sys_kill(W[i].client,SIGKILL); int st; sys_wait4(W[i].client,&st,WNOHANG);
+        win_free(i);
+    }
     sys_fcntl(0,F_SETFL,0);
     sys_statusbar_set(saved_status);
     if (exit_to_shell) sys_gui_close();

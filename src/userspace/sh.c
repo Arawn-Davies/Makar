@@ -424,6 +424,15 @@ done:
 
 /* ---------- readline with tab cycle ---------- */
 
+/* The interactive REPL prompt lives here (not on main's stack) so readline can
+ * rebuild it on KEY_FOCUS_GAIN: when the GUI hands control back after a
+ * graphical login set the session user, the prompt built *before* the GUI ran
+ * is stale (it showed `@host` with no user) -- rebuilding picks up the live
+ * user.  Other readline callers (e.g. the `more` pager) pass their own prompt,
+ * which we leave untouched. */
+static char g_prompt[VFS_PATH_MAX + 64];
+static void build_prompt(char *out, unsigned int outsz);
+
 /* readline result: 0+ = length, -1 = EOF/Ctrl-D, -2 = Ctrl-C aborted. */
 static int readline(const char *prompt, char *buf)
 {
@@ -493,6 +502,19 @@ static int readline(const char *prompt, char *buf)
             len = n; cur = n;
             if (len > 0) sys_write(1, buf, len);
             hist_idx = new_idx;
+            continue;
+        }
+
+        /* Regained the keyboard (e.g. the GUI 'Exit' handed control back): the
+         * screen was owned by whoever had focus, so redraw the prompt + the
+         * in-progress line.  Without this you land on a bare cursor, no prompt. */
+        if (ch == KEY_FOCUS_GAIN) {
+            /* Refresh the REPL prompt: a GUI login that ran while we were blocked
+             * here may have changed the session user.  Only our own g_prompt. */
+            if (prompt == g_prompt) build_prompt(g_prompt, sizeof g_prompt);
+            put_c('\n'); put_s(prompt);
+            if (len > 0) sys_write(1, buf, len);
+            for (unsigned int i = len; i > cur; i--) put_c('\b');
             continue;
         }
 
@@ -1970,10 +1992,18 @@ int main(int argc, char **argv, char **envp)
      * `gui`.  It spawns in the background (is_gui_path) so this login session
      * stays alive as the GUI's parent and resumes the prompt on Log Off. */
     if (g_autostart_gui == 1)      run_script_buf("gui\n");
-    else if (g_autostart_gui == 2) run_script_buf("gui login\n");
+    else if (g_autostart_gui == 2) {
+        /* `gui login [user]` -- pass the suggested (autologin) username so the
+         * graphical login can pre-fill it.  g_username is the --user= value the
+         * login loop handed us (the autologin user when one is configured). */
+        char line[80]; unsigned int o=0;
+        const char *p="gui login "; while(*p) line[o++]=*p++;
+        for (unsigned int i=0; g_username[i] && o<sizeof(line)-2; i++) line[o++]=g_username[i];
+        line[o++]='\n'; line[o]='\0';
+        run_script_buf(line);
+    }
 
     char line[LINE_MAX];
-    char prompt[VFS_PATH_MAX + 64];
 
     for (;;) {
         unsigned int pos = sys_cursor_pos();
@@ -1985,8 +2015,8 @@ int main(int argc, char **argv, char **envp)
          * prompt, so existing scenarios work unchanged.  No-op unless
          * g_serial_verbose is on (kernel-side gate). */
         sys_shell_ready();
-        build_prompt(prompt, sizeof(prompt));
-        int n = readline(prompt, line);
+        build_prompt(g_prompt, sizeof(g_prompt));
+        int n = readline(g_prompt, line);
         if (n == -1) {
             put_c('\n');
             if (g_login) { put_s("(use `shutdown` or `reboot` to power off)\n"); continue; }

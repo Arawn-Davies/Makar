@@ -3,27 +3,7 @@
 
 #include <stdint.h>
 
-/* Linux i386 signal numbers.  We only enumerate the ones the kernel
- * currently inspects; the rest of the standard set is reserved by
- * number so future code can use SIGFOO without churning headers. */
-#define SIGHUP    1
-#define SIGINT    2
-#define SIGQUIT   3
-#define SIGILL    4
-#define SIGTRAP   5
-#define SIGABRT   6
-#define SIGFPE    8
-#define SIGKILL   9
-#define SIGUSR1  10
-#define SIGSEGV  11
-#define SIGUSR2  12
-#define SIGPIPE  13
-#define SIGALRM  14
-#define SIGTERM  15
-#define SIGCHLD  17
-#define SIGCONT  18
-#define SIGSTOP  19
-#define SIGTSTP  20
+#include <makar_signals.h>
 
 /* Number of signal slots carried in the per-task pending/mask bitmaps
  * and in the per-task handler table.  Bit (n-1) corresponds to signal

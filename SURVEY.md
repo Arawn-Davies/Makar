@@ -145,6 +145,19 @@ All apps in `/Users/arawn/Makar/src/userspace/` compile to `.elf` files and are 
 - Plain HTTP only (no TLS). Also available as an in-kernel shell builtin (`shell_cmd_net.c`)
 - Pairs with the `unzip` shell command (`fs/unzip.c` + `fs/inflate.c`) to fetch + extract archives
 
+### **gui.elf** (wm.c) — the makx display server
+- X11-style **display server**: owns the framebuffer + keyboard + mouse, draws the desktop chrome (window borders, dock, menu bar, cursor) and composites client windows. The sole `SYS_FB_PRESENT` caller.
+- Applications are separate **client** processes over IPC (control) + shared surfaces (pixels); protocol + client lib in `makx.{h,c}`. Server launches clients with `-makx <pid>`.
+- `gui.elf uitest` / `gui.elf fstest` are headless self-tests (`GUI-UITEST` / `GUI-FSTEST` markers, run by `shell-smoke.sh`). Built-in graphical login (`gui login`). See `docs/gui.md`.
+
+### makx clients (`mxterm.elf`, `mxfiles.elf`, `mxedit.elf`, `mxtasks.elf`, `doom.elf`)
+- **mxterm** (mxterm.c) — terminal: forks `sh.elf` over pipes, renders the byte grid into its surface.
+- **mxfiles** (mxfiles.c) — file browser on the shared `gui_browser` model (Up/Open/Refresh/Go).
+- **mxedit** (mxedit.c) — multi-line text editor with the shared open/save dialog (`br_dialog`).
+- **mxtasks** (mxtasks.c) — task manager: `/proc/tasks` list, Kill, refresh-interval slider.
+- **doom.elf** (doomgeneric_makar.c) — windowed makx client with `-makx`; unchanged fullscreen path without it.
+- Shared client libs: `gui_gfx` (drawing), `gui_ui` (immediate-mode widgets), `gui_browser` (FS model + file dialog), `makx` (protocol client).
+
 ## Userspace Syscall API (`src/userspace/syscall.h`)
 
 ### POSIX-Compatible I/O

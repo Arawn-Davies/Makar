@@ -8,8 +8,11 @@ AR=$(HOST)-ar
 OBJCOPY=$(HOST)-objcopy
 
 CFLAGS?=-O2 -g
+# -I../kernel/include exposes exactly one header to userspace: <makar_syscalls.h>,
+# the canonical syscall-number ABI shared with the kernel (Linux-uapi style).
+# Nothing else lives at that include root's top level, so no kernel header leaks.
 CFLAGS:=$(CFLAGS) -std=c11 -ffreestanding -fno-stack-protector \
-        -Wall -Wextra -nostdlib -nostdinc -I. -MMD -MP
+        -Wall -Wextra -nostdlib -nostdinc -I. -I../kernel/include -MMD -MP
 
 LDFLAGS=-T link.ld -nostdlib
 
@@ -29,7 +32,7 @@ DOOM_CFLAGS=$(CFLAGS) -I$(DOOM_DIR) -include stddef.h -Wno-unused \
 DESTDIR?=
 ISODIR?=$(CURDIR)/../../isodir
 
-PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf lspci.elf maknetcfg.elf kbtester.elf makbox.elf makmux.elf statusbar.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf fdisk.elf cfdisk.elf basic.elf filetest.elf alloctest.elf sh.elf ar.elf microhash.elf sha256.elf md5.elf wget.elf ktest_uspace.elf gui.elf doom.elf files.elf
+PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf lspci.elf maknetcfg.elf kbtester.elf makbox.elf makmux.elf statusbar.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf fdisk.elf cfdisk.elf basic.elf filetest.elf alloctest.elf sh.elf ar.elf microhash.elf sha256.elf md5.elf wget.elf ktest_uspace.elf gui.elf doom.elf files.elf mxterm.elf mxedit.elf mxfiles.elf mxtasks.elf mxabout.elf
 
 # libc.a -- single archive of the userspace shim (malloc + FILE* stdio +
 # setjmp/longjmp + string/memory helpers).  Shipped under /usr/lib on the
@@ -80,7 +83,25 @@ ktest_uspace.elf: crt0.o ktest_uspace.o
 vix.elf: crt0.o vix.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-gui.elf: crt0.o wm.o gui_gfx.o gui_ui.o
+gui.elf: crt0.o wm.o gui_gfx.o gui_ui.o gui_browser.o makx.o
+	$(LD) $(LDFLAGS) -o $@ $^
+
+# makx clients: each links the gui_gfx/gui_ui/gui_browser helpers it uses plus
+# the makx client library (makx.o).  Applications are independent processes that
+# talk to gui.elf (the display server) over IPC + a shared surface; see makx.h.
+mxterm.elf: crt0.o mxterm.o gui_gfx.o makx.o
+	$(LD) $(LDFLAGS) -o $@ $^
+
+mxfiles.elf: crt0.o mxfiles.o gui_gfx.o gui_ui.o gui_browser.o makx.o
+	$(LD) $(LDFLAGS) -o $@ $^
+
+mxedit.elf: crt0.o mxedit.o gui_gfx.o gui_ui.o gui_browser.o makx.o
+	$(LD) $(LDFLAGS) -o $@ $^
+
+mxtasks.elf: crt0.o mxtasks.o gui_gfx.o gui_ui.o makx.o
+	$(LD) $(LDFLAGS) -o $@ $^
+
+mxabout.elf: crt0.o mxabout.o gui_gfx.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 files.elf: crt0.o files.o
@@ -93,9 +114,12 @@ $(DOOM_DIR)/%.o: $(DOOM_DIR)/%.c
 doomgeneric_makar.o: doomgeneric_makar.c
 	$(CC) $(DOOM_CFLAGS) -c -o $@ $<
 
-# Link via the gcc driver so -lgcc (64-bit math helpers) resolves.
-doom.elf: crt0.o doomgeneric_makar.o $(DOOM_OBJ) libc.a
-	$(CC) $(LDFLAGS) -o $@ crt0.o doomgeneric_makar.o $(DOOM_OBJ) libc.a -lgcc
+# Link via the gcc driver so -lgcc (64-bit math helpers) resolves.  makx.o adds
+# the (dormant unless `-makx` is passed) windowed makx-client backend; Doom's
+# fullscreen text-mode path is unchanged.  No gui_gfx: the backend uses only the
+# gfx_surface *type* from makx.h, not any drawing code.
+doom.elf: crt0.o doomgeneric_makar.o $(DOOM_OBJ) makx.o libc.a
+	$(CC) $(LDFLAGS) -o $@ crt0.o doomgeneric_makar.o $(DOOM_OBJ) makx.o libc.a -lgcc
 
 ls.elf: crt0.o ls.o
 	$(LD) $(LDFLAGS) -o $@ $^
@@ -197,6 +221,11 @@ install: all
 	mkdir -p $(ISODIR)/usr/lib $(ISODIR)/usr/include $(ISODIR)/usr/share/examples
 	cp crt0.o libc.a $(ISODIR)/usr/lib/
 	cp $(SYSROOT_HEADERS) $(ISODIR)/usr/include/
+# The shared ABI headers live in the kernel tree; ship them to /usr/include too
+# so a tcc-compiled program's <syscall.h> -> <makar_{syscalls,signals,keys}.h>
+# resolves in-OS (the kernel rebuild already gets them via /usr/include/kernel-build).
+	cp ../kernel/include/makar_syscalls.h ../kernel/include/makar_signals.h \
+	   ../kernel/include/makar_keys.h ../kernel/include/makar_abi.h $(ISODIR)/usr/include/
 	cp hello-tcc.c $(ISODIR)/usr/share/examples/
 # tcc.elf rides along with the rest of the apps so PATH lookup resolves
 # `tcc` from the kernel shell.  Only present when build-tcc.sh has been

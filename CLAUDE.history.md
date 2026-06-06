@@ -67,19 +67,39 @@ subsystems:
 
 | [#190](https://github.com/Arawn-Davies/Makar/pull/190) | `feat/gui-windowed-desktop` | **Windowed GUI desktop + hypervisor/bare-metal compat + IDE DMA.**  GUI: multi-window WM (`wm.c`) over the VESA framebuffer with per-kind windows (Terminal/Editor/Files/Tasks/DOOM), z-order, click-to-focus input routing, dock/taskbar, title-bar drag; immediate-mode widget framework (`gui_gfx`/`gui_ui`); shared pixel surfaces (`SYS_SURFACE_*`); GUI session/login/auth with `Ctrl+Alt+F5/F6` focus handoff; PS/2 mouse (IRQ12); userspace DOOM port with a windowed `-surface` backend (shared surface, no `SYS_FB_PRESENT`, stdin input).  **Hypervisor/bare-metal display**: fixed Hyper-V Gen 1 black screen — when no Bochs/DISPI adapter is present the kernel now adopts the bootloader's linear framebuffer (was writing to the invisible `0xB8000` text buffer while the HW was in a graphics mode); framebuffer now mapped **write-combining** via a PAT slot (CPUID-gated, `paging_map_region_wc`) so pixel writes don't trap as UC MMIO on VT-x hosts / real HW.  **IDE DMA**: bus-master IDE (BMIDE) DMA for ATA read/write (LBA28) and ATAPI reads (`PACKET READ(12)`), with full PIO fallback; `ide_pci_register()` binds the `01:01` controller, reads BAR4, enables bus mastering; chunked through a 64 KiB-aligned bounce buffer, polled via the BMIDE Active bit (nIEN, no IRQ).  All filesystems (FAT32/ext2/ISO9660) + devfs + partition + installer route through the three `ide_*_sectors` functions, so they all gain DMA.  Verified: 855/855 ktests (ATAPI DMA from CD) + HDD GDB boot test (ATA DMA).  Real-hardware Hyper-V/VBox validation pending. |
 
+| [#196](https://github.com/Arawn-Davies/Makar/pull/196) | `feat/gui-app-agnostic` | **makx X11-style display-server/client split + ABI consolidation + hypervisor compat + GUI-perf on VT-x.**  Re-architected `gui.elf` (`wm.c`) into a **pure display server** (owns framebuffer/keyboard/mouse, draws chrome, composites — no app logic) plus independent **client processes** (`mxterm`/`mxfiles`/`mxedit`/`mxtasks`/`doom`) talking over an X11-shaped split: IPC for control (`MX_HELLO/PRESENT/POLL/BYE`, each reply carrying one input event + a pending count, server purely reactive) and a server-owned **shared pixel surface** for window pixels.  New kernel syscall `sys_ipc_nbrecv` (267) so the server drains clients + polls hardware in one loop.  **GUI stabilization**: terminal keyboard (clients get fd 0 = their drain pipe, no focus grab), close-window VT flash (fresh fork no longer inherits `fb_touched`), exit/log-off freeze (graceful `MXEV_CLOSE` + `WNOHANG` reap), kernel text bleeding over the desktop (`t_putchar` skips the LFB while the GUI owns scanout), resize fill, live-CD autologin, prompt rebuild on focus-gain.  **ABI single source of truth**: hoisted syscall numbers/signals/key sentinels/typed structs+flags into shared `makar_{syscalls,signals,keys,abi}.h` (kernel + userspace both include; staged to `/usr/include` for in-OS tcc), reconciling the 103-vs-96 drift.  **Hypervisor**: `vm_detect()`/`vm_kind()`/`vm_name()` (CPUID 0x40000000 + fw_cfg + DISPI id) identifies QEMU/Bochs/Hyper-V/VirtualBox/VMware; Hyper-V PS/2 mouse Y-negation skipped; Hyper-V ACPI soft-off fixed (`\_S5_` parser accepts a RootChar/ParentPrefix before the NameSeg + ACPI-enable handshake — write `acpi_enable` to `SMI_CMD`, poll `SCI_EN`, since Hyper-V Gen1 boots with SCI_EN off; XSDT/X_DSDT preferred + on-screen diag).  **Resolution**: MB2 framebuffer tag now requests **1024×768×32** (Hyper-V Gen1 VBE has no 16:9 / no >768 32bpp; QEMU/Bochs still DISPI-upgrade to 720p), plus GRUB `gfxpayload` fallback list, a `videoinfo` "Show video modes" entry, and matching `limine.conf` entries.  **GUI perf on VT-x**: pinned a **WC MTRR** over the framebuffer (`paging_set_mtrr_wc`; a page-level PAT-WC can't override firmware's UC MMIO hole), **damage-tracked compositing** presenting only the changed rect (`SYS_FB_PRESENT_RECT` 269) from a cacheable back buffer, a cursor save-under fast path, and a motion-forwarding gate (plain hover not forwarded to clients).  **Build/DX**: `iso build` emits only `makar.iso` (`TEST_ISO=1` for the CI/test ISO) to halve `grub-mkrescue`; `VERBOSE=1` streams the `tcc.c` compile (`gcc -v`).  **Docs**: glossary of abbreviations (linked from the site index) + THIRD-PARTY licence notices/links (doomgeneric/DOOM/TinyCC/Limine/lwIP/font8x8; Linux/ELKS/FUZIX/musl/GRUB) + i686-makar toolchain checklist.  CI green: ktest (874), iso test (incl. in-OS libc-tcc), guitest (`GUI: READY`, 1280×720), GDB ISO + HDD.  Hyper-V/VMware-specific changes are reasoned + gated (QEMU-only in CI), not hardware-verified here. |
+
 ## Acknowledgements and FOSS attribution
 
-Makar draws on the work of many free and open-source projects.  All referenced
-code is used in compliance with its licence; attribution is maintained in each
-relevant source file and in `docs/userland-libc.md`.
+Makar itself is **BSD-3-Clause-Clear** (see `LICENSE`).  It draws on the work of
+many free/open-source projects.  **Vendored** code keeps its upstream licence
+verbatim in its own tree (`vendor/doomgeneric/LICENSE` GPLv2,
+`vendor/tinycc/COPYING` LGPLv2.1, `vendor/lwip/COPYING` BSD); the Limine boot
+binaries under `vendor/limine/` are redistributed under Limine's BSD-2-Clause.
+`font8x8.h` is public domain (noted in-file).  **Influence-only** projects
+(no code copied) are credited below.  GPL components are kept as separate,
+independently-licensed programs (e.g. `doom.elf`), not linked into the
+BSD-licensed kernel.
 
-| Project | Licence | Influence |
-|---------|---------|-----------|
-| **Linux kernel** | GPLv2 | Syscall ABI (i386 int 0x80), ELF loading model, process memory layout |
-| **ELKS** | GPLv2 | Minimal libc / crt0 model; `vix` editor philosophy |
-| **FUZIX** | GPLv2 | vi-style editor design; libc porting approach for small systems |
-| **CP/M** | Historic | Terminal-owns-screen philosophy; self-contained program model |
-| **musl libc** | MIT | Target libc for future userspace; syscall stub conventions |
-| **lwIP** | BSD | Future TCP/IP stack candidate |
-| **GRUB** | GPLv2 | Bootloader; Multiboot 2 tag format |
-| **OSDev wiki** | CC-BY-SA | Cross-compiler setup, paging, descriptor table guidance |
+### Vendored / shipped code (licence preserved in-tree)
+
+| Project | Licence | Source | Used for |
+|---------|---------|--------|----------|
+| **doomgeneric** (ozkl) | GPLv2 | https://github.com/ozkl/doomgeneric | Portable DOOM port; `doom.elf` (Makar backend: `src/userspace/doomgeneric_makar.c`) |
+| **DOOM** (id Software) | GPLv2 | https://github.com/id-Software/DOOM | The DOOM engine wrapped by doomgeneric |
+| **TinyCC** | LGPLv2.1 | https://repo.or.cz/tinycc.git | In-OS C compiler `tcc.elf` (`vendor/tinycc/`) |
+| **lwIP** | BSD-3-Clause | https://github.com/lwip-tcpip/lwip | TCP/IP stack (`vendor/lwip/`) |
+| **Limine** (v12.3.0) | BSD-2-Clause | https://github.com/limine-bootloader/limine | BIOS boot stage the installer deploys (`vendor/limine/*.sys,*.bin`) |
+| **font8x8** (D. Hepper) | Public domain | https://github.com/dhepper/font8x8 | GUI/console 8x8 bitmap font (`src/userspace/font8x8.h`) |
+
+### Influence / reference (no code copied)
+
+| Project | Licence | Source | Influence |
+|---------|---------|--------|-----------|
+| **Linux kernel** | GPLv2 | https://github.com/torvalds/linux | Syscall ABI (i386 int 0x80), ELF loading model, process memory layout, ACPI soft-off (XSDT/X_DSDT + S5) behaviour |
+| **ELKS** | GPLv2 | https://github.com/ghaerr/elks | Minimal libc / crt0 model; `vix` editor philosophy; NX-windowing (roadmap) |
+| **FUZIX** | GPLv2 | https://github.com/EtchedPixels/FUZIX | vi-style editor design; libc porting approach for small systems |
+| **CP/M** | DRI (open-sourced 2022) | http://www.cpm.z80.de/ | Terminal-owns-screen philosophy; self-contained program model |
+| **musl libc** | MIT | https://musl.libc.org | Target libc for future userspace; syscall stub conventions |
+| **GRUB** | GPLv2 | https://www.gnu.org/software/grub/ | Bootloader; Multiboot 2 tag format |
+| **OSDev wiki** | CC-BY-SA | https://wiki.osdev.org | Cross-compiler / OS-specific toolchain, paging, descriptor tables, ACPI guidance |

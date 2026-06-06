@@ -10,6 +10,7 @@
 #include <kernel/task.h>
 #include <kernel/timer.h>
 #include <kernel/version.h>
+#include <kernel/vm.h>      /* vm_name() for the cpuinfo hypervisor line */
 #include <kernel/rtc.h>     /* CMOS RTC reader for /proc/rtc */
 #include <string.h>
 #include <stdio.h>
@@ -153,6 +154,7 @@ static void render_cpuinfo(pf_writer_t *w)
     }
 
     pf_puts(w, "arch        : i386 (protected mode)\n");
+    pf_puts(w, "hypervisor  : "); pf_puts(w, vm_name()); pf_putc(w, '\n');
 }
 
 /* -------------------------------------------------------------------------

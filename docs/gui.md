@@ -1,9 +1,15 @@
 # Makar GUI / windowing
 
-The Makar desktop (`gui.elf`, `src/userspace/wm.c`) is a userspace window
-manager that owns the framebuffer and composites a desktop, a dock, and a set
-of windows. This document describes the windowing architecture as it is built
-out; it is updated per phase.
+The Makar desktop is an **X11-style display server + clients** ("makx").
+`gui.elf` (`src/userspace/wm.c`) is the **display server**: it owns the
+framebuffer, the keyboard and the mouse, draws the desktop chrome (window
+borders, dock, menu bar, cursor) and composites windows. Each application is a
+separate **client** process (`mxterm.elf`, `mxfiles.elf`, `mxedit.elf`,
+`mxtasks.elf`, `doom.elf`) that talks to the server over the kernel's
+synchronous IPC for control and a **shared pixel surface** for pixels — control
+over the message channel, bulk pixels over shared memory, the same split X11
+draws between its protocol socket and MIT-SHM. The protocol + client library is
+`src/userspace/makx.{h,c}`.
 
 ## Design constraints
 
@@ -39,14 +45,18 @@ unmaps a dying task's surface pages from its page directory *before*
 `vmm_free_pd()` walks it — without this the shared frames, still mapped by
 another holder, would be double-freed. Covered by the `surface` ktest suite.
 
-Usage pattern for a windowed graphical app:
+Usage pattern (driven by the makx protocol, below): the **server** owns each
+surface (it is the creator, so lifetime is robust against a client crash); the
+client maps it and renders into it:
 
 ```
-WM:    id = surface_create(W, H); base = surface_map(id);   // composite from base
-       fork(); child execve("app", "-surface", id, ...);    // + stdin key pipe
-child: base = surface_map(id); /* render frames into base; never fb_present */
-WM:    each frame: blit the surface into the app's window rect
-       on child exit: surface_destroy(id)
+client: HELLO(w,h) ----------------------------> server: id=surface_create(w,h)
+        base=surface_map(id) <---(win,id)------          base=surface_map(id)
+        render frames into base; never fb_present
+        PRESENT(win) ---------------------------> server: blit base into the
+                                                           window rect; reply
+                                                           one queued input event
+        (on client exit) server reaps it and surface_destroy(id)
 ```
 
 ## Widget framework (userspace)
@@ -68,39 +78,95 @@ and reusable by future surface-rendering apps.
   with no buttons/keys so they still draw but don't react) — this is how the
   per-window focus model reaches individual widgets.
 
-## Window manager (`wm.c`)
+## makx protocol (`makx.h` / `makx.c`)
 
-`gui.elf` keeps a fixed window per kind (`W_TERMINAL/EDITOR/FILES/TASKS/DOOM`)
-with a z-order list. Each frame it: gathers mouse + one key, does
-window-management click handling (dock/taskbar, icons, raise+focus, title-bar
-drag, close box), routes the key to the focused window (terminal/doom over a
-pipe; editor/files/tasks via their `ui_ctx` pass), then composites desktop →
-windows back-to-front → dock → cursor and presents once. Only the focused
-window receives a "live" `ui_ctx`; others draw but don't react. `gui uitest`
-runs a headless widget self-test emitting `GUI-UITEST: PASS`.
+Control travels over the kernel's MINIX-style synchronous IPC (`kernel/ipc.h`,
+32-byte messages); pixels travel over a shared surface. Endpoints are task pids;
+the server passes each client `-makx <server-pid>` in argv, so a client finds
+the server with no name service.
 
-- **Terminal** hosts `sh.elf` over pipes (byte stream drawn as a grid). It is a
-  *forked* shell on a private pipe, so Ctrl-C / Ctrl-D there only ever closes
-  that terminal window — `mak.sh0` (the login session) is never in the blast
-  radius.
-- **Editor** is a native multi-line editor (caret, click-to-position) with an
-  **Open / Save / Save As** dialog built on the shared file browser (below):
-  Save As lets you traverse to a directory and type a filename.
-- **Files** is a native browser built on the same reusable `browser` model:
-  **Up / Open / Refresh** plus a path box + **Go** to jump to an absolute path;
-  `.`/`..` are hidden (Up handles the parent). Opening a file routes it to the
-  Editor window. Navigation captures the post-`chdir` cwd via `getcwd` before
-  reloading (an earlier bug reset the cwd on every reload — see the `fstest`).
-- **Tasks** parses `/proc/tasks`, Kill via `SYS_KILL`, refresh-interval slider.
-- **Doom** forks `doom.elf -surface <id>`; the WM maps the shared surface and
-  `gfx_blit_scaled`s it into the window, forwarding keys over the child's stdin.
+Client → server requests (sent with `sys_ipc_sendrec`):
 
-An always-on **top menu bar** (drawn after the windows every frame, so it is
-never occluded) carries the Makar brand, the focused window's name, and the
-**Log Off** item. Log Off tears down the WM's children (terminal / doom),
-restores terminal + statusbar state, calls `sys_logout()` to end the underlying
-login session, and exits — returning to the login screen with `mak.sh0` intact.
-Desktop + menu bar + dock are unconditional: the GUI is never chromeless.
+- `MX_HELLO(w,h)` → reply `(win, sid)`: create a window + a `w×h` surface.
+- `MX_PRESENT(win)` → reply = one input event: "I drew a frame, composite it."
+- `MX_POLL(win)` → reply = one input event (drain input without presenting).
+- `MX_BYE(win)` → ack; the client is exiting.
+
+Each reply carries **one** input event (`MXEV_KEY/MOUSE/FOCUS/CLOSE/NONE`) plus
+a "still pending" count in `data[MX_PENDING]`, so a client drains its input by
+polling until the count is zero. **The server never sends a client an
+unsolicited message** — it only ever replies — which keeps the synchronous
+rendezvous deadlock-free: the server is purely reactive.
+
+The kernel piece that makes this work is **`sys_ipc_nbrecv`** (non-blocking
+receive, syscall 267): the server drains queued client requests *and* polls the
+keyboard/mouse in the same loop, instead of parking in a blocking `ipc_recv`.
+It drains a **bounded** number of requests per frame (a budget), then returns to
+composite and `sys_yield` — an unbounded drain would spin forever on a couple of
+busy-polling clients and starve everything else (including a not-yet-connected
+client waiting to send its first HELLO).
+
+The client library (`makx.c`) wraps this: `mx_connect` (parse `-makx`, HELLO,
+map the surface into `c.surf`), `mx_pump` (drain events into `c`, compute mouse
+edges), `mx_key` (pop a buffered key), `mx_present` (flush a frame), `mx_close`.
+
+## Display server (`wm.c`)
+
+`gui.elf` keeps a dynamic table of **client-backed** windows (`W[MAXWIN]`, each
+= client pid + surface id + geometry + a small event queue) and a z-order list.
+Each frame it: gathers mouse + one key; does window-management click handling
+(dock, icons → `launch_icon`, raise+focus, title-bar drag, resize grip, min/max,
+close box); forwards the key and client-relative mouse to the **focused**
+window's event queue; drains client requests (`serve_requests`, bounded); reaps
+exited clients (`reap_clients`, draining their stdout to prevent text-VT bleed);
+then composites desktop → windows back-to-front (chrome + the client surface,
+1:1 or `gfx_blit_scaled`) → dock → menu bar → cursor, and presents once.
+
+**Compositing is damage-tracked.** Recompositing the scene is cheap (it lands in
+a cacheable RAM back buffer), but *presenting* — copying to the framebuffer — is
+the expensive step on a write-combining LFB, especially on VT-x hypervisors. So
+the server accumulates a **damage rectangle** from the frame's actual changes
+(a window moved/resized/redrew, a chrome/dock/menu band updated) and presents
+**only that rect** via `SYS_FB_PRESENT_RECT` (269) instead of the whole screen.
+The cursor is handled by a **save-under** fast path: on plain pointer motion with
+nothing else dirty, the server restores the pixels under the old cursor box and
+blits it at the new position — two tiny rect presents, no recomposite. And
+**plain pointer motion is not forwarded to clients** at all (only clicks and
+drags are), so idle hover over a window never makes that client repaint. Together
+these keep multiple windows + Doom responsive on WC-framebuffer hosts, where a
+full-screen present per mouse move was the bottleneck.
+
+The server contains **no application logic** — it is a pure window server. It
+launches a client by forking and `execve`-ing the icon's `.elf` with
+`-makx <pid>` and a drained stdout/stderr pipe; the client's HELLO fills in the
+reserved window's surface.
+
+Clients (each an independent process, `src/userspace/mx*.c`):
+
+- **mxterm** hosts `sh.elf` over pipes (byte stream drawn as a grid), forwarding
+  the keys the server delivers to the shell's stdin. Ctrl-C / Ctrl-D there only
+  closes that terminal — `mak.sh0` is never in the blast radius.
+- **mxedit** is a native multi-line editor (caret, click-to-position) with an
+  **Open / Save / Save As** dialog built on the shared file dialog (`br_dialog`,
+  below).
+- **mxfiles** is a native browser on the same `browser` model: **Up / Open /
+  Refresh** plus a path box + **Go**; `.`/`..` are hidden (Up handles the
+  parent). (Cross-client "open in editor" is a follow-up; each client is
+  self-contained for now.)
+- **mxtasks** parses `/proc/tasks`, Kill via `SYS_KILL`, refresh-interval slider.
+- **doom** is the windowed makx client (see below).
+
+An always-on **top menu bar** (drawn after the windows, never occluded) carries
+the Makar brand, the focused window's title, **Exit** (→ `sys_gui_close`, back
+to the CLI shell) and **Log Off** (→ `sys_logout`, ends the session). Both first
+SIGKILL + reap every client child and restore statusbar state. Desktop + menu
+bar + dock are unconditional: the GUI is never chromeless.
+
+**Still built into the server (this cut):** the desktop/dock/menu-bar/chrome (a
+compositor-owned panel + WM, like many simple stacks) and the graphical login
+(it is tied to the session/auth handshake). Splitting the panel + login out to
+their own clients is the remaining client-ization step (a server that composites
+a pre-desktop fullscreen login client) — see Status.
 
 ### Graphical login
 
@@ -108,9 +174,10 @@ Launched as `gui login` (the kernel does this when no user is auto-logged-in),
 `gui.elf` shows a graphical login (`do_login`): username + masked password
 (`ui_password`) + a Log In button. Submit calls **`SYS_LOGIN`** (`sys_login`,
 syscall 266) → `auth_login` → `shadow_verify` + set the session user; on success
-it falls through to the desktop. This is the only new syscall in the GUI work;
-when the GUI is split into a display server + clients (next PR), `do_login`
-lifts wholesale into a standalone `login.elf`.
+it falls through to the desktop. Login stays *inside* the server for now (it is
+tied to the session/auth handshake); lifting `do_login` into a standalone
+`login.elf` client is Phase 6b (the server would composite a fullscreen login
+client before opening the desktop).
 
 ### Booting straight to the desktop / login
 
@@ -141,9 +208,13 @@ cannot give.
 
 ### Reusable file browser + headless coverage
 
-The Files window and the Editor's Open/Save dialog share one `browser` model
-(`cwd` + entries + select/enter/up), navigating via the existing
-`chdir`/`readdir`/`getcwd` syscalls. `gui fstest` drives that model against the
+The Files client and the Editor's Open/Save dialog share one `browser` model
+*and* one **shared file dialog** — `br_dialog` in `gui_browser.{c,h}` draws the
+Up/Open|Save/Cancel toolbar + optional Name field + listbox into any surface rect
+and returns accept/cancel, so any windowed app can drop in the same open/save
+picker (the editor uses it; a future "save page" in a browser would too). The
+model navigates via the existing `chdir`/`readdir`/`getcwd` syscalls.
+`gui.elf fstest` drives that model against the
 live VFS (descend a real dir, confirm the cwd deepened, climb back) and emits
 `GUI-FSTEST: PASS`; it runs under `shell-smoke.sh` alongside `gui uitest`
 (`GUI-UITEST: PASS`). Both return before touching the framebuffer, so they are
@@ -175,13 +246,16 @@ points for the desktop story:
 
 ## DOOM windowed backend (`doomgeneric_makar.c`)
 
-`-surface <id>` selects windowed mode: `DG_Init` maps the surface instead of the
-full framebuffer, `DG_DrawFrame` writes the frame into the surface and does
-**not** call `SYS_FB_PRESENT` (the WM composites), and input comes from stdin
-(the WM forwards decoded key bytes). Since cooked stdin has no key-up codes, a
-press auto-releases after ~120 ms (tap-to-move) — good enough for menus/turning,
-a known limitation. Without `-surface`, DOOM runs its normal fullscreen path
-(shell `doom`), unchanged.
+`-makx <pid>` selects windowed mode: `main` calls `mx_connect` (640×400 surface)
+before `doomgeneric_Create`; `DG_Init` renders into `mx_conn.surf` instead of the
+full framebuffer; `DG_DrawFrame` writes the frame into the surface and
+`mx_present`s it (never `SYS_FB_PRESENT` — the server composites); input is the
+keys `mx_pump` delivers (not the raw scancode stream). Since makx keys are
+press-only, a press auto-releases after ~120 ms (tap-to-move) — good enough for
+menus/turning, a known limitation. Without `-makx`, DOOM runs its normal
+fullscreen path (shell `doom`), unchanged — so DOOM works the same in GUI and
+text mode. Only `makx.o` is linked in (no `gui_gfx`): the backend uses the
+`gfx_surface` *type* from `makx.h`, not any drawing code.
 
 ## Status
 
@@ -193,8 +267,19 @@ a known limitation. Without `-surface`, DOOM runs its normal fullscreen path
   shared browser, and a dock **Log Off**. Navigation is regression-covered by
   `gui fstest` (`GUI-FSTEST: PASS`).
 - **Phase 5 (done):** DOOM in a window via a shared surface.
-- **Phase 6 (todo):** host drag-and-drop GUI designer that emits widget-layout
-  code. Deferred — the widget schema (`gui_ui.h`) is the contract it will target.
+- **Phase 6 — makx server/client split (done):** `gui.elf` is now a pure
+  display server; every application (terminal, files, editor, tasks, doom) is an
+  independent client process talking the makx protocol (`makx.h`) over IPC +
+  shared surfaces. Added one kernel syscall (`sys_ipc_nbrecv`, 267). The shared
+  file dialog (`br_dialog`, in `gui_browser`) is reusable by any client.
+- **Phase 6b (todo):** lift the panel (dock + menu bar) and the login screen out
+  to their own clients (the server would composite a pre-desktop fullscreen login
+  client; the panel becomes a normal always-on-top client window).
+- **Phase 7 (ideas / roadmap):** more makx clients now that the protocol exists —
+  a lynx/dillo-style text web browser (`mxweb`, fetch via `sys_wget` → render),
+  an image viewer (BMP/PNG/JPEG/GIF), a simple paint app. See `CLAUDE.roadmap.md`.
+- **GUI designer (deferred):** host drag-and-drop designer emitting widget-layout
+  code. The widget schema (`gui_ui.h`) is the contract it will target.
 
 ## Next PR (not this one): trim the syscall surface
 

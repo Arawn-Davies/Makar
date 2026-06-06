@@ -140,20 +140,40 @@ cat > isodir/boot/grub/grub.cfg << EOF
 set default=${GRUB_DEFAULT:-1}
 set timeout=3
 
+# Ask GRUB for the best mode the firmware actually offers, highest first.  The
+# kernel adopts whatever LFB it's handed (no DISPI on Hyper-V/VMware), so this is
+# how those platforms get a decent resolution.  Hyper-V Gen1's VBE has no 16:9
+# modes, so 1024x768 is the realistic fallback there (beats the 800x600 default).
+insmod all_video
+set gfxpayload=1280x720x32,1024x768x32,800x600x32
+
 menuentry "Makar OS" {
 	multiboot2 /boot/makar.kernel live${KERNEL_ARGS:+ $KERNEL_ARGS}
 }
 
 menuentry "Makar OS (GUI desktop)" {
-	multiboot2 /boot/makar.kernel live autoboot=gui
+	multiboot2 /boot/makar.kernel live autoboot=gui autologin=user
 }
 
 menuentry "Makar OS (rescue shell)" {
 	multiboot2 /boot/makar.kernel live shell=rescue
 }
 
+menuentry "Makar OS (verbose boot)" {
+	multiboot2 /boot/makar.kernel live verbose
+}
+
 menuentry "Makar OS (serial console)" {
 	multiboot2 /boot/makar.kernel live console=ttyS0
+}
+
+menuentry "Show video modes (Hyper-V/VMware resolution diagnostic)" {
+	videoinfo
+	echo ""
+	echo "Photograph the 'Adapter ... modes' list above -- note which widths"
+	echo "(1024x768, 1280x720...) appear and at what bit depths.  That tells us"
+	echo "what gfxpayload can ask for.  Returning to the menu in 60s..."
+	sleep --verbose --interruptible 60
 }
 
 menuentry "Next available device" {
@@ -186,20 +206,40 @@ EOF
 set default=${GRUB_DEFAULT:-1}
 set timeout=3
 
+# Ask GRUB for the best mode the firmware actually offers, highest first.  The
+# kernel adopts whatever LFB it's handed (no DISPI on Hyper-V/VMware), so this is
+# how those platforms get a decent resolution.  Hyper-V Gen1's VBE has no 16:9
+# modes, so 1024x768 is the realistic fallback there (beats the 800x600 default).
+insmod all_video
+set gfxpayload=1280x720x32,1024x768x32,800x600x32
+
 menuentry "Makar OS" {
 	multiboot2 /boot/makar.kernel live${KERNEL_ARGS:+ $KERNEL_ARGS}
 }
 
 menuentry "Makar OS (GUI desktop)" {
-	multiboot2 /boot/makar.kernel live autoboot=gui
+	multiboot2 /boot/makar.kernel live autoboot=gui autologin=user
 }
 
 menuentry "Makar OS (rescue shell)" {
 	multiboot2 /boot/makar.kernel live shell=rescue
 }
 
+menuentry "Makar OS (verbose boot)" {
+	multiboot2 /boot/makar.kernel live verbose
+}
+
 menuentry "Makar OS (serial console)" {
 	multiboot2 /boot/makar.kernel live console=ttyS0
+}
+
+menuentry "Show video modes (Hyper-V/VMware resolution diagnostic)" {
+	videoinfo
+	echo ""
+	echo "Photograph the 'Adapter ... modes' list above -- note which widths"
+	echo "(1024x768, 1280x720...) appear and at what bit depths.  That tells us"
+	echo "what gfxpayload can ask for.  Returning to the menu in 60s..."
+	sleep --verbose --interruptible 60
 }
 
 menuentry "Next available device" {

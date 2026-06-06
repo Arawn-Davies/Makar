@@ -1,37 +1,17 @@
 #ifndef _USERSPACE_SYSCALL_H
 #define _USERSPACE_SYSCALL_H
 
-/* Syscall numbers - Linux i386 ABI subset + Makar extensions. */
-#define SYS_EXIT       1
-#define SYS_FORK       2
-#define SYS_READ       3
-#define SYS_EXECVE     11
-#define SYS_CHDIR      12
-#define SYS_WAIT4      114
+/* Syscall NUMBERS come from the shared ABI header (one source of truth with the
+ * kernel; Linux-uapi style).  This file keeps the userspace wrappers + the libc-
+ * facing types/flags. */
+#include <makar_syscalls.h>
+/* Typed ABI shared verbatim with the kernel: clockids, struct timeval/timespec/
+ * stat/dirent, tty_cell_t, open/fcntl flags, S_IF + DT_ bits.  Userspace-only bits
+ * (access modes, O_NONBLOCK, S_ISxxx, signal handlers, mmap/seek/vga) stay here. */
+#include <makar_abi.h>
+
 /* wait4 `options` flags */
 #define WNOHANG        1
-#define SYS_WRITE      4
-#define SYS_OPEN       5
-#define SYS_CLOSE      6
-#define SYS_LSEEK      19
-#define SYS_GETPID     20
-#define SYS_DUP        41
-#define SYS_PIPE       42
-#define SYS_DUP2       63
-#define SYS_KILL       37
-#define SYS_RENAME     38
-#define SYS_MKDIR      39
-#define SYS_RMDIR      40
-#define SYS_UNLINK     10
-#define SYS_BRK        45
-#define SYS_MUNMAP     91
-#define SYS_MMAP2     192
-#define SYS_SIGNAL     48
-#define SYS_GETPPID    64
-#define SYS_GETTIMEOFDAY 78
-#define SYS_CLOCK_GETTIME 265
-#define CLOCK_REALTIME    0
-#define CLOCK_MONOTONIC   1
 
 /* access(2) mode bits.  No permission model -- all four behave as F_OK. */
 #define F_OK 0
@@ -39,112 +19,13 @@
 #define W_OK 2
 #define R_OK 4
 
-/* Linux i386 layouts -- must match kernel/syscall.h.  Each struct has
- * its own guard macro so the userspace + kernel headers can coexist
- * when in-OS TCC rebuilds the kernel: kernel timer.h pulls in stdio.h
- * which pulls in this header, while kernel source also independently
- * includes kernel/syscall.h.  Whichever header is included first wins
- * the struct definition; the second skips. */
-#ifndef _MAKAR_STRUCT_TIMEVAL_DEFINED
-#define _MAKAR_STRUCT_TIMEVAL_DEFINED
-struct timeval  { int tv_sec; int tv_usec; };
-#endif
-#ifndef _MAKAR_STRUCT_TIMESPEC_DEFINED
-#define _MAKAR_STRUCT_TIMESPEC_DEFINED
-struct timespec { int tv_sec; int tv_nsec; };
-#endif
-#define SYS_SIGRETURN  119
-#define SYS_DEBUG      100
-#define SYS_YIELD      158
-#define SYS_GETKEY     200
-#define SYS_PUTCH_AT   201
-#define SYS_SET_CURSOR 202
-#define SYS_TTY_CLEAR  203
-#define SYS_TERM_SIZE  204
-#define SYS_WRITE_FILE 205
-#define SYS_LS_DIR     206
-#define SYS_DISK_INFO    207
-#define SYS_PCI_INFO     239
-#define SYS_DELETE_FILE  208
-#define SYS_RENAME_FILE  209
-#define SYS_DELETE_DIR   210
-#define SYS_WRITE_SERIAL 211
-#define SYS_KEYBOARD_RAW 212
-#define SYS_SHELL_CLEAR  213
-#define SYS_UPTIME       214
-#define SYS_GETCWD       215
-#define SYS_FB_INFO      216
-#define SYS_DRAW_LINE    217
-#define SYS_MOUSE_READ   256
-#define SYS_FB_PRESENT   257
-#define SYS_SURFACE_CREATE  259
-#define SYS_SURFACE_MAP     262
-#define SYS_SURFACE_INFO    263
-#define SYS_SURFACE_DESTROY 264
-#define SYS_CARET_STYLE  218
 /* Admin syscalls (privileged operations).  task_is_admin() gates each;
  * currently always-true (no user model).  Negative return = denied or
  * failed; helper-specific error code conventions in kernel/admin.h. */
-#define SYS_REBOOT        219
-#define SYS_SHUTDOWN      220
-#define SYS_SETMODE       221
-#define SYS_FGCOL         222
-#define SYS_BGCOL         223
-#define SYS_EJECT         224
-#define SYS_INSTALL       238
-#define SYS_MOUNT         225
-#define SYS_UMOUNT        226
-#define SYS_MKFS          227
-#define SYS_SCHED_QUANTUM 228
-#define SYS_VERBOSE       229
-#define SYS_GETHOSTNAME   230
-#define SYS_WHOAMI        247   /* moved off 240 (Linux futex) */
-#define SYS_STATUSBAR     241
-#define SYS_VT_OPEN_APP   242
-#define SYS_VT_TAKE_APP   248   /* moved off 243 (Linux set_thread_area) */
-#define SYS_VT_SETNAME    244
-#define SYS_VT_GETNAME    245
-#define SYS_STATFS        246
-#define SYS_SHELL_READY   231
-#define SYS_CURSOR_POS    232
-#define SYS_VT_ENTER      233
-#define SYS_VT_CLOSE      234
-#define SYS_VT_OPEN_REQUEST 235
-#define SYS_VT_STATE      236
-#define SYS_VT_CLOCK_REQUEST 237
-#define SYS_FCNTL        55
-#define SYS_STAT        106
-#define SYS_FSTAT       108
-#define SYS_READDIR     141
-#define SYS_NET_INFO    253
-#define SYS_NET_CTL     254
-#define SYS_WGET        255
-#define SYS_LOGOUT      260
-#define SYS_GUI_CLOSE   261
-#define SYS_LOGIN       266
 
 #define NET_CTL_DHCP_RELEASE 1
 #define NET_CTL_DHCP_RENEW   2
 #define NET_CTL_DNS_FLUSH    3
-
-/* dirent shape -- must match kernel struct dirent in kernel/syscall.h. */
-#define DIRENT_NAME_MAX 256
-#define DT_UNKNOWN 0
-#define DT_DIR     4
-#define DT_REG     8
-#ifndef _MAKAR_STRUCT_DIRENT_DEFINED
-#define _MAKAR_STRUCT_DIRENT_DEFINED
-struct dirent {
-    unsigned int   d_ino;
-    unsigned char  d_type;
-    unsigned char  __pad[3];
-    char           d_name[DIRENT_NAME_MAX];
-};
-#endif
-
-/* fcntl cmds */
-#define F_GETFL          3
-#define F_SETFL          4
 
 /* O_NONBLOCK for F_SETFL on stdin (fd 0).  Matches Linux i386 0x800. */
 #define O_NONBLOCK       0x800
@@ -152,72 +33,16 @@ struct dirent {
 /* read(2) errno-style return for "no data and non-blocking". */
 #define EAGAIN           11
 
-/* Signal numbers (Linux i386 ABI subset).  Mirrors <kernel/signal.h>;
- * kept in sync by hand since the userspace build doesn't see kernel
- * headers. */
-#define SIGHUP    1
-#define SIGINT    2
-#define SIGQUIT   3
-#define SIGILL    4
-#define SIGTRAP   5
-#define SIGABRT   6
-#define SIGFPE    8
-#define SIGKILL   9
-#define SIGUSR1  10
-#define SIGSEGV  11
-#define SIGUSR2  12
-#define SIGPIPE  13
-#define SIGALRM  14
-#define SIGTERM  15
-#define SIGCHLD  17
-#define SIGCONT  18
-#define SIGSTOP  19
-#define SIGTSTP  20
+/* Signal numbers: the canonical list is the shared ABI header (no longer
+ * hand-synced with the kernel). */
+#include <makar_signals.h>
 
 /* sig_handler_t function pointer + SIG_DFL/SIG_IGN sentinels (POSIX). */
 typedef void (*sig_handler_t)(int);
 #define SIG_DFL  ((sig_handler_t)0)
 #define SIG_IGN  ((sig_handler_t)1)
 
-/* open() flags -- low 2 bits are access mode; the rest are status flags.
- * Values mirror Linux i386. */
-#define O_RDONLY    0
-#define O_WRONLY    1
-#define O_RDWR      2
-#define O_ACCMODE   3
-#define O_CREAT     0100
-#define O_TRUNC     01000
-#define O_APPEND    02000
-
-/* Linux i386 struct stat (must match kernel/syscall.h). */
-#ifndef _MAKAR_STRUCT_STAT_DEFINED
-#define _MAKAR_STRUCT_STAT_DEFINED
-struct stat {
-    unsigned int   st_dev;
-    unsigned int   st_ino;
-    unsigned short st_mode;
-    unsigned short st_nlink;
-    unsigned short st_uid;
-    unsigned short st_gid;
-    unsigned int   st_rdev;
-    unsigned int   st_size;
-    unsigned int   st_blksize;
-    unsigned int   st_blocks;
-    unsigned int   st_atime;
-    unsigned int   st_atime_nsec;
-    unsigned int   st_mtime;
-    unsigned int   st_mtime_nsec;
-    unsigned int   st_ctime;
-    unsigned int   st_ctime_nsec;
-    unsigned int   __unused4;
-    unsigned int   __unused5;
-};
-#endif
-#define S_IFMT   0170000
-#define S_IFREG  0100000
-#define S_IFDIR  0040000
-#define S_IFCHR  0020000
-#define S_IFBLK  0060000
+/* st_mode test macros (the S_IF* bits come from the shared makar_abi.h). */
 #define S_ISREG(m)  (((m) & S_IFMT) == S_IFREG)
 #define S_ISDIR(m)  (((m) & S_IFMT) == S_IFDIR)
 #define S_ISBLK(m)  (((m) & S_IFMT) == S_IFBLK)
@@ -247,40 +72,11 @@ struct stat {
 #define VGA_YELLOW       14
 #define VGA_WHITE        15
 
-/* One screen cell passed to sys_putch_at(). */
-typedef struct { unsigned char col, row, ch, clr; } tty_cell_t;
+/* (tty_cell_t for sys_putch_at() comes from the shared makar_abi.h.) */
 
-/* Key sentinels returned by sys_getkey() (unsigned byte values).  Mirrors
- * <kernel/keyboard.h> KEY_* - kept in sync by hand because the userspace
- * build doesn't see kernel headers. */
-#define KEY_ARROW_UP    0x80
-#define KEY_ARROW_DOWN  0x81
-#define KEY_ARROW_LEFT  0x82
-#define KEY_ARROW_RIGHT 0x83
-#define KEY_F1          0x84
-#define KEY_F2          0x85
-#define KEY_F3          0x86
-#define KEY_F4          0x87
-#define KEY_FOCUS_GAIN  0x88
-#define KEY_F5          0x89
-#define KEY_F6          0x8A
-#define KEY_F7          0x8B
-#define KEY_F8          0x8C
-#define KEY_F9          0x8D
-#define KEY_F10         0x8E
-#define KEY_F11         0x8F
-#define KEY_F12         0x90
-#define KEY_SHIFT_DOWN  0x91
-#define KEY_CTRL_DOWN   0x92
-#define KEY_ALT_DOWN    0x93
-#define KEY_CAPS_TOGGLE 0x94
-#define KEY_SUPER_DOWN  0x95
-#define KEY_MENU_DOWN   0x96
-#define KEY_PAGE_UP     0x97
-#define KEY_PAGE_DOWN   0x98
-#define KEY_CTRL_S      0x13
-#define KEY_CTRL_Q      0x11
-#define KEY_CTRL_C      0x03
+/* Key sentinels returned by sys_getkey(): the canonical list is the shared ABI
+ * header (no longer hand-synced with the kernel). */
+#include <makar_keys.h>
 
 /* Raw syscall stubs. */
 static inline long syscall0(long nr)
@@ -518,6 +314,17 @@ static inline int sys_fb_present(const void *backbuf)
     return (int)syscall1(SYS_FB_PRESENT, (long)backbuf);
 }
 
+/* Blit only the (x,y,w,h) sub-rect of the same full-frame back buffer.  Lets a
+ * compositor refresh a small region (e.g. the cursor) without re-pushing the
+ * whole frame.  Returns 0 on success, -1 if no pixel FB / not focused. */
+static inline int sys_fb_present_rect(const void *backbuf, int x, int y, int w, int h)
+{
+    if (w <= 0 || h <= 0) return 0;
+    return (int)syscall3(SYS_FB_PRESENT_RECT, (long)backbuf,
+                         ((long)(x & 0xFFFF) << 16) | (long)(y & 0xFFFF),
+                         ((long)(w & 0xFFFF) << 16) | (long)(h & 0xFFFF));
+}
+
 /* Shared pixel surfaces — the one shared-memory primitive (kernel/surface.h).
  * surface_create reserves w*h*4 bytes of kernel frames and returns an id;
  * surface_map maps that surface into the caller and returns its base address
@@ -539,6 +346,42 @@ static inline unsigned int sys_surface_info(int id)
 static inline int sys_surface_destroy(int id)
 {
     return (int)syscall1(SYS_SURFACE_DESTROY, (long)id);
+}
+/* Unmap a surface from the caller (free its frames if unreferenced) -- used to
+ * release the old surface when a window client reallocates on resize. */
+static inline int sys_surface_unmap(int id)
+{
+    return (int)syscall1(SYS_SURFACE_UNMAP, (long)id);
+}
+
+/* Synchronous message-passing IPC (MINIX-style; kernel/ipc.h).  Endpoints are
+ * task pids; messages are fixed 32-byte structs.  send/recv block until the
+ * peer rendezvouses; sendrec is an atomic send-then-await-reply RPC; nbrecv is
+ * a non-blocking poll (returns -EAGAIN, i.e. -11, when nothing is queued) so a
+ * server can interleave client requests with hardware-input polling. */
+#define IPC_MSG_DATA_WORDS 6
+#define IPC_ANY  (-1)
+typedef struct {
+    int           src;     /* sender pid; filled in by the kernel on receive */
+    int           type;    /* caller-defined opcode                          */
+    unsigned int  data[IPC_MSG_DATA_WORDS];
+} ipc_msg_t;               /* 32 bytes -- must match kernel/ipc.h            */
+
+static inline int sys_ipc_send(int dst, const ipc_msg_t *m)
+{
+    return (int)syscall2(SYS_IPC_SEND, (long)dst, (long)m);
+}
+static inline int sys_ipc_recv(int from, ipc_msg_t *m)
+{
+    return (int)syscall2(SYS_IPC_RECV, (long)from, (long)m);
+}
+static inline int sys_ipc_sendrec(int dst, ipc_msg_t *m)
+{
+    return (int)syscall2(SYS_IPC_SENDREC, (long)dst, (long)m);
+}
+static inline int sys_ipc_nbrecv(int from, ipc_msg_t *m)
+{
+    return (int)syscall2(SYS_IPC_NBRECV, (long)from, (long)m);
 }
 
 /* Set the VESA caret style (0 = underline/line, 2 = flashing block).

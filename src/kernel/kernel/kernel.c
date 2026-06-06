@@ -5,6 +5,7 @@
 #include <kernel/vga.h>
 #include <kernel/descr_tbl.h>
 #include <kernel/fpu.h>
+#include <kernel/vm.h>
 #include <kernel/serial.h>
 #include <kernel/timer.h>
 #include <kernel/system.h>
@@ -51,6 +52,10 @@ int g_boot_gui = 0;
  * (SYS_GUI_CLOSE).  shell_login_loop reads it so Log Off re-shows the GUI
  * login but a CLI `logout` re-shows the text login. */
 int g_gui_session = 0;
+
+/* `verbose` on the cmdline: skip the boot loading screen/progress bar so the
+ * boot log + background ktest output stay visible instead. */
+int g_verbose_boot = 0;
 
 /*
  * Column at which "[ OK ]" starts, counting from 0.
@@ -176,6 +181,14 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	fpu_init();
 	KLOG("fpu: x87 armed (fninit) + per-task fxsave/fxrstor on context switch\n");
 
+	/* Identify the hypervisor/VM early so later drivers can apply per-platform
+	 * quirks (e.g. the Hyper-V PS/2 mouse Y convention). */
+	vm_detect();
+	t_writestring("Virtualization: ");
+	t_writestring(vm_name());
+	t_putchar('\n');
+	KLOG("vm: detected platform\n");
+
 	t_writestring("Installing exception handlers");
 	kprint_ok();
 	init_debug_handlers();
@@ -235,7 +248,7 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			 * later setmode up to this size never reaches an unmapped FB region
 			 * (the 1080p page-fault-at-0xFD400000 bug). */
 			static const struct { uint32_t w, h; } prefs[] = {
-				{ 1920, 1080 }, { 1280, 720 }, { 640, 480 },
+				{ 1280, 720 }, { 640, 480 },   /* 720p is the supported ceiling */
 			};
 			uint32_t max_w = 0, max_h = 0;
 			for (uint32_t i = 0; i < sizeof(prefs)/sizeof(prefs[0]); i++) {
@@ -250,7 +263,8 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			uint32_t bw = 0, bh = 0;
 			if (vmode[0]) {
 				uint32_t rw = 0, rh = 0;
-				if (!strcmp(vmode,"1080p") || !strcmp(vmode,"1920x1080")) { rw=1920; rh=1080; }
+				/* 720p is the cap; 1080p requests clamp to it. */
+				if (!strcmp(vmode,"1080p") || !strcmp(vmode,"1920x1080")) { rw=1280; rh=720; }
 				else if (!strcmp(vmode,"720p") || !strcmp(vmode,"1280x720")) { rw=1280; rh=720; }
 				else if (!strcmp(vmode,"480p") || !strcmp(vmode,"640x480")) { rw=640; rh=480; }
 				if (rw && bochs_vbe_mode_supported(rw, rh, 32)) { bw = rw; bh = rh; }
@@ -391,6 +405,8 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 				if (tag->type == MULTIBOOT2_TAG_TYPE_CMDLINE) {
 					multiboot2_tag_cmdline_t *cmd =
 						(multiboot2_tag_cmdline_t *)tag;
+					if (strstr(cmd->string, "verbose"))
+						g_verbose_boot = 1;
 					if (strstr(cmd->string, "test_mode"))
 						test_mode = 1;
 					if (strstr(cmd->string, "live"))
