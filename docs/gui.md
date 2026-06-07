@@ -183,6 +183,8 @@ Clients (each an independent process, `src/userspace/mx*.c`):
   parent). (Cross-client "open in editor" is a follow-up; each client is
   self-contained for now.)
 - **mxtasks** parses `/proc/tasks`, Kill via `SYS_KILL`, refresh-interval slider.
+- **mxclock** draws a large digital time + date from `/proc/rtc` (GUI peer of the
+  fullscreen `clock.elf`; reuses the same parse, scaled-glyph rendering).
 - **doom** is the windowed makx client (see below).
 
 An always-on **top menu bar** (drawn after the windows, never occluded) carries

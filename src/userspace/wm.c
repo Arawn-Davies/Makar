@@ -165,10 +165,11 @@ static void win_free(int i)
 /* Each icon names a client *.elf and the default outer window geometry.  The
  * program path is launcher data -- the server bakes in no application. */
 typedef struct { int x,y,w,h; const char *label; gfx_u32 tint; const char *cmd; int winw, winh; } icon_t;
-#define ICON_N 6
+#define ICON_N 7
 /* winw/winh are sized so each client's fixed surface (mxterm 640x400, mxfiles
- * 560x380, mxedit 620x420, mxtasks 560x360, doom 640x400, mxabout 560x430) fits
- * the window's client rect 1:1 (client_w = winw-2, client_h = winh-TH-1). */
+ * 560x380, mxedit 620x420, mxtasks 560x360, doom 640x400, mxabout 560x430,
+ * mxclock 360x200) fits the window's client rect 1:1 (client_w = winw-2,
+ * client_h = winh-TH-1). */
 static icon_t icons[ICON_N] = {
     { 24,  40, 96,70, "Terminal", RGB(0x4c,0x8d,0xff), "/apps/mxterm.elf",  648,424 },
     { 24, 124, 96,70, "Files",    RGB(0xf0,0xa8,0x30), "/apps/mxfiles.elf", 568,404 },
@@ -176,6 +177,7 @@ static icon_t icons[ICON_N] = {
     { 24, 292, 96,70, "Tasks",    RGB(0x9b,0x6c,0xff), "/apps/mxtasks.elf", 568,384 },
     { 24, 376, 96,70, "Doom",     RGB(0xc0,0x40,0x40), "/apps/doom.elf",    648,424 },
     { 24, 460, 96,70, "About",    RGB(0x35,0x6a,0xa8), "/apps/mxabout.elf", 568,454 },
+    { 24, 544, 96,70, "Clock",    RGB(0x40,0xc0,0xb0), "/apps/mxclock.elf", 384,232 },
 };
 
 /* Fork+exec a client, handing it `-makx <server-pid>` and a stdout/stderr pipe
