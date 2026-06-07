@@ -50,6 +50,19 @@ the WM cursor route through `video_active()`.
   cursor** (`VID_CAP_HW_CURSOR`). Testable via `MAKAR_VGA="-device vmware-svga"
   ./run.sh guitest`.
 
+### Display settings (`mxdisplay`)
+
+`mxdisplay.elf` changes the screen resolution at runtime. Apply calls
+`SYS_SETMODE`; the kernel repoints the framebuffer and the WM **reflows in
+place** (`wm_reinit_display`: realloc the back buffer, clamp/re-fit windows,
+recomposite) -- no process restart or re-login. After applying it shows a
+**"Keep this resolution?"** prompt that auto-reverts to the previous mode after
+15 s if not confirmed (the safe-monitor pattern), so an unsupported/garbled mode
+can't lock the user out. Runtime mode-set rides the Bochs/DISPI path
+(`admin_setmode`), available on QEMU-std / Bochs / VirtualBox; on a pure SVGA II
+adapter without DISPI the apply fails gracefully ("mode not supported") -- wiring
+runtime mode-set through the SVGA II driver is a follow-up.
+
 When the active driver advertises `VID_CAP_HW_CURSOR`, the WM uploads its arrow
 sprite once (`sys_hwcursor_define`) and just moves the overlay
 (`sys_hwcursor_move`), skipping the software save-under compositing entirely --

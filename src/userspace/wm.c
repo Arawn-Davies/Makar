@@ -175,7 +175,7 @@ static void win_free(int i)
 /* Each icon names a client *.elf and the default outer window geometry.  The
  * program path is launcher data -- the server bakes in no application. */
 typedef struct { int x,y,w,h; const char *label; gfx_u32 tint; const char *cmd; int winw, winh; const char *arg; } icon_t;
-#define ICON_N 12
+#define ICON_N 13
 /* Two-column desktop icon grid (col x = 24 / 128, rows step 84).  winw/winh are
  * sized so each client's fixed surface (mxterm 640x400, mxfiles 560x380,
  * mxedit 620x420, mxtasks 560x360, doom 640x400, mxabout 560x430, mxclock
@@ -197,6 +197,7 @@ static icon_t icons[ICON_N] = {
      * during the copy (the TUI installer is for shell mode). */
     {  24, 460, 96,70, "Install",  RGB(0xff,0x70,0x70), "/apps/mxinstall.elf", 588,492 },
     { 128, 460, 96,70, "Image",    RGB(0x70,0xb0,0x70), "/apps/mximg.elf",   608,468 },
+    { 24,  544, 96,70, "Display",  RGB(0x60,0x90,0xc0), "/apps/mxdisplay.elf", 380,300 },
 };
 
 /* Desktop icon artwork: real BMP tiles under the XFCE-style asset path
@@ -205,7 +206,7 @@ static icon_t icons[ICON_N] = {
  * draws instead, so the desktop always has icons. */
 static const char *icon_img[ICON_N] = {
     "terminal","files","editor","tasks","doom","about",
-    "clock","calc","net","disk","install","image",
+    "clock","calc","net","disk","install","image","display",
 };
 static gfx_surface icon_surf[ICON_N];
 static int         icon_has[ICON_N];
@@ -735,6 +736,37 @@ static void present_rect(int x,int y,int w,int h){
     if(w>0&&h>0) sys_fb_present_rect(scr.px,x,y,w,h);
 }
 
+/* Re-initialise the display after a runtime resolution change (mxdisplay calls
+ * SYS_SETMODE; the kernel repoints the framebuffer; we notice the new geometry
+ * each frame and reflow in place -- no process restart / re-login).  Reallocates
+ * the back buffer, clamps/re-fits windows, and recomposites. */
+static void wm_reinit_display(unsigned nw, unsigned nh)
+{
+    gfx_u32 *nb = (gfx_u32*)sys_mmap(0,(unsigned long)nw*nh*4,
+                                     PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    if (nb==(gfx_u32*)MAP_FAILED || !nb) return;     /* keep the old mode on OOM */
+    if (scr.px) sys_munmap(scr.px,(unsigned long)FBW*FBH*4);
+    scr.px=nb; scr.w=(int)nw; scr.h=(int)nh;
+    FBW=nw; FBH=nh;
+
+    for(int i=0;i<MAXWIN;i++){ if(!W[i].in_use) continue;
+        if (W[i].maximized){
+            W[i].x=0; W[i].y=MENU_H; W[i].w=(int)FBW; W[i].h=(int)FBH-MENU_H-DOCK_H;
+            maybe_send_resize(i);
+        } else {
+            if (W[i].w>(int)FBW) W[i].w=(int)FBW;
+            if (W[i].h>(int)FBH-MENU_H-DOCK_H) W[i].h=(int)FBH-MENU_H-DOCK_H;
+            if (W[i].x+W[i].w>(int)FBW) W[i].x=(int)FBW-W[i].w;
+            if (W[i].x<0) W[i].x=0;
+            if (W[i].y+W[i].h>(int)FBH-DOCK_H) W[i].y=(int)FBH-DOCK_H-W[i].h;
+            if (W[i].y<MENU_H) W[i].y=MENU_H;
+        }
+    }
+    cur_sx=cur_sy=-1;                 /* SW cursor save-under is stale */
+    if (g_hwcursor) sys_hwcursor_show(1);
+    g_dirty=1; damage_full();
+}
+
 /* ============================== self-tests ============================== */
 /* `gui.elf uitest` / `gui.elf fstest` are headless and run by shell-smoke.sh;
  * they keep the GUI-UITEST / GUI-FSTEST regression markers (no framebuffer is
@@ -979,6 +1011,13 @@ int main(int argc, char **argv, char **envp)
     unsigned stat_up=0;
 
     for(;;){
+        /* ---- pick up a runtime resolution change (mxdisplay -> SYS_SETMODE) ---- */
+        { unsigned gi=sys_fb_info(); unsigned nw=(gi>>16)&0xFFFF, nh=gi&0xFFFF;
+          if (nw && nh && (nw!=FBW || nh!=FBH)){
+              wm_reinit_display(nw,nh);
+              if (cx>=(int)FBW) cx=(int)FBW-1;
+              if (cy>=(int)FBH) cy=(int)FBH-1;
+          } }
         /* ---- gather hardware input ---- */
         int mpressed=0, mreleased=0;
         unsigned int ev;

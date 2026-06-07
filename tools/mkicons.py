@@ -111,11 +111,17 @@ def i_image(im):
     rect(im, 2, 2, 28, 22, (0x10, 0x22, 0x12)); outline(im, 4, 4, 24, 18, (0x70, 0xb0, 0x70))
     disc(im, 11, 10, 3, (0xff, 0xe0, 0x60)); rect(im, 5, 15, 22, 6, (0x40, 0x90, 0x50))
 
+def i_display(im):                      # monitor + stand
+    rect(im, 3, 2, 26, 17, (0x20, 0x2a, 0x38)); outline(im, 3, 2, 26, 17, (0x60, 0x90, 0xc0))
+    rect(im, 6, 5, 20, 11, (0x10, 0x40, 0x60))
+    rect(im, 13, 19, 6, 3, (0x60, 0x90, 0xc0)); rect(im, 9, 22, 14, 2, (0x60, 0x90, 0xc0))
+
 ICONS = [
     ("terminal", i_terminal), ("files", i_files), ("editor", i_editor),
     ("tasks", i_tasks), ("doom", i_doom), ("about", i_about),
     ("clock", i_clock), ("calc", i_calc), ("net", i_net),
     ("disk", i_disk), ("install", i_install), ("image", i_image),
+    ("display", i_display),
 ]
 
 def main():
