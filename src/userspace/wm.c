@@ -546,23 +546,36 @@ static int dock_hit(int px,int py,int *out_win)
 }
 
 /* top menu bar -------------------------------------------------------------- */
-#define LOGOFF_W 70
-#define EXIT_W   54
+/* IEC 5009 "standby" power glyph (11x11): a broken ring with a vertical bar. */
+#define POWER_W 30
+static const char *PWR_ICON[11]={
+ "    XX     ",
+ "  X XX X   ",
+ " X  XX  X  ",
+ "X   XX   X ",
+ "X        X ",
+ "X        X ",
+ "X        X ",
+ " X      X  ",
+ "  X    X   ",
+ "   XXXX    ",
+ "           " };
+static void draw_power_icon(int bx,int by,gfx_u32 col)
+{
+    for(int r=0;r<11;r++) for(int c=0;PWR_ICON[r][c];c++)
+        if(PWR_ICON[r][c]=='X') gfx_px(&scr,bx+c,by+r,col);
+}
 static void draw_menubar(void)
 {
     gfx_fill(&scr,0,0,(int)FBW,MENU_H,COL_MENU);
     gfx_fill(&scr,0,MENU_H-1,(int)FBW,1,RGB(0x28,0x32,0x44));
     gfx_str(&scr,8,(MENU_H-8)/2,"Makar",RGB(0x8a,0xe2,0x34));
     gfx_str(&scr,64,(MENU_H-8)/2, (focus>=0&&W[focus].in_use)?W[focus].title:"Desktop", RGB(0x90,0xa0,0xb5));
-    int lx=(int)FBW-LOGOFF_W-4;
-    gfx_fill(&scr,lx,2,LOGOFF_W,MENU_H-4,COL_CLOSE);
-    gfx_str(&scr,lx+(LOGOFF_W-gfx_text_w("Log Off"))/2,(MENU_H-8)/2,"Log Off",0xFFFFFF);
-    int ex=lx-EXIT_W-4;
-    gfx_fill(&scr,ex,2,EXIT_W,MENU_H-4,UI_COL_BTN);
-    gfx_str(&scr,ex+(EXIT_W-gfx_text_w("Exit"))/2,(MENU_H-8)/2,"Exit",0xFFFFFF);
+    int px0=(int)FBW-POWER_W-4;
+    gfx_fill(&scr,px0,2,POWER_W,MENU_H-4,UI_COL_BTN);
+    draw_power_icon(px0+(POWER_W-11)/2,(MENU_H-11)/2,0xFFFFFF);
 }
-static int exit_hit(int px,int py){ int ex=(int)FBW-LOGOFF_W-4-EXIT_W-4; return in_rect(px,py,ex,2,EXIT_W,MENU_H-4); }
-static int logoff_hit(int px,int py){ int lx=(int)FBW-LOGOFF_W-4; return in_rect(px,py,lx,2,LOGOFF_W,MENU_H-4); }
+static int power_hit(int px,int py){ int x0=(int)FBW-POWER_W-4; return in_rect(px,py,x0,2,POWER_W,MENU_H-4); }
 
 /* ---- mouse cursor ------------------------------------------------------- */
 static const char *CURSOR[16]={
@@ -700,6 +713,64 @@ static void do_login(const char *prefill_user)
     }
 }
 
+/* ============================ power menu ================================ */
+enum { PWR_NONE=0, PWR_CANCEL, PWR_LOGOUT_GUI, PWR_LOGOUT_SHELL,
+       PWR_SHUTDOWN, PWR_REBOOT, PWR_PASSWD };
+
+/* Centred modal power menu (clones do_login's input/render loop).  Returns one
+ * of the PWR_* actions; Cancel / Esc dismisses it.  The caller (main, or the
+ * Ctrl-Alt-Del path) repaints the desktop afterwards. */
+static int show_power_menu(int cx, int cy)
+{
+    int prev_left=0, dirty=1;
+    ui_ctx u; for(unsigned i=0;i<sizeof u/sizeof(int);i++) ((int*)&u)[i]=0;
+
+    static const char *labels[6]={
+        "Log out (graphical)","Log out to shell","Shut down",
+        "Reboot","Change password...","Cancel" };
+    static const int acts[6]={ PWR_LOGOUT_GUI,PWR_LOGOUT_SHELL,PWR_SHUTDOWN,
+                               PWR_REBOOT,PWR_PASSWD,PWR_CANCEL };
+
+    for(;;){
+        int mpressed=0,mreleased=0; unsigned int ev;
+        while((ev=sys_mouse_read())!=0){
+            cx+=(int)(signed char)((ev>>8)&0xFF); cy+=(int)(signed char)((ev>>16)&0xFF);
+            if(cx<0)cx=0; if(cx>=(int)FBW)cx=(int)FBW-1;
+            if(cy<0)cy=0; if(cy>=(int)FBH)cy=(int)FBH-1;
+            int left=ev&1; if(left&&!prev_left)mpressed=1; if(!left&&prev_left)mreleased=1;
+            prev_left=left; dirty=1;
+        }
+        int mdown=prev_left, key=-1;
+        { unsigned char b; if(sys_read(0,&b,1)==1){ key=b; dirty=1; } }
+        if(key==27) return PWR_CANCEL;                 /* Esc */
+        if(!dirty){ sys_yield(); continue; }
+
+        gfx_fill(&scr,0,0,(int)FBW,(int)FBH,COL_DESK);
+        int pw=300, ph=44+6*40+12, px=(int)FBW/2-pw/2, py=(int)FBH/2-ph/2;
+        gfx_round(&scr,px,py,pw,ph,COL_WIN,COL_BORDER);
+        gfx_fill(&scr,px,py,pw,26,COL_TITLE);
+        gfx_str(&scr,px+(pw-gfx_text_w("Power"))/2,py+9,"Power",0xFFFFFF);
+
+        ui_begin(&u,cx,cy,mdown,mpressed,mreleased,-1);
+        int ret=PWR_NONE;
+        for(int i=0;i<6;i++)
+            if(ui_button(&u,&scr,px+24,py+40+i*40,pw-48,30,labels[i])) ret=acts[i];
+
+        draw_cursor(cx,cy);
+        sys_fb_present(scr.px);
+        dirty=0;
+        if(ret!=PWR_NONE) return ret;
+        sys_yield();
+    }
+}
+
+/* Graphical change-password dialog.  Phase 7 implements it (SYS_PASSWD over
+ * the shadow file); this stub keeps the power-menu commit self-contained. */
+static void show_passwd_dialog(int start_cx, int start_cy)
+{
+    (void)start_cx; (void)start_cy;
+}
+
 /* =============================== main =================================== */
 int main(int argc, char **argv, char **envp)
 {
@@ -729,7 +800,7 @@ int main(int argc, char **argv, char **envp)
 
     int cx=(int)FBW/2, cy=(int)FBH/2, prev_left=0;
     int dragging=0, resizing=0, drag_win=-1, drag_dx=0, drag_dy=0;
-    int announced=0, exit_to_shell=0;
+    int announced=0, exit_to_shell=0, power_action=0;
     unsigned stat_up=0;
 
     for(;;){
@@ -760,8 +831,16 @@ int main(int argc, char **argv, char **envp)
         /* ---- window-management click handling ---- */
         if (mpressed){
             int dk;
-            if (logoff_hit(cx,cy)) break;
-            else if (exit_hit(cx,cy)){ exit_to_shell=1; break; }
+            if (power_hit(cx,cy)){
+                int act=show_power_menu(cx,cy);
+                g_dirty=1; damage_full();           /* repaint desktop after modal */
+                if      (act==PWR_SHUTDOWN)    { power_action=PWR_SHUTDOWN;    break; }
+                else if (act==PWR_REBOOT)      { power_action=PWR_REBOOT;      break; }
+                else if (act==PWR_LOGOUT_GUI)  { power_action=PWR_LOGOUT_GUI;  break; }
+                else if (act==PWR_LOGOUT_SHELL){ exit_to_shell=1; break; }
+                else if (act==PWR_PASSWD)      { show_passwd_dialog(cx,cy); g_dirty=1; damage_full(); }
+                /* CANCEL: stay on the desktop */
+            }
             else if (dock_hit(cx,cy,&dk)){ W[dk].minimized=0; z_raise(dk); set_focus(dk); g_dirty=1; damage_full(); }
             else {
                 int hk=hit_window(cx,cy);
@@ -892,7 +971,11 @@ int main(int argc, char **argv, char **envp)
     }
     sys_fcntl(0,F_SETFL,0);
     sys_statusbar_set(saved_status);
-    if (exit_to_shell) sys_gui_close();
-    else               sys_logout();
+    /* Power actions (clients already torn down above): shut down / reboot are
+     * noreturn on success; fall through to the session exit if they fail. */
+    if (power_action==PWR_SHUTDOWN) sys_shutdown();
+    if (power_action==PWR_REBOOT)   sys_reboot();
+    if (exit_to_shell) sys_gui_close();   /* "Log out to shell" -> CLI shell   */
+    else               sys_logout();      /* "Log out (graphical)" -> login    */
     return 0;
 }
