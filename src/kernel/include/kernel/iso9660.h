@@ -39,6 +39,11 @@ int iso9660_probe(uint8_t drive);
 int iso9660_read_file(uint8_t drive, const char *path,
                       void *buf, uint32_t bufsz, uint32_t *out_sz);
 
+/* Byte-range read for demand-paged / page-cache file I/O.  Returns bytes read
+ * (>=0, 0 at/past EOF) or -1 on error. */
+long iso9660_read_at(uint8_t drive, const char *path,
+                     uint32_t off, void *buf, uint32_t len);
+
 /*
  * iso9660_ls – list the contents of a directory to the terminal.
  *

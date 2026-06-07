@@ -12,10 +12,13 @@
  * stdin (keyboard), stdout (VGA), stderr (VGA + serial) at task creation
  * time to mirror POSIX. Higher fds are allocated by SYS_OPEN.
  *
- * FD_KIND_FILE slots hold the file in a kmalloc'd, growable heap buffer.
- * Read-mode opens eager-load the whole file (capped at SYSCALL_FILE_MAX).
- * Write-mode opens start at SYSCALL_FILE_INITIAL and grow via krealloc on
- * demand; the buffer is flushed back via vfs_write_file on close when the
+ * FD_KIND_FILE slots are either lazy (read-only, on a disk backend: data ==
+ * NULL, reads demand-streamed through the page cache via path+size+pos -- no
+ * whole-file buffer) or buffered.  Buffered covers writable opens and read-only
+ * opens on synthetic backends (procfs/tmpfs/...): the file lives in a kmalloc'd,
+ * growable heap buffer.  Write-mode opens start at SYSCALL_FILE_INITIAL and grow
+ * via krealloc on demand; the buffer is flushed back via vfs_write_file on close
+ * when the
  * `dirty` bit is set.  The path the fd was opened against is kept inline
  * on the slot so close-flush can name the destination without a second
  * lookup; the open_file_t refactor that would deduplicate this lives on
@@ -69,6 +72,8 @@ typedef struct {
     uint8_t   dirty;    /* FILE: data differs from on-disk; flush on close */
     uint8_t   writable; /* FILE: opened with O_WRONLY or O_RDWR        */
     uint8_t   append;   /* FILE: O_APPEND -- force pos = size before write */
+    uint8_t   lazy;     /* FILE: read-only, demand-streamed via the page cache
+                         * (data == NULL; reads served by path+size+pos)   */
     char      path[VFS_PATH_MAX];  /* FILE: absolute path for close-flush */
     /* PIPE-kind state.  pipe is shared across all fds (reader + writer
      * across fork / dup2) that name the same end; pipe_is_writer selects

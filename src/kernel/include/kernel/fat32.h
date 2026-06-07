@@ -90,6 +90,10 @@ int fat32_mkdir(const char *path);
 int fat32_read_file(const char *path, void *buf, uint32_t bufsz,
                     uint32_t *out_sz);
 
+/* Byte-range read for demand-paged / page-cache file I/O.  Returns bytes read
+ * (>=0, 0 at/past EOF) or -1 on error. */
+long fat32_read_at(const char *path, uint32_t off, void *buf, uint32_t len);
+
 /* Return 1 if path exists on the volume, 0 otherwise. No heap allocation. */
 int fat32_file_exists(const char *path);
 

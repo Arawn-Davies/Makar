@@ -33,6 +33,7 @@
 #include <kernel/fat32.h>
 #include <kernel/ext2.h>
 #include <kernel/iso9660.h>
+#include <kernel/pagecache.h>
 #include <kernel/procfs.h>
 #include <kernel/devfs.h>
 #include <kernel/logfs.h>
@@ -433,6 +434,25 @@ static int backend_read_file(vfs_mount_t *m, const char *p,
     default: r = -1; break;
     }
     if (_dk) vfs_fs_unlock();
+    return r;
+}
+
+/* Byte-range read dispatch for demand-paged / page-cache file I/O.  Only the
+ * disk backends (which can seek) support it; everything else returns -1 so the
+ * caller falls back to the eager whole-file path. */
+static long backend_read_at(vfs_mount_t *m, const char *p,
+                            uint32_t off, void *buf, uint32_t len)
+{
+    if (!fs_backend_disk(m->backend)) return -1;
+    vfs_fs_lock();
+    long r;
+    switch (m->backend) {
+    case VFS_BACKEND_EXT2:    r = ext2_read_at(p, off, buf, len); break;
+    case VFS_BACKEND_FAT32:   r = fat32_read_at(p, off, buf, len); break;
+    case VFS_BACKEND_ISO9660: r = iso9660_read_at(m->drive, p, off, buf, len); break;
+    default:                  r = -1; break;
+    }
+    vfs_fs_unlock();
     return r;
 }
 
@@ -1301,6 +1321,26 @@ int vfs_read_file(const char *path, void *buf, uint32_t bufsz, uint32_t *out_sz)
     return backend_read_file(&s_mounts[idx], drv, buf, bufsz, out_sz);
 }
 
+long vfs_read_at(const char *path, uint32_t off, void *buf, uint32_t len)
+{
+    char abs[VFS_PATH_MAX];
+    path_resolve(path, abs);
+    const char *drv;
+    int idx = vfs_route(abs, &drv);
+    if (idx < 0 || s_mounts[idx].backend == VFS_BACKEND_NONE) return -1;
+    return backend_read_at(&s_mounts[idx], drv, off, buf, len);
+}
+
+int vfs_path_is_disk(const char *path)
+{
+    char abs[VFS_PATH_MAX];
+    path_resolve(path, abs);
+    const char *drv;
+    int idx = vfs_route(abs, &drv);
+    if (idx < 0) return 0;
+    return fs_backend_disk(s_mounts[idx].backend);
+}
+
 int vfs_write_file(const char *path, const void *buf, uint32_t size)
 {
     char abs[VFS_PATH_MAX];
@@ -1308,6 +1348,9 @@ int vfs_write_file(const char *path, const void *buf, uint32_t size)
     const char *drv;
     int idx = vfs_route(abs, &drv);
     if (idx < 0 || s_mounts[idx].backend == VFS_BACKEND_NONE) return -1;
+    /* Drop any cached read pages first (outside the disk lock) so a later read
+     * never sees stale bytes. */
+    pagecache_invalidate(abs);
     return backend_write_file(&s_mounts[idx], drv, buf, size);
 }
 
@@ -1318,6 +1361,7 @@ int vfs_delete_file(const char *path)
     const char *drv;
     int idx = vfs_route(abs, &drv);
     if (idx < 0 || s_mounts[idx].backend == VFS_BACKEND_NONE) return -1;
+    pagecache_invalidate(abs);
     return backend_delete_file(&s_mounts[idx], drv);
 }
 
@@ -1351,6 +1395,8 @@ int vfs_rename(const char *old_path, const char *new_path)
     int ni = vfs_route(new_abs, &new_drv);
     if (oi < 0 || ni < 0) return -1;
     if (s_mounts[oi].backend != s_mounts[ni].backend) return -1;
+    pagecache_invalidate(old_abs);
+    pagecache_invalidate(new_abs);
     if (s_mounts[oi].backend == VFS_BACKEND_EXT2)
         return ext2_file_exists(old_drv) ? ext2_rename_file(old_drv, new_drv)
                                           : ext2_rename_dir(old_drv, new_drv);

@@ -162,6 +162,16 @@ int vfs_mkdir(const char *path);
  * Return 0 on success, negative on error.
  */
 int vfs_read_file(const char *path, void *buf, uint32_t bufsz, uint32_t *out_sz);
+
+/* Byte-range read for demand-paged / page-cache file I/O.  Supported only on
+ * seekable disk backends (ext2/fat32/iso9660); returns -1 otherwise.  Returns
+ * bytes read (>=0, 0 at/past EOF) or -1 on error. */
+long vfs_read_at(const char *path, uint32_t off, void *buf, uint32_t len);
+
+/* 1 if `path` routes to a seekable disk backend (so it can be lazily streamed
+ * through the page cache); 0 for synthetic backends (procfs/tmpfs/...). */
+int  vfs_path_is_disk(const char *path);
+
 int vfs_write_file(const char *path, const void *buf, uint32_t size);
 
 /* Return 1 if path exists and is readable, 0 otherwise. */
