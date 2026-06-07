@@ -172,6 +172,14 @@ task_t *task_create(const char *name, void (*entry)(void))
     if (!new_fds)
         return NULL;
 
+    /* Serialize the task-pool mutation (slot claim, DEAD-slot reclaim, run-list
+     * relink, task_pool_count/next_pid bumps) against the timer IRQ -> schedule()
+     * which walks ->next, and against a concurrent task_create/task_fork.  A
+     * no-op while syscalls still run with IF=0; load-bearing once preemptive sti
+     * is flipped on.  The up-front fd-table alloc above is outside the lock so a
+     * slow kmalloc doesn't extend the critical section. */
+    uint32_t _tf = irq_save_disable();
+
     /* Try to reclaim a DEAD slot before allocating a new one. */
     for (int i = 1; i < task_pool_count; i++) {
         if (task_pool[i].state == TASK_DEAD) {
@@ -220,12 +228,14 @@ task_t *task_create(const char *name, void (*entry)(void))
 
     if (!t) {
         if (task_pool_count >= MAX_TASKS) {
+            irq_restore(_tf);
             fd_table_destroy(new_fds);
             return NULL;
         }
 
         uint8_t *stack = (uint8_t *)kmalloc(TASK_STACK_SIZE);
         if (!stack) {
+            irq_restore(_tf);
             fd_table_destroy(new_fds);
             return NULL;
         }
@@ -283,6 +293,7 @@ task_t *task_create(const char *name, void (*entry)(void))
     t->next            = current_task->next;
     current_task->next = t;
 
+    irq_restore(_tf);
     return t;
 }
 
@@ -318,7 +329,9 @@ task_t *task_fork(registers_t *parent_regs)
     }
 
     /* Reserve a slot (same logic as task_create, modulo the explicit
-     * stack/PD init below). */
+     * stack/PD init below).  IRQ-guarded for the same reason -- see the lock
+     * comment in task_create; the up-front fd/PD clones above stay outside it. */
+    uint32_t _tf = irq_save_disable();
     task_t *t = NULL;
     for (int i = 1; i < task_pool_count; i++) {
         if (task_pool[i].state == TASK_DEAD) {
@@ -350,12 +363,14 @@ task_t *task_fork(registers_t *parent_regs)
     }
     if (!t) {
         if (task_pool_count >= MAX_TASKS) {
+            irq_restore(_tf);
             vmm_free_pd(child_pd);
             fd_table_destroy(child_fds);
             return NULL;
         }
         uint8_t *stack = (uint8_t *)kmalloc(TASK_STACK_SIZE);
         if (!stack) {
+            irq_restore(_tf);
             vmm_free_pd(child_pd);
             fd_table_destroy(child_fds);
             return NULL;
@@ -439,6 +454,7 @@ task_t *task_fork(registers_t *parent_regs)
     t->next            = current_task->next;
     current_task->next = t;
 
+    irq_restore(_tf);
     return t;
 }
 

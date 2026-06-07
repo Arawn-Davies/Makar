@@ -58,6 +58,18 @@ static uint32_t s_max_frames;               /* highest managed frame + 1   */
 static uint32_t s_free_frames;              /* O(1) free-frame accounting   */
 static uint32_t s_total_managed_frames;     /* constant after pmm_init      */
 
+/* IRQ guard for the buddy free-lists + descriptor table.  The PMM is touched
+ * from many contexts (mmap/brk demand-fault, fork COW, page-table alloc, heap
+ * growth); once syscalls run preemptively (IF=1) two tasks can allocate frames
+ * concurrently and corrupt the free lists.  A cli/restore lock keeps each
+ * alloc/free atomic against the timer IRQ and any preempting task.  No-op while
+ * syscalls are still serialized (IF=0); load-bearing once sti is flipped on.
+ * Same pattern as heap.c's heap_irq_save/restore. */
+static inline uint32_t pmm_irq_save(void)
+{ uint32_t f; __asm__ volatile("pushfl; popl %0; cli" : "=r"(f) :: "memory"); return f; }
+static inline void pmm_irq_restore(uint32_t f)
+{ __asm__ volatile("pushl %0; popfl" :: "r"(f) : "memory", "cc"); }
+
 /* --------------------------------------------------------------------------
  * Free-list primitives (doubly-linked via frame indices)
  * -------------------------------------------------------------------------- */
@@ -220,12 +232,16 @@ uint32_t pmm_alloc_pages(unsigned order)
 	if (order >= PMM_MAX_ORDER)
 		return PMM_ALLOC_ERROR;
 
+	uint32_t fl = pmm_irq_save();
+
 	/* Find the smallest available order >= the request. */
 	unsigned o = order;
 	while (o < PMM_MAX_ORDER && free_lists[o] == PMM_NIL)
 		o++;
-	if (o >= PMM_MAX_ORDER)
+	if (o >= PMM_MAX_ORDER) {
+		pmm_irq_restore(fl);
 		return PMM_ALLOC_ERROR;           /* out of memory at this size */
+	}
 
 	uint32_t f = free_lists[o];
 	list_del(o, f);
@@ -243,6 +259,7 @@ uint32_t pmm_alloc_pages(unsigned order)
 	mem_map[f].flags   &= (uint8_t)~PG_BUDDY;
 	s_free_frames      -= (1U << order);
 
+	pmm_irq_restore(fl);
 	return f * PMM_FRAME_SIZE;
 }
 
@@ -261,7 +278,10 @@ void pmm_free_pages(uint32_t addr, unsigned order)
 	if (f >= s_max_frames)
 		return;
 
+	uint32_t fl = pmm_irq_save();
+
 	if (mem_map[f].refcount == 0) {
+		pmm_irq_restore(fl);
 		KLOG("pmm_free_pages: refcount underflow at frame ");
 		KLOG_HEX(f);
 		KLOG("\n");
@@ -273,6 +293,8 @@ void pmm_free_pages(uint32_t addr, unsigned order)
 	(void)order;
 	if (--mem_map[f].refcount == 0)
 		buddy_free(f, mem_map[f].order);
+
+	pmm_irq_restore(fl);
 }
 
 void pmm_free_frame(uint32_t addr)
@@ -285,19 +307,23 @@ void pmm_inc_ref(uint32_t addr)
 	uint32_t frame = addr / PMM_FRAME_SIZE;
 	if (frame >= s_max_frames)
 		return;
+	uint32_t fl = pmm_irq_save();
 	if (mem_map[frame].refcount == 0) {
+		pmm_irq_restore(fl);
 		KLOG("pmm_inc_ref: frame not allocated, refcount=0 at ");
 		KLOG_HEX(frame);
 		KLOG("\n");
 		return;
 	}
 	if (mem_map[frame].refcount == 0xFF) {
+		pmm_irq_restore(fl);
 		KLOG("pmm_inc_ref: refcount saturated at 255 for frame ");
 		KLOG_HEX(frame);
 		KLOG("\n");
 		return;
 	}
 	mem_map[frame].refcount++;
+	pmm_irq_restore(fl);
 }
 
 uint8_t pmm_ref_count(uint32_t addr)
