@@ -29,6 +29,7 @@
 #define COL_BAR    RGB(0x4c,0x8d,0xff)
 
 static void scpy(char *d,const char *s,int max){ int i=0; while(s[i]&&i<max-1){d[i]=s[i];i++;} d[i]=0; }
+static int  seq(const char *a,const char *b){ int i=0; while(a[i]&&a[i]==b[i])i++; return a[i]==b[i]; }
 /* unsigned -> decimal, appended at *o in buf */
 static void udec(char *buf,int *o,unsigned v){
     char t[12]; int n=0; if(!v){buf[(*o)++]='0';return;}
@@ -72,6 +73,8 @@ int main(int argc, char **argv)
     unsigned done_at = 0;
     int autologin_on = 0;
     int shown_step = -1;   /* drives auto-focus of the first field per step */
+    char root_pw2[128] = {0}, user_pw2[128] = {0};   /* password confirmations */
+    const char *acct_err = 0;
 
     while (!c.closed) {
         mx_pump(&c);
@@ -89,7 +92,7 @@ int main(int argc, char **argv)
          * nowhere.  On entering a step, focus its first input (always widget id
          * 1 here -- listbox / textbox / first password).  Tab cycles fields. */
         if (step != shown_step) { u.focus = 1; shown_step = step; }
-        if (key == '\t') { u.focus = u.focus + 1; if (u.focus > 3) u.focus = 1; }
+        if (key == '\t') { u.focus = u.focus + 1; if (u.focus > 5) u.focus = 1; }
         int by = H - 38, bnext = W - 104, bback = 14;
         int x = 20, y = 46;
 
@@ -134,23 +137,32 @@ int main(int argc, char **argv)
             if (ui_button(&u,s,bnext,by,90,26,"Next >")) step = ST_ACCT;
         }
         else if (step == ST_ACCT) {
-            gfx_str(s, x, y,    "Root password:", COL_TEXT);
-            ui_password(&u, s, x+150, y, 200, 24, p.root_pw, sizeof p.root_pw);
-            gfx_str(s, x, y+34, "New user (optional):", COL_TEXT);
-            ui_textbox(&u, s, x+150, y+34, 200, 24, p.user_name, sizeof p.user_name);
-            gfx_str(s, x, y+68, "User password:", COL_TEXT);
-            ui_password(&u, s, x+150, y+68, 200, 24, p.user_pw, sizeof p.user_pw);
-            if (ui_button(&u,s,x,y+104,210,26, autologin_on ? "[x] auto-login on boot" : "[ ] auto-login on boot"))
+            int yy = y, fx = x + 170, fw = 180;
+            gfx_str(s, x, yy+4, "Root password:",    COL_TEXT); ui_password(&u, s, fx, yy, fw, 22, p.root_pw,   sizeof p.root_pw);   yy += 28;
+            gfx_str(s, x, yy+4, "Confirm:",           COL_TEXT); ui_password(&u, s, fx, yy, fw, 22, root_pw2,    sizeof root_pw2);    yy += 34;
+            gfx_str(s, x, yy+4, "New user (opt'l):",  COL_TEXT); ui_textbox (&u, s, fx, yy, fw, 22, p.user_name, sizeof p.user_name); yy += 28;
+            gfx_str(s, x, yy+4, "User password:",     COL_TEXT); ui_password(&u, s, fx, yy, fw, 22, p.user_pw,   sizeof p.user_pw);   yy += 28;
+            gfx_str(s, x, yy+4, "Confirm:",           COL_TEXT); ui_password(&u, s, fx, yy, fw, 22, user_pw2,    sizeof user_pw2);    yy += 34;
+            if (ui_button(&u,s,x,yy,210,24, autologin_on ? "[x] auto-login on boot" : "[ ] auto-login on boot"))
                 autologin_on = !autologin_on;
-            if (ui_button(&u,s,bback,by,90,26,"< Back")) step = ST_HOST;
+            if (acct_err) gfx_str(s, x, by-18, acct_err, COL_WARN);
+            if (ui_button(&u,s,bback,by,90,26,"< Back")) { acct_err = 0; step = ST_HOST; }
             if (ui_button(&u,s,bnext,by,90,26,"Next >")) {
-                /* Prefer the new user for auto-login, else root. */
-                p.autologin[0]=0;
-                if (autologin_on) {
-                    if (p.user_name[0] && p.user_pw[0]) scpy(p.autologin, p.user_name, sizeof p.autologin);
-                    else if (p.root_pw[0])              scpy(p.autologin, "root", sizeof p.autologin);
+                /* Passwords must be confirmed (typed twice). */
+                if (!seq(p.root_pw, root_pw2)) {
+                    acct_err = "Root passwords do not match.";
+                } else if (p.user_name[0] && !seq(p.user_pw, user_pw2)) {
+                    acct_err = "User passwords do not match.";
+                } else {
+                    acct_err = 0;
+                    /* Prefer the new user for auto-login, else root. */
+                    p.autologin[0]=0;
+                    if (autologin_on) {
+                        if (p.user_name[0] && p.user_pw[0]) scpy(p.autologin, p.user_name, sizeof p.autologin);
+                        else if (p.root_pw[0])              scpy(p.autologin, "root", sizeof p.autologin);
+                    }
+                    step = ST_CONFIRM;
                 }
-                step = ST_CONFIRM;
             }
         }
         else if (step == ST_CONFIRM) {
