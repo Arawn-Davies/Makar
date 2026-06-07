@@ -87,6 +87,10 @@ without a detailed errno. Check the wrapper before assuming Linux parity.
 | 252 | `SYS_EXIT_GROUP` | `status` | same as exit |
 | 258 | `SYS_SET_TID_ADDRESS` | `int *` | returns pid |
 | 265 | `SYS_CLOCK_GETTIME` | `clockid, timespec *` | realtime and monotonic |
+| 274 | `SYS_VIDEO_CAPS` | – | returns `VIDEO_CAP_*` of the active display driver |
+| 275 | `SYS_HWCURSOR_DEFINE` | `argb, (w<<16)|h, (hx<<16)|hy` | upload a HW cursor sprite |
+| 276 | `SYS_HWCURSOR_MOVE` | `x, y` | move the HW cursor overlay |
+| 277 | `SYS_HWCURSOR_SHOW` | `on` | show/hide the HW cursor |
 
 ## Makar Extension Ranges
 

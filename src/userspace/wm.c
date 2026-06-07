@@ -694,6 +694,26 @@ static void draw_cursor(int cx,int cy)
 static gfx_u32 cur_save[CURW*CURH];
 static int     cur_sx=-1, cur_sy=-1;   /* where cur_save was captured (-1 = none) */
 
+/* Hardware cursor: when the display driver advertises one (SVGA II), the WM
+ * uploads the arrow sprite once and just moves the HW overlay, skipping the
+ * software save-under compositing entirely -- a pure mouse move then costs no
+ * framebuffer traffic at all.  0 = software cursor (the universal path). */
+static int g_hwcursor = 0;
+static void hwcursor_setup(void){
+    if (!(sys_video_caps() & VIDEO_CAP_HW_CURSOR)) return;
+    static gfx_u32 spr[CURW*CURH];
+    for (int r=0;r<CURH;r++) for (int c=0;c<CURW;c++){
+        char p = CURSOR[r][c];                 /* row strings are 11+NUL; c=11 -> 0 */
+        spr[r*CURW+c] = (p=='X') ? 0xFF000000u      /* outline: opaque black */
+                       : (p=='.') ? 0xFFFFFFFFu      /* body: opaque white    */
+                       : 0x00000000u;                /* transparent           */
+    }
+    if (sys_hwcursor_define(spr, CURW, CURH, 0, 0) == 0){
+        g_hwcursor = 1;
+        sys_hwcursor_show(1);
+    }
+}
+
 static void cursor_capture(int x,int y){
     for(int r=0;r<CURH;r++) for(int c=0;c<CURW;c++){
         int px=x+c, py=y+r;
@@ -804,7 +824,7 @@ static void do_login(const char *prefill_user)
             scpy(err,"Incorrect credentials",sizeof err);
             pass[0]=0; u.focus=2;
         }
-        draw_cursor(cx,cy);
+        if (g_hwcursor) sys_hwcursor_move(cx,cy); else draw_cursor(cx,cy);
         sys_fb_present(scr.px);
         dirty=0; sys_yield();
     }
@@ -854,7 +874,7 @@ static int show_power_menu(int cx, int cy)
         for(int i=0;i<6;i++)
             if(ui_button(&u,&scr,px+24,py+40+i*40,pw-48,30,labels[i])) ret=acts[i];
 
-        draw_cursor(cx,cy);
+        if (g_hwcursor) sys_hwcursor_move(cx,cy); else draw_cursor(cx,cy);
         sys_fb_present(scr.px);
         dirty=0;
         if(ret!=PWR_NONE) return ret;
@@ -918,7 +938,7 @@ static void show_passwd_dialog(int cx, int cy)
                 else           { scpy(err,"Could not change (read-only?)",sizeof err); }
             }
         }
-        draw_cursor(cx,cy);
+        if (g_hwcursor) sys_hwcursor_move(cx,cy); else draw_cursor(cx,cy);
         sys_fb_present(scr.px);
         dirty=0; sys_yield();
     }
@@ -949,6 +969,7 @@ int main(int argc, char **argv, char **envp)
     if (want_login) do_login(login_user);
 
     load_icon_assets();         /* desktop icon BMPs (glyph fallback if absent) */
+    hwcursor_setup();           /* use the display driver's HW cursor if it has one */
     znum=0; focus=-1;
     launch_icon(0);             /* open a terminal client on the desktop */
 
@@ -1087,15 +1108,21 @@ int main(int argc, char **argv, char **envp)
             draw_dock();
             draw_menubar();
             int ox=cur_sx, oy=cur_sy;
-            cursor_capture(cx,cy);          /* stash scene under the cursor */
-            draw_cursor(cx,cy);
+            if (!g_hwcursor){ cursor_capture(cx,cy); draw_cursor(cx,cy); }
             /* ---- but PUSH only the damaged region to the framebuffer ---- */
             if (!dmg_v) damage_full();      /* safety net for any untracked change */
             present_rect(dmg_x0,dmg_y0,dmg_x1-dmg_x0,dmg_y1-dmg_y0);
-            if (cmoved && ox>=0) present_rect(ox,oy,CURW,CURH);  /* erase old cursor */
-            present_rect(cx,cy,CURW,CURH);                       /* draw new cursor  */
+            if (!g_hwcursor){
+                if (cmoved && ox>=0) present_rect(ox,oy,CURW,CURH);  /* erase old cursor */
+                present_rect(cx,cy,CURW,CURH);                       /* draw new cursor  */
+            } else if (cmoved){
+                sys_hwcursor_move(cx,cy); cur_sx=cx; cur_sy=cy;      /* HW overlay follows */
+            }
             if (!announced){ sys_write_serial("GUI: READY\n", 11); announced=1; }
             g_dirty=0; dmg_v=0;
+        } else if (g_hwcursor){
+            /* ---- cursor-only with a HW cursor: move the overlay, no FB push ---- */
+            sys_hwcursor_move(cx,cy); cur_sx=cx; cur_sy=cy;
         } else {
             /* ---- cursor-only: O(cursor) regardless of window count ---- */
             int ox=cur_sx, oy=cur_sy;

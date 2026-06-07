@@ -229,6 +229,29 @@ static inline void sys_keyboard_raw(int on)
     syscall1(SYS_KEYBOARD_RAW, (long)on);
 }
 
+/* Display-driver hooks (see kernel/video.h).  sys_video_caps() returns
+ * VIDEO_CAP_* bits; the hwcursor calls drive the active driver's hardware
+ * cursor (no-op / -1 without VIDEO_CAP_HW_CURSOR). */
+static inline unsigned sys_video_caps(void)
+{
+    return (unsigned)syscall0(SYS_VIDEO_CAPS);
+}
+static inline int sys_hwcursor_define(const void *argb, int w, int h,
+                                      int hot_x, int hot_y)
+{
+    return (int)syscall3(SYS_HWCURSOR_DEFINE, (long)argb,
+                         ((long)w << 16) | (long)h,
+                         ((long)hot_x << 16) | (long)hot_y);
+}
+static inline void sys_hwcursor_move(int x, int y)
+{
+    syscall2(SYS_HWCURSOR_MOVE, (long)x, (long)y);
+}
+static inline void sys_hwcursor_show(int on)
+{
+    syscall1(SYS_HWCURSOR_SHOW, (long)on);
+}
+
 /* Reset the terminal to the shell's default palette and clear it - the
  * same code path the `clear` shell command executes.  Use this from
  * apps that paint custom chrome and want to leave the screen in a known

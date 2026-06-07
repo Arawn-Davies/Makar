@@ -208,4 +208,16 @@
 #define SYS_GETTIMEOFDAY 78 /* int gettimeofday(struct timeval *, void *)       */
 #define SYS_CLOCK_GETTIME 265 /* int clock_gettime(clockid_t, struct timespec *)*/
 
+/* Display-driver hooks (see kernel/video.h).  video_caps returns VIDEO_CAP_*;
+ * the hwcursor calls drive the active driver's hardware cursor sprite (no-op /
+ * -1 on a driver without VIDEO_CAP_HW_CURSOR, e.g. the dumb LFB). */
+#define SYS_VIDEO_CAPS      274 /* unsigned video_caps(void)                       */
+#define SYS_HWCURSOR_DEFINE 275 /* int hwcursor_define(argb,(w<<16)|h,(hx<<16)|hy) */
+#define SYS_HWCURSOR_MOVE   276 /* void hwcursor_move(x, y)                        */
+#define SYS_HWCURSOR_SHOW   277 /* void hwcursor_show(on)                          */
+
+/* video_caps() bits (mirror VID_CAP_* in kernel/video.h). */
+#define VIDEO_CAP_ACCEL_COPY 0x1u
+#define VIDEO_CAP_HW_CURSOR  0x2u
+
 #endif /* _MAKAR_SYSCALLS_H */

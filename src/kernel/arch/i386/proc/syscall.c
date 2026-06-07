@@ -1129,6 +1129,38 @@ static void syscall_dispatch_inner(registers_t *regs)
         break;
     }
 
+    /* ------------------------------------------------------------------
+     * Display-driver hooks (kernel/video.h).  video_caps lets the WM learn
+     * whether a hardware cursor is available; the hwcursor calls drive the
+     * active driver's cursor sprite (the WM uses them instead of compositing
+     * a software cursor, so a pure mouse move costs no framebuffer traffic).
+     * ------------------------------------------------------------------ */
+    case SYS_VIDEO_CAPS:
+        regs->eax = video_caps();
+        break;
+    case SYS_HWCURSOR_DEFINE: {
+        const uint32_t *argb = (const uint32_t *)(uintptr_t)regs->ebx;
+        int w  = (int)((regs->ecx >> 16) & 0xFFFFu), h  = (int)(regs->ecx & 0xFFFFu);
+        int hx = (int)((regs->edx >> 16) & 0xFFFFu), hy = (int)(regs->edx & 0xFFFFu);
+        const vid_driver_t *d = video_active();
+        regs->eax = (d && d->cursor_define)
+                        ? (uint32_t)d->cursor_define(argb, w, h, hx, hy)
+                        : (uint32_t)-1;
+        break;
+    }
+    case SYS_HWCURSOR_MOVE: {
+        const vid_driver_t *d = video_active();
+        if (d && d->cursor_move) d->cursor_move((int)regs->ebx, (int)regs->ecx);
+        regs->eax = 0;
+        break;
+    }
+    case SYS_HWCURSOR_SHOW: {
+        const vid_driver_t *d = video_active();
+        if (d && d->cursor_show) d->cursor_show((int)regs->ebx);
+        regs->eax = 0;
+        break;
+    }
+
     case SYS_WRITE_SERIAL: {
         const char *buf = (const char *)(uintptr_t)regs->ebx;
         uint32_t    len = regs->ecx;
