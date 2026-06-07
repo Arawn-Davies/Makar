@@ -1409,25 +1409,14 @@ void syscall_dispatch(registers_t *regs)
             break;
         }
 
-        /* Align the current break up to the next page boundary, then map
-         * all pages needed to reach new_brk. */
-        uint32_t cur_page = (t->user_brk + 0xFFFu) & ~0xFFFu;
-        uint32_t new_page = (new_brk     + 0xFFFu) & ~0xFFFu;
-
-        for (uint32_t va = cur_page; va < new_page; va += 0x1000u) {
-            uint32_t phys = pmm_alloc_frame();
-            if (phys == PMM_ALLOC_ERROR) {
-                /* Return what we managed to allocate so far. */
-                regs->eax = t->user_brk;
-                goto brk_done;
-            }
-            memset((void *)phys, 0, 0x1000u);
-            vmm_map_page(t->page_dir, va, phys,
-                         VMM_FLAG_USER | VMM_FLAG_WRITABLE);
-        }
+        /* Demand-paged heap (WWLD: Linux brk only reserves; pages are mapped
+         * lazily on first touch).  Just advance the break -- the page-fault
+         * handler maps a zeroed frame for any access in [user_brk_base,
+         * user_brk).  This keeps a multi-MiB growth (e.g. doom's 6 MiB zone)
+         * from stalling every other task in one interrupts-off syscall. */
+        if (t->user_brk_base == 0) t->user_brk_base = t->user_brk;
         t->user_brk = new_brk;
         regs->eax   = new_brk;
-    brk_done:
         break;
     }
 
@@ -1441,7 +1430,6 @@ void syscall_dispatch(registers_t *regs)
      * a hosted malloc (musl mallocng) needs beyond brk.
      * ------------------------------------------------------------------ */
     case SYS_MMAP2: {
-        #define USER_MMAP_BASE 0x90000000u
         #define MMAP_MAP_ANONYMOUS 0x20u
         #define MMAP_MAP_FIXED     0x10u
         uint32_t len   = regs->ecx;
@@ -1462,20 +1450,9 @@ void syscall_dispatch(registers_t *regs)
             regs->eax = (uint32_t)-1; break;
         }
 
-        for (uint32_t i = 0; i < pages; i++) {
-            uint32_t phys = pmm_alloc_frame();
-            if (phys == PMM_ALLOC_ERROR) {
-                /* Roll back what we mapped so far. */
-                for (uint32_t j = 0; j < i; j++) {
-                    uint32_t va = base + (j << 12);
-                    vmm_unmap_page(t->page_dir, va);
-                }
-                regs->eax = (uint32_t)-1; break;
-            }
-            memset((void *)phys, 0, 0x1000u);
-            vmm_map_page(t->page_dir, base + (i << 12), phys,
-                         VMM_FLAG_USER | VMM_FLAG_WRITABLE);
-        }
+        /* Demand-paged anonymous mmap: reserve the window only; the page-fault
+         * handler maps a zeroed frame on first touch in [USER_MMAP_BASE,
+         * mmap_next).  Same WWLD lazy model as brk above. */
         t->mmap_next = base + (pages << 12);
         regs->eax = base;
         break;

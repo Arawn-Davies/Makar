@@ -224,6 +224,7 @@ int elf_exec(const char *path, int argc, const char *const *argv)
         if (end > top_vaddr) top_vaddr = end;
     }
     task_current()->user_brk = top_vaddr;
+    task_current()->user_brk_base = top_vaddr;  /* lower bound of the lazy brk region */
     task_current()->mmap_next = 0;   /* fresh address space: reset anon-mmap window */
     task_current()->tls_gs = 0x23u;  /* fresh image: drop any prior TLS */
     task_current()->tls_active = 0;

@@ -125,6 +125,7 @@ void tasking_init(void)
     idle->next     = idle;               /* circular list of one for now             */
     idle->pid      = 1;
     idle->user_brk = 0;
+    idle->user_brk_base = 0;
     fpu_init_state(idle->fpu_state);
     idle->tls_gs = 0x23u; idle->tls_active = 0;
     /* Seed idle->cwd from the boot-time scratch cwd that vfs_init() /
@@ -240,6 +241,7 @@ task_t *task_create(const char *name, void (*entry)(void))
     t->state       = TASK_READY;
     t->name        = name;
     t->user_brk    = 0;
+    t->user_brk_base = 0;
     t->mmap_next   = 0;
     fpu_init_state(t->fpu_state);
     t->tls_gs = 0x23u; t->tls_active = 0;   /* default %gs = user data; no TLS yet */
@@ -367,6 +369,7 @@ task_t *task_fork(registers_t *parent_regs)
     t->state       = TASK_READY;
     t->name        = current_task->name;     /* same image */
     t->user_brk    = current_task->user_brk;
+    t->user_brk_base = current_task->user_brk_base;
     t->mmap_next   = current_task->mmap_next;
     fpu_init_state(t->fpu_state);   /* child starts clean (fork+exec common path) */
     t->tls_gs = 0x23u; t->tls_active = 0;
