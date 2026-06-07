@@ -77,6 +77,11 @@ and reusable by future surface-rendering apps.
   windows first and only feeds the focused window a "live" ctx (others get a ctx
   with no buttons/keys so they still draw but don't react) — this is how the
   per-window focus model reaches individual widgets.
+- **vt100** (`vt100.{c,h}`) — a standalone ANSI/VT100+ terminal emulator core:
+  `vt_init`/`vt_resize`/`vt_putc` drive a colour `vt_cell` grid (cursor, scroll
+  region, SGR colours, ED/EL, IL/DL/ICH/DCH/ECH, alt-screen, UTF-8 → one cell).
+  Used by `mxterm` (and reusable by a future serial console); freestanding (no
+  libc). The front-end renders the grid via a 16-colour palette → `gfx_char`.
 
 ## makx protocol (`makx.h` / `makx.c`)
 
@@ -143,9 +148,14 @@ reserved window's surface.
 
 Clients (each an independent process, `src/userspace/mx*.c`):
 
-- **mxterm** hosts `sh.elf` over pipes (byte stream drawn as a grid), forwarding
-  the keys the server delivers to the shell's stdin. Ctrl-C / Ctrl-D there only
-  closes that terminal — `mak.sh0` is never in the blast radius.
+- **mxterm** hosts `sh.elf` over pipes, forwarding the keys the server delivers
+  to the shell's stdin. Ctrl-C / Ctrl-D there only closes that terminal —
+  `mak.sh0` is never in the blast radius. It is a **real ANSI/VT100+ terminal
+  emulator**: the child's byte stream runs through the reusable `vt100.c` core
+  (see below), so colour (SGR), cursor addressing (CUP/ED/EL), scroll regions,
+  insert/delete lines & chars, the alt-screen, and cursor show/hide all render
+  correctly — TUI programs (`maktop`, `vix`, `ls --color`, …) display properly
+  in the window. The grid resizes with the window.
 - **mxedit** is a native multi-line editor (caret, click-to-position) with an
   **Open / Save / Save As** dialog built on the shared file dialog (`br_dialog`,
   below).
