@@ -164,8 +164,8 @@ static void win_free(int i)
 /* ===================== desktop icons (client launchers) ================== */
 /* Each icon names a client *.elf and the default outer window geometry.  The
  * program path is launcher data -- the server bakes in no application. */
-typedef struct { int x,y,w,h; const char *label; gfx_u32 tint; const char *cmd; int winw, winh; } icon_t;
-#define ICON_N 8
+typedef struct { int x,y,w,h; const char *label; gfx_u32 tint; const char *cmd; int winw, winh; const char *arg; } icon_t;
+#define ICON_N 11
 /* Two-column desktop icon grid (col x = 24 / 128, rows step 84).  winw/winh are
  * sized so each client's fixed surface (mxterm 640x400, mxfiles 560x380,
  * mxedit 620x420, mxtasks 560x360, doom 640x400, mxabout 560x430, mxclock
@@ -180,6 +180,11 @@ static icon_t icons[ICON_N] = {
     { 128, 208, 96,70, "About",    RGB(0x35,0x6a,0xa8), "/apps/mxabout.elf", 568,454 },
     {  24, 292, 96,70, "Clock",    RGB(0x40,0xc0,0xb0), "/apps/mxclock.elf", 384,232 },
     { 128, 292, 96,70, "Calc",     RGB(0xe0,0x80,0x40), "/apps/mxcalc.elf",  264,324 },
+    {  24, 376, 96,70, "Net",      RGB(0x4c,0xb0,0xff), "/apps/mxnet.elf",   468,344 },
+    { 128, 376, 96,70, "Disk",     RGB(0xc0,0xa0,0x40), "/apps/mxdisk.elf",  528,384 },
+    /* Install: run the in-OS installer inside a terminal window (Phase-11 ANSI
+     * bridge renders its TUI).  arg "install" -> mxterm runs `sh.elf -c install`. */
+    {  24, 460, 96,70, "Install",  RGB(0xff,0x70,0x70), "/apps/mxterm.elf",  648,424, "install" },
 };
 
 /* Fork+exec a client, handing it `-makx <server-pid>` and a stdout/stderr pipe
@@ -209,7 +214,8 @@ static void launch_icon(int ii)
         sys_dup2(op[1],0); sys_dup2(op[1],1); sys_dup2(op[1],2);
         sys_close(op[1]);
         char pids[12]; u2s((unsigned)server_pid, pids);
-        char *av[4]={ (char*)icons[ii].cmd, "-makx", pids, 0 };
+        char *av[5]={ (char*)icons[ii].cmd, "-makx", pids, 0, 0 };
+        if (icons[ii].arg) av[3]=(char*)icons[ii].arg;   /* e.g. Install -> "install" */
         sys_execve(icons[ii].cmd, av, (char *const*)0);
         sys_exit(127);
     }

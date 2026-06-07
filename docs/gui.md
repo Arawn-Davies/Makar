@@ -187,7 +187,16 @@ Clients (each an independent process, `src/userspace/mx*.c`):
   fullscreen `clock.elf`; reuses the same parse, scaled-glyph rendering).
 - **mxcalc** is a button-grid calculator over the same integer expression
   evaluator as `calc.elf` (`+ - * / %`, parens, unary); mouse or keyboard input.
+- **mxnet** shows the eth0/DHCP/DNS state (`SYS_NET_INFO`) with Renew / Release /
+  Flush-DNS buttons (`SYS_NET_CTL`) — the GUI peer of `maknetcfg.elf`.
+- **mxdisk** is a read-only view of the drives + partition table + FAT32 BPB
+  (`SYS_DISK_INFO`), GUI peer of `diskinfo.elf` (destructive partitioning stays
+  in `cfdisk`/`fdisk`).
 - **doom** is the windowed makx client (see below).
+
+The **Install** desktop icon launches `mxterm` with a one-shot command
+(`mxterm.elf -makx <pid> install` → it runs `sh.elf -c install`), so the in-OS
+installer's TUI renders inside a terminal window via the cell-API→ANSI bridge.
 
 An always-on **top menu bar** (drawn after the windows, never occluded) carries
 the Makar brand, the focused window's title, and a **power icon** at the

@@ -26,6 +26,9 @@ static const gfx_u32 PAL[16] = {
 
 static vt_term vt;
 static int term_pid=-1, term_in=-1, term_out=-1;
+/* If non-NULL (e.g. the desktop Install icon passes "install"), run this as a
+ * one-shot command via `sh.elf -c <cmd>` instead of an interactive login shell.*/
+static const char *g_runcmd = 0;
 
 static void feed(const char *s){ while(*s) vt_putc(&vt,(unsigned char)*s++); }
 
@@ -39,6 +42,11 @@ static void term_spawn(void){
         sys_close(ip[1]);sys_close(op[0]);
         sys_dup2(ip[0],0);sys_dup2(op[1],1);sys_dup2(op[1],2);
         sys_close(ip[0]);sys_close(op[1]);
+        if(g_runcmd){
+            char *av[4]={"sh.elf","-c",(char*)g_runcmd,0};
+            sys_execve("/apps/sh.elf",av,(char*const*)0);
+            sys_exit(127);
+        }
         char user[48],uarg[64];char*av[3]={"sh.elf",0,0};
         if(sys_whoami(user,sizeof user)>0){scpy(uarg,"--user=",sizeof uarg);scat(uarg,user);av[1]=uarg;}
         sys_execve("/apps/sh.elf",av,(char*const*)0);
@@ -88,9 +96,18 @@ static void term_draw(gfx_surface *s, int focused){
         gfx_fill(s,4+vt.cx*8,4+vt.cy*8,8,8,RGB(0x8a,0xe2,0x34));
 }
 
+static int streq(const char *a,const char *b){ while(*a&&*a==*b){a++;b++;} return *a==*b; }
+
 int main(int argc,char**argv){
     mx_conn c;
     if(mx_connect(&c,argc,argv,640,400,MX_F_RESIZABLE)!=0) return 1;
+    /* Optional one-shot command: the first non-flag arg after `-makx <pid>`
+     * (e.g. the Install icon passes "install"). */
+    for(int i=1;i<argc;i++){
+        if(streq(argv[i],"-makx")){ i++; continue; }
+        if(argv[i][0]=='-') continue;
+        g_runcmd=argv[i]; break;
+    }
     { int cols=(c.surf.w-8)/8, rows=(c.surf.h-8)/8; vt_init(&vt,cols,rows); }
     term_spawn();
     int first=1;
