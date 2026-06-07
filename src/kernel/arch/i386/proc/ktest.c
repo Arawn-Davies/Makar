@@ -2365,12 +2365,22 @@ static void test_signal(void)
     KTEST_ASSERT(sig_set_handler(cur, SIGSTOP, SIG_IGN) == -1);
     KTEST_ASSERT(sig_set_handler(cur, SIGINT,  SIG_IGN) == 0);
 
-    /* SIG_IGN: sig_deliver clears the pending bit without touching state. */
+    /* SIG_IGN: sig_deliver clears the pending bit without touching state.
+     * cur is the running task, so a preempting timer IRQ between the post and
+     * the observe would let schedule()'s sig_deliver clear the (ignored) bit
+     * first -- wrap post + observe in disable_interrupts to remove the window
+     * (more likely at 250 Hz; surfaced on CI's TCG timing).  Capture state with
+     * IRQs off, assert on the snapshots. */
+    disable_interrupts();
     sig_send(cur, SIGINT);
-    KTEST_ASSERT((cur->sig_pending & SIG_BIT(SIGINT)) != 0);
+    uint32_t ign_before = cur->sig_pending;
     sig_deliver(cur);
-    KTEST_ASSERT((cur->sig_pending & SIG_BIT(SIGINT)) == 0);
-    KTEST_ASSERT(cur->state != TASK_DEAD);
+    uint32_t ign_after  = cur->sig_pending;
+    int      ign_state  = cur->state;
+    enable_interrupts();
+    KTEST_ASSERT((ign_before & SIG_BIT(SIGINT)) != 0);
+    KTEST_ASSERT((ign_after  & SIG_BIT(SIGINT)) == 0);
+    KTEST_ASSERT(ign_state != TASK_DEAD);
     sig_set_handler(cur, SIGINT, SIG_DFL);
 
     /* sig_send input validation: NULL task / bogus signo are no-ops. */
