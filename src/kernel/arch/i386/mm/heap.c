@@ -23,6 +23,17 @@ typedef struct block_hdr {
 
 #define BLOCK_HDR_SIZE  sizeof(block_hdr_t)
 
+/* The freelist is shared mutable state.  Once syscalls run with interrupts
+ * enabled (preemptible) a timer preempt mid-allocation could let another task
+ * re-enter the allocator and corrupt the list, so the freelist critical
+ * sections briefly disable interrupts (the regions are short -- a list walk /
+ * a couple of pointer writes).  irq_save/restore preserve the caller's IF so
+ * this is safe from both interrupts-off and interrupts-on contexts. */
+static inline uint32_t heap_irq_save(void)
+{ uint32_t f; __asm__ volatile("pushfl; popl %0; cli" : "=r"(f) :: "memory"); return f; }
+static inline void heap_irq_restore(uint32_t f)
+{ __asm__ volatile("pushl %0; popfl" :: "r"(f) : "memory", "cc"); }
+
 /* Minimum user-data size kept when splitting a block.  Splitting a block that
    would leave a remainder smaller than this wastes less memory by not splitting
    at all. */
@@ -65,6 +76,7 @@ void *kmalloc(size_t size)
      * subsequent block in the freelist, eventually corrupting it. */
     size = (size + 3u) & ~3u;
 
+    uint32_t fl = heap_irq_save();
     block_hdr_t *blk = heap_head;
 
     while (blk) {
@@ -82,11 +94,13 @@ void *kmalloc(size_t size)
             }
 
             blk->is_free = 0;
+            heap_irq_restore(fl);
             return (void *)((uint8_t *)blk + BLOCK_HDR_SIZE);
         }
         blk = blk->next;
     }
 
+    heap_irq_restore(fl);
     return NULL; /* heap exhausted */
 }
 
@@ -112,6 +126,7 @@ void kfree(void *ptr)
         return;
     }
 
+    uint32_t fl = heap_irq_save();
     block_hdr_t *blk = (block_hdr_t *)((uint8_t *)ptr - BLOCK_HDR_SIZE);
     blk->is_free = 1;
 
@@ -140,6 +155,7 @@ void kfree(void *ptr)
         blk->size += BLOCK_HDR_SIZE + blk->next->size;
         blk->next  = blk->next->next;
     }
+    heap_irq_restore(fl);
 }
 
 /* ---------------------------------------------------------------------------
