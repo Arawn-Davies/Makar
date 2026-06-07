@@ -373,19 +373,23 @@ _run_qemu_interactive() {
     # fallback has no /dev/kvm passthrough wired up.
     _accel=$(_qemu_accel)
 
+    # Interactive boots get 256 MiB: the kernel heap is fixed (HEAP_MAX) but the
+    # extra RAM gives the PMM enough user frames for memory-hungry apps -- e.g.
+    # DOOM's zone + a large IWAD (FreeDOOM is ~29 MiB) + the GUI back buffer,
+    # which starve at 64 MiB.  The correctness gates run their own -m 64.
     if [ -n "$_qemu" ]; then
         local _host_args="${_args//\/work\//$REPO_ROOT/}"
         # shellcheck disable=SC2086
-        "$_qemu" -m 64 $_accel $_host_args
+        "$_qemu" -m 256 $_accel $_host_args
     elif [ "$(_build_ctx)" = "docker" ]; then
         echo "==> Host QEMU not found - running QEMU in Docker (serial stdio)..."
         "$DOCKER_BIN" run --rm -it \
             --platform "$DOCKER_PLATFORM" \
             -v "$REPO_ROOT:/work" -w /work \
             "$DOCKER_IMAGE" \
-            bash -lc "qemu-system-i386 -m 64 $_args"
+            bash -lc "qemu-system-i386 -m 256 $_args"
     else
-        bash -lc "qemu-system-i386 -m 64 $_args"
+        bash -lc "qemu-system-i386 -m 256 $_args"
     fi
 }
 
