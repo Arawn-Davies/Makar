@@ -83,7 +83,7 @@ ktest_uspace.elf: crt0.o ktest_uspace.o
 vix.elf: crt0.o vix.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-gui.elf: crt0.o wm.o gui_gfx.o gui_ui.o gui_browser.o makx.o
+gui.elf: crt0.o wm.o gui_gfx.o gui_ui.o gui_browser.o img_bmp.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 # makx clients: each links the gui_gfx/gui_ui/gui_browser helpers it uses plus
@@ -119,7 +119,7 @@ mxdisk.elf: crt0.o mxdisk.o gui_gfx.o gui_ui.o makx.o
 mxinstall.elf: crt0.o mxinstall.o gui_gfx.o gui_ui.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-mximg.elf: crt0.o mximg.o gui_gfx.o gui_ui.o gui_browser.o makx.o
+mximg.elf: crt0.o mximg.o gui_gfx.o gui_ui.o gui_browser.o img_bmp.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 files.elf: crt0.o files.o
@@ -227,10 +227,18 @@ install: all
 	mkdir -p $(ISODIR)/apps
 	rm -f $(ISODIR)/apps/ls.elf $(ISODIR)/apps/cp.elf $(ISODIR)/apps/mv.elf \
 	      $(ISODIR)/apps/rm.elf $(ISODIR)/apps/echo.elf $(ISODIR)/apps/fsutil.elf
+# WADs moved to /usr/share/games/doom; drop any left in /apps by an older build
+# so the ISO doesn't carry two ~29 MiB copies on an incremental rebuild.
+	rm -f $(ISODIR)/apps/*.wad $(ISODIR)/apps/*.WAD
 	cp $(PROGS) $(ISODIR)/apps/
 	cp demo.sh incore.sh rebuild-kernel.sh kend.S getwad.sh $(ISODIR)/apps/
-	-cp ../../wads/*.WAD ../../wads/*.wad $(ISODIR)/apps/ 2>/dev/null || true
 	cp *.bas $(ISODIR)/apps/
+# DOOM IWADs live on the XFCE-style asset path /usr/share/games/doom so DOOM
+# finds them automatically (see cand[] in doomgeneric_makar.c) and the installer
+# copies them with the rest of /usr.  Staged here only (not /apps) to avoid
+# duplicating ~29 MiB of FreeDOOM on the ISO.
+	mkdir -p $(ISODIR)/usr/share/games/doom
+	-cp ../../wads/*.WAD ../../wads/*.wad $(ISODIR)/usr/share/games/doom/ 2>/dev/null || true
 # /usr sysroot for the in-OS compiler (tcc) and any future hosted ports.
 # `crt0.o` is the C-runtime startup; `libc.a` the freestanding libc shim
 # archive; headers under /usr/include resolve #include <name.h>; and the
@@ -245,6 +253,10 @@ install: all
 	cp ../kernel/include/makar_syscalls.h ../kernel/include/makar_signals.h \
 	   ../kernel/include/makar_keys.h ../kernel/include/makar_abi.h $(ISODIR)/usr/include/
 	cp hello-tcc.c $(ISODIR)/usr/share/examples/
+# Desktop icon artwork on the XFCE-style path /usr/share/icons/makar (loaded by
+# the window manager; copied to the installed system with the rest of /usr).
+	mkdir -p $(ISODIR)/usr/share/icons/makar
+	cp ../../data/icons/*.bmp $(ISODIR)/usr/share/icons/makar/
 # tcc.elf rides along with the rest of the apps so PATH lookup resolves
 # `tcc` from the kernel shell.  Only present when build-tcc.sh has been
 # run with vendor/tinycc/ populated.

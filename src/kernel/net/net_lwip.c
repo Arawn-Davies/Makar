@@ -22,6 +22,39 @@ static int s_dhcp_bound;
 static int s_static_fallback;
 static int s_released;       /* DHCP released: interface deconfigured, no IP */
 
+/*
+ * Net big-lock.  lwIP is built NO_SYS (single-threaded, not reentrant): the net
+ * task drives it from net_lwip_poll(), while ring-3 tasks reach it through the
+ * info/control/resolve syscalls.  Under preemptive syscalls those can interleave
+ * with a poll mid-operation and corrupt lwIP state, so all public entry points
+ * serialize on this cooperative lock (busy flag + yield, like the IDE lock).
+ * The internal *_poll_ready/_try_dhcp helpers do NOT take it -- the public entry
+ * holding it calls them, so a DHCP renew / DNS resolve can still pump lwIP while
+ * the net task waits.  No-op while syscalls are still serial; load-bearing once
+ * preemption is on. */
+static volatile int s_net_busy;
+
+static inline uint32_t net_irq_save(void)
+{ uint32_t f; __asm__ volatile("pushfl; popl %0; cli" : "=r"(f) :: "memory"); return f; }
+static inline void net_irq_restore(uint32_t f)
+{ __asm__ volatile("pushl %0; popfl" :: "r"(f) : "memory", "cc"); }
+
+static void net_lock(void)
+{
+    for (;;) {
+        uint32_t f = net_irq_save();
+        if (!s_net_busy) { s_net_busy = 1; net_irq_restore(f); return; }
+        net_irq_restore(f);
+        task_yield();
+    }
+}
+static void net_unlock(void)
+{
+    uint32_t f = net_irq_save();
+    s_net_busy = 0;
+    net_irq_restore(f);
+}
+
 static void net_lwip_note_dhcp_off(void)
 {
     s_dhcp_enabled = 0;
@@ -131,7 +164,9 @@ void net_lwip_poll(void)
 {
     if (!s_ready)
         return;
+    net_lock();
     net_lwip_poll_ready();
+    net_unlock();
 }
 
 int net_lwip_ready(void)
@@ -162,6 +197,8 @@ int net_lwip_resolve(const char *host, uint8_t ip_out[4], uint32_t timeout_ticks
     if (!s_ready || !host || !ip_out)
         return -1;
 
+    net_lock();
+    int rv = -1;
     net_resolve_t r;
     r.state = 0;
     ip_addr_t immediate;
@@ -174,22 +211,21 @@ int net_lwip_resolve(const char *host, uint8_t ip_out[4], uint32_t timeout_ticks
     } else if (rc == ERR_INPROGRESS) {
         uint32_t deadline = timer_get_ticks() + timeout_ticks;
         while (timer_get_ticks() < deadline && r.state == 0) {
-            net_lwip_poll_ready();
+            net_lwip_poll_ready();   /* we hold the net lock; pump lwIP ourselves */
             task_yield();
         }
-    } else {
-        return -1;
     }
 
-    if (r.state != 1)
-        return -1;
-
-    const ip4_addr_t *v4 = ip_2_ip4(&r.addr);
-    ip_out[0] = ip4_addr1(v4);
-    ip_out[1] = ip4_addr2(v4);
-    ip_out[2] = ip4_addr3(v4);
-    ip_out[3] = ip4_addr4(v4);
-    return 0;
+    if (r.state == 1) {
+        const ip4_addr_t *v4 = ip_2_ip4(&r.addr);
+        ip_out[0] = ip4_addr1(v4);
+        ip_out[1] = ip4_addr2(v4);
+        ip_out[2] = ip4_addr3(v4);
+        ip_out[3] = ip4_addr4(v4);
+        rv = 0;
+    }
+    net_unlock();
+    return rv;
 }
 
 static void net_lwip_copy_ip4(const ip4_addr_t *src, uint8_t out[4])
@@ -203,18 +239,22 @@ static void net_lwip_copy_ip4(const ip4_addr_t *src, uint8_t out[4])
 int net_lwip_local_ip(uint8_t out[4])
 {
     if (!s_ready || !out) return -1;
+    net_lock();
     net_lwip_copy_ip4(netif_ip4_addr(&s_netif), out);
+    net_unlock();
     return 0;
 }
 
 int net_lwip_gateway(uint8_t out[4])
 {
     if (!s_ready || !out) return -1;
+    net_lock();
     net_lwip_copy_ip4(netif_ip4_gw(&s_netif), out);
+    net_unlock();
     return 0;
 }
 
-int net_lwip_control(int cmd)
+static int net_lwip_control_locked(int cmd)
 {
     if (!s_ready)
         return -1;
@@ -243,6 +283,14 @@ int net_lwip_control(int cmd)
     default:
         return -1;
     }
+}
+
+int net_lwip_control(int cmd)
+{
+    net_lock();
+    int r = net_lwip_control_locked(cmd);
+    net_unlock();
+    return r;
 }
 
 static void info_append(char *buf, uint32_t cap, uint32_t *off, const char *s)
@@ -294,7 +342,7 @@ static void info_append_mac(char *buf, uint32_t cap, uint32_t *off,
     }
 }
 
-int net_lwip_info(char *buf, uint32_t cap)
+static int net_lwip_info_locked(char *buf, uint32_t cap)
 {
     if (!buf || cap == 0)
         return 0;
@@ -351,6 +399,14 @@ int net_lwip_info(char *buf, uint32_t cap)
 
     buf[off] = '\0';
     return (int)off;
+}
+
+int net_lwip_info(char *buf, uint32_t cap)
+{
+    net_lock();
+    int r = net_lwip_info_locked(buf, cap);
+    net_unlock();
+    return r;
 }
 
 void net_lwip_task(void)

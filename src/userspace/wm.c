@@ -31,6 +31,7 @@
 #include "gui_gfx.h"
 #include "gui_ui.h"
 #include "gui_browser.h"
+#include "img_bmp.h"
 #include "makx.h"
 
 /* ---- framebuffer / back buffer ----------------------------------------- */
@@ -197,6 +198,31 @@ static icon_t icons[ICON_N] = {
     {  24, 460, 96,70, "Install",  RGB(0xff,0x70,0x70), "/apps/mxinstall.elf", 588,492 },
     { 128, 460, 96,70, "Image",    RGB(0x70,0xb0,0x70), "/apps/mximg.elf",   608,468 },
 };
+
+/* Desktop icon artwork: real BMP tiles under the XFCE-style asset path
+ * /usr/share/icons/makar/<name>.bmp, loaded once at startup.  If a file is
+ * missing (e.g. a live boot without the assets) the procedural icon_glyph()
+ * draws instead, so the desktop always has icons. */
+static const char *icon_img[ICON_N] = {
+    "terminal","files","editor","tasks","doom","about",
+    "clock","calc","net","disk","install","image",
+};
+static gfx_surface icon_surf[ICON_N];
+static int         icon_has[ICON_N];
+
+static void load_icon_assets(void)
+{
+    for (int i = 0; i < ICON_N; i++){
+        char path[64]; int n = 0;
+        const char *pre = "/usr/share/icons/makar/";
+        for (const char *p = pre; *p; p++) path[n++] = *p;
+        for (const char *p = icon_img[i]; *p; p++) path[n++] = *p;
+        const char *ext = ".bmp";
+        for (const char *p = ext; *p; p++) path[n++] = *p;
+        path[n] = 0;
+        icon_has[i] = (bmp_load(path, &icon_surf[i]) == 0);
+    }
+}
 
 /* Fork+exec a client, handing it `-makx <server-pid>` and a stdout/stderr pipe
  * the server drains (so client console noise can't bleed onto the text VT and a
@@ -512,7 +538,15 @@ static void draw_icons(void)
 {
     for(int i=0;i<ICON_N;i++){ icon_t *c=&icons[i];
         gfx_round(&scr,c->x,c->y,c->w,c->h,RGB(0x2a,0x38,0x50),COL_DESK);
-        icon_glyph(i, c->x+c->w/2-16, c->y+9);
+        int gx=c->x+c->w/2-16, gy=c->y+9;
+        if (icon_has[i]){
+            if (icon_surf[i].w==32 && icon_surf[i].h==26)
+                gfx_blit(&scr,gx,gy,&icon_surf[i],0,0,32,26);
+            else
+                gfx_blit_scaled(&scr,gx,gy,32,26,&icon_surf[i]);
+        } else {
+            icon_glyph(i, gx, gy);
+        }
         gfx_str(&scr,c->x+(c->w-gfx_text_w(c->label))/2,c->y+c->h-16,c->label,0xFFFFFF);
     }
 }
@@ -914,6 +948,7 @@ int main(int argc, char **argv, char **envp)
 
     if (want_login) do_login(login_user);
 
+    load_icon_assets();         /* desktop icon BMPs (glyph fallback if absent) */
     znum=0; focus=-1;
     launch_icon(0);             /* open a terminal client on the desktop */
 

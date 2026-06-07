@@ -1134,6 +1134,61 @@ int fat32_read_file(const char *path, void *buf, uint32_t bufsz,
     return 0;
 }
 
+/*
+ * fat32_read_at - byte-range read for demand-paged / page-cache file I/O.
+ * FAT chains are singly linked, so this walks from the first cluster, skips the
+ * whole clusters before `off`, then copies the sectors covering [off, off+len).
+ * Returns bytes read (>=0, 0 at/past EOF) or -1 on error.  (The per-call chain
+ * walk is O(off/cluster); fine for the page cache's 4 KiB fills, and big media
+ * lives on iso9660/ext2 in practice -- FAT32 is the small boot partition.)
+ */
+long fat32_read_at(const char *path, uint32_t off, void *buf, uint32_t len)
+{
+    if (!vol.mounted) return -1;
+
+    uint32_t    parent_cluster;
+    const char *basename;
+    if (path_split(path, &parent_cluster, &basename) || !*basename) return -1;
+
+    dirent_t ent;
+    if (dir_scan(parent_cluster, DIRSCAN_FIND, basename, &ent, NULL, NULL) != 0)
+        return -1;
+    if (ent.attr & ATTR_DIR) return -1;
+
+    uint32_t size = ent.file_size;
+    if (off >= size) return 0;
+    uint32_t avail   = size - off;
+    uint32_t to_read = (len < avail) ? len : avail;
+
+    uint32_t bpc     = (uint32_t)vol.spc * 512u;       /* bytes per cluster */
+    uint32_t cluster = ent.first_cluster;
+    for (uint32_t skip = off / bpc;
+         skip > 0u && cluster >= 2u && cluster < FAT32_BAD; skip--)
+        cluster = fat_read(cluster);
+
+    uint8_t *dst     = (uint8_t *)buf;
+    uint32_t done    = 0;
+    uint32_t cur_off = off % bpc;                        /* offset in cluster */
+
+    while (done < to_read && cluster >= 2u && cluster < FAT32_BAD) {
+        uint32_t lba      = clus_to_lba(cluster);
+        uint32_t sec      = cur_off / 512u;
+        uint32_t sec_off  = cur_off % 512u;
+        for (; sec < vol.spc && done < to_read; sec++) {
+            if (ide_read_sectors(vol.drive, lba + sec, 1, s_sec))
+                return -1;
+            uint32_t chunk = 512u - sec_off;
+            if (chunk > to_read - done) chunk = to_read - done;
+            memcpy(dst + done, s_sec + sec_off, chunk);
+            done   += chunk;
+            sec_off = 0;
+        }
+        cur_off = 0;
+        cluster = fat_read(cluster);
+    }
+    return (long)done;
+}
+
 /* -------------------------------------------------------------------------
  * fat32_write_file
  * ---------------------------------------------------------------------- */

@@ -764,6 +764,44 @@ int ext2_read_file(const char *path, void *buf, uint32_t bufsz, uint32_t *out_sz
     return 0;
 }
 
+/*
+ * ext2_read_at - byte-range read for demand-paged / page-cache file I/O.
+ * Walks the inode block map (e2_bmap) only over the blocks covering
+ * [off, off+len).  Returns bytes read (>=0, 0 at/past EOF) or -1 on error.
+ */
+long ext2_read_at(const char *path, uint32_t off, void *buf, uint32_t len)
+{
+    if (!s_mounted) return -1;
+    ext2_inode_t in;
+    uint32_t ino = e2_resolve(path, &in);
+    if (!ino) return -1;
+    if ((in.i_mode & EXT2_S_IFMT) != EXT2_S_IFREG) return -1;
+
+    uint32_t size = in.i_size;
+    if (off >= size) return 0;
+    uint32_t avail   = size - off;
+    uint32_t to_read = (len < avail) ? len : avail;
+    uint8_t *out     = (uint8_t *)buf;
+    uint32_t done    = 0;
+
+    while (done < to_read) {
+        uint32_t cur   = off + done;
+        uint32_t lb    = cur / s_block_size;
+        uint32_t boff  = cur % s_block_size;
+        uint32_t pb    = e2_bmap(&in, lb);
+        uint32_t chunk = s_block_size - boff;
+        if (chunk > to_read - done) chunk = to_read - done;
+        if (pb == 0) {
+            memset(out + done, 0, chunk);            /* sparse hole */
+        } else {
+            if (e2_read_block(pb, s_blk) != 0) break;
+            memcpy(out + done, s_blk + boff, chunk);
+        }
+        done += chunk;
+    }
+    return (long)done;
+}
+
 int ext2_ls(const char *path)
 {
     if (!s_mounted) { t_writestring("ext2: not mounted\n"); return -1; }

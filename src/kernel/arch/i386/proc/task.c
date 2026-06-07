@@ -54,6 +54,26 @@ static int     next_pid        = 2;   /* idle task gets PID 1; created tasks sta
  * it. */
 static volatile int in_schedule = 0;
 
+/* Preemptive-syscall control (see task.h).  g_preempt_enabled = 1 makes the
+ * int-0x80 dispatcher run with interrupts on; s_preempt_count lets a short
+ * section suppress the timer yield without masking interrupts. */
+volatile int g_preempt_enabled = 1;
+static volatile int s_preempt_count = 0;
+
+void preempt_disable(void) { __atomic_add_fetch(&s_preempt_count, 1, __ATOMIC_SEQ_CST); }
+void preempt_enable(void)
+{
+    if (__atomic_load_n(&s_preempt_count, __ATOMIC_SEQ_CST) > 0)
+        __atomic_sub_fetch(&s_preempt_count, 1, __ATOMIC_SEQ_CST);
+}
+/* The timer may yield only when no section has asked to stay atomic and the
+ * scheduler isn't already mid-switch.  Independent of g_preempt_enabled: in the
+ * legacy mode the timer still preempts ring-3 between syscalls as before. */
+int sched_can_preempt(void)
+{
+    return __atomic_load_n(&s_preempt_count, __ATOMIC_SEQ_CST) == 0 && !in_schedule;
+}
+
 /* Save EFLAGS and disable interrupts; return the prior EFLAGS so the
  * caller can restore exactly the IF state it had on entry. */
 static inline uint32_t irq_save_disable(void)

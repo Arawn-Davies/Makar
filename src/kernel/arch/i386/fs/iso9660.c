@@ -413,6 +413,40 @@ int iso9660_read_file(uint8_t drive, const char *path,
     return 0;
 }
 
+/*
+ * iso9660_read_at - byte-range read for demand-paged / page-cache file I/O.
+ * ISO9660 extents are contiguous, so this resolves the file once then reads
+ * only the sectors covering [off, off+len).  Returns bytes read (>=0, 0 at or
+ * past EOF) or -1 on error.  Shares s_sector under the VFS disk big-lock.
+ */
+long iso9660_read_at(uint8_t drive, const char *path,
+                     uint32_t off, void *buf, uint32_t len)
+{
+    uint32_t lba, size;
+    int isdir;
+    if (path_resolve(drive, path, &lba, &size, &isdir) || isdir)
+        return -1;
+    if (off >= size)
+        return 0;
+    uint32_t avail   = size - off;
+    uint32_t to_read = (len < avail) ? len : avail;
+    uint8_t *dst     = (uint8_t *)buf;
+    uint32_t done    = 0;
+
+    while (done < to_read) {
+        uint32_t cur  = off + done;
+        uint32_t sect = lba + cur / ISO9660_SECTOR_SIZE;
+        uint32_t soff = cur % ISO9660_SECTOR_SIZE;
+        if (ide_read_atapi_sectors(drive, sect, 1, s_sector))
+            return -1;
+        uint32_t chunk = ISO9660_SECTOR_SIZE - soff;
+        if (chunk > to_read - done) chunk = to_read - done;
+        memcpy(dst + done, s_sector + soff, chunk);
+        done += chunk;
+    }
+    return (long)done;
+}
+
 int iso9660_file_exists(uint8_t drive, const char *path)
 {
     uint32_t lba, size;

@@ -69,6 +69,9 @@ int ext2_mkdir(const char *path);
  * File I/O
  * ---------------------------------------------------------------------- */
 int ext2_read_file(const char *path, void *buf, uint32_t bufsz, uint32_t *out_sz);
+/* Byte-range read for demand-paged / page-cache file I/O.  Returns bytes read
+ * (>=0, 0 at/past EOF) or -1 on error. */
+long ext2_read_at(const char *path, uint32_t off, void *buf, uint32_t len);
 int ext2_file_exists(const char *path);
 /* Lean stat: fills *out_size and *out_is_dir without reading file data.
  * Returns 0 on success, -1 if path unresolved or volume unmounted. */

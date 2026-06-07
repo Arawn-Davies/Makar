@@ -53,7 +53,7 @@ without a detailed errno. Check the wrapper before assuming Linux parity.
 | 2 | `SYS_FORK` | none | COW fork; parent gets child pid, child gets 0 |
 | 3 | `SYS_READ` | `fd, buf, len` | fd-backed read |
 | 4 | `SYS_WRITE` | `fd, buf, len` | fd-backed write |
-| 5 | `SYS_OPEN` | `path, flags, mode` | mode ignored |
+| 5 | `SYS_OPEN` | `path, flags, mode` | mode ignored; read-only disk files are lazy (page-cached) |
 | 6 | `SYS_CLOSE` | `fd` | closes and flushes |
 | 10 | `SYS_UNLINK` | `path` | delete file |
 | 11 | `SYS_EXECVE` | `path, argv, envp` | envp ignored |

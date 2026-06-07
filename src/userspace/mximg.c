@@ -9,6 +9,7 @@
 #include "gui_gfx.h"
 #include "gui_ui.h"
 #include "gui_browser.h"
+#include "img_bmp.h"
 #include "makx.h"
 
 #define RGB GFX_RGB
@@ -30,32 +31,14 @@ static void scpy(char *d,const char *s,int max){int i=0;while(s[i]&&i<max-1){d[i
 static unsigned rd32(const unsigned char *p){ return p[0]|(p[1]<<8)|(p[2]<<16)|((unsigned)p[3]<<24); }
 static int      rd16(const unsigned char *p){ return p[0]|(p[1]<<8); }
 
-/* Decode an uncompressed 24/32-bpp BMP from fbuf[0..n) into img_px. 0 ok. */
+/* Decode an uncompressed 24/32-bpp BMP from fbuf[0..n) into img_px.  Thin
+ * wrapper over the shared bmp_decode (img_bmp.c) that sets the status line. */
 static int decode_bmp(unsigned n)
 {
-    if (n < 54 || fbuf[0] != 'B' || fbuf[1] != 'M') { scpy(msg,"not a BMP file",sizeof msg); return -1; }
-    unsigned off = rd32(fbuf+10);
-    int w = (int)rd32(fbuf+18);
-    int hh = (int)rd32(fbuf+22);
-    int bpp = rd16(fbuf+28);
-    unsigned comp = rd32(fbuf+30);
-    int topdown = 0;
-    if (hh < 0) { hh = -hh; topdown = 1; }
-    if (comp != 0 || (bpp != 24 && bpp != 32)) { scpy(msg,"unsupported BMP (need 24/32-bpp uncompressed)",sizeof msg); return -1; }
-    if (w < 1 || hh < 1 || w > IMG_MAXW || hh > IMG_MAXH) { scpy(msg,"image too large",sizeof msg); return -1; }
-    int bypp = bpp/8;
-    unsigned stride = ((unsigned)(w*bypp) + 3u) & ~3u;
-    if (off + stride*(unsigned)hh > n) { scpy(msg,"truncated BMP",sizeof msg); return -1; }
-    for (int y = 0; y < hh; y++) {
-        int srcrow = topdown ? y : (hh-1-y);
-        const unsigned char *row = fbuf + off + (unsigned)srcrow*stride;
-        gfx_u32 *dst = img_px + (unsigned)y*w;
-        for (int x = 0; x < w; x++) {
-            const unsigned char *px = row + x*bypp;
-            dst[x] = RGB(px[2], px[1], px[0]);   /* BMP is BGR(A) */
-        }
+    if (bmp_decode(fbuf, n, img_px, IMG_MAXW, IMG_MAXH, &img_w, &img_h) != 0) {
+        scpy(msg, "unsupported BMP (need 24/32-bpp uncompressed)", sizeof msg);
+        return -1;
     }
-    img_w = w; img_h = hh;
     return 0;
 }
 

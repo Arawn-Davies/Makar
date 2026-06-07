@@ -79,7 +79,11 @@ void timer_callback(registers_t *regs)
 	} else {
 		due = (tick % g_sched_quantum == 0);
 	}
-	if (due) {
+	/* Honour preempt_disable()'d sections (and don't re-enter a switch that's
+	 * already in flight): charge the tick but defer the yield until it's safe.
+	 * On a deferred tick we fall through and the generic ISR path sends the
+	 * EOI. */
+	if (due && sched_can_preempt()) {
 		/* Send EOI to the master PIC before yielding so that the idle
 		   task's hlt can be woken by the next timer tick.  Without this
 		   the IRQ 0 in-service bit stays set, blocking all future timer

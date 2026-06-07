@@ -94,9 +94,10 @@ a fake error code (where the CPU didn't), push the vector number, and jump to
 `isr_common_stub` which pushes the full register set, calls into C, and
 restores. The stubs reload DS/ES/FS for kernel C code but intentionally leave
 `%gs` untouched so a ring-3 task's TLS selector survives syscalls and
-interrupts. The interrupt gate type clears IF on entry; we keep it clear for
-the duration of the syscall handler (see §10) — a deliberate simplification
-that means a syscall can't be preempted, only voluntarily yielded.
+interrupts. The interrupt gate type clears IF on entry; `syscall_dispatch` then
+re-enables it (preemptive syscalls — see §7/§9) and restores the caller's IF on
+exit, so a long syscall can be preempted by the timer instead of stalling the
+whole system.
 
 DPL on every IDT gate is **zero**, *except* the syscall gate at 0x80, which is
 DPL=3. Ring-3 cannot raise an arbitrary interrupt; the only doorbell it has
@@ -326,16 +327,23 @@ slots, round-robin scheduler, voluntary `task_yield()` *and* preemptive
 timer-driven yields (PIT `TIMER_HZ` = 250 Hz, `g_sched_quantum = 1` tick → 4 ms
 time slice).
 
-Ring-3 is preemptible (the timer yields between slices); **syscalls are still
-serialized** — the `int 0x80` gate clears IF and the handler keeps it clear, so
-a syscall runs to completion or yields voluntarily (§10). Long operations opt
-into preemption explicitly instead (`sti` inside the installer's stepped copy),
-and the worst eager stalls were removed structurally (demand-paged `brk`/`mmap`,
-§4). The shared mutable structures a future global `sti` would expose —
-`schedule()`, `task_exit`, the kernel heap, the task pool (`task_create`/
-`task_fork`) and the PMM buddy lists — are already `cli`-guarded so flipping it
-is gateable; the remaining prerequisite is an lwIP net lock plus fork/exec
-stress testing.
+Ring-3 and **syscalls are both preemptible** (CONFIG_PREEMPT-style). The
+`int 0x80` gate clears IF, but `syscall_dispatch` re-enables it for the duration
+of the call (when `g_preempt_enabled`, the default; `nopreempt` on the cmdline
+forces the legacy serialized path), restoring the caller's IF on exit so the ISR
+epilogue + `iret` stay atomic. So a long syscall — a big read, an install copy, a
+demand-fault-in — no longer blocks every other task until it yields.
+
+The shared mutable kernel state this exposes is each protected by a `cli` lock:
+the kernel heap, the PMM buddy lists, the task pool (`task_create`/`task_fork`),
+the recursive FS disk big-lock, the page cache, and the lwIP net big-lock (lwIP
+is NO_SYS / non-reentrant). `schedule()` and `task_exit` already `irq_save`.
+Beyond those, a section that must stay atomic without masking interrupts calls
+`preempt_disable()`/`preempt_enable()`, a counter the timer consults
+(`sched_can_preempt()`) before yielding. Residual *non-corruption* glitches
+(VT framebuffer paint, kbd/mouse ring reads tearing under preemption) are
+accepted and refined later. The worst eager stalls were also removed
+structurally — demand-paged `brk`/`mmap` and lazy page-cached file reads (§4).
 
 ### `task_t` (abbreviated)
 
@@ -496,20 +504,16 @@ ring 3                                          ring 0
   result in EAX                                  (IF restored to user 1)
 ```
 
-The trap gate at IDT[0x80] is DPL=3 so ring 3 can fire it. Inside the
-handler, IF stays 0 — interrupts are masked for the syscall's duration.
-This is the simplest thread-safety story: a syscall can't be preempted, so
-no syscall handler needs to be reentrant or take locks against IRQ context.
-The cost is latency — a slow syscall (FAT32 read, IDE access) holds the IRQ
-mask for milliseconds. Disk transfers now prefer bus-master DMA
-(`ide.c`, BMIDE BAR4) over the old per-word PIO loop, which both shortens
-that window and — more importantly — avoids ~256 VM exits per sector on VT-x
-hypervisors (VirtualBox, Hyper-V); PIO remains the fallback when no DMA-capable
-controller is found. Acceptable on a single-task interactive shell; the
-fix is to *enable* IF inside the handler once we're past the regs-save and
-no longer running on a possibly-corrupt stack, the same pattern Linux uses
-for `local_irq_enable()` inside its syscall path. The plumbing is there
-(`irq_save_disable` etc.); we just haven't pulled the trigger.
+The trap gate at IDT[0x80] is DPL=3 so ring 3 can fire it. The gate clears IF,
+but `syscall_dispatch` re-enables it for the call's duration (preemptive
+syscalls; `nopreempt` cmdline forces the old serialized behaviour) — this is the
+`local_irq_enable()`-inside-the-syscall-path pattern, now pulled (§7). A slow
+syscall (a big read, an install copy) no longer holds the IRQ mask for
+milliseconds; it's preemptible, and the shared kernel state is protected by the
+per-subsystem `cli` locks (heap/PMM/task-pool/FS/page-cache/net). Disk transfers
+also prefer bus-master DMA (`ide.c`, BMIDE BAR4) over the old per-word PIO loop,
+which avoids ~256 VM exits per sector on VT-x hypervisors (VirtualBox, Hyper-V);
+PIO remains the fallback when no DMA-capable controller is found.
 
 The full table lives at `src/kernel/include/kernel/syscall.h`. Numbers 1..49
 match Linux/i386 exactly (EXIT, READ, WRITE, OPEN, CLOSE, LSEEK, KILL, BRK,
@@ -518,6 +522,25 @@ ops, signal returns, the pixel framebuffer API (`SYS_DRAW_LINE` 217,
 `SYS_CARET_STYLE` 218), and `SYS_GETCWD`. `OPEN`/`READ`/`WRITE`/`LSEEK`
 also drive `/dev` block devices: a `/dev` node opens as `FD_KIND_BLOCKDEV`
 (no eager buffer) and read/write/seek do byte-addressed sector I/O.
+
+#### Lazy read-only files + the page cache
+
+A `read-only` open on a seekable disk backend (ext2/fat32/iso9660) is **not**
+eager-loaded. The fd records only `{path, size, pos}` (`fd_entry_t.lazy`); each
+`SYS_READ` streams the needed bytes through the kernel **page cache**
+(`mm/pagecache.c`) — a fixed pool of 4 KiB pages in an LRU list, keyed by
+`{path-hash, page index}`, filled on a miss via `vfs_read_at()` →
+per-backend `*_read_at` (iso9660 contiguous extent; ext2 block-map walk; fat32
+cluster-chain walk). So opening a ~29 MiB FreeDOOM WAD costs ~0 heap and DOOM
+streams lumps like it does on DOS, instead of the old whole-file `kmalloc` (the
+band-aid that pushed `SYSCALL_FILE_MAX` to 32 MiB and interactive boots to
+`-m 256`, both now reverted). Writable opens and synthetic backends
+(procfs/tmpfs/...) keep the buffered path. Correctness: the cache holds clean
+read-only data only; the VFS write/delete/rename paths call
+`pagecache_invalidate(path)` (outside the disk big-lock) so a later read never
+sees stale bytes — verified by the libc-tcc gate (compile → write `.o` →
+`ar` → link → run). The cache is a fixed static pool (bounded, self-evicting);
+a dynamic, PMM-pressure-driven shrinker is a documented follow-up.
 
 ### `int 0x80` vs `sysenter`
 

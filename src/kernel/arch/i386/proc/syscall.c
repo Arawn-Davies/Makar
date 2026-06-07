@@ -35,6 +35,7 @@
 #include <kernel/mouse.h>
 #include <kernel/shell.h>
 #include <kernel/vfs.h>
+#include <kernel/pagecache.h>
 #include <kernel/heap.h>
 #include <kernel/vmm.h>
 #include <kernel/pmm.h>
@@ -262,7 +263,7 @@ volatile uint32_t g_ring3_last_cp = 0;
  * syscall_dispatch
  * ------------------------------------------------------------------------- */
 
-void syscall_dispatch(registers_t *regs)
+static void syscall_dispatch_inner(registers_t *regs)
 {
     switch (regs->eax) {
 
@@ -607,6 +608,11 @@ void syscall_dispatch(registers_t *regs)
             if (n > len) n = len;
             memcpy(buf, s_stdin_line, n);
             regs->eax = n;
+        } else if (e->kind == FD_KIND_FILE && e->lazy) {
+            /* Demand-streamed read-only file: serve via the page cache. */
+            long r = pagecache_read(e->path, e->size, e->pos, buf, len);
+            if (r < 0) { regs->eax = (uint32_t)-1; }
+            else { e->pos += (uint32_t)r; regs->eax = (uint32_t)r; }
         } else if (e->kind == FD_KIND_FILE) {
             uint32_t avail = e->size - e->pos;
             uint32_t n     = (len < avail) ? len : avail;
@@ -1221,37 +1227,51 @@ void syscall_dispatch(registers_t *regs)
             e->capacity = SYSCALL_FILE_INITIAL;
             e->dirty    = 1;
         } else {
-            /* Read existing file content into the buffer.  Size the
-             * allocation to the actual file (probed via vfs_stat), not
-             * SYSCALL_FILE_MAX -- otherwise every open()/close() pair on
-             * a tiny log file would kmalloc + kfree 8 MiB, which is both
-             * slow on TCG and stressful for the kernel heap.  For writable
-             * fds, round up to at least SYSCALL_FILE_INITIAL so the first
-             * write doesn't have to grow immediately. */
             vfs_stat_info_t si;
-            uint32_t cap;
-            if (vfs_stat(path, &si) == 0) {
-                cap = si.size;
-                if (writable && cap < SYSCALL_FILE_INITIAL) cap = SYSCALL_FILE_INITIAL;
-                if (cap == 0) cap = SYSCALL_FILE_INITIAL;   /* empty file: 1 page */
-                if (cap > SYSCALL_FILE_MAX) cap = SYSCALL_FILE_MAX;
+            int have_stat = (vfs_stat(path, &si) == 0);
+
+            /* Lazy read-only path (WWLD): a read-only open on a seekable disk
+             * backend is *not* eager-loaded.  We record the size and stream the
+             * file a page at a time through the kernel page cache on each read
+             * (see SYS_READ) -- so opening a 29 MiB WAD costs ~0 heap instead of
+             * a 29 MiB kmalloc.  Writable opens and synthetic backends
+             * (procfs/tmpfs/...) keep the buffered path below. */
+            if (have_stat && !writable && si.kind == VFS_STAT_FILE &&
+                vfs_path_is_disk(path)) {
+                e->kind     = FD_KIND_FILE;
+                e->data     = NULL;
+                e->capacity = 0;
+                e->size     = si.size;
+                e->lazy     = 1;
             } else {
-                /* vfs_stat unsupported on this backend; fall back to the
-                 * conservative large allocation. */
-                cap = SYSCALL_FILE_MAX;
+                /* Buffered: size the allocation to the actual file (probed via
+                 * vfs_stat) so a tiny file doesn't kmalloc SYSCALL_FILE_MAX.
+                 * Writable fds round up to SYSCALL_FILE_INITIAL so the first
+                 * write needn't grow immediately. */
+                uint32_t cap;
+                if (have_stat) {
+                    cap = si.size;
+                    if (writable && cap < SYSCALL_FILE_INITIAL) cap = SYSCALL_FILE_INITIAL;
+                    if (cap == 0) cap = SYSCALL_FILE_INITIAL;   /* empty file: 1 page */
+                    if (cap > SYSCALL_FILE_MAX) cap = SYSCALL_FILE_MAX;
+                } else {
+                    /* vfs_stat unsupported on this backend; fall back to the
+                     * conservative large allocation. */
+                    cap = SYSCALL_FILE_MAX;
+                }
+                uint8_t *buf = (uint8_t *)kmalloc(cap);
+                if (!buf) { regs->eax = (uint32_t)-1; break; }
+                uint32_t out_sz = 0;
+                if (vfs_read_file(path, buf, cap, &out_sz) != 0) {
+                    kfree(buf);
+                    regs->eax = (uint32_t)-1;
+                    break;
+                }
+                e->kind     = FD_KIND_FILE;
+                e->data     = buf;
+                e->size     = out_sz;
+                e->capacity = cap;
             }
-            uint8_t *buf = (uint8_t *)kmalloc(cap);
-            if (!buf) { regs->eax = (uint32_t)-1; break; }
-            uint32_t out_sz = 0;
-            if (vfs_read_file(path, buf, cap, &out_sz) != 0) {
-                kfree(buf);
-                regs->eax = (uint32_t)-1;
-                break;
-            }
-            e->kind     = FD_KIND_FILE;
-            e->data     = buf;
-            e->size     = out_sz;
-            e->capacity = cap;
         }
 
         e->writable = writable ? 1 : 0;
@@ -2531,6 +2551,30 @@ void syscall_dispatch(registers_t *regs)
      * (and unmasked) before iret returns to ring 3.  No-op when the
      * frame is ring 0 or no handler is installed. */
     signal_check_user(regs);
+}
+
+/*
+ * syscall_dispatch -- int 0x80 entry.  The gate clears IF; when preemptive
+ * syscalls are enabled we re-enable interrupts for the duration of the call so
+ * the timer can preempt a long syscall (the whole point of Phase C), then
+ * disable again so the ISR epilogue's register-restore + iret runs atomically
+ * (iret restores ring 3's IF=1).  Shared kernel state is protected by the
+ * heap / PMM / task-pool / FS-disk / page-cache / net locks; noreturn paths
+ * (task_exit, ring3_enter) manage IF themselves and never fall through here.
+ */
+void syscall_dispatch(registers_t *regs)
+{
+    /* Save the caller's IF and restore it on exit rather than forcing it.
+     * Via int 0x80 the gate cleared IF, so this restores cli and the ISR
+     * epilogue's restore+iret runs atomically (iret restores ring 3's IF=1).
+     * ktest also calls this *directly* from a kernel task with IF=1; restoring
+     * the caller's flags keeps the timer running for it (an unconditional cli
+     * here froze a CLOCK_MONOTONIC busy-wait). */
+    uint32_t fl;
+    __asm__ volatile("pushfl; popl %0" : "=r"(fl) :: "memory");
+    if (g_preempt_enabled) __asm__ volatile("sti");
+    syscall_dispatch_inner(regs);
+    __asm__ volatile("pushl %0; popfl" :: "r"(fl) : "memory", "cc");
 }
 
 void syscall_init(void)
