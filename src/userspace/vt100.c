@@ -267,7 +267,11 @@ void vt_putc(vt_term *t, unsigned char b)
     if (b == 0x1B) { t->state = VT_ESC; return; }
     if (b < 0x20) {                                            /* C0 controls */
         switch (b) {
-        case '\n': line_feed(t); break;
+        /* Makar convention (matches the kernel VGA console, t_putchar): a bare
+         * '\n' is a *newline* -- carriage-return + line-feed -- since apps emit
+         * '\n' between lines rather than "\r\n".  (A strict VT would move down
+         * only; that left prompts cascading diagonally.) */
+        case '\n': t->cx = 0; line_feed(t); break;
         case '\r': t->cx = 0; break;
         case '\b': if (t->cx > 0) t->cx--; break;
         case '\t': t->cx = (t->cx + 8) & ~7; if (t->cx > t->cols-1) t->cx = t->cols-1; break;
