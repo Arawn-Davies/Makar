@@ -2312,19 +2312,18 @@ void syscall_dispatch(registers_t *regs)
         if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
         int   cmd = (int)regs->ebx;
         void *ptr = (void *)(uintptr_t)regs->ecx;
-        /* The install engine calls the FS backends directly (not via VFS), and
-         * runs preemptibly, so serialise it under the FS big-lock: a file op in
-         * another task can't then race the installer's writes on the shared FS
-         * scratch.  Held for one begin/step/finish (one file per step) -- the
-         * recursive lock covers the engine's nested backend calls; drive
-         * enumeration touches no FS scratch so it stays outside. */
-        if (cmd == 3) { regs->eax = (uint32_t)install_exec_drives((install_drive_t *)ptr); break; }
-        vfs_fs_lock();
+        /* NOTE: the install engine runs WITHOUT the FS big-lock held across the
+         * step.  Holding vfs_fs_lock across a whole begin/step (the engine is
+         * preemptible) stalled the copy, so we keep the v0.10.0 behaviour: the
+         * engine's direct backend calls go unlocked.  The remaining race is the
+         * installer's iso9660 read vs. another task's iso9660 read on the shared
+         * sector scratch -- low severity (read/read, contained), to be closed in
+         * the preemption phase by per-op locking of the engine's backend calls. */
         if      (cmd == 0) regs->eax = (uint32_t)install_exec_begin((const install_params_t *)ptr);
         else if (cmd == 1) regs->eax = (uint32_t)install_exec_step((install_progress_t *)ptr);
         else if (cmd == 2) regs->eax = (uint32_t)install_exec_finish((const install_params_t *)ptr);
+        else if (cmd == 3) regs->eax = (uint32_t)install_exec_drives((install_drive_t *)ptr);
         else               regs->eax = (uint32_t)-1;
-        vfs_fs_unlock();
         break;
     }
     case SYS_MOUNT: {
