@@ -626,6 +626,11 @@ static inline int sys_passwd(const char *oldp, const char *newp)
 {
     return (int)syscall2(SYS_PASSWD, (long)oldp, (long)newp);
 }
+/* Test-and-clear the pending Ctrl-Alt-Del flag (1 if it was pressed). */
+static inline int sys_cad_pending(void)
+{
+    return (int)syscall1(SYS_CAD_PENDING, 0);
+}
 static inline int sys_gui_close(void)
 {
     return (int)syscall1(SYS_GUI_CLOSE, 0);

@@ -113,6 +113,7 @@
  * Verifies `old` against /etc/shadow then sets `new`.  Returns 0 ok, -2 if the
  * current password is wrong, -1 otherwise (bad args / read-only live rootfs). */
 #define SYS_PASSWD          270 /* int passwd(const char *old, const char *new)    */
+#define SYS_CAD_PENDING     271 /* int cad_pending(void) - test+clear Ctrl-Alt-Del */
 
 /*
  * Admin syscalls (219..229).

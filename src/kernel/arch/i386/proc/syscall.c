@@ -776,6 +776,13 @@ void syscall_dispatch(registers_t *regs)
         break;
     }
 
+    /* SYS_CAD_PENDING(271): test-and-clear the Ctrl-Alt-Del flag.  The GUI
+     * server polls this each frame to open its power menu instantly (the text
+     * path only services CAD inside a root text session). */
+    case SYS_CAD_PENDING:
+        regs->eax = (uint32_t)kb_take_cad_pending();
+        break;
+
     case SYS_GUI_CLOSE: {
         vtty_switch_root_text();
         g_gui_session = 0;          /* Exit to Shell: this session is now CLI */

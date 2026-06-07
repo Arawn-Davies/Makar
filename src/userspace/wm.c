@@ -883,18 +883,13 @@ int main(int argc, char **argv, char **envp)
         int cmoved = (cx!=cur_sx || cy!=cur_sy);  /* cursor moved this frame? */
 
         /* ---- window-management click handling ---- */
+        /* The power menu opens from the menubar icon OR from Ctrl-Alt-Del
+         * (polled below) -- both set this so the action dispatch lives once. */
+        int want_power_menu = 0;
+
         if (mpressed){
             int dk;
-            if (power_hit(cx,cy)){
-                int act=show_power_menu(cx,cy);
-                g_dirty=1; damage_full();           /* repaint desktop after modal */
-                if      (act==PWR_SHUTDOWN)    { power_action=PWR_SHUTDOWN;    break; }
-                else if (act==PWR_REBOOT)      { power_action=PWR_REBOOT;      break; }
-                else if (act==PWR_LOGOUT_GUI)  { power_action=PWR_LOGOUT_GUI;  break; }
-                else if (act==PWR_LOGOUT_SHELL){ exit_to_shell=1; break; }
-                else if (act==PWR_PASSWD)      { show_passwd_dialog(cx,cy); g_dirty=1; damage_full(); }
-                /* CANCEL: stay on the desktop */
-            }
+            if (power_hit(cx,cy)) want_power_menu=1;
             else if (dock_hit(cx,cy,&dk)){ W[dk].minimized=0; z_raise(dk); set_focus(dk); g_dirty=1; damage_full(); }
             else {
                 int hk=hit_window(cx,cy);
@@ -931,6 +926,22 @@ int main(int argc, char **argv, char **envp)
             if(w->x+w->w>(int)FBW)w->w=(int)FBW-w->x;
             if(w->y+w->h>(int)FBH-DOCK_H)w->h=(int)FBH-DOCK_H-w->y;
             g_dirty=1; damage_win(drag_win);     /* new size */
+        }
+
+        /* ---- Ctrl-Alt-Del opens the power menu instantly (kernel sets the
+         * flag from the IRQ; we test-and-clear it every frame) ---- */
+        if (sys_cad_pending()) want_power_menu=1;
+
+        if (want_power_menu){
+            int act=show_power_menu(cx,cy);
+            g_dirty=1; damage_full();                 /* repaint desktop after modal */
+            if      (act==PWR_SHUTDOWN)    { power_action=PWR_SHUTDOWN;    break; }
+            else if (act==PWR_REBOOT)      { power_action=PWR_REBOOT;      break; }
+            else if (act==PWR_LOGOUT_GUI)  { power_action=PWR_LOGOUT_GUI;  break; }
+            else if (act==PWR_LOGOUT_SHELL){ exit_to_shell=1; break; }
+            else if (act==PWR_PASSWD)      { show_passwd_dialog(cx,cy); g_dirty=1; damage_full(); }
+            /* CANCEL: stay on the desktop */
+            prev_left=0;                               /* swallow the click that opened it */
         }
 
         /* ---- forward input to the focused client over IPC ---- */

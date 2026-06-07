@@ -157,10 +157,27 @@ Clients (each an independent process, `src/userspace/mx*.c`):
 - **doom** is the windowed makx client (see below).
 
 An always-on **top menu bar** (drawn after the windows, never occluded) carries
-the Makar brand, the focused window's title, **Exit** (→ `sys_gui_close`, back
-to the CLI shell) and **Log Off** (→ `sys_logout`, ends the session). Both first
+the Makar brand, the focused window's title, and a **power icon** at the
+right. Clicking it (or pressing **Ctrl-Alt-Del**, see below) opens a centred
+modal **power menu** (`show_power_menu`) with: **Log out (graphical)**
+(→ `sys_logout`, re-shows login), **Log out to shell** (→ `sys_gui_close`,
+back to the CLI shell), **Shut down** (→ `sys_shutdown`), **Reboot**
+(→ `sys_reboot`), **Change password...** (the passwd dialog below), and
+**Cancel** (Esc). Shut down / reboot and the two log-out paths all first
 SIGKILL + reap every client child and restore statusbar state. Desktop + menu
 bar + dock are unconditional: the GUI is never chromeless.
+
+**Change-password dialog** (`show_passwd_dialog`): a centred modal with masked
+Current / New / Confirm fields (`ui_password`, Tab cycles, Esc cancels). OK
+calls **`SYS_PASSWD`** (`sys_passwd`, syscall 270) → `shadow_verify` the old
+password then `shadow_set_password` the new one; it needs a writable (installed)
+rootfs and reports "current password incorrect" / mismatch inline.
+
+**Ctrl-Alt-Del:** the kernel sets a pending flag from the keyboard IRQ; in a
+text session it opens `cad_menu`, but under the GUI the server polls
+**`SYS_CAD_PENDING`** (syscall 271, test-and-clear) every frame and opens the
+power menu instantly. Escape hatch: a *second* Ctrl-Alt-Del within ~1 s pulses
+an 8042 CPU reset from the IRQ, so a wedged GUI is still recoverable.
 
 **Still built into the server (this cut):** the desktop/dock/menu-bar/chrome (a
 compositor-owned panel + WM, like many simple stacks) and the graphical login
