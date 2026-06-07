@@ -568,7 +568,17 @@ int auth_try_autologin(const char *cmdline_user)
     if (!user || !*user)
         return 0;                       /* no autologin configured */
 
-    if (!shadow_user_exists(user)) {
+    /* The user is configured (cmdline autologin / /etc/autologin) and the live
+     * CD genuinely ships it (user:user), so a miss here is almost always a
+     * transient /etc/shadow read during early boot (the rootfs/ATAPI is still
+     * settling).  Retry briefly before falling back to the login prompt so the
+     * live CD autologins reliably. */
+    int found = 0;
+    for (int tries = 0; tries < 10; tries++) {
+        if (shadow_user_exists(user)) { found = 1; break; }
+        ksleep(5);                      /* ~50 ms */
+    }
+    if (!found) {
         Serial_WriteString("[auth] autologin user not found, requiring login: ");
         Serial_WriteString((char *)user);
         Serial_WriteString("\n");
