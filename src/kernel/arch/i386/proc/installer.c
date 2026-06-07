@@ -15,10 +15,13 @@
  * At runtime the FAT32 boot partition mounts as /mnt/boot and the data
  * partition mounts as /mnt/root (auto-detected by vfs_auto_mount).
  *
- * Rendering uses the VESA TTY paint primitives (vesa_tty_*), reserving the
- * bottom makmux status row.  In VGA-text fallback it degrades to a plain
- * numbered-prompt flow.  The shell repaints the screen (shell_restore_screen)
- * after installer_run() returns.
+ * Rendering is a real ANSI/VT100 terminal byte stream written to the invoking
+ * task's stdout (kfd_stdout_write): on a live text VT the bytes reach the
+ * framebuffer console's ANSI parser (vt_putchar); inside an mxterm window they
+ * reach the client's vt100 emulator over a pipe -- so the installer runs both
+ * from a shell and in a GUI window with one code path.  With no terminal at all
+ * (no VESA, not piped) it degrades to a plain numbered-prompt flow.  The shell
+ * repaints the screen (shell_restore_screen) after installer_run() returns.
  *
  * The host build still boots via GRUB; this deploys limine at runtime, reading
  * the vendored limine-bios.sys off the CD (staged at /limine/limine-bios.sys
@@ -37,6 +40,7 @@
 #include <kernel/fat32.h>
 #include <kernel/ext2.h>
 #include <kernel/vfs.h>
+#include <kernel/fd.h>
 #include <kernel/logfs.h>
 #include <kernel/heap.h>
 #include <kernel/tty.h>
@@ -119,13 +123,6 @@ static int  s_q_head, s_q_tail;
 static struct { char name[64]; int is_dir; } s_ents[ENTS_MAX];
 static int s_nents;
 
-/* Installed target info, set during do_install so the account-creation
- * wizard can remount the data partition without re-discovering it. */
-static uint8_t  s_inst_drive;
-static uint32_t s_inst_boot_lba;
-static uint32_t s_inst_data_lba;
-static int      s_inst_fs;
-
 /* Optional component trees, chosen in the wizard (default: install both). */
 static int      s_inst_docs = 1;   /* copy /docs to the target rootfs */
 static int      s_inst_src  = 1;   /* copy /src  to the target rootfs */
@@ -134,15 +131,22 @@ static int      s_inst_src  = 1;   /* copy /src  to the target rootfs */
 /* Geometry                                                                  */
 /* ------------------------------------------------------------------------- */
 
-static int g_gui;        /* 1 = VESA TUI, 0 = VGA text fallback */
+/* The installer renders as a real ANSI/VT100 terminal application.  Output is
+ * a byte stream of escape sequences written to the calling task's stdout via
+ * kfd_stdout_write(): on a live text VT those bytes reach the framebuffer
+ * console's ANSI parser (vt_putchar); inside an mxterm window they reach the
+ * client's vt100 emulator over a pipe.  Pure-VGA-text with no terminal at all
+ * (no VESA, not piped) degrades to a plain numbered-prompt flow via t_write. */
+static int g_ansi;       /* 1 = ANSI terminal available, 0 = VGA-text fallback */
 static uint32_t g_cols, g_rows;   /* usable area (status row excluded)       */
 
 static void tui_geometry(void)
 {
-    g_gui = vesa_tty_is_ready();
-    if (g_gui) {
-        g_cols = vesa_tty_get_cols();
-        g_rows = vesa_tty_usable_rows();
+    g_ansi = kfd_stdout_is_pipe() || vesa_tty_is_ready();
+    if (g_ansi) {
+        kfd_term_size(&g_cols, &g_rows);
+        if (g_cols == 0) g_cols = 80;
+        if (g_rows < 2)  g_rows = 25;
     } else {
         g_cols = 80;
         g_rows = 49;   /* 80x50 VGA text, minus status row */
@@ -150,24 +154,88 @@ static void tui_geometry(void)
 }
 
 /* ------------------------------------------------------------------------- */
-/* Low-level paint helpers (GUI mode only)                                   */
+/* ANSI output primitives                                                     */
 /* ------------------------------------------------------------------------- */
 
-static void paint_fill(uint32_t bg)
+/* Write to the invoking task's terminal; fall back to the kernel console when
+ * it has no usable stdout (in-kernel rescue shell). */
+static void out(const char *s)
 {
-    char blank[256];
-    uint32_t n = (g_cols < 255) ? g_cols : 255;
-    for (uint32_t i = 0; i < n; i++) blank[i] = ' ';
-    blank[n] = '\0';
-    for (uint32_t r = 0; r < g_rows; r++)
-        vesa_tty_paint_string_at(0, r, blank, C_FG, bg);
+    unsigned n = 0; while (s[n]) n++;
+    if (kfd_stdout_write(s, n) < 0) t_write(s, n);
+}
+static void outn(const char *s, unsigned n)
+{
+    if (kfd_stdout_write(s, n) < 0) t_write(s, n);
 }
 
+/* uint -> decimal text, returns length written (no NUL). */
+static int u2d(char *b, unsigned v)
+{
+    char t[10]; int n = 0;
+    if (!v) { b[0] = '0'; return 1; }
+    while (v) { t[n++] = (char)('0' + v % 10); v /= 10; }
+    for (int i = 0; i < n; i++) b[i] = t[n - 1 - i];
+    return n;
+}
+
+/* Emit SGR for an (fg,bg) pair drawn from the installer's RGB palette.  The
+ * console / mxterm map these 16-colour codes back to pixels; bright codes
+ * (9x/10x) carry the vivid title/warn/ok hues. */
+static void ansi_color(uint32_t fg, uint32_t bg)
+{
+    if (!g_ansi) return;
+    unsigned fc, bc;
+    if      (fg == C_TITLE) fc = 96;        /* bright cyan */
+    else if (fg == C_DIM)   fc = 37;        /* grey        */
+    else if (fg == C_SELFG) fc = 30;        /* dark (on cyan selection) */
+    else if (fg == C_WARN)  fc = 91;        /* bright red  */
+    else if (fg == C_OK)    fc = 92;        /* bright green */
+    else                    fc = 97;        /* C_FG bright white */
+    if      (bg == C_SELBG) bc = 106;       /* bright cyan (== C_TITLE) */
+    else if (bg == C_WARN)  bc = 101;
+    else                    bc = 44;        /* C_BG deep blue / default */
+    char b[24]; int o = 0;
+    b[o++] = 0x1b; b[o++] = '['; b[o++] = '0'; b[o++] = ';';
+    o += u2d(b + o, fc); b[o++] = ';'; o += u2d(b + o, bc); b[o++] = 'm';
+    outn(b, (unsigned)o);
+}
+static void ansi_goto(uint32_t col, uint32_t row)
+{
+    if (!g_ansi) return;
+    char b[24]; int o = 0;
+    b[o++] = 0x1b; b[o++] = '[';
+    o += u2d(b + o, row + 1); b[o++] = ';'; o += u2d(b + o, col + 1); b[o++] = 'H';
+    outn(b, (unsigned)o);
+}
+
+/* Clear the whole screen to bg, cursor home. */
+static void tui_clear(uint32_t bg)
+{
+    if (!g_ansi) return;
+    ansi_color(C_FG, bg);
+    out("\x1b[2J\x1b[H");
+}
+
+/* Paint a positioned, coloured string (no-op in VGA-text fallback).  Embedded
+ * '\n' starts a new line re-anchored at the same start column (some menu
+ * descriptions are multi-line) rather than wrapping to column 0. */
 static void tui_at(uint32_t col, uint32_t row, const char *s,
                    uint32_t fg, uint32_t bg)
 {
-    if (g_gui)
-        vesa_tty_paint_string_at(col, row, s, fg, bg);
+    if (!g_ansi) return;
+    ansi_color(fg, bg);
+    uint32_t line = 0;
+    const char *p = s;
+    for (;;) {
+        ansi_goto(col, row + line);
+        char buf[256]; int o = 0;
+        while (*p && *p != '\n' && o < (int)sizeof(buf) - 1) buf[o++] = *p++;
+        buf[o] = '\0';
+        out(buf);
+        if (*p != '\n') break;   /* hit end of string */
+        p++; line++;             /* consume newline, continue one row down */
+    }
 }
 
 /* Centre a string on 'row'. */
@@ -181,12 +249,12 @@ static void tui_center(uint32_t row, const char *s, uint32_t fg, uint32_t bg)
 /* Common header (title bar + footer hint) for every wizard screen. */
 static void tui_frame(const char *title, const char *hint)
 {
-    paint_fill(C_BG);
+    tui_clear(C_BG);
     char bar[256];
     uint32_t n = (g_cols < 255) ? g_cols : 255;
     for (uint32_t i = 0; i < n; i++) bar[i] = ' ';
     bar[n] = '\0';
-    vesa_tty_paint_string_at(0, 0, bar, C_SELFG, C_TITLE);
+    tui_at(0, 0, bar, C_SELFG, C_TITLE);
     tui_center(0, title, C_SELFG, C_TITLE);
     if (hint)
         tui_at(2, g_rows - 1, hint, C_DIM, C_BG);
@@ -196,66 +264,69 @@ static void tui_frame(const char *title, const char *hint)
 /* Keyboard helpers                                                          */
 /* ------------------------------------------------------------------------- */
 
-static unsigned char getkey(void) { return keyboard_getchar(); }
+/* One key.  Source is the mxterm stdin pipe when piped, else the raw keyboard;
+ * arrow bytes (0x80-0x83), Esc (0x1B) and ASCII match either way.  EOF (pipe
+ * writer gone) returns Esc so menus cancel rather than spin. */
+static unsigned char getkey(void)
+{
+    int b = kfd_stdin_getbyte();
+    return (b < 0) ? 0x1B : (unsigned char)b;
+}
 
-/* Read a line (VGA fallback prompts / "type yes" confirm). Echoes to VGA. */
+/* Read a line (VGA fallback prompts / "type yes" confirm) with echo. */
 static void readline(char *buf, size_t max)
 {
     size_t len = 0;
     while (1) {
         unsigned char c = getkey();
-        if (c == '\n' || c == '\r') { t_putchar('\n'); break; }
-        if (c == '\b') { if (len) { len--; t_backspace(); } continue; }
+        if (c == '\n' || c == '\r') { out("\r\n"); break; }
+        if (c == '\b' || c == 127) { if (len) { len--; out("\b \b"); } continue; }
         if (c < 0x20 || c > 0x7E) continue;
-        if (len < max - 1) { buf[len++] = (char)c; t_putchar((char)c); }
+        if (len < max - 1) { buf[len++] = (char)c; { char e[2]={(char)c,0}; out(e); } }
     }
     buf[len] = '\0';
 }
 
-/* Masked password readline: echoes '*' per character with a '_' cursor.
- * GUI mode paints at (field_col, row); VGA mode echoes to terminal cursor. */
+/* Masked password readline: echoes '*' per character with a '_' cursor at
+ * (field_col, row) in ANSI mode; plain '*' echo in VGA-text fallback. */
 static void readline_masked(char *buf, size_t max,
                             uint32_t field_col, uint32_t row)
 {
     size_t len = 0;
 
-    /* Draw initial cursor */
-    if (g_gui)
-        vesa_tty_paint_string_at(field_col, row, "_", C_TITLE, C_BG);
+    if (g_ansi)
+        tui_at(field_col, row, "_", C_TITLE, C_BG);
 
     while (1) {
         unsigned char c = getkey();
         if (c == '\n' || c == '\r') {
-            /* Clear cursor on commit */
-            if (g_gui)
-                vesa_tty_paint_string_at(field_col + (uint32_t)len, row, " ", C_FG, C_BG);
+            if (g_ansi)
+                tui_at(field_col + (uint32_t)len, row, " ", C_FG, C_BG);
+            else
+                out("\r\n");
             break;
         }
         if (c == '\b' || c == 127) {
             if (len) {
-                /* Erase cursor at current pos */
-                if (g_gui)
-                    vesa_tty_paint_string_at(field_col + (uint32_t)len, row, " ", C_FG, C_BG);
-                len--;
-                /* Erase the star that was at len */
-                if (g_gui)
-                    vesa_tty_paint_string_at(field_col + (uint32_t)len, row, "_", C_TITLE, C_BG);
-                else
-                    t_backspace();
+                if (g_ansi) {
+                    tui_at(field_col + (uint32_t)len, row, " ", C_FG, C_BG);
+                    len--;
+                    tui_at(field_col + (uint32_t)len, row, "_", C_TITLE, C_BG);
+                } else {
+                    len--; out("\b \b");
+                }
             }
             continue;
         }
         if (c < 0x20 || c > 0x7E) continue;
         if (len < max - 1) {
-            /* Overwrite cursor with star, advance cursor */
-            if (g_gui) {
-                vesa_tty_paint_string_at(field_col + (uint32_t)len, row, "*", C_FG, C_BG);
-            } else {
-                t_putchar('*');
-            }
+            if (g_ansi)
+                tui_at(field_col + (uint32_t)len, row, "*", C_FG, C_BG);
+            else
+                out("*");
             buf[len++] = (char)c;
-            if (g_gui)
-                vesa_tty_paint_string_at(field_col + (uint32_t)len, row, "_", C_TITLE, C_BG);
+            if (g_ansi)
+                tui_at(field_col + (uint32_t)len, row, "_", C_TITLE, C_BG);
         }
     }
     buf[len] = '\0';
@@ -270,7 +341,7 @@ static int tui_menu(const char *title, const char *hint,
                     const char *const *items, int n,
                     const char *const *descs)
 {
-    if (!g_gui) {
+    if (!g_ansi) {
         /* VGA fallback: numbered list + readline. */
         t_writestring("\n=== ");
         t_writestring(title);
@@ -293,12 +364,25 @@ static int tui_menu(const char *title, const char *hint,
         }
     }
 
+    /* Vertical step per item: 1 label row + the tallest description + a blank
+     * separator row, so multi-line descriptions never collide with the next
+     * item (the bug that made the filesystem page look cramped). */
+    int desc_lines = 0;
+    if (descs)
+        for (int i = 0; i < n; i++) {
+            if (!descs[i]) continue;
+            int ln = 1;
+            for (const char *p = descs[i]; *p; p++) if (*p == '\n') ln++;
+            if (ln > desc_lines) desc_lines = ln;
+        }
+    uint32_t step = desc_lines ? (uint32_t)(desc_lines + 2) : 2;
+
     int sel = 0;
     uint32_t top = 4;
     while (1) {
         tui_frame(title, hint ? hint : "Up/Down to move  Enter to select  Esc to cancel");
         for (int i = 0; i < n; i++) {
-            uint32_t row = top + (uint32_t)i * 2;
+            uint32_t row = top + (uint32_t)i * step;
             char line[128];
             /* "  > label" with left padding; pad the rest with spaces so the
              * selected highlight spans a fixed width. */
@@ -315,7 +399,7 @@ static int tui_menu(const char *title, const char *hint,
             else
                 tui_at(4, row, line, C_FG, C_BG);
             if (descs && descs[i])
-                tui_at(8, row + 1, descs[i], C_DIM, C_BG);
+                tui_at(12, row + 1, descs[i], C_DIM, C_BG);   /* indent under the label */
         }
         unsigned char c = getkey();
         if (c == KEY_ARROW_UP)        sel = (sel == 0) ? n - 1 : sel - 1;
@@ -329,7 +413,7 @@ static int tui_menu(const char *title, const char *hint,
  * against dropped keystrokes and the standard TUI idiom.  VGA: type "yes". */
 static int tui_confirm(const char *title, const char *l1, const char *l2)
 {
-    if (g_gui) {
+    if (g_ansi) {
         /* Paint the warning lines, then present the choice as a menu so the
          * (highlighted, reliable) arrow/Enter path drives it.  Default is
          * Cancel - the operator must move down to Install. */
@@ -380,7 +464,7 @@ static void box_border(void)
 /* Repaint the visible tail of the log inside the box. */
 static void box_repaint(void)
 {
-    if (!g_gui) return;
+    if (!g_ansi) return;
     int start = (s_log_n > (int)s_box_vis) ? s_log_n - (int)s_box_vis : 0;
     char blank[LOG_W];
     for (uint32_t i = 0; i < s_box_w - 2 && i < LOG_W - 1; i++) blank[i] = ' ';
@@ -397,8 +481,8 @@ static void box_repaint(void)
 static void exec_screen(const char *title)
 {
     s_log_n = 0;
-    if (g_gui) {
-        vesa_tty_clear();
+    if (g_ansi) {
+        tui_clear(C_BG);
         tui_frame(title, "Installing - please wait...");
         s_box_top   = 2;
         s_box_bot   = (g_rows > 4) ? g_rows - 3 : g_rows - 1;
@@ -424,7 +508,7 @@ static void tui_log(const char *s)
      * stopped. */
     logfs_append_line("install.log", s);
 
-    if (g_gui) {
+    if (g_ansi) {
         char *dst = s_log[s_log_n % LOG_LINES];
         uint32_t i = 0;
         while (s[i] && i < LOG_W - 1) { dst[i] = s[i]; i++; }
@@ -440,7 +524,7 @@ static void tui_log(const char *s)
 /* Overwrite the transient status line (running counts during long copies). */
 static void tui_status(const char *s)
 {
-    if (g_gui) {
+    if (g_ansi) {
         char blank[256];
         uint32_t w = (g_cols < 255) ? g_cols : 255;
         for (uint32_t i = 0; i < w; i++) blank[i] = ' ';
@@ -560,73 +644,6 @@ static const char *q_pop(void)
     return p;
 }
 
-/* Recursively mirror an ISO directory tree onto the rootfs (BFS).  Paths are
- * identical on both sides (same layout), so one path serves source + dest.
- * Logs one step line, then updates a running file count on the status line so
- * the box doesn't fill with hundreds of per-file lines. */
-static void copy_tree(const char *root)
-{
-    char line[LOG_W];
-    str_u(line, "Copying ", 0);   /* placeholder, rebuild below */
-    int o = 0; const char *p = "Copying "; while (*p) line[o++] = *p++;
-    p = root; while (*p) line[o++] = *p++;
-    const char *t = " ..."; while (*t) line[o++] = *t++; line[o] = '\0';
-    tui_log(line);
-
-    uint32_t files = 0;
-    rfs_mkdir(root);
-    q_reset();
-    q_push(root);
-    while (!q_empty()) {
-        char dir[PATH_MAX_];
-        strncpy(dir, q_pop(), PATH_MAX_ - 1);
-        dir[PATH_MAX_ - 1] = '\0';
-
-        s_nents = 0;
-        iso9660_complete(g_cd, dir, "", enum_cb, NULL);
-
-        for (int i = 0; i < s_nents; i++) {
-            char child[PATH_MAX_];
-            int co = 0;
-            const char *d = dir;
-            while (*d && co < PATH_MAX_ - 1) child[co++] = *d++;
-            if (!(co == 1 && child[0] == '/') && co < PATH_MAX_ - 1)
-                child[co++] = '/';
-            const char *nm = s_ents[i].name;
-            while (*nm && co < PATH_MAX_ - 1) child[co++] = *nm++;
-            child[co] = '\0';
-
-            if (s_ents[i].is_dir) {
-                rfs_mkdir(child);
-                q_push(child);
-            } else {
-                /* Name the current file on the status line *before* copying it.
-                 * rfs_write is whole-file (no progress callback), so a large
-                 * file (e.g. the 12 MB DOOM.WAD) otherwise sits on a stale
-                 * "copied N files" line and looks frozen.  Showing the name
-                 * makes it visibly alive: the operator sees which file is in
-                 * flight even when one copy takes a while under emulation. */
-                {
-                    char st[64];
-                    int so = 0;
-                    const char *pre = "  copying "; while (*pre) st[so++] = *pre++;
-                    const char *nm = s_ents[i].name;
-                    while (*nm && so < (int)sizeof(st) - 6) st[so++] = *nm++;
-                    const char *e = " ..."; while (*e) st[so++] = *e++; st[so] = '\0';
-                    tui_status(st);
-                }
-                copy_file(child, child);
-                files++;
-            }
-        }
-    }
-    char done[64];
-    str_u(done, "  done - ", files);
-    int do_ = (int)strlen(done);
-    const char *f = " files"; while (*f) done[do_++] = *f++; done[do_] = '\0';
-    tui_log(done);
-    tui_status("");
-}
 
 /* ------------------------------------------------------------------------- */
 /* limine MBR install (mirrors host/limine.c::bios_install, MBR path, v12.x) */
@@ -803,115 +820,7 @@ static uint32_t build_limine_conf(char *buf, uint32_t cap, const char *autologin
     return o;
 }
 
-/* Append "<prefix> (rc=<n>)" to the installer log -- detailed failure
- * context so a post-mortem `cat /log/install.log` records exactly which
- * step failed and the backend return code.  Buf is generous (`tui_log`
- * truncates at LOG_W). */
-static void tui_log_rc(const char *prefix, int rc)
-{
-    char buf[160];
-    int  i = 0;
-    while (prefix[i] && i < 120) { buf[i] = prefix[i]; i++; }
-    /* " (rc=<int>)" */
-    const char *suf = " (rc=";
-    for (int j = 0; suf[j] && i < 154; j++) buf[i++] = suf[j];
-    int n = rc;
-    if (n < 0) { buf[i++] = '-'; n = -n; }
-    char dig[12]; int dn = 0;
-    if (n == 0) dig[dn++] = '0';
-    while (n) { dig[dn++] = (char)('0' + (n % 10)); n /= 10; }
-    while (dn--) buf[i++] = dig[dn];
-    buf[i++] = ')';
-    buf[i]   = '\0';
-    tui_log(buf);
-}
 
-static int do_install(uint8_t drive, uint32_t disk_sectors, int fs)
-{
-    uint32_t boot_lba = 0, boot_count = 0;
-    uint32_t data_lba = 0, data_count = 0;
-
-    exec_screen("Installing Makar");
-
-    tui_log("Partitioning drive...");
-    int prc = partition_whole_disk(drive, disk_sectors, fs,
-                                   &boot_lba, &boot_count,
-                                   &data_lba, &data_count);
-    if (prc != 0) {
-        tui_log_rc("  ERROR: failed to write partition table.", prc);
-        return -1;
-    }
-
-    /* ---- Partition 1: FAT32 boot (kernel + limine stage 3) ---- */
-
-    tui_log("Formatting boot partition (FAT32, 34 MiB)...");
-    int rc;
-    if ((rc = fat32_mkfs(drive, boot_lba, boot_count)) != 0) {
-        tui_log_rc("  ERROR: boot mkfs failed (need >= 33 MiB for FAT32).", rc);
-        return -2;
-    }
-
-    /* Boot files are copied after the remaining wizard inputs have been
-     * collected.  This phase only prepares the filesystem. */
-
-    /* ---- Partition 2: data (apps / docs / src) ---- */
-
-    tui_log(fs == ROOTFS_EXT2 ? "Formatting data partition (ext2)..."
-                               : "Formatting data partition (FAT32)...");
-    int mk = (fs == ROOTFS_EXT2) ? ext2_mkfs(drive, data_lba, data_count)
-                                  : fat32_mkfs(drive, data_lba, data_count);
-    if (mk != 0) {
-        tui_log_rc(fs == ROOTFS_EXT2
-                       ? "  ERROR: data mkfs (ext2) failed."
-                       : "  ERROR: data mkfs (FAT32) failed.", mk);
-        return -4;
-    }
-
-    tui_log("Mounting data partition...");
-    if (fat32_mounted()) fat32_unmount();
-    int mnt = (fs == ROOTFS_EXT2) ? ext2_mount(drive, data_lba)
-                                   : fat32_mount(drive, data_lba);
-    if (mnt != 0) {
-        tui_log_rc(fs == ROOTFS_EXT2 ? "  ERROR: data mount (ext2) failed."
-                                      : "  ERROR: data mount (FAT32) failed.", mnt);
-        return -5;
-    }
-    g_root_fs = fs;
-    /* Record for the post-install account-creation step. */
-    s_inst_drive    = drive;
-    s_inst_boot_lba = boot_lba;
-    s_inst_data_lba = data_lba;
-    s_inst_fs       = fs;
-
-    /* Data partition contents are copied after the remaining wizard inputs
-     * have been collected, so the installer does not spend time mirroring
-     * large trees before hostname/account prompts. */
-    if (fs == ROOTFS_EXT2) ext2_unmount(); else fat32_unmount();
-
-    /* ---- limine MBR install ---- */
-
-    tui_log("Installing limine bootloader...");
-    /* The MBR boot code + stage2 come from limine-hdd.bin (mirrors the host
-     * bios-install, which embeds binary_limine_hdd_bin_data); limine-bios.sys
-     * is stage3 and lives on the FAT32 /mnt/boot partition (/limine, above). */
-    uint32_t sys_sz = 0;
-    if (iso9660_read_file(g_cd, LIMINE_HDD_ISO_PATH, s_filebuf,
-                          INST_MAX_FILE_SIZE, &sys_sz) != 0 || sys_sz <= 512) {
-        tui_log("  ERROR: cannot read limine-hdd.bin from CD.");
-        return -6;
-    }
-    int li = limine_install_mbr(drive, s_filebuf, sys_sz);
-    if (li != 0) {
-        char e[48];
-        str_u(e, "  ERROR: limine install failed (", (uint32_t)(-li));
-        int eo = (int)strlen(e); e[eo++] = ')'; e[eo] = '\0';
-        tui_log(e);
-        return -7;
-    }
-
-    tui_log("Done.");
-    return 0;
-}
 
 /* ------------------------------------------------------------------------- */
 /* Drive picker                                                              */
@@ -953,6 +862,313 @@ static int build_drive_list(void)
 }
 
 /* ------------------------------------------------------------------------- */
+/* Shared headless execution engine (kernel/installer.h)                     */
+/*                                                                           */
+/* Drives the same disk work the TUI wizard performs, but parameterised and  */
+/* *stepped* so a GUI front-end (mxinstall.elf) can render a live progress   */
+/* bar and yield between files instead of freezing behind one blocking call. */
+/* ------------------------------------------------------------------------- */
+
+/* Build a shadow line "user:$mh$<salt16>$<hash16>:::::::\n" into out (>=128).
+ * Returns its length.  Salt seeded from the timer + RTC like the TUI path. */
+static uint32_t make_shadow_line(const char *user, const char *pw, char *out)
+{
+    char salt[17], hash[17];
+    uint32_t ticks = timer_get_ticks();
+    uint32_t rtcsec = 0; rtc_unix_time(&rtcsec);
+    uint8_t seed[8];
+    seed[0]=(uint8_t)ticks;        seed[1]=(uint8_t)(ticks>>8);
+    seed[2]=(uint8_t)(ticks>>16);  seed[3]=(uint8_t)(ticks>>24);
+    seed[4]=(uint8_t)rtcsec;       seed[5]=(uint8_t)(rtcsec>>8);
+    seed[6]=(uint8_t)(rtcsec>>16); seed[7]=(uint8_t)(rtcsec>>24);
+    microhash_hex16(seed, 8, salt);
+    {
+        size_t plen = strlen(pw); if (plen > 256) plen = 256;
+        uint8_t combined[16 + 256];
+        for (int i = 0; i < 16; i++) combined[i] = (uint8_t)salt[i];
+        for (size_t i = 0; i < plen; i++) combined[16+i] = (uint8_t)pw[i];
+        microhash_hex16(combined, 16 + plen, hash);
+    }
+    uint32_t pos = 0;
+    for (const char *u = user; *u && pos < 64; u++) out[pos++] = *u;
+    out[pos++]=':'; out[pos++]='$'; out[pos++]='m'; out[pos++]='h'; out[pos++]='$';
+    for (int i=0;i<16;i++) out[pos++]=salt[i];
+    out[pos++]='$';
+    for (int i=0;i<16;i++) out[pos++]=hash[i];
+    const char *tail = ":::::::\n"; for (int i=0;tail[i];i++) out[pos++]=tail[i];
+    out[pos]='\0';
+    return pos;
+}
+
+/* Default per-account rc files (mirrors the TUI installer's). */
+static const char s_makrc[]  = "# ~/.makshrc -- sourced by sh.elf on login\nPATH=/apps:/bin\n";
+static const char s_vixrc[]  = "\" ~/.vixrc -- read by vix on startup\nset linenumbers\n";
+static const char s_sbrc[]   =
+    "# ~/.sbrc -- statusbar layout: <section> <widgets...>\n"
+    "left command\ncenter tabs\nright cpu mem rootfs time\n";
+
+/* Write the home dir + .makshrc/.vixrc/.sbrc for one account. */
+static void write_home(const char *home)
+{
+    rfs_mkdir(home);
+    char path[96];
+    const char *files[3] = { "/.makshrc", "/.vixrc", "/.sbrc" };
+    const char *body[3]  = { s_makrc, s_vixrc, s_sbrc };
+    for (int f = 0; f < 3; f++) {
+        int o = 0; const char *h = home;
+        while (*h && o < (int)sizeof(path)-12) path[o++] = *h++;
+        const char *s = files[f]; while (*s) path[o++] = *s++; path[o] = '\0';
+        rfs_write(path, body[f], (uint32_t)strlen(body[f]));
+    }
+}
+
+/* Write /etc/{hostname,shadow,autologin} + home dirs from the params.  The data
+ * partition must already be mounted (g_root_fs set). */
+static void install_write_meta(const install_params_t *p)
+{
+    rfs_mkdir("/etc");
+
+    const char *host = (p->hostname[0]) ? p->hostname : "makar";
+    { char hf[66]; int n=0; for (const char *h=host; *h && n<64; h++) hf[n++]=*h;
+      hf[n++]='\n'; hf[n]='\0'; rfs_write("/etc/hostname", hf, (uint32_t)n); }
+
+    /* /etc/shadow: root (if a password was set) + optional user. */
+    {
+        char shadow[512]; uint32_t sp = 0;
+        if (p->root_pw[0]) {
+            char ln[160]; uint32_t l = make_shadow_line("root", p->root_pw, ln);
+            for (uint32_t i=0;i<l && sp<sizeof(shadow);i++) shadow[sp++]=ln[i];
+        }
+        if (p->user_name[0] && p->user_pw[0]) {
+            char ln[160]; uint32_t l = make_shadow_line(p->user_name, p->user_pw, ln);
+            for (uint32_t i=0;i<l && sp<sizeof(shadow);i++) shadow[sp++]=ln[i];
+        }
+        if (sp) rfs_write("/etc/shadow", shadow, sp);
+    }
+
+    if (p->autologin[0]) {
+        char al[66]; int n=0; for (const char *a=p->autologin; *a && n<64; a++) al[n++]=*a;
+        al[n++]='\n'; al[n]='\0'; rfs_write("/etc/autologin", al, (uint32_t)n);
+    }
+
+    /* Home directories. */
+    rfs_mkdir("/root"); rfs_mkdir("/home");
+    if (p->root_pw[0]) write_home("/root");
+    if (p->user_name[0] && p->user_pw[0]) {
+        char home[80]; int o=0; const char *pre="/home/";
+        while (*pre) home[o++]=*pre++;
+        for (const char *u=p->user_name; *u && o<(int)sizeof(home)-1; u++) home[o++]=*u;
+        home[o]='\0';
+        write_home(home);
+    }
+}
+
+/* Copy-iterator state (BFS across the selected trees, one file per step). */
+static const char *s_gui_trees[4];
+static int         s_gui_ntrees, s_gui_tree_i, s_gui_ent_i;
+static uint32_t    s_gui_files, s_gui_total;
+static char        s_gui_dir[PATH_MAX_];
+
+/* Count files across all selected trees up-front, so the copy phase can report
+ * an accurate percentage.  A pure directory walk (no file reads), so it's cheap
+ * relative to the copy itself; uses the shared BFS scratch (s_copyq/s_ents). */
+static uint32_t install_count_files(void)
+{
+    uint32_t total = 0;
+    for (int t = 0; t < s_gui_ntrees; t++) {
+        q_reset();
+        q_push(s_gui_trees[t]);
+        while (!q_empty()) {
+            char dir[PATH_MAX_];
+            strncpy(dir, q_pop(), PATH_MAX_ - 1);
+            dir[PATH_MAX_ - 1] = '\0';
+            s_nents = 0;
+            iso9660_complete(g_cd, dir, "", enum_cb, NULL);
+            for (int i = 0; i < s_nents; i++) {
+                if (!s_ents[i].is_dir) { total++; continue; }
+                char child[PATH_MAX_]; int co = 0;
+                for (const char *d = dir; *d && co < PATH_MAX_ - 1; d++) child[co++] = *d;
+                if (!(co == 1 && child[0] == '/') && co < PATH_MAX_ - 1) child[co++] = '/';
+                for (const char *nm = s_ents[i].name; *nm && co < PATH_MAX_ - 1; nm++) child[co++] = *nm;
+                child[co] = '\0';
+                q_push(child);
+            }
+        }
+    }
+    return total;
+}
+
+/* Run the install engine preemptibly: syscalls normally execute with
+ * interrupts masked (non-preemptible), which froze the whole machine -- mouse
+ * included -- for the duration of a disk-bound install.  Enabling interrupts
+ * here lets the timer preempt on its fixed schedule, so the compositor and
+ * other tasks keep running at full frame rate while files copy in the
+ * background.  The shared state this path touches is made safe for that: the
+ * heap is irq-guarded and the IDE controller is behind a lock.  (The FS
+ * scratch buffers are only safe because the engine is the sole disk-FS user
+ * during an install; concurrent FS from another task is the remaining gap,
+ * tracked for the full preemptive-kernel pass.) */
+static inline void inst_preempt_on(void) { __asm__ volatile("sti"); }
+
+int install_exec_begin(const install_params_t *p)
+{
+    inst_preempt_on();
+    if (!p) return -1;
+    int cd = find_cdrom(); if (cd < 0) return -2;
+    g_cd = (uint8_t)cd;
+    if (!s_filebuf) { s_filebuf = (uint8_t *)kmalloc(INST_MAX_FILE_SIZE); if (!s_filebuf) return -3; }
+
+    const ide_drive_t *hdd = ide_get_drive(p->drive);
+    if (!hdd) return -4;
+    int fs = (p->fs == INSTALL_FS_FAT32) ? ROOTFS_FAT32 : ROOTFS_EXT2;
+
+    uint32_t b_lba=0,b_cnt=0,d_lba=0,d_cnt=0;
+    if (partition_whole_disk(p->drive, hdd->size, fs, &b_lba,&b_cnt,&d_lba,&d_cnt) != 0) return -5;
+    if (fat32_mkfs(p->drive, b_lba, b_cnt) != 0) return -6;
+    int mk = (fs == ROOTFS_EXT2) ? ext2_mkfs(p->drive, d_lba, d_cnt)
+                                  : fat32_mkfs(p->drive, d_lba, d_cnt);
+    if (mk != 0) return -7;
+
+    /* limine MBR. */
+    uint32_t sys_sz = 0;
+    if (iso9660_read_file(g_cd, LIMINE_HDD_ISO_PATH, s_filebuf, INST_MAX_FILE_SIZE, &sys_sz) != 0
+        || sys_sz <= 512) return -8;
+    if (limine_install_mbr(p->drive, s_filebuf, sys_sz) != 0) return -9;
+
+    /* Boot partition files. */
+    if (fat32_mounted()) fat32_unmount();
+    if (fat32_mount(p->drive, b_lba) != 0) return -10;
+    g_root_fs = ROOTFS_FAT32;
+    fat32_mkdir("/boot"); fat32_mkdir("/limine");
+    copy_one("/boot/makar.kernel", "/boot/makar.kernel");
+    copy_one(LIMINE_SYS_ISO_PATH, "/limine/limine-bios.sys");
+    { static char lbuf[1024]; uint32_t ln = build_limine_conf(lbuf, sizeof lbuf, p->autologin);
+      rfs_write("/limine/limine.conf", lbuf, ln); }
+    fat32_unmount();
+
+    /* Data partition: mount + metadata, leave mounted for the copy steps. */
+    int mnt = (fs == ROOTFS_EXT2) ? ext2_mount(p->drive, d_lba) : fat32_mount(p->drive, d_lba);
+    if (mnt != 0) return -11;
+    g_root_fs = fs;
+    install_write_meta(p);
+
+    /* Build the tree list, count files for the progress %, then seed the
+     * copy iterator. */
+    s_gui_ntrees = 0;
+    s_gui_trees[s_gui_ntrees++] = "/apps";
+    if (p->install_docs) s_gui_trees[s_gui_ntrees++] = "/docs";
+    if (p->install_src)  s_gui_trees[s_gui_ntrees++] = "/src";
+    s_gui_trees[s_gui_ntrees++] = "/usr";
+    s_gui_total = install_count_files();
+    s_gui_tree_i = 0; s_gui_files = 0;
+    s_nents = 0; s_gui_ent_i = 0;
+    q_reset();
+    rfs_mkdir(s_gui_trees[0]); q_push(s_gui_trees[0]);
+    { char b[48]; str_u(b, "INSTALL>exec begin ok, files=", s_gui_total);
+      Serial_WriteString(b); Serial_WriteString("\n"); }
+    return 0;
+}
+
+int install_exec_step(install_progress_t *prog)
+{
+    inst_preempt_on();
+    if (prog) { prog->done = 0; prog->files = s_gui_files; prog->total = s_gui_total; prog->current[0] = '\0'; }
+    for (;;) {
+        if (s_gui_ent_i >= s_nents) {
+            /* Current directory drained: take the next dir, else next tree. */
+            if (!q_empty()) {
+                strncpy(s_gui_dir, q_pop(), PATH_MAX_ - 1);
+                s_gui_dir[PATH_MAX_ - 1] = '\0';
+                s_nents = 0;
+                iso9660_complete(g_cd, s_gui_dir, "", enum_cb, NULL);
+                s_gui_ent_i = 0;
+                continue;
+            }
+            s_gui_tree_i++;
+            if (s_gui_tree_i >= s_gui_ntrees) {
+                if (prog) { prog->done = 1; prog->files = s_gui_files; prog->total = s_gui_total; }
+                Serial_WriteString("INSTALL>copy done\n");
+                return 0;   /* all trees copied */
+            }
+            q_reset();
+            rfs_mkdir(s_gui_trees[s_gui_tree_i]);
+            q_push(s_gui_trees[s_gui_tree_i]);
+            s_nents = 0; s_gui_ent_i = 0;
+            continue;
+        }
+
+        int idx = s_gui_ent_i++;
+        /* Build "<dir>/<name>". */
+        char child[PATH_MAX_]; int co = 0;
+        for (const char *d = s_gui_dir; *d && co < PATH_MAX_ - 1; d++) child[co++] = *d;
+        if (!(co == 1 && child[0] == '/') && co < PATH_MAX_ - 1) child[co++] = '/';
+        for (const char *nm = s_ents[idx].name; *nm && co < PATH_MAX_ - 1; nm++) child[co++] = *nm;
+        child[co] = '\0';
+
+        if (s_ents[idx].is_dir) {
+            rfs_mkdir(child);
+            q_push(child);
+            continue;   /* directories are quick: keep going within this step */
+        }
+        copy_file(child, child);
+        s_gui_files++;
+        if (prog) {
+            prog->files = s_gui_files;
+            prog->total = s_gui_total;
+            int o = 0; for (const char *nm = s_ents[idx].name; *nm && o < (int)sizeof(prog->current)-1; nm++)
+                prog->current[o++] = *nm;
+            prog->current[o] = '\0';
+        }
+        /* Per-file serial breadcrumb with running count + percentage. */
+        {
+            unsigned pct = s_gui_total ? (s_gui_files * 100u) / s_gui_total : 100u;
+            char b[160]; int o = 0;
+            const char *t = "INSTALL>copy ";       while (*t) b[o++] = *t++;
+            { char n[12]; int ni=0; uint32_t v=s_gui_files; if(!v)n[ni++]='0'; while(v){n[ni++]=(char)('0'+v%10);v/=10;} while(ni)b[o++]=n[--ni]; }
+            b[o++]='/';
+            { char n[12]; int ni=0; uint32_t v=s_gui_total; if(!v)n[ni++]='0'; while(v){n[ni++]=(char)('0'+v%10);v/=10;} while(ni)b[o++]=n[--ni]; }
+            b[o++]=' '; b[o++]='(';
+            { char n[12]; int ni=0; uint32_t v=pct; if(!v)n[ni++]='0'; while(v){n[ni++]=(char)('0'+v%10);v/=10;} while(ni)b[o++]=n[--ni]; }
+            b[o++]='%'; b[o++]=')'; b[o++]=' ';
+            for (const char *nm = s_ents[idx].name; *nm && o < (int)sizeof(b)-2; nm++) b[o++]=*nm;
+            b[o++]='\n'; b[o]='\0';
+            Serial_WriteString(b);
+        }
+        return 1;   /* one file copied; more work remains */
+    }
+}
+
+int install_exec_drives(install_drive_t *out)
+{
+    if (!out) return 0;
+    int n = 0;
+    for (int i = 0; i < IDE_MAX_DRIVES && n < INSTALL_MAX_DRIVES; i++) {
+        const ide_drive_t *d = ide_get_drive((uint8_t)i);
+        if (!d || !d->present || d->type != IDE_TYPE_ATA) continue;
+        out[n].index    = (unsigned char)i;
+        out[n].size_mib = d->size / 2048u;
+        int o = 0;
+        for (const char *m = d->model; *m && o < (int)sizeof(out[n].model)-1; m++)
+            out[n].model[o++] = *m;
+        out[n].model[o] = '\0';
+        n++;
+    }
+    return n;
+}
+
+int install_exec_finish(const install_params_t *p)
+{
+    inst_preempt_on();
+    int fs = (p && p->fs == INSTALL_FS_FAT32) ? ROOTFS_FAT32 : ROOTFS_EXT2;
+    if (rfs_mkdir("/bin") != 0)
+        Serial_WriteString("[install] WARNING: mkdir /bin failed\n");
+    if (fs == ROOTFS_EXT2) ext2_unmount(); else fat32_unmount();
+    if (s_filebuf) { kfree(s_filebuf); s_filebuf = NULL; }
+    Serial_WriteString("INSTALL>exec finish ok\n");
+    return 0;
+}
+
+/* ------------------------------------------------------------------------- */
 /* installer_run                                                             */
 /* ------------------------------------------------------------------------- */
 
@@ -983,7 +1199,7 @@ static void installer_run_inner(void)
     tui_log("Installer started.");
 
     /* Welcome. */
-    if (g_gui) {
+    if (g_ansi) {
         tui_frame("Makar OS Installer", "Press Enter to begin, Esc to cancel");
         tui_center(6,  "Install Makar to a hard disk.", C_FG, C_BG);
         tui_center(8,  "This will ERASE the drive you choose.", C_WARN, C_BG);
@@ -996,7 +1212,7 @@ static void installer_run_inner(void)
 
     int cd = find_cdrom();
     if (cd < 0) {
-        if (g_gui) { tui_frame("Installer", "Press a key"); tui_center(6, "No ISO9660 CD-ROM source found.", C_WARN, C_BG); getkey(); }
+        if (g_ansi) { tui_frame("Installer", "Press a key"); tui_center(6, "No ISO9660 CD-ROM source found.", C_WARN, C_BG); getkey(); }
         else t_writestring("Error: no ISO9660 CD-ROM source found.\n");
         return;
     }
@@ -1004,7 +1220,7 @@ static void installer_run_inner(void)
 
     int n = build_drive_list();
     if (n == 0) {
-        if (g_gui) { tui_frame("Installer", "Press a key"); tui_center(6, "No ATA target drives found.", C_WARN, C_BG); getkey(); }
+        if (g_ansi) { tui_frame("Installer", "Press a key"); tui_center(6, "No ATA target drives found.", C_WARN, C_BG); getkey(); }
         else t_writestring("Error: no ATA target drives found.\n");
         return;
     }
@@ -1020,12 +1236,10 @@ static void installer_run_inner(void)
     /* Filesystem choice for the data partition. */
     static const char *fs_items[] = { "ext2  (Unix-style, recommended)", "FAT32 (EFI-style)" };
     static const char *fs_descs[] = {
-        "Apps / docs / src land on an ext2 data partition.\n"
-        "  A separate FAT32 boot partition (34 MiB) holds the\n"
-        "  kernel and Limine stage 3 (limine-bios.sys).",
-        "Apps / docs / src land on a FAT32 data partition.\n"
-        "  A separate FAT32 boot partition (34 MiB) holds the\n"
-        "  kernel and Limine stage 3 (limine-bios.sys)." };
+        "/apps, /docs and /src land on an ext2 data partition.\n"
+        "A separate 34 MiB FAT32 partition holds the kernel + Limine.",
+        "/apps, /docs and /src land on a FAT32 data partition.\n"
+        "A separate 34 MiB FAT32 partition holds the kernel + Limine." };
     Serial_WriteString("INSTALL>fs\n");
     int fs_pick = tui_menu("Root filesystem", NULL, fs_items, 2, fs_descs);
     if (fs_pick < 0) return;
@@ -1044,7 +1258,7 @@ static void installer_run_inner(void)
         /* Advanced: defer to cfdisk.  We don't drive it here; instruct the
          * user and bail (re-running install with a partitioned disk picks up
          * the existing layout in a future revision). */
-        if (g_gui) {
+        if (g_ansi) {
             tui_frame("Advanced partitioning", "Press a key to exit the installer");
             tui_center(6, "Run 'cfdisk' to lay out partitions,", C_FG, C_BG);
             tui_center(7, "then re-run 'install' and choose 'Use entire disk'", C_DIM, C_BG);
@@ -1069,7 +1283,7 @@ static void installer_run_inner(void)
         w1[o] = '\0';
     }
     if (!tui_confirm("Confirm install", w1, NULL)) {
-        if (!g_gui) t_writestring("Installation cancelled.\n");
+        if (!g_ansi) t_writestring("Installation cancelled.\n");
         return;
     }
 
@@ -1077,7 +1291,7 @@ static void installer_run_inner(void)
     Serial_WriteString("INSTALL>components\n");
     {
         unsigned char a1 = 0, a2 = 0;
-        if (g_gui) {
+        if (g_ansi) {
             tui_frame("Components", "Choose which optional trees to install.");
             uint32_t mid  = g_rows / 2;
             uint32_t lcol = (g_cols / 2) > 20 ? (g_cols / 2) - 20 : 2;
@@ -1108,7 +1322,7 @@ static void installer_run_inner(void)
     char w_hostname[64];
     w_hostname[0] = '\0';
     {
-        if (g_gui) {
+        if (g_ansi) {
             tui_frame("Set hostname", "Enter a name for this machine (letters, digits, hyphens)");
             uint32_t mid  = g_rows / 2;
             uint32_t lcol = (g_cols / 2) > 20 ? (g_cols / 2) - 20 : 2;
@@ -1116,32 +1330,32 @@ static void installer_run_inner(void)
             tui_at(lcol, mid, "Hostname:   ", C_FG, C_BG);
             {
                 char blank[32]; for (int i=0;i<20;i++) blank[i]=' '; blank[20]='\0';
-                vesa_tty_paint_string_at(fcol, mid, blank, C_FG, C_BG);
+                tui_at(fcol, mid, blank, C_FG, C_BG);
             }
             tui_at(lcol, mid + 2, "Press Enter to accept (default: makar)", C_DIM, C_BG);
             {
                 size_t len = 0;
-                vesa_tty_paint_string_at(fcol, mid, "_", C_TITLE, C_BG);
+                tui_at(fcol, mid, "_", C_TITLE, C_BG);
                 while (1) {
                     unsigned char c = getkey();
                     if (c == '\n' || c == '\r') {
-                        vesa_tty_paint_string_at(fcol+(uint32_t)len, mid, " ", C_FG, C_BG);
+                        tui_at(fcol+(uint32_t)len, mid, " ", C_FG, C_BG);
                         break;
                     }
                     if (c == '\b' || c == 127) {
                         if (len) {
-                            vesa_tty_paint_string_at(fcol+(uint32_t)len, mid, " ", C_FG, C_BG);
+                            tui_at(fcol+(uint32_t)len, mid, " ", C_FG, C_BG);
                             len--;
-                            vesa_tty_paint_string_at(fcol+(uint32_t)len, mid, "_", C_TITLE, C_BG);
+                            tui_at(fcol+(uint32_t)len, mid, "_", C_TITLE, C_BG);
                         }
                         continue;
                     }
                     if (c < 0x20 || c > 0x7E) continue;
                     if (len < sizeof(w_hostname)-1) {
                         char ch[2] = {(char)c, '\0'};
-                        vesa_tty_paint_string_at(fcol+(uint32_t)len, mid, ch, C_FG, C_BG);
+                        tui_at(fcol+(uint32_t)len, mid, ch, C_FG, C_BG);
                         w_hostname[len++] = (char)c;
-                        vesa_tty_paint_string_at(fcol+(uint32_t)len, mid, "_", C_TITLE, C_BG);
+                        tui_at(fcol+(uint32_t)len, mid, "_", C_TITLE, C_BG);
                     }
                 }
                 w_hostname[len] = '\0';
@@ -1159,15 +1373,17 @@ static void installer_run_inner(void)
     /* --- Accounts --- */
     Serial_WriteString("INSTALL>accounts\n");
 
-    /* Per-account wizard state; shadow lines built in memory. */
-    struct {
-        char username[64];
-        char shadow_line[256];
-        size_t shadow_len;
-    } w_accts[2];
-    int w_naccts = 0;
-    char w_autologin[64];   /* username to auto-log-in, or "" for none */
-    w_autologin[0] = '\0';
+    /* Every wizard choice lands in one install_params_t; the TUI then drives the
+     * SAME shared engine (install_exec_*) the GUI installer uses, so the two
+     * installers are functionally identical -- only the front-end differs. */
+    install_params_t ip;
+    for (unsigned _i = 0; _i < sizeof ip; _i++) ((unsigned char *)&ip)[_i] = 0;
+    ip.drive        = (unsigned char)drive;
+    ip.fs           = (fs == ROOTFS_FAT32) ? INSTALL_FS_FAT32 : INSTALL_FS_EXT2;
+    ip.install_docs = (unsigned char)s_inst_docs;
+    ip.install_src  = (unsigned char)s_inst_src;
+    { int _h = 0; for (; w_hostname[_h] && _h < (int)sizeof(ip.hostname)-1; _h++)
+          ip.hostname[_h] = w_hostname[_h]; ip.hostname[_h] = '\0'; }
 
     static const struct { const char *user; const char *prompt; int required; }
     acct_steps[] = {
@@ -1183,7 +1399,7 @@ static void installer_run_inner(void)
         char username[64];
         char pass1[256], pass2[256];
 
-        if (g_gui) {
+        if (g_ansi) {
             tui_frame(title,
                       required ? "Enter a password for root  (Enter to skip)"
                                : "Y = create user   N / Enter = skip");
@@ -1201,45 +1417,46 @@ static void installer_run_inner(void)
                 tui_at(lcol, mid - 4, "Username:     ", C_FG, C_BG);
                 {
                     char blank[32]; for (int i=0;i<20;i++) blank[i]=' '; blank[20]='\0';
-                    vesa_tty_paint_string_at(fcol, mid - 4, blank, C_FG, C_BG);
+                    tui_at(fcol, mid - 4, blank, C_FG, C_BG);
                 }
                 {
                     char blank[40]; for (int i=0;i<36;i++) blank[i]=' '; blank[36]='\0';
-                    vesa_tty_paint_string_at(lcol, mid - 2, blank, C_FG, C_BG);
+                    tui_at(lcol, mid - 2, blank, C_FG, C_BG);
                 }
                 {
                     size_t len = 0;
-                    vesa_tty_paint_string_at(fcol, mid-4, "_", C_TITLE, C_BG);
+                    tui_at(fcol, mid-4, "_", C_TITLE, C_BG);
                     while (1) {
                         unsigned char c = getkey();
                         if (c == '\n' || c == '\r') {
-                            vesa_tty_paint_string_at(fcol+(uint32_t)len, mid-4, " ", C_FG, C_BG);
+                            tui_at(fcol+(uint32_t)len, mid-4, " ", C_FG, C_BG);
                             break;
                         }
                         if (c == 0x1B) { username[0]='\0'; break; }
                         if (c == '\b' || c == 127) {
                             if (len) {
-                                vesa_tty_paint_string_at(fcol+(uint32_t)len, mid-4, " ", C_FG, C_BG);
+                                tui_at(fcol+(uint32_t)len, mid-4, " ", C_FG, C_BG);
                                 len--;
-                                vesa_tty_paint_string_at(fcol+(uint32_t)len, mid-4, "_", C_TITLE, C_BG);
+                                tui_at(fcol+(uint32_t)len, mid-4, "_", C_TITLE, C_BG);
                             }
                             continue;
                         }
                         if (c < 0x20 || c > 0x7E) continue;
                         if (len < sizeof(username)-1) {
                             char ch[2]={(char)c,'\0'};
-                            vesa_tty_paint_string_at(fcol+(uint32_t)len, mid-4, ch, C_FG, C_BG);
+                            tui_at(fcol+(uint32_t)len, mid-4, ch, C_FG, C_BG);
                             username[len++]=(char)c;
-                            vesa_tty_paint_string_at(fcol+(uint32_t)len, mid-4, "_", C_TITLE, C_BG);
+                            tui_at(fcol+(uint32_t)len, mid-4, "_", C_TITLE, C_BG);
                         }
                     }
                     username[len]='\0';
                 }
                 if (!username[0]) goto next_acct;
             } else {
-                for (int i=0; fixed_user[i] && i<(int)sizeof(username)-1; i++)
-                    username[i] = fixed_user[i];
-                username[sizeof(username)-1] = '\0';
+                { int i = 0;
+                  for (; fixed_user[i] && i < (int)sizeof(username)-1; i++)
+                      username[i] = fixed_user[i];
+                  username[i] = '\0'; }   /* terminate after the name, not at [63] */
             }
 
             uint32_t row_pass  = fixed_user ? mid - 2 : mid;
@@ -1251,8 +1468,8 @@ static void installer_run_inner(void)
             tui_at(lcol, row_hint,  "Press Enter to confirm", C_DIM, C_BG);
 
             char blanks[32]; for (int i=0;i<20;i++) blanks[i]=' '; blanks[20]='\0';
-            vesa_tty_paint_string_at(fcol, row_pass,  blanks, C_FG, C_BG);
-            vesa_tty_paint_string_at(fcol, row_pass2, blanks, C_FG, C_BG);
+            tui_at(fcol, row_pass,  blanks, C_FG, C_BG);
+            tui_at(fcol, row_pass2, blanks, C_FG, C_BG);
 
             readline_masked(pass1, sizeof(pass1), fcol, row_pass);
             if (!pass1[0] && required) {
@@ -1273,9 +1490,10 @@ static void installer_run_inner(void)
                 readline(username, sizeof(username));
                 if (!username[0]) goto next_acct;
             } else {
-                for (int i=0; fixed_user[i] && i<(int)sizeof(username)-1; i++)
-                    username[i] = fixed_user[i];
-                username[sizeof(username)-1] = '\0';
+                { int i = 0;
+                  for (; fixed_user[i] && i < (int)sizeof(username)-1; i++)
+                      username[i] = fixed_user[i];
+                  username[i] = '\0'; }   /* terminate after the name, not at [63] */
                 t_writestring("\nSet root password (Enter to skip): ");
             }
             readline_masked(pass1, sizeof(pass1), 0, 0);
@@ -1288,49 +1506,19 @@ static void installer_run_inner(void)
             }
         }
 
-        /* Build shadow line in memory — no disk I/O here. */
-        if (w_naccts < 2) {
-            /* Copy username */
-            size_t ui = 0;
-            while (username[ui] && ui < sizeof(w_accts[0].username)-1) {
-                w_accts[w_naccts].username[ui] = username[ui]; ui++;
-            }
-            w_accts[w_naccts].username[ui] = '\0';
-
-            /* Compute salt + hash */
-            char salt[17], hash[17];
-            {
-                uint32_t ticks = timer_get_ticks();
-                uint32_t rtcsec = 0; rtc_unix_time(&rtcsec);
-                uint8_t seed[8];
-                seed[0]=(uint8_t)ticks;       seed[1]=(uint8_t)(ticks>>8);
-                seed[2]=(uint8_t)(ticks>>16);  seed[3]=(uint8_t)(ticks>>24);
-                seed[4]=(uint8_t)rtcsec;       seed[5]=(uint8_t)(rtcsec>>8);
-                seed[6]=(uint8_t)(rtcsec>>16); seed[7]=(uint8_t)(rtcsec>>24);
-                microhash_hex16(seed, 8, salt);
-            }
-            {
-                size_t plen = strlen(pass1);
-                if (plen > 256) plen = 256;
-                uint8_t combined[16 + 256];
-                for (int i = 0; i < 16; i++) combined[i] = (uint8_t)salt[i];
-                for (size_t i = 0; i < plen; i++) combined[16+i] = (uint8_t)pass1[i];
-                microhash_hex16(combined, 16 + plen, hash);
-            }
-
-            /* "username:$mh$<salt16>$<hash16>:::::::\n" */
-            char *ln = w_accts[w_naccts].shadow_line;
-            size_t pos = 0;
-            for (size_t i = 0; username[i] && pos < 64; i++) ln[pos++] = username[i];
-            ln[pos++]=':'; ln[pos++]='$'; ln[pos++]='m';
-            ln[pos++]='h'; ln[pos++]='$';
-            for (int i=0;i<16;i++) ln[pos++]=salt[i];
-            ln[pos++]='$';
-            for (int i=0;i<16;i++) ln[pos++]=hash[i];
-            const char *tail = ":::::::\n";
-            for (int i=0;tail[i];i++) ln[pos++]=tail[i];
-            w_accts[w_naccts].shadow_len = pos;
-            w_naccts++;
+        /* Stash the confirmed plaintext into the shared params; the engine
+         * salts + hashes it into /etc/shadow (same path as the GUI installer). */
+        if (step == 0) {                 /* root */
+            int _i = 0; for (; pass1[_i] && _i < (int)sizeof(ip.root_pw)-1; _i++)
+                ip.root_pw[_i] = pass1[_i];
+            ip.root_pw[_i] = '\0';
+        } else {                         /* additional user */
+            int _i = 0; for (; username[_i] && _i < (int)sizeof(ip.user_name)-1; _i++)
+                ip.user_name[_i] = username[_i];
+            ip.user_name[_i] = '\0';
+            _i = 0; for (; pass1[_i] && _i < (int)sizeof(ip.user_pw)-1; _i++)
+                ip.user_pw[_i] = pass1[_i];
+            ip.user_pw[_i] = '\0';
         }
 
         next_acct:;
@@ -1340,14 +1528,9 @@ static void installer_run_inner(void)
     /* Auto-login toggle — offer to skip the password prompt on boot.     */
     /* ------------------------------------------------------------------ */
     {
-        /* Prefer the first non-root account; fall back to root. */
-        const char *cand = (const char *)0;
-        for (int i = 0; i < w_naccts; i++) {
-            const char *u = w_accts[i].username;
-            int is_root = (u[0]=='r'&&u[1]=='o'&&u[2]=='o'&&u[3]=='t'&&u[4]=='\0');
-            if (!is_root) { cand = u; break; }
-        }
-        if (!cand && w_naccts > 0) cand = w_accts[0].username;
+        /* Prefer the new user; fall back to root (if a root password was set). */
+        const char *cand = ip.user_name[0] ? ip.user_name
+                         : (ip.root_pw[0]  ? "root" : (const char *)0);
 
         if (cand) {
             char q[96]; size_t qp = 0;
@@ -1359,7 +1542,7 @@ static void installer_run_inner(void)
             q[qp] = '\0';
 
             unsigned char ans = 0;
-            if (g_gui) {
+            if (g_ansi) {
                 tui_frame("Auto-login",
                           "Skip the password prompt and sign in automatically on boot?");
                 uint32_t mid  = g_rows / 2;
@@ -1372,31 +1555,21 @@ static void installer_run_inner(void)
                 ans = (unsigned char)buf[0];
             }
             if (ans == 'y' || ans == 'Y') {
-                size_t i = 0;
-                while (cand[i] && i < sizeof(w_autologin)-1) { w_autologin[i] = cand[i]; i++; }
-                w_autologin[i] = '\0';
+                int i = 0;
+                for (; cand[i] && i < (int)sizeof(ip.autologin)-1; i++) ip.autologin[i] = cand[i];
+                ip.autologin[i] = '\0';
             }
         }
     }
 
     /* ------------------------------------------------------------------ */
-    /* Disk preparation: no partitioning/formatting/copying starts until */
-    /* all installer input has been collected.                           */
+    /* Execute via the shared engine -- identical to the GUI installer.    */
     /* ------------------------------------------------------------------ */
-
-    s_filebuf = (uint8_t *)kmalloc(INST_MAX_FILE_SIZE);
-    if (!s_filebuf) {
-        t_writestring("Error: out of memory for transfer buffer.\n");
-        return;
-    }
-
-    int rc = do_install((uint8_t)drive, hdd->size, fs);
-
-    if (rc != 0) {
+    exec_screen("Installing Makar");
+    tui_log("Preparing disk (partition + format + bootloader)...");
+    if (install_exec_begin(&ip) < 0) {
         t_writestring("INSTALL: failed\n");
-        kfree(s_filebuf);
-        s_filebuf = NULL;
-        if (g_gui) {
+        if (g_ansi) {
             tui_frame("Installer", "Press a key to return to the shell");
             tui_center(6, "Installation FAILED.", C_WARN, C_BG);
             tui_center(8, "See the messages above; nothing was finalised.", C_DIM, C_BG);
@@ -1406,227 +1579,27 @@ static void installer_run_inner(void)
         }
         return;
     }
-    Serial_WriteString("INSTALL: disk prepared ok\n");
-
-    /* ------------------------------------------------------------------ */
-    /* Final disk writes: boot files, account config, and optional trees. */
-    /* All file copying happens here, after the remaining wizard inputs. */
-    /* ------------------------------------------------------------------ */
     {
-        tui_log("Mounting boot partition...");
-        if (fat32_mounted()) fat32_unmount();
-        int bm = fat32_mount(s_inst_drive, s_inst_boot_lba);
-        if (bm == 0) {
-            g_root_fs = ROOTFS_FAT32;
-
-            tui_log("Creating boot directory tree...");
-            int brc;
-            if ((brc = fat32_mkdir("/boot")) != 0)
-                tui_log_rc("  WARNING: mkdir /boot failed.", brc);
-            if ((brc = fat32_mkdir("/limine")) != 0)
-                tui_log_rc("  WARNING: mkdir /limine failed.", brc);
-
-            tui_log("Copying kernel...");
-            copy_one("/boot/makar.kernel", "/boot/makar.kernel");
-
-            tui_log("Copying limine-bios.sys...");
-            copy_one(LIMINE_SYS_ISO_PATH, "/limine/limine-bios.sys");
-
-            tui_log("Writing limine.conf...");
-            {
-                static char limine_buf[1024];
-                uint32_t ln = build_limine_conf(limine_buf, sizeof limine_buf, w_autologin);
-                if ((brc = rfs_write("/limine/limine.conf", limine_buf, ln)) != 0)
-                    tui_log_rc("  WARNING: failed to write limine.conf.", brc);
-            }
-
-            fat32_unmount();
-        } else {
-            tui_log_rc("  WARNING: boot mount failed during final copy.", bm);
+        install_progress_t prog;
+        prog.done = 0; prog.files = 0; prog.total = 0; prog.current[0] = '\0';
+        while (install_exec_step(&prog) > 0) {
+            unsigned pct = prog.total ? (prog.files * 100u) / prog.total : 100u;
+            char st[80]; int _o = 0;
+            const char *cc = "  ["; while (*cc) st[_o++] = *cc++;
+            { uint32_t v=pct; char n[4]; int ni=0; if(!v)n[ni++]='0'; while(v){n[ni++]=(char)('0'+v%10);v/=10;} while(ni)st[_o++]=n[--ni]; }
+            const char *pp = "%] "; while (*pp) st[_o++] = *pp++;
+            for (const char *q = prog.current; *q && _o < (int)sizeof(st)-2; q++) st[_o++] = *q;
+            st[_o] = '\0';
+            tui_status(st);
         }
     }
-
-    {
-        int mnt = (s_inst_fs == ROOTFS_EXT2)
-            ? ext2_mount(s_inst_drive, s_inst_data_lba)
-            : fat32_mount(s_inst_drive, s_inst_data_lba);
-
-        if (mnt == 0) {
-            g_root_fs = s_inst_fs;
-
-            rfs_mkdir("/etc");
-
-            /* /etc/hostname */
-            {
-                size_t hlen = strlen(w_hostname);
-                char hfile[66];
-                for (size_t i = 0; i < hlen; i++) hfile[i] = w_hostname[i];
-                hfile[hlen] = '\n'; hfile[hlen+1] = '\0';
-                rfs_write("/etc/hostname", hfile, (uint32_t)(hlen + 1));
-                Serial_WriteString("[install] hostname: ");
-                Serial_WriteString(w_hostname);
-                Serial_WriteString("\n");
-            }
-
-            /* /etc/autologin — written only if the operator opted in. */
-            if (w_autologin[0]) {
-                char albuf[66];
-                size_t al = 0;
-                while (w_autologin[al] && al < sizeof(albuf) - 2) {
-                    albuf[al] = w_autologin[al]; al++;
-                }
-                albuf[al++] = '\n';
-                albuf[al]   = '\0';
-                rfs_write("/etc/autologin", albuf, (uint32_t)al);
-                Serial_WriteString("[install] autologin: ");
-                Serial_WriteString(w_autologin);
-                Serial_WriteString("\n");
-            }
-
-            /* /etc/shadow — concatenate all entries */
-            if (w_naccts > 0) {
-                static char shadow_buf[512];
-                size_t spos = 0;
-                for (int i = 0; i < w_naccts; i++) {
-                    size_t llen = w_accts[i].shadow_len;
-                    if (spos + llen < sizeof(shadow_buf)) {
-                        for (size_t j = 0; j < llen; j++)
-                            shadow_buf[spos++] = w_accts[i].shadow_line[j];
-                        Serial_WriteString("[install] shadow written for: ");
-                        Serial_WriteString(w_accts[i].username);
-                        Serial_WriteString("\n");
-                    }
-                }
-                rfs_write("/etc/shadow", shadow_buf, (uint32_t)spos);
-            }
-
-            /* Home directories + default .makshrc */
-            rfs_mkdir("/root");
-            rfs_mkdir("/home");
-            for (int i = 0; i < w_naccts; i++) {
-                int is_root = (w_accts[i].username[0]=='r' &&
-                               w_accts[i].username[1]=='o' &&
-                               w_accts[i].username[2]=='o' &&
-                               w_accts[i].username[3]=='t' &&
-                               w_accts[i].username[4]=='\0');
-
-                /* Compute home dir path */
-                char hdir[80];
-                size_t p = 0;
-                if (is_root) {
-                    hdir[p++]='/'; hdir[p++]='r'; hdir[p++]='o';
-                    hdir[p++]='o'; hdir[p++]='t'; hdir[p]='\0';
-                } else {
-                    hdir[p++]='/'; hdir[p++]='h'; hdir[p++]='o';
-                    hdir[p++]='m'; hdir[p++]='e'; hdir[p++]='/';
-                    for (size_t j = 0; w_accts[i].username[j] && p < sizeof(hdir)-1; j++)
-                        hdir[p++] = w_accts[i].username[j];
-                    hdir[p] = '\0';
-                    rfs_mkdir(hdir);
-                }
-                Serial_WriteString("[install] homedir: ");
-                Serial_WriteString(hdir);
-                Serial_WriteString("\n");
-
-                /* Write ~/.makshrc with defaults */
-                char rc_path[88];
-                p = 0;
-                for (size_t j = 0; hdir[j] && p < sizeof(rc_path)-10; j++)
-                    rc_path[p++] = hdir[j];
-                rc_path[p++]='/'; rc_path[p++]='.'; rc_path[p++]='m';
-                rc_path[p++]='a'; rc_path[p++]='k'; rc_path[p++]='s';
-                rc_path[p++]='h'; rc_path[p++]='r'; rc_path[p++]='c';
-                rc_path[p]='\0';
-
-                /* Default .makshrc content */
-                static const char makrc_root[] =
-                    "# ~/.makshrc -- sourced by sh.elf on login\n"
-                    "PATH=/apps:/bin\n";
-                static const char makrc_user[] =
-                    "# ~/.makshrc -- sourced by sh.elf on login\n"
-                    "PATH=/apps:/bin\n";
-                const char *rc_content = is_root ? makrc_root : makrc_user;
-                size_t rc_len = 0;
-                while (rc_content[rc_len]) rc_len++;
-                rfs_write(rc_path, rc_content, (uint32_t)rc_len);
-                Serial_WriteString("[install] makshrc: ");
-                Serial_WriteString(rc_path);
-                Serial_WriteString("\n");
-
-                /* Write ~/.vixrc enabling line numbers by default.  vix
-                 * itself ships with line numbers OFF; this rc opts each
-                 * installed account into them (Ctrl-N toggles at runtime). */
-                char vix_path[88];
-                p = 0;
-                for (size_t j = 0; hdir[j] && p < sizeof(vix_path) - 8; j++)
-                    vix_path[p++] = hdir[j];
-                vix_path[p++]='/'; vix_path[p++]='.'; vix_path[p++]='v';
-                vix_path[p++]='i'; vix_path[p++]='x'; vix_path[p++]='r';
-                vix_path[p++]='c'; vix_path[p]='\0';
-                static const char vixrc[] =
-                    "\" ~/.vixrc -- read by vix on startup\n"
-                    "set linenumbers\n";
-                size_t vix_len = 0;
-                while (vixrc[vix_len]) vix_len++;
-                rfs_write(vix_path, vixrc, (uint32_t)vix_len);
-                Serial_WriteString("[install] vixrc: ");
-                Serial_WriteString(vix_path);
-                Serial_WriteString("\n");
-
-                /* Write ~/.sbrc -- statusbar.elf layout (foreground command
-                 * left, resources right).  Sections: left/center/right + widgets. */
-                char sb_path[88];
-                p = 0;
-                for (size_t j = 0; hdir[j] && p < sizeof(sb_path) - 7; j++)
-                    sb_path[p++] = hdir[j];
-                sb_path[p++]='/'; sb_path[p++]='.'; sb_path[p++]='s';
-                sb_path[p++]='b'; sb_path[p++]='r'; sb_path[p++]='c';
-                sb_path[p]='\0';
-                static const char sbrc[] =
-                    "# ~/.sbrc -- statusbar layout: <section> <widgets...>\n"
-                    "# widgets: hostname user date time datetime uptime\n"
-                    "#          cpu mem rootfs command tabs\n"
-                    "left command\n"
-                    "center tabs\n"
-                    "right cpu mem rootfs time\n";
-                size_t sb_len = 0;
-                while (sbrc[sb_len]) sb_len++;
-                rfs_write(sb_path, sbrc, (uint32_t)sb_len);
-                Serial_WriteString("[install] sbrc: ");
-                Serial_WriteString(sb_path);
-                Serial_WriteString("\n");
-            }
-
-            copy_tree("/apps");
-            if (s_inst_docs) copy_tree("/docs");
-            if (s_inst_src)  copy_tree("/src");
-            copy_tree("/usr");
-
-            /* /bin is the scratch + output directory the in-OS kernel rebuild
-             * (rebuild-kernel.sh) writes to.  tmpfs has no subdirectories, so
-             * the rebuild can't use /tmp; it needs a real writable dir on the
-             * rootfs.  Create it empty here so the first `mkdir /bin/ktcc` from
-             * the script doesn't try to create a directory inside a missing
-             * parent.  No source tree to copy -- /bin lives only on the target. */
-            if (rfs_mkdir("/bin") != 0)
-                tui_log("  WARNING: mkdir /bin on rootfs failed (rebuild-kernel will need it).");
-
-            if (s_inst_fs == ROOTFS_EXT2) ext2_unmount();
-            else fat32_unmount();
-        } else {
-            Serial_WriteString("[install] WARNING: could not mount data fs for post-install writes\n");
-        }
-    }
-    kfree(s_filebuf);
-    s_filebuf = NULL;
-
-    /* ------------------------------------------------------------------ */
-    /* Done                                                                 */
-    /* ------------------------------------------------------------------ */
+    install_exec_finish(&ip);
+    tui_status("");
+    tui_log("Done.");
 
     t_writestring("INSTALL: complete ok\n");
-    Serial_WriteString("[install] complete — rebooting\n");
-    if (g_gui) {
+    Serial_WriteString("[install] complete -- rebooting\n");
+    if (g_ansi) {
         tui_frame("Installer", "Rebooting...");
         tui_center(6, "Installation complete!", C_OK, C_BG);
         tui_center(8, "Remove the install media. Rebooting in 3 seconds...", C_FG, C_BG);

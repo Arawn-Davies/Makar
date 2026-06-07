@@ -116,6 +116,10 @@
 #define SYS_CAD_PENDING     271 /* int cad_pending(void) - test+clear Ctrl-Alt-Del */
 #define SYS_PTY_WINSIZE     272 /* int pty_winsize(int fd, (cols<<16)|rows) - set a
                                  * pipe's pty window size (GUI terminal -> child) */
+#define SYS_INSTALL_EXEC    273 /* int install_exec(cmd, ptr) - stepped headless
+                                 * installer for the GUI front-end.  EBX cmd:
+                                 * 0=begin(params*) 1=step(progress*) 2=finish(params*).
+                                 * Returns the engine's int result (see installer.h). */
 
 /*
  * Admin syscalls (219..229).

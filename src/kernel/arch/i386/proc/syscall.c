@@ -31,6 +31,7 @@
 #include <kernel/signal.h>
 #include <kernel/tty.h>
 #include <kernel/keyboard.h>
+#include <kernel/installer.h>   /* install_exec_* (SYS_INSTALL_EXEC) */
 #include <kernel/mouse.h>
 #include <kernel/shell.h>
 #include <kernel/vfs.h>
@@ -139,8 +140,81 @@ static int ansi_sgr(char *b, unsigned char vga)
     int o = 0; b[o++] = 0x1b; b[o++] = '['; b[o++] = '0'; b[o++] = ';';
     o += ansi_u(b+o, fc); b[o++] = ';'; o += ansi_u(b+o, bc); b[o++] = 'm'; return o; }
 static int ansi_cup(char *b, unsigned row, unsigned col)
-{   int o = 0; b[o++] = 0x1b; b[o++] = '[';
-    o += ansi_u(b+o, row+1); b[o++] = ';'; o += ansi_u(b+o, col+1); b[o++] = 'H'; return o; }
+{   int o = 0; b[o++] = 0x1b; b[o++] = '['; o += ansi_u(b+o, row+1); b[o++] = ';';
+    o += ansi_u(b+o, col+1); b[o++] = 'H'; return o; }
+
+/* -------------------------------------------------------------------------
+ * Generic in-kernel terminal I/O on the calling task's standard streams
+ * (kernel/fd.h) -- the kernel-side analogue of write(1)/read(0).  In-kernel
+ * TUI code (e.g. the installer) uses these to speak to whatever terminal the
+ * invoking ring-3 task owns: a real text VT (bytes reach the framebuffer
+ * console's vt_putchar ANSI parser) or an mxterm window (bytes reach the
+ * client over a pipe).  This file provides the implementation; it deliberately
+ * knows nothing about who calls it.
+ * ------------------------------------------------------------------------- */
+long kfd_stdout_write(const char *buf, unsigned int len)
+{
+    task_t     *cur = task_current();
+    fd_entry_t *e   = fd_get(cur ? cur->fd_table : NULL, 1);
+    if (!e) return -1;
+    if (e->kind == FD_KIND_PIPE && e->pipe_is_writer && e->pipe) {
+        ansi_pipe_write(e, buf, len);
+        return (long)len;
+    }
+    if (e->kind == FD_KIND_VGA || e->kind == FD_KIND_VGA_SERIAL) {
+        for (unsigned int i = 0; i < len; i++) t_putchar(buf[i]);
+        if (e->kind == FD_KIND_VGA_SERIAL && !g_serial_verbose)
+            for (unsigned int i = 0; i < len; i++) Serial_WriteChar(buf[i]);
+        return (long)len;
+    }
+    if (e->kind == FD_KIND_SERIAL) {
+        for (unsigned int i = 0; i < len; i++) Serial_WriteChar(buf[i]);
+        return (long)len;
+    }
+    return -1;
+}
+
+int kfd_stdout_is_pipe(void)
+{
+    task_t     *cur = task_current();
+    fd_entry_t *e   = fd_get(cur ? cur->fd_table : NULL, 1);
+    return (e && e->kind == FD_KIND_PIPE && e->pipe_is_writer && e->pipe) ? 1 : 0;
+}
+
+int kfd_stdin_getbyte(void)
+{
+    task_t     *cur = task_current();
+    fd_entry_t *e   = fd_get(cur ? cur->fd_table : NULL, 0);
+    if (e && e->kind == FD_KIND_PIPE && !e->pipe_is_writer && e->pipe) {
+        pipe_ring_t *r = e->pipe;
+        for (;;) {
+            if (r->head != r->tail) {
+                unsigned char b = r->buf[r->tail % PIPE_RING_CAP];
+                r->tail++;
+                return (int)b;
+            }
+            if (r->refcount_w == 0) return -1;   /* writer (mxterm) gone */
+            task_yield();
+        }
+    }
+    /* Real text VT (or no fd 0): raw single key, so arrows/Esc/Enter arrive
+     * un-line-buffered -- exactly what the wizard's getkey() expects. */
+    return (int)(unsigned char)keyboard_getchar();
+}
+
+void kfd_term_size(unsigned int *cols, unsigned int *rows)
+{
+    unsigned int c = 80, rw = 25;
+    task_t     *cur = task_current();
+    fd_entry_t *e   = fd_get(cur ? cur->fd_table : NULL, 1);
+    if (e && e->kind == FD_KIND_PIPE && e->pipe && e->pipe->cols && e->pipe->rows) {
+        c = e->pipe->cols; rw = e->pipe->rows;
+    } else if (vesa_tty_is_ready()) {
+        c = vesa_tty_get_cols(); rw = vesa_tty_usable_rows();
+    }
+    if (cols) *cols = c;
+    if (rows) *rows = rw;
+}
 
 /* Callback + context for SYS_LS_DIR using vfs_complete. */
 typedef struct { char *buf; uint32_t cap; uint32_t off; } ls_ctx_t;
@@ -2217,6 +2291,20 @@ void syscall_dispatch(registers_t *regs)
     case SYS_INSTALL: {
         if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
         regs->eax = (uint32_t)admin_install();
+        break;
+    }
+    /* Stepped headless installer for the GUI front-end (mxinstall.elf).
+     * EBX = cmd (0 begin, 1 step, 2 finish, 3 list-drives); ECX = the matching
+     * params / progress / drive-array pointer. */
+    case SYS_INSTALL_EXEC: {
+        if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
+        int   cmd = (int)regs->ebx;
+        void *ptr = (void *)(uintptr_t)regs->ecx;
+        if      (cmd == 0) regs->eax = (uint32_t)install_exec_begin((const install_params_t *)ptr);
+        else if (cmd == 1) regs->eax = (uint32_t)install_exec_step((install_progress_t *)ptr);
+        else if (cmd == 2) regs->eax = (uint32_t)install_exec_finish((const install_params_t *)ptr);
+        else if (cmd == 3) regs->eax = (uint32_t)install_exec_drives((install_drive_t *)ptr);
+        else               regs->eax = (uint32_t)-1;
         break;
     }
     case SYS_MOUNT: {
