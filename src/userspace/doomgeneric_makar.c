@@ -205,6 +205,14 @@ int main(int argc, char **argv)
          * fall back to DOOM.WAD / DOOM1.WAD (shareware) and /tmp fetches if
          * someone supplies them. */
         static const char *cand[] = {
+            /* XFCE-style asset path (shipped + installed): /usr/share/games/doom */
+            "/usr/share/games/doom/freedoom1.wad",
+            "/usr/share/games/doom/freedoom2.wad",
+            "/usr/share/games/doom/DOOM.WAD",
+            "/usr/share/games/doom/DOOM2.WAD",
+            "/usr/share/games/doom/DOOM1.WAD",
+            "/usr/share/games/doom/doom1.wad",
+            /* legacy / fallback locations (manual drops, /tmp fetches) */
             "/apps/freedoom1.wad", "/apps/freedoom2.wad",
             "/apps/DOOM.WAD",  "/tmp/DOOM.WAD",   "/apps/DOOM2.WAD",
             "/apps/DOOM1.WAD", "/apps/doom1.wad", "/tmp/DOOM1.WAD", 0
