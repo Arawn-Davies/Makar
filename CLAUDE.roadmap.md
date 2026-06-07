@@ -37,6 +37,12 @@ files, editor, tasks, doom are client `.elf`s over IPC + shared surfaces; see
 
 ### OS-specific cross toolchain (`i686-makar`)
 
+> **Designated next major PR** (after `feat/gpu-drivers-and-os-polish` merges):
+> a proper **self-hosted** OSDev toolchain in the style of Linux / **SerenityOS**
+> — build the `i686-makar` cross toolchain + hosted libc, make it self-hosting
+> in-OS (`tcc.elf` is the seed), and carry it far enough to reach **x86_64**
+> (the 64-bit port below is the destination this unlocks).
+
 Per the OSDev wiki (https://wiki.osdev.org/OS_Specific_Toolchain and
 https://wiki.osdev.org/Creating_an_Operating_System — both 403 to automated
 fetches, read in a browser). Today the build uses a generic `i686-elf` cross-
