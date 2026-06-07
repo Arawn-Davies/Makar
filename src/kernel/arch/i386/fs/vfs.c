@@ -324,25 +324,33 @@ static int vfs_route(const char *abs, const char **drv_path)
 
 static int backend_ls(vfs_mount_t *m, const char *p)
 {
+    int r;
+    vfs_fs_lock();
     switch (m->backend) {
-    case VFS_BACKEND_EXT2:    return ext2_ls(p);
-    case VFS_BACKEND_FAT32:   return fat32_ls(p);
-    case VFS_BACKEND_ISO9660: return iso9660_ls(m->drive, p);
-    case VFS_BACKEND_DEVFS:   return devfs_ls(p);
-    case VFS_BACKEND_PROCFS:  return procfs_ls(p);
-    case VFS_BACKEND_TMPFS:   return tmpfs_ls(p);
-    case VFS_BACKEND_LOGFS:   return logfs_ls(p);
-    default:                  return -1;
+    case VFS_BACKEND_EXT2:    r = ext2_ls(p); break;
+    case VFS_BACKEND_FAT32:   r = fat32_ls(p); break;
+    case VFS_BACKEND_ISO9660: r = iso9660_ls(m->drive, p); break;
+    case VFS_BACKEND_DEVFS:   r = devfs_ls(p); break;
+    case VFS_BACKEND_PROCFS:  r = procfs_ls(p); break;
+    case VFS_BACKEND_TMPFS:   r = tmpfs_ls(p); break;
+    case VFS_BACKEND_LOGFS:   r = logfs_ls(p); break;
+    default:                  r = -1; break;
     }
+    vfs_fs_unlock();
+    return r;
 }
 
 static int backend_cd(vfs_mount_t *m, const char *p)
 {
+    int r;
+    vfs_fs_lock();
     switch (m->backend) {
-    case VFS_BACKEND_EXT2:  return ext2_cd(p);
-    case VFS_BACKEND_FAT32: return fat32_cd(p);
-    default:                return 0;   /* flat backends accept any "/X" */
+    case VFS_BACKEND_EXT2:  r = ext2_cd(p); break;
+    case VFS_BACKEND_FAT32: r = fat32_cd(p); break;
+    default:                r = 0; break;   /* flat backends accept any "/X" */
     }
+    vfs_fs_unlock();
+    return r;
 }
 
 /* -------------------------------------------------------------------------
@@ -456,35 +464,47 @@ static int backend_mkdir(vfs_mount_t *m, const char *p)
 
 static int backend_delete_file(vfs_mount_t *m, const char *p)
 {
+    int r;
+    vfs_fs_lock();
     switch (m->backend) {
-    case VFS_BACKEND_EXT2:  return ext2_delete_file(p);
-    case VFS_BACKEND_FAT32: return fat32_delete_file(p);
-    case VFS_BACKEND_TMPFS: return tmpfs_delete(p);
-    default: return -1;
+    case VFS_BACKEND_EXT2:  r = ext2_delete_file(p); break;
+    case VFS_BACKEND_FAT32: r = fat32_delete_file(p); break;
+    case VFS_BACKEND_TMPFS: r = tmpfs_delete(p); break;
+    default: r = -1; break;
     }
+    vfs_fs_unlock();
+    return r;
 }
 
 static int backend_delete_dir(vfs_mount_t *m, const char *p)
 {
+    int r;
+    vfs_fs_lock();
     switch (m->backend) {
-    case VFS_BACKEND_EXT2:  return ext2_delete_dir(p);
-    case VFS_BACKEND_FAT32: return fat32_delete_dir(p);
-    default: return -1;
+    case VFS_BACKEND_EXT2:  r = ext2_delete_dir(p); break;
+    case VFS_BACKEND_FAT32: r = fat32_delete_dir(p); break;
+    default: r = -1; break;
     }
+    vfs_fs_unlock();
+    return r;
 }
 
 static int backend_file_exists(vfs_mount_t *m, const char *p)
 {
+    int r;
+    vfs_fs_lock();
     switch (m->backend) {
-    case VFS_BACKEND_EXT2:    return ext2_file_exists(p);
-    case VFS_BACKEND_FAT32:   return fat32_file_exists(p);
-    case VFS_BACKEND_ISO9660: return iso9660_file_exists(m->drive, p);
-    case VFS_BACKEND_PROCFS:  return procfs_file_exists(p);
-    case VFS_BACKEND_DEVFS:   return devfs_file_exists(p);
-    case VFS_BACKEND_LOGFS:   return logfs_file_exists(p);
-    case VFS_BACKEND_TMPFS:   return tmpfs_file_exists(p);
-    default: return 0;
+    case VFS_BACKEND_EXT2:    r = ext2_file_exists(p); break;
+    case VFS_BACKEND_FAT32:   r = fat32_file_exists(p); break;
+    case VFS_BACKEND_ISO9660: r = iso9660_file_exists(m->drive, p); break;
+    case VFS_BACKEND_PROCFS:  r = procfs_file_exists(p); break;
+    case VFS_BACKEND_DEVFS:   r = devfs_file_exists(p); break;
+    case VFS_BACKEND_LOGFS:   r = logfs_file_exists(p); break;
+    case VFS_BACKEND_TMPFS:   r = tmpfs_file_exists(p); break;
+    default: r = 0; break;
     }
+    vfs_fs_unlock();
+    return r;
 }
 
 static int backend_complete(vfs_mount_t *m, const char *p, const char *pre,
