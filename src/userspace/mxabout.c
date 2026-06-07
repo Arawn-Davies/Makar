@@ -47,10 +47,16 @@ int main(int argc, char **argv)
     /* Gather specs once (RAM/disk/uptime refresh per redraw below). */
     static char cpuinfo[2048];
     readfile("/proc/cpuinfo", cpuinfo, sizeof cpuinfo);
-    char vendor[32], hv[24]; field(cpuinfo, "vendor_id", vendor, sizeof vendor);
-    field(cpuinfo, "hypervisor", hv, sizeof hv);
-    if (!vendor[0]) scpy(vendor, "unknown", sizeof vendor);
-    if (!hv[0])     scpy(hv, "bare metal", sizeof hv);
+    char vendor[32], hv[24], cpuname[64], gpu[32], net[32];
+    field(cpuinfo, "vendor_id",  vendor,  sizeof vendor);
+    field(cpuinfo, "model name", cpuname, sizeof cpuname);   /* brand string */
+    field(cpuinfo, "hypervisor", hv,      sizeof hv);
+    field(cpuinfo, "gpu",        gpu,     sizeof gpu);        /* bound display driver */
+    field(cpuinfo, "netdev",     net,     sizeof net);        /* bound NIC driver */
+    if (!cpuname[0]) scpy(cpuname, vendor[0] ? vendor : "unknown", sizeof cpuname);
+    if (!hv[0])      scpy(hv,  "bare metal", sizeof hv);
+    if (!gpu[0])     scpy(gpu, "unknown",    sizeof gpu);
+    if (!net[0])     scpy(net, "none",       sizeof net);
     char host[64] = {0}, user[64] = {0};
     sys_gethostname(host, sizeof host); sys_whoami(user, sizeof user);
     unsigned info = sys_fb_info();
@@ -88,7 +94,7 @@ int main(int argc, char **argv)
             scpy(line+L, val, (int)sizeof line - L); \
             gfx_str(s, x, y, line, RGB(0xd3,0xd7,0xcf)); y += 15; } while (0)
 
-        ROW("CPU        : ", vendor);
+        ROW("CPU        : ", cpuname);
         ROW("Platform   : ", hv);
         { scpy(num, "", sizeof num); unsigned mb = 0;
           for (const char *q=memtot; *q>='0'&&*q<='9'; q++) mb = mb*10 + (unsigned)(*q-'0');
@@ -97,10 +103,12 @@ int main(int argc, char **argv)
         { char b[12],b2[12]; u2s(fbw,b); u2s(fbh,b2); scpy(num,b,sizeof num); int L=slen(num);
           num[L++]='x'; scpy(num+L,b2,(int)sizeof num-L); }
         ROW("Display    : ", num);
+        ROW("GPU driver : ", gpu);
         { char b[16]; u2s((tkb>fkb?(tkb-fkb):0)/1024u, b); scpy(num,b,sizeof num); int L=slen(num);
           scpy(num+L," / ",(int)sizeof num-L); L=slen(num); char b2[16]; u2s(tkb/1024u,b2); scpy(num+L,b2,(int)sizeof num-L);
           L=slen(num); scpy(num+L," MB used",(int)sizeof num-L); }
         ROW("Disk       : ", num);
+        ROW("Network    : ", net);
         ROW("Host       : ", host[0]?host:"makar");
         ROW("User       : ", user[0]?user:"user");
         { char b[16]; u2s(sys_uptime()/100u, b); scpy(num,b,sizeof num); int L=slen(num); scpy(num+L," s",(int)sizeof num-L); }

@@ -11,6 +11,8 @@
 #include <kernel/timer.h>
 #include <kernel/version.h>
 #include <kernel/vm.h>      /* vm_name() for the cpuinfo hypervisor line */
+#include <kernel/video.h>   /* video_active() -> bound GPU driver name */
+#include <kernel/netdev.h>  /* netdev_present()/netdev_name() -> NIC driver */
 #include <kernel/rtc.h>     /* CMOS RTC reader for /proc/rtc */
 #include <string.h>
 #include <stdio.h>
@@ -122,6 +124,25 @@ static void render_cpuinfo(pf_writer_t *w)
     pf_puts(w, vendor);
     pf_putc(w, '\n');
 
+    /* Processor brand string (CPUID 0x80000002-4): the marketing name like
+     * "Intel(R) Core(TM) i5-12400F @ 2.50GHz" or "AMD Ryzen 5 ...".  Reported
+     * by most real CPUs and by QEMU; absent on a few very old parts. */
+    cpuid_raw(0x80000000u, &eax, &ebx, &ecx, &edx);
+    if (eax >= 0x80000004u) {
+        char brand[49];
+        uint32_t *bp = (uint32_t *)brand;
+        for (uint32_t leaf = 0x80000002u, i = 0; leaf <= 0x80000004u; leaf++) {
+            cpuid_raw(leaf, &eax, &ebx, &ecx, &edx);
+            bp[i++] = eax; bp[i++] = ebx; bp[i++] = ecx; bp[i++] = edx;
+        }
+        brand[48] = '\0';
+        const char *bs = brand;       /* brand strings are often space-padded */
+        while (*bs == ' ') bs++;
+        pf_puts(w, "model name  : ");
+        pf_puts(w, bs);
+        pf_putc(w, '\n');
+    }
+
     if (max_leaf >= 1) {
         cpuid_raw(1, &eax, &ebx, &ecx, &edx);
         uint32_t family   = (eax >> 8)  & 0xF;
@@ -155,6 +176,15 @@ static void render_cpuinfo(pf_writer_t *w)
 
     pf_puts(w, "arch        : i386 (protected mode)\n");
     pf_puts(w, "hypervisor  : "); pf_puts(w, vm_name()); pf_putc(w, '\n');
+
+    /* Bound device drivers (also surfaced on the GUI About panel). */
+    {
+        const vid_driver_t *vd = video_active();
+        pf_puts(w, "gpu         : "); pf_puts(w, vd ? vd->name : "none"); pf_putc(w, '\n');
+    }
+    pf_puts(w, "netdev      : ");
+    pf_puts(w, netdev_present() ? (netdev_name() ? netdev_name() : "unknown") : "none");
+    pf_putc(w, '\n');
 }
 
 /* -------------------------------------------------------------------------
