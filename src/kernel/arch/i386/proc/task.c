@@ -11,6 +11,7 @@
  */
 
 #include <kernel/task.h>
+#include <kernel/timer.h>
 #include <kernel/vtty.h>
 #include <kernel/keyboard.h>
 #include <kernel/fd.h>
@@ -537,6 +538,9 @@ static void schedule(void)
 
     current_task        = next;
     current_task->state = TASK_RUNNING;
+    /* Stamp the switch-in tick so the timer IRQ measures this task's slice
+     * from here (see timer_callback's effective-quantum preemption). */
+    current_task->last_sched_tick = timer_get_ticks();
 
     /* Update the TSS so Ring-3 → Ring-0 transitions land on this task's
        kernel stack.  Skip the idle task which uses the original boot stack. */

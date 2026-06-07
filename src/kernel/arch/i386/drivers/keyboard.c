@@ -998,10 +998,19 @@ static void on_make(kc_t kc)
         default: break;
     }
 
-    /* Ctrl-Alt-Del: request the text-session system menu (Log off / Change
-     * password).  Serviced in task context by keyboard_getchar -> cad_menu;
-     * gated there to the active root text session (not the GUI). */
+    /* Ctrl-Alt-Del: request the system menu.  In a text session it's serviced
+     * by keyboard_getchar -> cad_menu; under the GUI the WM polls
+     * SYS_CAD_PENDING and opens its power menu.  Escape hatch: a *second* CAD
+     * within ~1 s (e.g. a wedged GUI that never drained the flag) triggers an
+     * immediate 8042 CPU reset -- safe from IRQ context, no disk flush, the
+     * classic "mash Ctrl-Alt-Del to reboot". */
     if (mod_ctrl && mod_alt && kc == KC_DELETE) {
+        static uint32_t last_cad = 0;
+        uint32_t now = timer_get_ticks();
+        if (last_cad && (now - last_cad) < TIMER_HZ) {
+            outb(0x64, 0xFE);                 /* pulse RESET line via the 8042 */
+        }
+        last_cad = now;
         __atomic_store_n(&kb_cad_pending, 1, __ATOMIC_RELEASE);
         return;
     }
@@ -1715,6 +1724,15 @@ static void kb_service_cad(void)
         __atomic_store_n(&kb_cad_pending, 0, __ATOMIC_RELEASE);
         cad_menu();
     }
+}
+
+/* Atomically test-and-clear the pending Ctrl-Alt-Del flag.  The GUI display
+ * server polls this each frame (via SYS_CAD_PENDING) to open its power menu --
+ * the text path (kb_service_cad) only fires when a root text session is active,
+ * so under the GUI the flag is the WM's to consume.  Returns 1 if it was set. */
+int kb_take_cad_pending(void)
+{
+    return __atomic_exchange_n(&kb_cad_pending, 0, __ATOMIC_ACQ_REL) ? 1 : 0;
 }
 
 unsigned char keyboard_getchar(void)

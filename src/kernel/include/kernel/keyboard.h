@@ -15,6 +15,10 @@ void keyboard_init(void);
 unsigned char keyboard_getchar(void);
 unsigned char keyboard_poll(void);
 
+/* Atomically test-and-clear the pending Ctrl-Alt-Del flag (1 if it was set).
+ * Backs SYS_CAD_PENDING so the GUI server can open its power menu instantly. */
+int kb_take_cad_pending(void);
+
 /* Per-task input routing (Phase 2 / split-panes). */
 void keyboard_bind_pane(int pane_id, task_t *t);
 void keyboard_focus_pane(int pane_id);

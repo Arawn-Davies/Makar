@@ -17,6 +17,7 @@ kept as separate, independently-licensed *programs* (e.g. `doom.elf`) and are
 | **lwIP** | BSD-3-Clause | https://github.com/lwip-tcpip/lwip | `vendor/lwip/COPYING` | TCP/IP stack |
 | **Limine** (v12.3.0) | BSD-2-Clause | https://github.com/limine-bootloader/limine | `vendor/limine/LICENSE` | BIOS boot binaries the installer deploys |
 | **font8x8** (D. Hepper) | Public domain | https://github.com/dhepper/font8x8 | header note | GUI/console 8×8 bitmap font (`src/userspace/font8x8.h`) |
+| **FreeDOOM** | BSD-3-Clause | https://freedoom.github.io/ | [`LICENSES/freedoom.md`](LICENSES/freedoom.md) | Freely redistributable IWAD game data (`freedoom1/2.wad`), fetched by `getfreedoom.sh` into the gitignored `wads/`; the default DOOM data so no copyrighted `DOOM.WAD` is shipped |
 
 ## Influence / reference (no code copied)
 

@@ -77,6 +77,30 @@ and reusable by future surface-rendering apps.
   windows first and only feeds the focused window a "live" ctx (others get a ctx
   with no buttons/keys so they still draw but don't react) — this is how the
   per-window focus model reaches individual widgets.
+- **vt100** (`vt100.{c,h}`) — a standalone ANSI/VT100+ terminal emulator core:
+  `vt_init`/`vt_resize`/`vt_putc` drive a colour `vt_cell` grid (cursor, scroll
+  region, SGR colours, ED/EL, IL/DL/ICH/DCH/ECH, alt-screen, UTF-8 → one cell).
+  Used by `mxterm` (and reusable by a future serial console); freestanding (no
+  libc). The front-end renders the grid via a 16-colour palette → `gfx_char`.
+
+### Text-mode (TUI) apps in the GUI terminal — cell-API → ANSI bridge
+
+The existing TUI apps (`maktop`, `vix`, `cfdisk`, the `install` flow, …) don't
+write bytes; they call the kernel **cell API** (`SYS_PUTCH_AT`, `SYS_SET_CURSOR`,
+`SYS_TTY_CLEAR`, `SYS_TERM_SIZE`) which targets a per-task VT backing grid. A
+process forked by `mxterm` has **no live VT slot** and its stdout is a pipe, so
+those calls would have nowhere to land.
+
+The kernel bridges them: when a cell-API call comes from a task with
+`vtty_buf_current() == NULL` **and** fd 1 is a pipe, it is translated to the
+equivalent **ANSI escape** written to fd 1 — `SYS_PUTCH_AT` → `CUP`+`SGR`+chars
+(coalescing same-row runs, VGA→ANSI colour remap), `SYS_SET_CURSOR` → `CUP`,
+`SYS_TTY_CLEAR` → `SGR`+`ED`+home — which `mxterm`'s vt100 core then renders.
+`SYS_TERM_SIZE` reports the terminal's published size: `mxterm` calls
+`SYS_PTY_WINSIZE` to stamp its grid dimensions onto the child's pipe. Grand-
+children inherit the piped fd 1, so a TUI app launched from the shell in the
+window works unchanged. The real text-VT path (non-NULL `vtty_buf_current()`) is
+untouched, so console/Alt-Fn VTs behave exactly as before.
 
 ## makx protocol (`makx.h` / `makx.c`)
 
@@ -143,9 +167,14 @@ reserved window's surface.
 
 Clients (each an independent process, `src/userspace/mx*.c`):
 
-- **mxterm** hosts `sh.elf` over pipes (byte stream drawn as a grid), forwarding
-  the keys the server delivers to the shell's stdin. Ctrl-C / Ctrl-D there only
-  closes that terminal — `mak.sh0` is never in the blast radius.
+- **mxterm** hosts `sh.elf` over pipes, forwarding the keys the server delivers
+  to the shell's stdin. Ctrl-C / Ctrl-D there only closes that terminal —
+  `mak.sh0` is never in the blast radius. It is a **real ANSI/VT100+ terminal
+  emulator**: the child's byte stream runs through the reusable `vt100.c` core
+  (see below), so colour (SGR), cursor addressing (CUP/ED/EL), scroll regions,
+  insert/delete lines & chars, the alt-screen, and cursor show/hide all render
+  correctly — TUI programs (`maktop`, `vix`, `ls --color`, …) display properly
+  in the window. The grid resizes with the window.
 - **mxedit** is a native multi-line editor (caret, click-to-position) with an
   **Open / Save / Save As** dialog built on the shared file dialog (`br_dialog`,
   below).
@@ -157,10 +186,27 @@ Clients (each an independent process, `src/userspace/mx*.c`):
 - **doom** is the windowed makx client (see below).
 
 An always-on **top menu bar** (drawn after the windows, never occluded) carries
-the Makar brand, the focused window's title, **Exit** (→ `sys_gui_close`, back
-to the CLI shell) and **Log Off** (→ `sys_logout`, ends the session). Both first
+the Makar brand, the focused window's title, and a **power icon** at the
+right. Clicking it (or pressing **Ctrl-Alt-Del**, see below) opens a centred
+modal **power menu** (`show_power_menu`) with: **Log out (graphical)**
+(→ `sys_logout`, re-shows login), **Log out to shell** (→ `sys_gui_close`,
+back to the CLI shell), **Shut down** (→ `sys_shutdown`), **Reboot**
+(→ `sys_reboot`), **Change password...** (the passwd dialog below), and
+**Cancel** (Esc). Shut down / reboot and the two log-out paths all first
 SIGKILL + reap every client child and restore statusbar state. Desktop + menu
 bar + dock are unconditional: the GUI is never chromeless.
+
+**Change-password dialog** (`show_passwd_dialog`): a centred modal with masked
+Current / New / Confirm fields (`ui_password`, Tab cycles, Esc cancels). OK
+calls **`SYS_PASSWD`** (`sys_passwd`, syscall 270) → `shadow_verify` the old
+password then `shadow_set_password` the new one; it needs a writable (installed)
+rootfs and reports "current password incorrect" / mismatch inline.
+
+**Ctrl-Alt-Del:** the kernel sets a pending flag from the keyboard IRQ; in a
+text session it opens `cad_menu`, but under the GUI the server polls
+**`SYS_CAD_PENDING`** (syscall 271, test-and-clear) every frame and opens the
+power menu instantly. Escape hatch: a *second* Ctrl-Alt-Del within ~1 s pulses
+an 8042 CPU reset from the IRQ, so a wedged GUI is still recoverable.
 
 **Still built into the server (this cut):** the desktop/dock/menu-bar/chrome (a
 compositor-owned panel + WM, like many simple stacks) and the graphical login

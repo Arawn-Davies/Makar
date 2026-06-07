@@ -19,11 +19,13 @@
 
 /* Maximum size of a regular file backed by an in-memory FD_KIND_FILE buffer.
  * Reads cap the eager-load here; writes may grow the buffer up to this hard
- * limit (16 MiB) before SYS_WRITE returns -1 (EFBIG).  Kernel heap is 32 MiB
- * (see HEAP_MAX in kernel/heap.h), so two simultaneously-open large files
- * still leave the kernel room to operate.  16 MiB is enough for tcc.c + its
- * emitted ELF on a self-compile attempt. */
-#define SYSCALL_FILE_MAX     (16u * 1024u * 1024u)
+ * limit before SYS_WRITE returns -1 (EFBIG).  The kernel heap is 40 MiB (see
+ * HEAP_MAX in kernel/heap.h), so a single 32 MiB file still leaves the kernel
+ * ~8 MiB to operate.  32 MiB covers a full DOOM IWAD: the FreeDOOM WADs are
+ * ~29 MiB (DOOM.WAD is 12 MiB) -- at 16 MiB they loaded truncated and DOOM
+ * died with "W_GetNumForName: PNAMES not found!".  Don't raise this past the
+ * heap's headroom, and note only one such file should be open at a time. */
+#define SYSCALL_FILE_MAX     (32u * 1024u * 1024u)
 /* Initial heap allocation for a freshly-created (O_CREAT) or O_TRUNC'd fd.
  * Subsequent SYS_WRITEs grow geometrically (doubling). */
 #define SYSCALL_FILE_INITIAL (4u * 1024u)

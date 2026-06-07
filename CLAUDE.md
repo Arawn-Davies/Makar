@@ -116,6 +116,8 @@ tests/                       GDB boot-test suite
   `SURVEY.md`; `toolchain/README.md`.
 
 ## Conventions
+- Full house rules + style: the **`makar-conventions`** Claude skill
+  (`.claude/skills/makar-conventions/SKILL.md`) — read it before non-trivial work.
 - Paths follow Linux: `/usr` `/apps` `/root` `/proc` `/dev` `/mnt/<name>`
   `/mnt/cdrom`; apps at `/apps/*.elf`, libc at `/usr/lib/libc.a`.
 - **Commits**: one per discrete work item; **no `Co-Authored-By`, no "Generated

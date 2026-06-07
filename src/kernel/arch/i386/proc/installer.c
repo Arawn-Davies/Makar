@@ -70,8 +70,12 @@
  * installer silently truncates it (iso9660_read_file copies min(size, bufsz)),
  * which corrupts the tail — e.g. a truncated DOOM.WAD (~11.8 MiB) loses its
  * lump directory and DOOM fails with "W_GetNumForName: PNAMES not found!".
- * 16 MiB covers DOOM.WAD/DOOM2.WAD; bump if a larger asset is ever bundled. */
-#define INST_MAX_FILE_SIZE    (16u * 1024u * 1024u)
+ * 32 MiB covers the FreeDOOM WADs (freedoom1 ~21 MiB, freedoom2 ~28 MiB) as
+ * well as DOOM.WAD/DOOM2.WAD.  It's a transient kmalloc in the 40 MiB heap,
+ * live only during the copy phase (mkfs metadata is block-sized), so it fits.
+ * A larger asset would need true streaming (ISO offset-read + FS append) --
+ * noted as a follow-up; the multi-sector FS writes already make the copy fast. */
+#define INST_MAX_FILE_SIZE    (32u * 1024u * 1024u)
 #define MBR_PART_TABLE_OFF    0x1BEu
 #define MBR_SIG_OFF           0x1FEu
 #define LIMINE_STAGE2_LOC_OFF 0x1A4u          /* u64 stage-2 byte offset       */

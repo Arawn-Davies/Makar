@@ -46,6 +46,9 @@ typedef struct pipe_ring {
     uint32_t tail;       /* read cursor (consumer)                    */
     int      refcount_r; /* live reader fds pointing at this ring     */
     int      refcount_w; /* live writer fds pointing at this ring     */
+    uint16_t cols, rows; /* pty window size (SYS_PTY_WINSIZE); 0 = unset.
+                          * A GUI terminal (mxterm) publishes its grid size here
+                          * so its piped child's SYS_TERM_SIZE reports it. */
 } pipe_ring_t;
 
 /* Per-fd flag bits, mirrored from Linux fcntl O_NONBLOCK.  Stored in

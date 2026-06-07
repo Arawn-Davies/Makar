@@ -37,6 +37,11 @@ const char *auth_current_user(void);
  * until a login sets it again. */
 void auth_clear_user(void);
 
+/* Force the session user with NO password check.  Used by the rescue boot
+ * (single-user mode): physical-console recovery is root-equivalent by design,
+ * the same trust model as Linux `init=/bin/sh`.  Do not use for normal login. */
+void auth_force_user(const char *user);
+
 /* Verify credentials and, on success, set the session user.  Returns 0 on
  * success, -1 on failure.  Backs SYS_LOGIN for the ring-3 GUI login screen. */
 int auth_login(const char *username, const char *password);

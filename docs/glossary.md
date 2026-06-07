@@ -38,6 +38,12 @@ this page — open an issue.
 | **WM** | Window Manager | The userspace GUI server (`gui.elf` / `wm.c`); sole compositor. |
 | **compositor** | — | The component that blits all window buffers into the one framebuffer. |
 | **DPI / fps** | dots per inch / frames per second | Pixel density / refresh rate. |
+| **ANSI / VT100** | — | The escape-sequence terminal standard (cursor moves, colours, scrolling). `mxterm` emulates it via the `vt100.c` core so TUI apps render in a GUI window. |
+| **CSI** | Control Sequence Introducer | The `ESC [` prefix of most ANSI sequences (e.g. `ESC[31m`, `ESC[2J`). |
+| **SGR** | Select Graphic Rendition | The `ESC[…m` family that sets colour/bold/reverse for following text. |
+| **CUP / ED / EL** | Cursor Position / Erase Display / Erase Line | Common CSI ops: move the cursor, clear the screen, clear a line. |
+| **pty** | pseudo-terminal | A terminal not backed by hardware — here the GUI terminal's pipe to its shell. `SYS_PTY_WINSIZE` publishes its size. |
+| **TUI** | Text User Interface | A full-screen text-mode app drawn with the cell API (maktop, vix, cfdisk). |
 
 ## Memory & CPU
 
@@ -59,6 +65,9 @@ this page — open an issue.
 | **FPU / SSE / FXSAVE** | Floating-Point Unit / Streaming SIMD Extensions | x87+SSE state, saved per task via the `fxsave`/`fxrstor` instructions. |
 | **TLS** | Thread-Local Storage | Per-task storage; i386 reaches it via a GDT segment (`%gs`). |
 | **GDT / IDT** | Global Descriptor Table / Interrupt Descriptor Table | The segment and interrupt-vector tables. |
+| **PIT** | Programmable Interval Timer | The 8253/8254 timer; Makar runs it at **TIMER_HZ** (250 Hz) to drive preemption. |
+| **TIMER_HZ / quantum** | — | Internal tick rate (250 Hz = 4 ms) and the per-task time-slice (`g_sched_quantum × sched_weight` ticks) before the scheduler preempts. |
+| **USER_HZ** | — | The *userspace-facing* tick rate, fixed at 100 Hz regardless of TIMER_HZ (like Linux). `SYS_UPTIME` and `/proc` CPU ticks report in these units so apps' timing stays correct. |
 
 ## Devices, power & virtualization
 

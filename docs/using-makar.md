@@ -20,3 +20,20 @@ For host-side build, boot, and test commands, use
 [Building and running](building.md). For implementation details behind the
 user-facing behavior, use [Internals](internals.md) and the
 [Kernel subsystems](kernel/) reference.
+
+## Rescue shell (single-user mode)
+
+The GRUB entry **"Makar OS (rescue shell)"** boots with `shell=rescue` on the
+kernel command line. This skips the normal multi-VT userspace boot and starts a
+single bare **in-kernel** shell on VT0 — the recovery path for when
+`/apps/sh.elf` or the rootfs is broken.
+
+The rescue shell **logs in as `root` automatically with no password prompt**
+(the prompt shows `root@makar:/#`). This is intentional and matches the Unix
+single-user-mode trust model (Linux `init=/bin/sh`): whoever has the physical
+console already has full control of the machine, so a password would only be an
+obstacle during recovery, not real security. Protecting the console itself is a
+bootloader-password concern (GRUB), not the OS shell.
+
+Normal boots are unaffected — they still go through the usual login / autologin
+flow (`auth_try_autologin`; see [GUI](gui.md) and `auth.h`).

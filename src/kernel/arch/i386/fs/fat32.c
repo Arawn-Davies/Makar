@@ -1174,24 +1174,57 @@ int fat32_write_file(const char *path, const void *buf, uint32_t size)
 
     if (fat_flush()) return -2;
 
-    /* Write file data sector by sector. */
+    /* Write file data, coalescing physically-contiguous clusters into large
+     * multi-sector transfers.  fat_alloc hands out consecutive clusters when
+     * it can, so a freshly written file is usually one or a few runs -- this
+     * turns the old one-sector-per-call loop (~24.5k DMA setups for a 12 MiB
+     * DOOM.WAD) into ~100 batched writes.  The single-sector ABI caps a call
+     * at 255 sectors (ide count is uint8_t), so each run is chunked to that. */
     const uint8_t *src       = (const uint8_t *)buf;
     uint32_t       remaining = size;
     uint32_t       cluster   = first_cluster;
 
     while (remaining > 0u && cluster >= 2u && cluster < FAT32_BAD) {
-        uint32_t lba = clus_to_lba(cluster);
+        /* Extend a run of consecutive cluster numbers (contiguous LBAs). */
+        uint32_t run_lba  = clus_to_lba(cluster);
+        uint32_t run_clus = 1u;
+        uint32_t next     = fat_read(cluster);
+        while (next == cluster + 1u && next >= 2u && next < FAT32_BAD) {
+            run_clus++;
+            cluster = next;
+            next    = fat_read(cluster);
+        }
 
-        for (uint8_t s = 0; s < vol.spc && remaining > 0u; s++) {
-            uint32_t chunk = remaining > 512u ? 512u : remaining;
+        uint32_t run_sectors = run_clus * vol.spc;
+        uint32_t run_bytes   = run_sectors * 512u;
+        uint32_t use_bytes   = remaining < run_bytes ? remaining : run_bytes;
+        uint32_t full_secs   = use_bytes / 512u;
+        uint32_t off         = 0u;
+
+        /* Whole sectors: write straight from the source buffer, ≤255 at a
+         * time (ide_write_sectors bounces through its own DMA buffer, so a
+         * non-contiguous kernel allocation is fine). */
+        while (full_secs > 0u) {
+            uint8_t batch = full_secs > 255u ? 255u : (uint8_t)full_secs;
+            if (ide_write_sectors(vol.drive, run_lba + off, batch, src))
+                return -2;
+            src       += (uint32_t)batch * 512u;
+            remaining -= (uint32_t)batch * 512u;
+            off       += batch;
+            full_secs -= batch;
+        }
+        /* Trailing partial sector (only at end-of-file): zero-pad via s_sec. */
+        if (remaining > 0u && off < run_sectors) {
+            uint32_t chunk = remaining;            /* < 512 */
             memset(s_sec, 0, 512);
             memcpy(s_sec, src, chunk);
-            if (ide_write_sectors(vol.drive, lba + s, 1, s_sec))
+            if (ide_write_sectors(vol.drive, run_lba + off, 1, s_sec))
                 return -2;
             src       += chunk;
             remaining -= chunk;
         }
-        cluster = fat_read(cluster);
+
+        cluster = next;
     }
 
     /* Update or create the directory entry. */

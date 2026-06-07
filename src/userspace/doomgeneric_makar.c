@@ -197,9 +197,15 @@ int DG_GetKey(int *pressed, unsigned char *doomKey)
 
 void DG_SetWindowTitle(const char *title) { (void)title; }
 
-/* If the caller didn't pass -iwad, look for a WAD next to doom.elf (/apps) or
- * in /tmp (where getwad.sh saves) and inject it.  Lets `doom` and the gui Doom
- * icon Just Work with a bundled/fetched WAD. */
+/* Flag handling (passed straight through to doomgeneric's d_main.c):
+ *   doom -iwad /apps/DOOM.WAD            pick a specific IWAD
+ *   doom -file /tmp/mymap.wad …          load one or more PWADs (mods/maps)
+ *   doom -iwad <iwad> -file <pwad> …     both together
+ * If no -iwad is given we auto-pick a bundled/fetched IWAD (cand[] below).
+ * `-makx <pid>` (display-server handle) is stripped before doomgeneric sees it.
+ *
+ * If the caller didn't pass -iwad, look for a WAD in /apps (bundled) or /tmp
+ * (where getwad.sh saves) and inject it. */
 static int has_iwad(int argc, char **argv)
 {
     for (int i = 1; i < argc; i++)
@@ -216,20 +222,23 @@ int main(int argc, char **argv)
     if (mx_connect(&s_mc, argc, argv, DOOMGENERIC_RESX, DOOMGENERIC_RESY, 0) == 0)
         s_windowed = 1;
 
-    static char *fa[18];
+    static char *fa[34];
     int fc = 0;
-    for (int i = 0; i < argc && fc < 17; i++) {
+    for (int i = 0; i < argc && fc < 33; i++) {
         if (i >= 1 && !strcmp(argv[i], "-makx") && i + 1 < argc) { i++; continue; }
         fa[fc++] = argv[i];
     }
     fa[fc] = 0;
     argv = fa; argc = fc;
 
-    static char *na[16];
+    static char *na[36];
     if (!has_iwad(argc, argv)) {
-        /* With -m 64 + a 40 MiB backed heap the full 12 MiB DOOM.WAD loads, so
-         * prefer it; DOOM1.WAD (shareware) and /tmp fetches are fallbacks. */
+        /* Prefer the BSD-licensed FreeDOOM IWADs (shipped by default, see
+         * getfreedoom.sh) so DOOM Just Works without the copyrighted DOOM.WAD;
+         * fall back to DOOM.WAD / DOOM1.WAD (shareware) and /tmp fetches if
+         * someone supplies them. */
         static const char *cand[] = {
+            "/apps/freedoom1.wad", "/apps/freedoom2.wad",
             "/apps/DOOM.WAD",  "/tmp/DOOM.WAD",   "/apps/DOOM2.WAD",
             "/apps/DOOM1.WAD", "/apps/doom1.wad", "/tmp/DOOM1.WAD", 0
         };
@@ -239,7 +248,7 @@ int main(int argc, char **argv)
                 sys_close(fd);
                 int n = 0;
                 na[n++] = argv[0]; na[n++] = "-iwad"; na[n++] = (char *)cand[i];
-                for (int j = 1; j < argc && n < 14; j++) na[n++] = argv[j];
+                for (int j = 1; j < argc && n < 34; j++) na[n++] = argv[j];
                 na[n] = 0;
                 argv = na; argc = n;
                 break;

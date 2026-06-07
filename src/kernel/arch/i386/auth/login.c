@@ -48,6 +48,20 @@ const char *auth_current_user(void) { return s_current_user; }
  * while this is empty, forcing a fresh login_screen() first. */
 void auth_clear_user(void) { s_current_user[0] = '\0'; }
 
+/* Force the session user with no password check (rescue / single-user mode).
+ * Physical-console recovery is root-equivalent by design -- same trust model as
+ * Linux `init=/bin/sh`; do not use on a normal multi-user login path. */
+void auth_force_user(const char *user)
+{
+    if (!user) return;
+    size_t i = 0;
+    while (user[i] && i < sizeof(s_current_user) - 1) { s_current_user[i] = user[i]; i++; }
+    s_current_user[i] = '\0';
+    Serial_WriteString("[auth] rescue: forced session user ");
+    Serial_WriteString(s_current_user);
+    Serial_WriteString(" (single-user, no password)\n");
+}
+
 /* Verify + sign in (ring-3 GUI login via SYS_LOGIN).  Returns 0 / -1. */
 int auth_login(const char *username, const char *password)
 {
@@ -554,7 +568,17 @@ int auth_try_autologin(const char *cmdline_user)
     if (!user || !*user)
         return 0;                       /* no autologin configured */
 
-    if (!shadow_user_exists(user)) {
+    /* The user is configured (cmdline autologin / /etc/autologin) and the live
+     * CD genuinely ships it (user:user), so a miss here is almost always a
+     * transient /etc/shadow read during early boot (the rootfs/ATAPI is still
+     * settling).  Retry briefly before falling back to the login prompt so the
+     * live CD autologins reliably. */
+    int found = 0;
+    for (int tries = 0; tries < 10; tries++) {
+        if (shadow_user_exists(user)) { found = 1; break; }
+        ksleep(5);                      /* ~50 ms */
+    }
+    if (!found) {
         Serial_WriteString("[auth] autologin user not found, requiring login: ");
         Serial_WriteString((char *)user);
         Serial_WriteString("\n");

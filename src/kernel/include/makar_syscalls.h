@@ -109,6 +109,14 @@
 #define SYS_SURFACE_DESTROY 264 /* int surface_destroy(int id) -> 0 / -1          */
 #define SYS_SURFACE_UNMAP   268 /* int surface_unmap(int id) -> 0/-1 (resize realloc) */
 
+/* Change the *current session user's* password (graphical passwd dialog).
+ * Verifies `old` against /etc/shadow then sets `new`.  Returns 0 ok, -2 if the
+ * current password is wrong, -1 otherwise (bad args / read-only live rootfs). */
+#define SYS_PASSWD          270 /* int passwd(const char *old, const char *new)    */
+#define SYS_CAD_PENDING     271 /* int cad_pending(void) - test+clear Ctrl-Alt-Del */
+#define SYS_PTY_WINSIZE     272 /* int pty_winsize(int fd, (cols<<16)|rows) - set a
+                                 * pipe's pty window size (GUI terminal -> child) */
+
 /*
  * Admin syscalls (219..229).
  *

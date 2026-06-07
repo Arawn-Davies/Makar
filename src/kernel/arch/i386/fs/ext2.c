@@ -888,22 +888,60 @@ int ext2_write_file(const char *path, const void *buf, uint32_t size)
         }
     }
 
-    /* Write the data, block by block. */
+    /* Write the data, coalescing physically-contiguous full blocks into one
+     * multi-block transfer (Linux merges adjacent blocks into a single bio).
+     * The bitmap allocator hands out consecutive blocks when it can, so this
+     * collapses the old block-at-a-time loop -- ~3k single-block DMA setups
+     * for a 12 MiB file -- into ~100 batched writes.  The ≤255-sector ABI
+     * (ide count is uint8_t) caps a run at (255 / s_spb) blocks. */
     uint32_t done = 0, lb = 0;
     const uint8_t *src = (const uint8_t *)buf;
+    uint32_t max_run = (s_spb && s_spb <= 255u) ? (255u / s_spb) : 1u;
+    if (max_run == 0u) max_run = 1u;
+    uint32_t run_start_pb = 0u, run_blocks = 0u;
+    const uint8_t *run_src = (const uint8_t *)0;
+    int werr = 0;
+
     while (done < size) {
         int grew;
         uint32_t pb = e2_bmap_alloc(&in, lb, &grew);
         if (!pb) { /* out of space: keep what we wrote */ break; }
-        uint32_t chunk = s_block_size;
-        if (chunk > size - done) chunk = size - done;
-        memset(s_blk, 0, s_block_size);
-        memcpy(s_blk, src + done, chunk);
-        if (e2_write_block(pb, s_blk) != 0) break;
         if (grew) in.i_blocks += s_block_size / SECTOR_SIZE;
+
+        uint32_t chunk = (size - done < s_block_size) ? (size - done) : s_block_size;
+
+        if (chunk == s_block_size) {
+            /* Full block: extend the contiguous run, flushing first if this
+             * block isn't physically adjacent or the run hit its size cap. */
+            if (run_blocks &&
+                (pb != run_start_pb + run_blocks || run_blocks >= max_run)) {
+                if (ide_write_sectors(s_drive, s_part_lba + run_start_pb * s_spb,
+                                      (uint8_t)(run_blocks * s_spb), run_src)) { werr = 1; break; }
+                run_blocks = 0u;
+            }
+            if (!run_blocks) { run_start_pb = pb; run_src = src + done; }
+            run_blocks++;
+        } else {
+            /* Final partial block: flush the run, then write the zero-padded
+             * tail through the per-block bounce buffer. */
+            if (run_blocks) {
+                if (ide_write_sectors(s_drive, s_part_lba + run_start_pb * s_spb,
+                                      (uint8_t)(run_blocks * s_spb), run_src)) { werr = 1; break; }
+                run_blocks = 0u;
+            }
+            memset(s_blk, 0, s_block_size);
+            memcpy(s_blk, src + done, chunk);
+            if (e2_write_block(pb, s_blk) != 0) { werr = 1; break; }
+        }
         done += chunk;
         lb++;
     }
+    /* Flush any trailing full-block run. */
+    if (!werr && run_blocks &&
+        ide_write_sectors(s_drive, s_part_lba + run_start_pb * s_spb,
+                          (uint8_t)(run_blocks * s_spb), run_src))
+        werr = 1;
+    (void)werr;
     in.i_size = done;
     e2_write_inode(ino, &in);
     e2_flush_meta();

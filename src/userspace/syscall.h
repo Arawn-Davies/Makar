@@ -620,6 +620,24 @@ static inline int sys_login(const char *user, const char *pass)
 {
     return (int)syscall2(SYS_LOGIN, (long)user, (long)pass);
 }
+/* Change the current session user's password.  0 = ok, -2 = wrong current
+ * password, -1 = otherwise (bad args / read-only live rootfs). */
+static inline int sys_passwd(const char *oldp, const char *newp)
+{
+    return (int)syscall2(SYS_PASSWD, (long)oldp, (long)newp);
+}
+/* Test-and-clear the pending Ctrl-Alt-Del flag (1 if it was pressed). */
+static inline int sys_cad_pending(void)
+{
+    return (int)syscall1(SYS_CAD_PENDING, 0);
+}
+/* Publish a pty window size onto a pipe fd so a piped child's SYS_TERM_SIZE
+ * reports it (GUI terminal -> shell).  0 ok, -1 if fd isn't a pipe. */
+static inline int sys_pty_winsize(int fd, int cols, int rows)
+{
+    return (int)syscall2(SYS_PTY_WINSIZE, fd,
+                         ((long)(cols & 0xFFFF) << 16) | (rows & 0xFFFF));
+}
 static inline int sys_gui_close(void)
 {
     return (int)syscall1(SYS_GUI_CLOSE, 0);
