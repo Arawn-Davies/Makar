@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include <kernel/tty.h>
+#include <kernel/auth.h>
 #include <kernel/vga.h>
 #include <kernel/descr_tbl.h>
 #include <kernel/fpu.h>
@@ -528,6 +529,10 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 		 * mak.sh0.  The explicit userspace `makmux` application owns
 		 * the multi-VT shell experience. */
 		if (shell_rescue) {
+			/* Single-user rescue: come up as root with no login prompt
+			 * (physical-console recovery is root-equivalent, like Linux
+			 * `init=/bin/sh`).  See auth_force_user / docs. */
+			auth_force_user("root");
 			task_create("rescu.sh", shell_run);
 		} else {
 			task_create("net", net_lwip_task);
