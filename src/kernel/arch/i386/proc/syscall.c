@@ -760,6 +760,22 @@ void syscall_dispatch(registers_t *regs)
         break;
     }
 
+    /* SYS_PASSWD(270): change the current session user's password.  Verify the
+     * old password, then write the new one.  Needs a writable (installed)
+     * rootfs -- /etc/shadow can't be rewritten on the read-only live CD.
+     * Returns 0 ok / -2 wrong current password / -1 otherwise. */
+    case SYS_PASSWD: {
+        const char *oldp = (const char *)(uintptr_t)regs->ebx;
+        const char *newp = (const char *)(uintptr_t)regs->ecx;
+        const char *user = auth_current_user();
+        if (!oldp || !newp || !user || !user[0] || !vfs_rootfs_is_disk()) {
+            regs->eax = (uint32_t)-1; break;
+        }
+        if (shadow_verify(user, oldp) != 0) { regs->eax = (uint32_t)-2; break; }
+        regs->eax = (uint32_t)(shadow_set_password(user, newp) == 0 ? 0 : -1);
+        break;
+    }
+
     case SYS_GUI_CLOSE: {
         vtty_switch_root_text();
         g_gui_session = 0;          /* Exit to Shell: this session is now CLI */

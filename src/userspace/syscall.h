@@ -620,6 +620,12 @@ static inline int sys_login(const char *user, const char *pass)
 {
     return (int)syscall2(SYS_LOGIN, (long)user, (long)pass);
 }
+/* Change the current session user's password.  0 = ok, -2 = wrong current
+ * password, -1 = otherwise (bad args / read-only live rootfs). */
+static inline int sys_passwd(const char *oldp, const char *newp)
+{
+    return (int)syscall2(SYS_PASSWD, (long)oldp, (long)newp);
+}
 static inline int sys_gui_close(void)
 {
     return (int)syscall1(SYS_GUI_CLOSE, 0);

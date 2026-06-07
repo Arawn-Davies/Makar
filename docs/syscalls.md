@@ -226,9 +226,11 @@ than user/credential based.
 |---|---|---|
 | 260 `SYS_LOGOUT` | — | end the root login session; `0` ok, `-1` |
 | 266 `SYS_LOGIN` | `user, pass` | `shadow_verify` + set session user; `0` ok, `-1` bad creds |
+| 270 `SYS_PASSWD` | `old, new` | change the current session user's password (`shadow_verify` old + `shadow_set_password` new); `0` ok, `-2` wrong current password, `-1` otherwise (bad args / read-only live rootfs) |
 
-`SYS_LOGIN` backs the GUI graphical login (`gui.elf`'s `do_login`); see
-`docs/gui.md`.
+`SYS_LOGIN` backs the GUI graphical login (`gui.elf`'s `do_login`); `SYS_PASSWD`
+backs its change-password dialog (the power menu's "Change password..."). Both
+are documented in `docs/gui.md`.
 
 ### Virtual Terminals and makmux
 

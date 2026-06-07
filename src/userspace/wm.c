@@ -764,11 +764,65 @@ static int show_power_menu(int cx, int cy)
     }
 }
 
-/* Graphical change-password dialog.  Phase 7 implements it (SYS_PASSWD over
- * the shadow file); this stub keeps the power-menu commit self-contained. */
-static void show_passwd_dialog(int start_cx, int start_cy)
+/* Graphical change-password dialog: Current / New / Confirm via masked fields,
+ * OK calls sys_passwd (verify old + set new over /etc/shadow).  Tab cycles
+ * fields; Esc/Cancel dismisses.  Mirrors do_login's input/render loop. */
+static void show_passwd_dialog(int cx, int cy)
 {
-    (void)start_cx; (void)start_cy;
+    char oldp[64]={0}, newp[64]={0}, conf[64]={0}, err[48]={0};
+    int prev_left=0, dirty=1;
+    ui_ctx u; for(unsigned i=0;i<sizeof u/sizeof(int);i++) ((int*)&u)[i]=0;
+    u.focus=1;
+
+    for(;;){
+        int mpressed=0,mreleased=0; unsigned int ev;
+        while((ev=sys_mouse_read())!=0){
+            cx+=(int)(signed char)((ev>>8)&0xFF); cy+=(int)(signed char)((ev>>16)&0xFF);
+            if(cx<0)cx=0; if(cx>=(int)FBW)cx=(int)FBW-1;
+            if(cy<0)cy=0; if(cy>=(int)FBH)cy=(int)FBH-1;
+            int left=ev&1; if(left&&!prev_left)mpressed=1; if(!left&&prev_left)mreleased=1;
+            prev_left=left; dirty=1;
+        }
+        int mdown=prev_left, key=-1;
+        { unsigned char b; if(sys_read(0,&b,1)==1){ key=b; dirty=1; } }
+        if(key==27) return;                                /* Esc cancels */
+        if(!dirty){ sys_yield(); continue; }
+
+        gfx_fill(&scr,0,0,(int)FBW,(int)FBH,COL_DESK);
+        int pw=340, ph=232, px=(int)FBW/2-pw/2, py=(int)FBH/2-ph/2;
+        gfx_round(&scr,px,py,pw,ph,COL_WIN,COL_BORDER);
+        gfx_fill(&scr,px,py,pw,26,COL_TITLE);
+        gfx_str(&scr,px+(pw-gfx_text_w("Change password"))/2,py+9,"Change password",0xFFFFFF);
+        gfx_str(&scr,px+24,py+50,"Current:",COL_TEXT);
+        gfx_str(&scr,px+24,py+86,"New:",COL_TEXT);
+        gfx_str(&scr,px+24,py+122,"Confirm:",COL_TEXT);
+
+        ui_begin(&u,cx,cy,mdown,mpressed,mreleased,
+                 (key=='\t'||key=='\n'||key=='\r')?-1:key);
+        ui_password(&u,&scr,px+110,py+44, pw-134,22,oldp,(int)sizeof oldp);
+        ui_password(&u,&scr,px+110,py+80, pw-134,22,newp,(int)sizeof newp);
+        ui_password(&u,&scr,px+110,py+116,pw-134,22,conf,(int)sizeof conf);
+        int okc =ui_button(&u,&scr,px+pw/2-92,py+162,88,28,"OK");
+        int cnc =ui_button(&u,&scr,px+pw/2+4, py+162,88,28,"Cancel");
+        if(err[0]) gfx_str(&scr,px+24,py+ph-22,err,COL_CLOSE);
+
+        if(key=='\t') u.focus = (u.focus>=3)?1:(u.focus+1);
+        if(cnc) return;
+        if(okc || key=='\n' || key=='\r'){
+            int match=1; for(int i=0;;i++){ if(newp[i]!=conf[i]){match=0;break;} if(!newp[i])break; }
+            if(!newp[0])      { scpy(err,"New password is empty",sizeof err); u.focus=2; }
+            else if(!match)   { scpy(err,"New passwords do not match",sizeof err); conf[0]=0; u.focus=3; }
+            else {
+                int rc=sys_passwd(oldp,newp);
+                if(rc==0) return;                          /* changed -> close */
+                else if(rc==-2){ scpy(err,"Current password incorrect",sizeof err); oldp[0]=0; u.focus=1; }
+                else           { scpy(err,"Could not change (read-only?)",sizeof err); }
+            }
+        }
+        draw_cursor(cx,cy);
+        sys_fb_present(scr.px);
+        dirty=0; sys_yield();
+    }
 }
 
 /* =============================== main =================================== */
