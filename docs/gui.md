@@ -196,11 +196,32 @@ Clients (each an independent process, `src/userspace/mx*.c`):
   argument, decode, and aspect-fit-to-window via `gfx_blit_scaled`. Decodes BMP
   (24/32-bpp uncompressed) and GIF (87a/89a first frame, LZW + interlace);
   PNG/JPEG are the next slice. mmap-backed file + pixel buffers (no libc).
+- **mxinstall** is the graphical OS installer (see "Installer" below).
 - **doom** is the windowed makx client (see below).
 
-The **Install** desktop icon launches `mxterm` with a one-shot command
-(`mxterm.elf -makx <pid> install` → it runs `sh.elf -c install`), so the in-OS
-installer's TUI renders inside a terminal window via the cell-API→ANSI bridge.
+`ui_password` fields render a small round dot per character (not `*`).
+
+### Installer (`mxinstall.elf`)
+
+The **Install** desktop icon launches `mxinstall.elf`, a graphical makx wizard:
+Welcome → target drive → filesystem + optional components → hostname → accounts
+(root + optional user) → confirm → progress → done. It collects an
+`install_params_t` and drives the kernel's **shared, stepped install engine**
+(`SYS_INSTALL_EXEC`: `install_exec_begin` / `install_exec_step` / `_finish`,
+declared in `kernel/installer.h`) — one file copied per `step` over a
+pre-counted total, so the client repaints a live percentage bar between files.
+The same engine backs the text installer (`installer_run`, shell mode), so the
+two front-ends are functionally identical; only the presentation differs.
+
+The engine runs **preemptibly** (interrupts enabled), so the compositor keeps
+running at full frame rate while files copy — the install never freezes the
+desktop. Per-file progress is also written to the serial log
+(`INSTALL>copy <n>/<total> (<pct>%) <name>`). Unlike a server install there is
+**no auto-reboot**: the completion screen offers *Continue (live)* or *Reboot
+now*, so on a live CD the operator stays in control (Ubuntu-style).
+
+The text installer renders as a real ANSI/VT100 byte stream to its stdout, so it
+also works from a shell VT and inside an `mxterm` window with one code path.
 
 An always-on **top menu bar** (drawn after the windows, never occluded) carries
 the Makar brand, the focused window's title, and a **power icon** at the

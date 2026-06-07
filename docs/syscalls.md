@@ -229,10 +229,13 @@ than user/credential based.
 | 270 `SYS_PASSWD` | `old, new` | change the current session user's password (`shadow_verify` old + `shadow_set_password` new); `0` ok, `-2` wrong current password, `-1` otherwise (bad args / read-only live rootfs) |
 | 271 `SYS_CAD_PENDING` | — | test-and-clear the Ctrl-Alt-Del flag; `1` if it was pressed. The GUI server polls it each frame to open its power menu |
 | 272 `SYS_PTY_WINSIZE` | `fd, (cols<<16)\|rows` | publish a pty window size onto a pipe fd so a piped child's `SYS_TERM_SIZE` reports it (GUI terminal → shell); `0` ok, `-1` if not a pipe |
+| 273 `SYS_INSTALL_EXEC` | `cmd, ptr` | stepped headless installer for the GUI front-end (`mxinstall.elf`). `cmd`: `0` begin(`install_params_t*`), `1` step(`install_progress_t*`, copies one file), `2` finish(`install_params_t*`), `3` list-drives(`install_drive_t[4]`). Returns the engine result (see `kernel/installer.h`). Runs preemptibly so the compositor stays live during the copy |
 
 `SYS_LOGIN` backs the GUI graphical login (`gui.elf`'s `do_login`); `SYS_PASSWD`
 backs its change-password dialog (the power menu's "Change password..."). Both
-are documented in `docs/gui.md`.
+are documented in `docs/gui.md`.  `SYS_INSTALL_EXEC` backs the graphical
+installer `mxinstall.elf`; the text installer (`install` builtin →
+`SYS_INSTALL`) and the GUI share one execution engine (see `docs/gui.md`).
 
 ### Virtual Terminals and makmux
 

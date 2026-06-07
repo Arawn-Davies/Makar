@@ -13,9 +13,24 @@ kernel.  It supports 28-bit LBA sector reads and writes over two ATA channels
 (primary and secondary), giving access to up to four drives (primary master,
 primary slave, secondary master, secondary slave).
 
-All transfers are polling-based - no DMA, no IRQ-driven I/O.  ATAPI (CD-ROM)
-devices are detected and read via the SCSI PACKET command set (READ(12),
-READ CAPACITY(10), START/STOP UNIT for eject); ATAPI writing is not supported.
+Bus-master (BMIDE) DMA is used when a drive advertises it, with a PIO fallback
+on any failure; completion is detected by polling (no IRQ-driven I/O).  ATAPI
+(CD-ROM) devices are detected and read via the SCSI PACKET command set
+(READ(12), READ CAPACITY(10), START/STOP UNIT for eject); ATAPI writing is not
+supported.
+
+### Concurrency
+
+The single controller / shared bus-master bounce buffer means only one transfer
+may be in flight at a time.  `ide_read_sectors` / `ide_write_sectors` /
+`ide_read_atapi_sectors` therefore take an irq-guarded controller lock
+(`ide_lock`/`ide_unlock`): the test-and-set briefly masks interrupts so it is
+correct from both interrupts-off syscalls and interrupts-on (preemptible)
+kernel tasks; a task that finds the controller busy yields until it frees.
+`io_spin_pump()` animates the boot/status spinner during a wait but does **not**
+yield — responsiveness during a long disk operation comes from the timer
+preempting the (interrupts-enabled) caller, e.g. the installer, rather than
+cooperative yields inside the poll loop.
 
 ---
 
