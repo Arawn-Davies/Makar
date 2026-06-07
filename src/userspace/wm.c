@@ -74,6 +74,7 @@ typedef struct {
     int          x, y, w, h;    /* outer rect                              */
     int          minimized, maximized;
     int          resizable;     /* MX_F_RESIZABLE: re-flow (blit 1:1) vs scale */
+    int          rawkeys;       /* MX_F_RAWKEYS: wants make/break scancodes     */
     int          sx, sy, sw, sh;/* geometry saved before maximise          */
     char         title[40];
     mxev         ev[EVQ]; int eh, et;     /* per-window event queue        */
@@ -148,6 +149,14 @@ static void set_focus(int i)
     g_dirty=1; damage_full();   /* both borders recolour: simplest to repaint all */
 }
 static void refocus(void){ set_focus(z_topmost()); }
+
+/* Keyboard delivery mode.  The server reads keys with sys_read(0): cooked bytes
+ * (0) normally, raw set-1 scancodes (2) while a MX_F_RAWKEYS client (doom) holds
+ * focus -- the kernel keeps the mode per focused-task slot, so this is just the
+ * server telling the kernel which stream it wants.  Tracked so we only issue the
+ * syscall on a transition.  Modals (login/power/passwd) force cooked. */
+static int s_kbd_mode = 0;
+static void kbd_mode(int m){ if (m != s_kbd_mode){ sys_keyboard_raw(m); s_kbd_mode = m; } }
 
 /* free a window slot whose client has gone (reaped) or been told to close */
 static void win_free(int i)
@@ -277,6 +286,7 @@ static void serve_requests(void)
             } else {
                 W[i].sid=sid; W[i].surf.px=(gfx_u32*)base; W[i].surf.w=w; W[i].surf.h=h; W[i].sw=w; W[i].sh=h;
                 W[i].resizable = (flags & MX_F_RESIZABLE) ? 1 : 0;
+                W[i].rawkeys   = (flags & MX_F_RAWKEYS)   ? 1 : 0;
                 r.data[0]=(unsigned)i; r.data[1]=(unsigned)sid;
                 z_raise(i); set_focus(i); g_dirty=1; damage_full();
                 /* A resizable client re-flows to fill: ask it to size its surface
@@ -720,6 +730,7 @@ static int fstest(void)
 static void do_login(const char *prefill_user)
 {
     char user[64]={0}, pass[64]={0}, err[40]={0};
+    kbd_mode(0);                 /* modal needs cooked bytes, not scancodes */
     if (prefill_user && prefill_user[0]) scpy(user, prefill_user, sizeof user);
     int cx=(int)FBW/2, cy=(int)FBH/2, prev_left=0, dirty=1;
     ui_ctx u; for(unsigned i=0;i<sizeof u/sizeof(int);i++) ((int*)&u)[i]=0;
@@ -775,6 +786,7 @@ enum { PWR_NONE=0, PWR_CANCEL, PWR_LOGOUT_GUI, PWR_LOGOUT_SHELL,
 static int show_power_menu(int cx, int cy)
 {
     int prev_left=0, dirty=1;
+    kbd_mode(0);                 /* modal needs cooked bytes, not scancodes */
     ui_ctx u; for(unsigned i=0;i<sizeof u/sizeof(int);i++) ((int*)&u)[i]=0;
 
     static const char *labels[6]={
@@ -823,6 +835,7 @@ static void show_passwd_dialog(int cx, int cy)
 {
     char oldp[64]={0}, newp[64]={0}, conf[64]={0}, err[48]={0};
     int prev_left=0, dirty=1;
+    kbd_mode(0);                 /* modal needs cooked bytes, not scancodes */
     ui_ctx u; for(unsigned i=0;i<sizeof u/sizeof(int);i++) ((int*)&u)[i]=0;
     u.focus=1;
 
@@ -928,6 +941,9 @@ int main(int argc, char **argv, char **envp)
         }
         int mdown=prev_left;
         int frame_key=-1;
+        /* Match the keyboard stream to the focused client: a MX_F_RAWKEYS game
+         * gets the raw make/break scancode stream, everyone else cooked bytes. */
+        kbd_mode((focus>=0 && W[focus].in_use && W[focus].rawkeys) ? 2 : 0);
         /* A key only changes the screen via the focused client's repaint (which
          * damages its own window); the WM chrome doesn't render keys, so this
          * doesn't dirty the scene by itself. */
@@ -1068,6 +1084,7 @@ int main(int argc, char **argv, char **envp)
      * and we reap it with WNOHANG.  Keep servicing IPC + reaping in a bounded
      * spin; SIGKILL + non-blocking reap any straggler that ignored CLOSE (it is
      * no longer IPC-blocked once we stop replying, so SIGKILL can land). */
+    kbd_mode(0);   /* hand the keyboard back cooked, whatever had focus */
     for(int i=0;i<MAXWIN;i++) if(W[i].in_use) win_push(&W[i],MXEV_CLOSE,0,0,0);
     for(int spin=0; spin<4000; spin++){
         ipc_msg_t m; int budget=4*MAXWIN;

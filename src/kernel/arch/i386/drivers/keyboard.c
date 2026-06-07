@@ -998,23 +998,6 @@ static void on_make(kc_t kc)
         default: break;
     }
 
-    /* Ctrl-Alt-Del: request the system menu.  In a text session it's serviced
-     * by keyboard_getchar -> cad_menu; under the GUI the WM polls
-     * SYS_CAD_PENDING and opens its power menu.  Escape hatch: a *second* CAD
-     * within ~1 s (e.g. a wedged GUI that never drained the flag) triggers an
-     * immediate 8042 CPU reset -- safe from IRQ context, no disk flush, the
-     * classic "mash Ctrl-Alt-Del to reboot". */
-    if (mod_ctrl && mod_alt && kc == KC_DELETE) {
-        static uint32_t last_cad = 0;
-        uint32_t now = timer_get_ticks();
-        if (last_cad && (now - last_cad) < TIMER_HZ) {
-            outb(0x64, 0xFE);                 /* pulse RESET line via the 8042 */
-        }
-        last_cad = now;
-        __atomic_store_n(&kb_cad_pending, 1, __ATOMIC_RELEASE);
-        return;
-    }
-
     /* Cooked-mode shortcuts: Alt+Fn TTY switch, Ctrl+Tab cycle, and
      * Ctrl-A pane prefix.  Raw-mode apps (kbtester) need every keystroke
      * as data, so the global F5/F6 console switch is handled earlier in
@@ -1162,6 +1145,24 @@ static void deliver_kc(kc_t kc, int is_break)
             default:
                 break;
         }
+    }
+
+    /* Ctrl-Alt-Del is a firmware-level chord: detect it in BOTH cooked and
+     * scancode mode (on_make is skipped in scancode mode, so it can't live
+     * there) so a focused game -- doom in a window or fullscreen -- can still
+     * raise the GUI power menu and the mash-twice hard reset.  Consumed here so
+     * it never reaches the game.  In a text session it's serviced by
+     * keyboard_getchar -> cad_menu; under the GUI the WM polls SYS_CAD_PENDING.
+     * Escape hatch: a *second* CAD within ~1 s triggers an immediate 8042 CPU
+     * reset -- safe from IRQ context, the classic "mash Ctrl-Alt-Del". */
+    if (!is_break && mod_ctrl && mod_alt && kc == KC_DELETE) {
+        static uint32_t last_cad = 0;
+        uint32_t now = timer_get_ticks();
+        if (last_cad && (now - last_cad) < TIMER_HZ)
+            outb(0x64, 0xFE);                 /* pulse RESET line via the 8042 */
+        last_cad = now;
+        __atomic_store_n(&kb_cad_pending, 1, __ATOMIC_RELEASE);
+        return;
     }
 
     /* Scancode passthrough: raw set-1 byte (low7 | 0x80-break) for make AND
