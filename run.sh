@@ -780,8 +780,11 @@ _run_guitest() {
     local _fifo="$REPO_ROOT/.guimon.$$";         rm -f "$_fifo"; mkfifo "$_fifo"
     local _secs="${GUITEST_TIMEOUT:-150}"
     local _accel; _accel=$(_qemu_accel)
+    # VGA device is overridable so the GPU drivers can be exercised, e.g.
+    #   MAKAR_VGA="-device vmware-svga" ./run.sh guitest
+    local _vga="${MAKAR_VGA:--vga std}"
     # shellcheck disable=SC2086
-    "$_qemu" -cdrom "$REPO_ROOT/makar.iso" -m 64 $_accel -vga std -display none \
+    "$_qemu" -cdrom "$REPO_ROOT/makar.iso" -m 64 $_accel $_vga -display none \
         -serial "file:$_log" -monitor stdio -no-reboot <"$_fifo" >/dev/null 2>&1 &
     local _qp=$!
     exec 9>"$_fifo"        # hold the FIFO open so QEMU's monitor stdin stays up

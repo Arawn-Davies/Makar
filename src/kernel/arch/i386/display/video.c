@@ -10,13 +10,14 @@
 #include <kernel/serial.h>
 
 extern const vid_driver_t video_vbe;       /* default linear-framebuffer path */
+extern const vid_driver_t video_svga2;     /* VMware/VirtualBox SVGA II        */
 /* Accelerated backends register ahead of video_vbe as they land:
- *   &video_svga2  -- VMware/VirtualBox SVGA II
  *   &video_hyperv -- Hyper-V synthvid (VMBus)
  */
 
 /* Probe order: accelerated backends first, the dumb LFB last (always binds). */
 static const vid_driver_t *const s_candidates[] = {
+    &video_svga2,
     &video_vbe,
 };
 

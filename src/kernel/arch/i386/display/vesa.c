@@ -161,6 +161,20 @@ void vesa_update_geometry(uint32_t width, uint32_t height, uint8_t bpp)
 	fb_ready  = true;
 }
 
+void vesa_set_framebuffer(uint32_t *addr, uint32_t pitch, uint32_t width,
+                          uint32_t height, uint8_t bpp)
+{
+	/* Repoint the framebuffer wholesale -- used by a display driver (SVGA II)
+	 * that mode-sets and reports its own FB base + stride.  The channel layout
+	 * is unchanged (32-bpp BGRX). */
+	fb.addr   = addr;
+	fb.pitch  = pitch;
+	fb.width  = width;
+	fb.height = height;
+	fb.bpp    = bpp;
+	fb_ready  = true;
+}
+
 void vesa_blit_logo(uint32_t fg, uint32_t bg)
 {
 	if (!fb_ready)
