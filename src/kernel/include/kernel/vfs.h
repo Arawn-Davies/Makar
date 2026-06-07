@@ -238,4 +238,14 @@ int vfs_rename(const char *old_path, const char *new_path);
 int vfs_complete(const char *dir, const char *prefix,
                  fat32_complete_cb_t cb, void *ctx);
 
+/*
+ * Filesystem big-lock (recursive).  The on-disk FS backends share static
+ * scratch, so concurrent FS work from preemptible syscalls would corrupt them.
+ * VFS ops take this internally; in-kernel code that calls the FS backends
+ * *directly* (e.g. the installer engine) wraps its operation in the same lock
+ * so the two paths serialise.  Recursive: nesting from one task is safe.
+ */
+void vfs_fs_lock(void);
+void vfs_fs_unlock(void);
+
 #endif /* _KERNEL_VFS_H */

@@ -2300,11 +2300,19 @@ void syscall_dispatch(registers_t *regs)
         if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
         int   cmd = (int)regs->ebx;
         void *ptr = (void *)(uintptr_t)regs->ecx;
+        /* The install engine calls the FS backends directly (not via VFS), and
+         * runs preemptibly, so serialise it under the FS big-lock: a file op in
+         * another task can't then race the installer's writes on the shared FS
+         * scratch.  Held for one begin/step/finish (one file per step) -- the
+         * recursive lock covers the engine's nested backend calls; drive
+         * enumeration touches no FS scratch so it stays outside. */
+        if (cmd == 3) { regs->eax = (uint32_t)install_exec_drives((install_drive_t *)ptr); break; }
+        vfs_fs_lock();
         if      (cmd == 0) regs->eax = (uint32_t)install_exec_begin((const install_params_t *)ptr);
         else if (cmd == 1) regs->eax = (uint32_t)install_exec_step((install_progress_t *)ptr);
         else if (cmd == 2) regs->eax = (uint32_t)install_exec_finish((const install_params_t *)ptr);
-        else if (cmd == 3) regs->eax = (uint32_t)install_exec_drives((install_drive_t *)ptr);
         else               regs->eax = (uint32_t)-1;
+        vfs_fs_unlock();
         break;
     }
     case SYS_MOUNT: {
