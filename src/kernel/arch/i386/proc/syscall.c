@@ -230,20 +230,23 @@ static void ls_cb(const char *name, int is_dir, void *ctx)
     c->buf[c->off] = '\0';
 }
 
-/* Callback + context for SYS_READDIR.  Static name buffer is OK: the
- * complete() backends can be re-entered but the kernel context is not. */
-struct rd_ctx { uint32_t target; uint32_t cur; int found; };
-static char s_name[DIRENT_NAME_MAX];
-static int  s_is_dir;
+/* Callback + context for SYS_READDIR.  The found name/type live in the ctx (on
+ * the caller's stack), not in file-scope statics -- so two tasks running
+ * readdir concurrently under preemptible syscalls don't clobber each other. */
+struct rd_ctx {
+    uint32_t target; uint32_t cur; int found;
+    char     name[DIRENT_NAME_MAX];
+    int      is_dir;
+};
 static void readdir_collect_cb(const char *n, int is_dir, void *vctx)
 {
     struct rd_ctx *c = (struct rd_ctx *)vctx;
     if (c->found) return;
     if (c->cur == c->target) {
         uint32_t i = 0;
-        while (n[i] && i < DIRENT_NAME_MAX - 1) { s_name[i] = n[i]; i++; }
-        s_name[i] = '\0';
-        s_is_dir = is_dir;
+        while (n[i] && i < DIRENT_NAME_MAX - 1) { c->name[i] = n[i]; i++; }
+        c->name[i] = '\0';
+        c->is_dir = is_dir;
         c->found = 1;
     }
     c->cur++;
@@ -585,8 +588,10 @@ void syscall_dispatch(registers_t *regs)
                 }
                 break;
             }
-            /* Line-buffered stdin with echo, backspace, and cursor editing. */
-            static char s_stdin_line[256];
+            /* Line-buffered stdin with echo, backspace, and cursor editing.
+             * On the stack (not static) so concurrent readers under preemptible
+             * syscalls don't share one line buffer. */
+            char s_stdin_line[256];
             uint32_t cap = (len < sizeof(s_stdin_line)) ? len : (uint32_t)sizeof(s_stdin_line);
             shell_readline(s_stdin_line, (size_t)cap);
             uint32_t n = (uint32_t)strlen(s_stdin_line);
@@ -1653,18 +1658,18 @@ void syscall_dispatch(registers_t *regs)
         uint32_t       idx  = regs->ecx;
         struct dirent *ude  = (struct dirent *)(uintptr_t)regs->edx;
         if (!path || !ude) { regs->eax = (uint32_t)-1; break; }
-        struct rd_ctx ctx = { idx, 0, 0 };
+        struct rd_ctx ctx = { idx, 0, 0, {0}, 0 };
         if (vfs_complete(path, "", readdir_collect_cb, &ctx) != 0) {
             regs->eax = (uint32_t)-1; break;
         }
         if (!ctx.found) { regs->eax = 0; break; }
         memset(ude, 0, sizeof(*ude));
         uint32_t h = 2166136261u;
-        for (const char *q = s_name; *q; q++) { h ^= (uint8_t)*q; h *= 16777619u; }
+        for (const char *q = ctx.name; *q; q++) { h ^= (uint8_t)*q; h *= 16777619u; }
         ude->d_ino  = h;
-        ude->d_type = s_is_dir ? DT_DIR : DT_REG;
+        ude->d_type = ctx.is_dir ? DT_DIR : DT_REG;
         uint32_t i = 0;
-        while (s_name[i] && i < DIRENT_NAME_MAX - 1) { ude->d_name[i] = s_name[i]; i++; }
+        while (ctx.name[i] && i < DIRENT_NAME_MAX - 1) { ude->d_name[i] = ctx.name[i]; i++; }
         ude->d_name[i] = '\0';
         regs->eax = 1;
         break;
