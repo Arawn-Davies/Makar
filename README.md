@@ -16,6 +16,15 @@ lives in [`docs/`](docs/) and in the source.
 Current kernel version: `0.9.5`
 ([`src/kernel/include/kernel/version.h`](src/kernel/include/kernel/version.h)).
 
+## Screenshots
+
+| GUI desktop | Rescue shell |
+| --- | --- |
+| ![Makar GUI desktop](docs/img/desktop.png) | ![Makar rescue shell](docs/img/shell.png) |
+
+The desktop (`gui`): menu bar, launcher icons, a draggable terminal window, dock
+and status bar. The in-kernel rescue shell: a green-on-black ANSI console.
+
 ## What It Currently Is
 
 Makar boots into a graphical VESA environment with virtual terminals, ring-3
