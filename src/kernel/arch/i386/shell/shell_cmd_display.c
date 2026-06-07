@@ -292,13 +292,20 @@ int admin_setmode(const char *mode)
             return -2;
         }
 
-        vesa_tty_set_scale(w >= 1280 ? 2 : 1);
         bochs_vbe_set_mode(w, h, 32);
         vesa_update_geometry(w, h, 32);
-        vesa_tty_init();
-        vtty_init();
-        vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
-        vesa_tty_clear();
+        /* Under the GUI the window manager owns the framebuffer and reflows
+         * itself (wm_reinit_display) on the geometry change; re-initialising the
+         * text console or clearing the FB here would stomp the desktop -- the
+         * "resolution messed up after changing" bug.  Only rebuild the text
+         * console on the shell/text path. */
+        if (!vtty_root_gui_active()) {
+            vesa_tty_set_scale(w >= 1280 ? 2 : 1);
+            vesa_tty_init();
+            vtty_init();
+            vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
+            vesa_tty_clear();
+        }
 
         t_writestring("Mode: ");
         t_dec(w); t_writestring("x"); t_dec(h); t_writestring("x32\n");
