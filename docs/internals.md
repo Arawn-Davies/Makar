@@ -519,6 +519,25 @@ ops, signal returns, the pixel framebuffer API (`SYS_DRAW_LINE` 217,
 also drive `/dev` block devices: a `/dev` node opens as `FD_KIND_BLOCKDEV`
 (no eager buffer) and read/write/seek do byte-addressed sector I/O.
 
+#### Lazy read-only files + the page cache
+
+A `read-only` open on a seekable disk backend (ext2/fat32/iso9660) is **not**
+eager-loaded. The fd records only `{path, size, pos}` (`fd_entry_t.lazy`); each
+`SYS_READ` streams the needed bytes through the kernel **page cache**
+(`mm/pagecache.c`) — a fixed pool of 4 KiB pages in an LRU list, keyed by
+`{path-hash, page index}`, filled on a miss via `vfs_read_at()` →
+per-backend `*_read_at` (iso9660 contiguous extent; ext2 block-map walk; fat32
+cluster-chain walk). So opening a ~29 MiB FreeDOOM WAD costs ~0 heap and DOOM
+streams lumps like it does on DOS, instead of the old whole-file `kmalloc` (the
+band-aid that pushed `SYSCALL_FILE_MAX` to 32 MiB and interactive boots to
+`-m 256`, both now reverted). Writable opens and synthetic backends
+(procfs/tmpfs/...) keep the buffered path. Correctness: the cache holds clean
+read-only data only; the VFS write/delete/rename paths call
+`pagecache_invalidate(path)` (outside the disk big-lock) so a later read never
+sees stale bytes — verified by the libc-tcc gate (compile → write `.o` →
+`ar` → link → run). The cache is a fixed static pool (bounded, self-evicting);
+a dynamic, PMM-pressure-driven shrinker is a documented follow-up.
+
 ### `int 0x80` vs `sysenter`
 
 Modern Linux on i686 uses `sysenter` (CSE-enabled fast syscalls) when the CPU

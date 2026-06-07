@@ -77,7 +77,14 @@ on the ISO; TCC sysroot lives at `/usr/lib/tcc/`.
 |---|---|
 | `docs/` | Subsystem documentation (one `.md` per module) |
 | `tests/` | Automated GDB boot-test suite (`gdb_boot_test.py` + groups) |
+| `data/icons/` | Desktop icon BMPs, staged to `/usr/share/icons/makar/` (see `tools/mkicons.py`) |
+| `tools/` | Host-side asset/build helpers (e.g. `mkicons.py`) |
 | `LICENSES/` | Third-party licence texts |
+
+On the installed/live system, assets follow the Linux/XFCE convention:
+`/usr/share/icons/makar/` (desktop icons), `/usr/share/games/doom/` (DOOM IWADs),
+`/usr/share/examples/` (sample sources) — all under `/usr`, which the installer
+copies wholesale to the target rootfs.
 
 ---
 
