@@ -5,6 +5,39 @@ day-to-day work — consult when planning new features or asked about direction.
 
 ## Future roadmap
 
+### In flight — the GUI/OS-polish effort, split into focused PRs
+
+The large `feat/gpu-drivers-and-os-polish` effort is being **split into several
+PRs** (it grew too big for one):
+
+- **PR #1 (current branch):** GUI/session + terminal + OS polish — 250 Hz
+  scheduler + USER_HZ; fast install (multi-sector FS writes); FreeDOOM
+  (auto-download); GUI power menu + graphical passwd (`SYS_PASSWD`) +
+  Ctrl-Alt-Del→power menu (`SYS_CAD_PENDING`); rescue→root autologin; ANSI/VT100
+  terminal (`vt100.c`) + cell-API→ANSI bridge (`SYS_PTY_WINSIZE`); `halt`/
+  `poweroff` aliases; `makar-conventions` skill. Branch name is now a misnomer
+  (GPU drivers moved out) — the PR title should describe the GUI/terminal scope.
+- **PR #2 — Hypervisor GPU drivers:** a `video.c` driver framework + VBE
+  fallback + VMware SVGA II (CI-testable via `-device vmware-svga`) + Hyper-V
+  synthvid (fallback-gated). HW cursor in `wm.c` rides on this.
+- **PR #3 — Modern hardware:** AHCI (+ a `blkdev` vtable), USB HID kbd/mouse
+  (UHCI→xHCI), UEFI boot survivability (OVMF). Each fallback-gated so the tested
+  QEMU BIOS+IDE+PS/2 path never regresses. See "Hardware / platform" below.
+- **PR #4 — GUI applications:** `mxclock`/`mxcalc`/`mxdisk`/`mxnet` + an Install
+  icon, plus an **image viewer** (PNG/JPEG/GIF/BMP — vendor stb_image/miniz) and
+  a **web browser** (HTTP over lwIP + a minimal HTML renderer; no TLS/JS/CSS).
+- **PR #5 — Memory management + GC:** **on-demand file I/O / page cache**
+  (`vfs_read_at` + per-FS range reads; stop eager-loading whole files into the
+  kernel heap — the reason FreeDOOM needed a band-aid), PMM accounting +
+  demand-paging hook, and **reclaim/GC** (evict clean cached pages under
+  pressure, reap orphaned heap/surfaces/fds, heap coalesce/shrink). Reverts the
+  `SYSCALL_FILE_MAX`→32 MiB / interactive `-m 256` band-aid (commit d530731);
+  with on-demand I/O, 64 MiB is plenty (FreeDOOM runs on DOS in <16 MiB).
+
+Longer-term, separately: a self-hosted OSDev toolchain toward **x86_64** (see
+"OS-specific cross toolchain" below), then possibly a **microkernel** evolution
+(the IPC + makx server/client split are the groundwork).
+
 ### makx GUI follow-ups (after the server/client split)
 
 The display server/client split has landed (`gui.elf` = makx server; terminal,

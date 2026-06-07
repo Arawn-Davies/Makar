@@ -390,6 +390,8 @@ const shell_cmd_entry_t system_cmds[] = {
     { "ps",       cmd_ps       },   /* richer columns: PID PPID S RING TTY NAME */
     { "tty",      cmd_tty      },   /* print controlling terminal (Linux `tty`) */
     { "shutdown", cmd_shutdown },
+    { "poweroff", cmd_shutdown },   /* alias (Linux) */
+    { "halt",     cmd_shutdown },   /* alias (Linux; ACPI soft-off) */
     { "reboot",   cmd_reboot   },
     { "panic",    cmd_panic    },
     { "ktest",    cmd_ktest    },
