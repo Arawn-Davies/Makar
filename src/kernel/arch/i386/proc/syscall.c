@@ -421,6 +421,12 @@ void syscall_dispatch(registers_t *regs)
 
         if (!upath) { regs->eax = (uint32_t)-14; break; }   /* -EFAULT */
 
+        /* Serialise execve so the shared argv scratch below is safe under
+         * preemptible syscalls.  elf_exec releases the lock once argv is packed
+         * onto the new stack (covering its no-return success path); we release
+         * it here on the error-return path. */
+        execve_lock();
+
         enum { EXECVE_MAX_ARGC = 128, EXECVE_ARG_MAX = 256 };  /* full kernel-rebuild link line */
         static char  s_path[256];
         static char  s_argbuf[EXECVE_MAX_ARGC * EXECVE_ARG_MAX];
@@ -515,6 +521,7 @@ void syscall_dispatch(registers_t *regs)
          * (never returns).  Any return value here means it failed; pass
          * the negative errno back to the caller via EAX. */
         int rc = elf_exec(s_path, kargc, (const char *const *)s_argv);
+        execve_unlock();   /* only reached when elf_exec failed (success no-returns) */
         regs->eax = (uint32_t)(int32_t)rc;
         break;
     }

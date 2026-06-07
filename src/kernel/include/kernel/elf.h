@@ -95,4 +95,13 @@ typedef struct {
  */
 int elf_exec(const char *path, int argc, const char *const *argv);
 
+/*
+ * execve serialization lock.  SYS_EXECVE takes execve_lock() before filling its
+ * shared argv scratch; elf_exec calls execve_unlock() once argv is packed onto
+ * the new stack (so the no-return success path releases it).  Owner-based:
+ * unlock is a no-op for callers that never locked (fresh-task/ktest paths).
+ */
+void execve_lock(void);
+void execve_unlock(void);
+
 #endif /* _KERNEL_ELF_H */
