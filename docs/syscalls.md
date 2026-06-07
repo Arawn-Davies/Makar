@@ -66,7 +66,7 @@ without a detailed errno. Check the wrapper before assuming Linux parity.
 | 40 | `SYS_RMDIR` | `path` | remove empty directory |
 | 41 | `SYS_DUP` | `oldfd` | duplicate to lowest free fd |
 | 42 | `SYS_PIPE` | `int pipefd[2]` | creates read/write fds |
-| 45 | `SYS_BRK` | `addr` | query/grow heap break |
+| 45 | `SYS_BRK` | `addr` | query/grow heap break (demand-paged) |
 | 48 | `SYS_SIGNAL` | `signo, handler` | simple signal handler install |
 | 54 | `SYS_IOCTL` | `fd, request, ...` | compatibility stub, returns `-ENOTTY` |
 | 55 | `SYS_FCNTL` | `fd, cmd, arg` | `F_GETFL`, `F_SETFL` |
@@ -81,7 +81,7 @@ without a detailed errno. Check the wrapper before assuming Linux parity.
 | 141 | `SYS_READDIR` | `path, index, dirent *` | indexed Makar syscall, libc wraps it |
 | 158 | `SYS_YIELD` | none | scheduler yield |
 | 175 | `SYS_RT_SIGPROCMASK` | Linux args | startup compatibility stub |
-| 192 | `SYS_MMAP2` | `addr, len, prot, flags, fd, pgoff` | anonymous only |
+| 192 | `SYS_MMAP2` | `addr, len, prot, flags, fd, pgoff` | anonymous only, demand-paged |
 | 240 | `SYS_FUTEX` | Linux args | single-threaded compatibility stub |
 | 243 | `SYS_SET_THREAD_AREA` | `user_desc *` | one-slot i386 TLS |
 | 252 | `SYS_EXIT_GROUP` | `status` | same as exit |
@@ -293,11 +293,20 @@ The scheduler restores TLS state for TLS-active tasks.
 - requires `MAP_ANONYMOUS`
 - rejects `MAP_FIXED`
 - ignores file descriptors and offsets
-- maps zero-filled pages
-- uses a per-task bump pointer
+- **demand-paged**: only reserves the range (advances a per-task bump pointer);
+  zero-filled frames are mapped on first touch by the page-fault handler, the
+  same lazy model Linux uses. A large mapping therefore costs O(1) in the call
+  rather than mapping every page up front.
 - returns `MAP_FAILED` (`(void *)-1`) on unsupported requests
 
+`SYS_BRK` is likewise lazy: growing the break only advances `user_brk`; pages in
+`[user_brk_base, user_brk)` fault in zeroed on first touch. (Query/shrink-to
+forms behave as before; the break only ever grows.)
+
 `SYS_MUNMAP` unmaps pages but does not currently recycle virtual addresses.
+Because the mmap window is a grow-only bump arena, touching a munmap'd address
+below `mmap_next` simply re-faults a fresh zero page rather than `SIGSEGV`-ing —
+acceptable for the current bring-up (no address reuse).
 
 ## Compatibility Stubs
 
