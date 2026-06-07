@@ -18,6 +18,22 @@ Modelled on Linux's `vc_data.vc_screenbuf` and the ELKS / xv6 console
 backing-buffer pattern. Lets background TTYs accumulate output silently and
 have it surface atomically when the user switches focus.
 
+## ANSI/VT100 escape parsing
+
+`vt_putchar` is also a small terminal emulator: it carries a CSI/SGR parser
+state machine (`esc_state`/`esc_param[]` in `vt_buf_t`) and interprets escape
+sequences in the byte stream rather than printing them as glyphs — modelled on
+Linux's in-kernel VT layer (`drivers/tty/vt/vt.c`). Supported: `CUP`/`HVP`,
+`CUU`/`CUD`/`CUF`/`CUB`, `CHA`/`VPA`, `ED`(0/1/2), `EL`(0/1/2), `SGR` (16-colour
+fg/bg via a built-in palette, plus reset), `ESC 7`/`ESC 8` and `CSI s`/`CSI u`
+(cursor save/restore), and `ESC c` (reset). Plain text and `\n`/`\r`/`\b`
+behave exactly as before; unknown finals are swallowed.
+
+Because the framebuffer console funnels through `vt_putchar`
+(`t_putchar → vesa_tty_putchar → vt_putchar`), this makes the kernel console a
+real ANSI terminal, not just `/dev/ttyN` — userspace TUIs (e.g. the installer)
+drive it with escape bytes. Covered by `test_vt_ansi` in `ktest`.
+
 ## Data layout
 
 ```c

@@ -155,6 +155,9 @@ All apps in `/Users/arawn/Makar/src/userspace/` compile to `.elf` files and are 
 - **mxfiles** (mxfiles.c) — file browser on the shared `gui_browser` model (Up/Open/Refresh/Go).
 - **mxedit** (mxedit.c) — multi-line text editor with the shared open/save dialog (`br_dialog`).
 - **mxtasks** (mxtasks.c) — task manager: `/proc/tasks` list, Kill, refresh-interval slider.
+- **mxclock / mxcalc / mxnet / mxdisk** (mx*.c) — GUI peers of `clock` / `calc` / `maknetcfg` / `diskinfo`.
+- **mximg** (mximg.c) — image viewer (BMP + GIF; PNG/JPEG pending), Open dialog or path arg.
+- **mxinstall** (mxinstall.c) — graphical OS installer; drives the shared install engine via `SYS_INSTALL_EXEC` (see Installer section + `docs/gui.md`).
 - **doom.elf** (doomgeneric_makar.c) — windowed makx client with `-makx`; unchanged fullscreen path without it.
 - Shared client libs: `gui_gfx` (drawing), `gui_ui` (immediate-mode widgets), `gui_browser` (FS model + file dialog), `makx` (protocol client).
 
@@ -250,33 +253,28 @@ All apps in `/Users/arawn/Makar/src/userspace/` compile to `.elf` files and are 
 ### Tab Completion
 - `fat32_complete(dir_path, prefix, cb, ctx)` - callback per entry
 
-## Installer (`src/kernel/arch/i386/proc/installer.c`, lines 137–466)
+## Installer (`src/kernel/arch/i386/proc/installer.c`)
 
-Fully interactive OS installer. Steps:
+Interactive OS installer, structured as **one shared execution engine** with two
+front-ends — see [docs/gui.md](docs/gui.md) ("Installer") and
+[docs/syscalls.md](docs/syscalls.md) (`SYS_INSTALL_EXEC`).
 
-1. **Probe ISO9660** (lines 146–167) - Find ATAPI CD-ROM with ISO
-2. **List ATA drives** (lines 172–192) - Prompt user to select target HDD
-3. **Confirm destructive write** (lines 216–231) - Type "yes" to proceed
-4. **Install GRUB bootloader** (lines 242–352):
-   - Read `boot.img` and `core.img` from ISO
-   - Patch `boot.img` with `core.img` LBA (sector 1)
-   - Build MBR at sector 0 (GRUB code + partition table + 0x55AA signature)
-   - Write `core.img` to sectors 1..N (embedding area before first partition)
-5. **Format FAT32** (lines 357–364) - `fat32_mkfs()` at LBA 2048
-6. **Mount volume** (lines 369–376) - `fat32_mount()` for directory creation
-7. **Create directory tree** (lines 381–384):
-   - `/boot`
-   - `/boot/grub`
-   - `/boot/grub/i386-pc`
-8. **Copy kernel** (lines 389–394) - `/boot/makar.kernel` from ISO
-9. **Copy GRUB modules** (lines 399–428):
-   - `normal.mod`, `part_msdos.mod`, `fat.mod`, `multiboot2.mod`, `linux.mod`
-   - Non-fatal if missing
-10. **Write grub.cfg** (lines 433–455):
-    - Sets `timeout=0` (no user prompt; boots immediately)
-    - Multiboot2 path: `/boot/makar.kernel`
-    - Includes explicit `boot` command
-11. **Unmount & success** (lines 460–465) - Report success; user removes CD-ROM and reboots
+- **Front-ends.** `installer_run()` is the text (TUI) wizard, rendered as an
+  ANSI/VT100 byte stream to its stdout (so it works on a shell VT and inside an
+  `mxterm` window with one path). `mxinstall.elf` is the graphical wizard. Both
+  collect an `install_params_t` and drive the same engine.
+- **Engine** (`install_exec_begin` / `install_exec_step` / `install_exec_finish`,
+  `install_exec_drives`; `kernel/installer.h`). `begin` partitions
+  (34 MiB FAT32 boot + a data partition), runs `fat32_mkfs`/`ext2_mkfs`, installs
+  **Limine** to the MBR (boot sector + post-MBR stage 2, stage-2 offset patched at
+  0x1a4), copies the kernel + `limine-bios.sys` + a generated `limine.conf`, writes
+  `/etc/{hostname,shadow,autologin}` + home dirs, then mounts the data partition
+  and pre-counts the files to copy. `step` copies one file per call (across
+  `/apps`, `/docs`, `/src`, `/usr`) reporting `{files, total, current}`. `finish`
+  makes `/bin` and unmounts.
+- **Preemptible**: the engine runs with interrupts enabled so the compositor
+  keeps running during the copy; per-file progress also goes to the serial log
+  (`INSTALL>copy <n>/<total> (<pct>%) <name>`). No auto-reboot on the GUI path.
 
 ## iso.sh Script (`iso.sh`, lines 1–79)
 

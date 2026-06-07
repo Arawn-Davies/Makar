@@ -120,4 +120,29 @@ fd_entry_t *fd_get(fd_table_t *tbl, int fd);
  */
 int fd_close(fd_table_t *tbl, int fd);
 
+/* ------------------------------------------------------------------------
+ * Generic in-kernel terminal I/O on the *calling task's* standard streams.
+ *
+ * These are the kernel-side equivalents of write(1)/read(0) -- the moral
+ * analogue of Linux's kernel_write()/kernel_read() -- for in-kernel code that
+ * wants to talk to whatever terminal the invoking ring-3 task owns (a text VT,
+ * whose bytes reach the framebuffer console's ANSI parser, or an mxterm window
+ * over a pipe).  Consumers reference these; the syscall layer must not depend
+ * on any particular consumer.
+ * ------------------------------------------------------------------------ */
+
+/* Write to fd 1.  Returns bytes written, or -1 if it has no usable stdout. */
+long kfd_stdout_write(const char *buf, unsigned int len);
+
+/* One raw input byte from fd 0: a forwarded pipe byte (blocking) when piped,
+ * else keyboard_getchar().  Returns 0-255, or -1 on EOF. */
+int kfd_stdin_getbyte(void);
+
+/* Terminal size: the pty winsize when stdout is a pipe, else the VESA TTY
+ * usable area, else 80x25. */
+void kfd_term_size(unsigned int *cols, unsigned int *rows);
+
+/* Non-zero when stdout (fd 1) is a pipe (i.e. running under an mxterm window). */
+int kfd_stdout_is_pipe(void);
+
 #endif /* _KERNEL_FD_H */

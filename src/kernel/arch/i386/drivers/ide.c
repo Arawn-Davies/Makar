@@ -18,6 +18,7 @@
 #include <kernel/serial.h>
 #include <kernel/debug.h>
 #include <kernel/pci.h>
+#include <kernel/task.h>   /* task_yield() -- cooperative I/O waits */
 
 #include <stddef.h>
 #include <string.h>
@@ -204,13 +205,41 @@ static int dma_atapi_usable(uint8_t drive_num)
  * with interrupts masked in syscall context), so the boot/status spinner
  * freezes and a slow read/write looks like a hang.  Pump it directly from the
  * I/O path: animation then tracks actual disk progress.  `t_spinner_tick`
- * advances one frame per 12 counts, so step the counter by 12 each pump. */
+ * advances one frame per 12 counts, so step the counter by 12 each pump.
+ *
+ * Pure animation, no CPU hand-off: responsiveness during long disk operations
+ * now comes from the timer preempting the (interrupts-enabled) install syscalls
+ * directly, rather than cooperative yields from inside the poll loop -- which,
+ * count- or time-gated, were always either too rare (frozen) or too frequent
+ * (livelocked the copy and starved other tasks). */
 static uint32_t s_io_spin = 0;
 static inline void io_spin_pump(void)
 {
     s_io_spin += 12u;
     t_spinner_tick(s_io_spin);
 }
+
+/* Cooperative controller lock.  Now that the I/O wait paths yield, two tasks
+ * could otherwise interleave on the single IDE controller mid-transfer.  The
+ * test-and-set is made atomic with irq_save_disable so it is correct whether
+ * called from an interrupts-off syscall or an interrupts-on kernel task; a task
+ * that finds the controller busy yields (interrupts restored) until it frees. */
+static inline uint32_t ide_irq_save(void)
+{ uint32_t f; asm volatile("pushfl; popl %0; cli" : "=r"(f) :: "memory"); return f; }
+static inline void ide_irq_restore(uint32_t f)
+{ asm volatile("pushl %0; popfl" :: "r"(f) : "memory", "cc"); }
+
+static volatile int s_ide_busy = 0;
+static void ide_lock(void)
+{
+    for (;;) {
+        uint32_t fl = ide_irq_save();
+        if (!s_ide_busy) { s_ide_busy = 1; ide_irq_restore(fl); return; }
+        ide_irq_restore(fl);
+        task_yield();
+    }
+}
+static void ide_unlock(void) { s_ide_busy = 0; }
 
 /* Program the BMIDE engine for one transfer and clear stale status bits.
  * to_mem != 0 selects device->memory (a read). */
@@ -245,7 +274,7 @@ static int bm_run_and_wait(uint8_t ch, int to_mem)
     uint8_t  sr;
     do {
         sr = inb(bm + BM_REG_STATUS);
-        if ((limit & 0x3FFFFu) == 0)        /* keep the spinner alive on long DMA */
+        if ((limit & 0x3FFFFu) == 0)        /* long DMA in flight: hand off the CPU */
             io_spin_pump();
         if (--limit == 0)
             break;
@@ -311,7 +340,7 @@ static int ide_poll(uint8_t ch, int check_drq)
     uint32_t limit = 5000000;
     do {
         status = ide_read_altstatus(ch);
-        if ((limit & 0x3FFFFu) == 0)        /* keep moving during a long wait */
+        if ((limit & 0x3FFFFu) == 0)        /* long BSY wait: hand off the CPU */
             io_spin_pump();
         if (--limit == 0)
             KPANIC("ide_poll: ATA drive BSY never cleared (drive hung or absent)");
@@ -601,23 +630,29 @@ static int ide_dma_ata(uint8_t direction, uint8_t drive_num,
 int ide_read_sectors(uint8_t drive_num, uint32_t lba, uint8_t count,
                      void *buf)
 {
+    ide_lock();
     int r = ide_dma_ata(0, drive_num, lba, count, buf);
-    if (r == 0)
-        return 0;
-    if (r != -3)                        /* DMA tried but errored: reset + retry */
-        dma_note_failure(drives[drive_num].channel);
-    return ide_access(0, drive_num, lba, count, buf);   /* PIO fallback/retry */
+    if (r != 0) {
+        if (r != -3)                    /* DMA tried but errored: reset + retry */
+            dma_note_failure(drives[drive_num].channel);
+        r = ide_access(0, drive_num, lba, count, buf);   /* PIO fallback/retry */
+    }
+    ide_unlock();
+    return r;
 }
 
 int ide_write_sectors(uint8_t drive_num, uint32_t lba, uint8_t count,
                       const void *buf)
 {
+    ide_lock();
     int r = ide_dma_ata(1, drive_num, lba, count, (void *)buf);
-    if (r == 0)
-        return 0;
-    if (r != -3)
-        dma_note_failure(drives[drive_num].channel);
-    return ide_access(1, drive_num, lba, count, (void *)buf);   /* PIO */
+    if (r != 0) {
+        if (r != -3)
+            dma_note_failure(drives[drive_num].channel);
+        r = ide_access(1, drive_num, lba, count, (void *)buf);   /* PIO */
+    }
+    ide_unlock();
+    return r;
 }
 
 const ide_drive_t *ide_get_drive(uint8_t drive_num)
@@ -755,6 +790,7 @@ int ide_read_atapi_sectors(uint8_t drive_num, uint32_t lba,
     if (count == 0)
         return 0;
 
+    ide_lock();   /* released at every controller-path return below */
     uint8_t  ch = drives[drive_num].channel;
     uint8_t  dr = drives[drive_num].drive;
     uint8_t *p  = (uint8_t *)buf;
@@ -778,6 +814,7 @@ int ide_read_atapi_sectors(uint8_t drive_num, uint32_t lba,
         }
         if (ok) {
             dma_note_success();
+            ide_unlock();
             return 0;
         }
         dma_note_failure(ch);
@@ -785,11 +822,14 @@ int ide_read_atapi_sectors(uint8_t drive_num, uint32_t lba,
 
     for (uint16_t i = 0; i < count; i++) {
         int err = atapi_read_one(ch, dr, lba + (uint32_t)i, p);
-        if (err)
+        if (err) {
+            ide_unlock();
             return err;
+        }
         p += ATAPI_CD_SECTOR_SIZE;
     }
 
+    ide_unlock();
     return 0;
 }
 

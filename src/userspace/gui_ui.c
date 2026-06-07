@@ -101,7 +101,11 @@ static int ui_textbox_impl(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h
     int maxchars = (w - 8) / 8;
     int shown = len > maxchars ? maxchars : len;   /* tail that fits */
     if (masked) {
-        for (int i = 0; i < shown; i++) gfx_char(s, tx + i * 8, ty, '*', UI_COL_TEXT);
+        /* One round dot per character (the bitmap font has no bullet glyph, so
+         * draw a small filled rounded square that reads as a dot). */
+        gfx_u32 dot_bg = focused ? UI_COL_FIELD_FC : UI_COL_FIELD;
+        for (int i = 0; i < shown; i++)
+            gfx_round(s, tx + i * 8 + 2, ty + 2, 5, 5, UI_COL_TEXT, dot_bg);
     } else {
         const char *show = buf;
         if (len > maxchars) show = buf + (len - maxchars);

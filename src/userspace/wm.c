@@ -164,18 +164,29 @@ static void win_free(int i)
 /* ===================== desktop icons (client launchers) ================== */
 /* Each icon names a client *.elf and the default outer window geometry.  The
  * program path is launcher data -- the server bakes in no application. */
-typedef struct { int x,y,w,h; const char *label; gfx_u32 tint; const char *cmd; int winw, winh; } icon_t;
-#define ICON_N 6
-/* winw/winh are sized so each client's fixed surface (mxterm 640x400, mxfiles
- * 560x380, mxedit 620x420, mxtasks 560x360, doom 640x400, mxabout 560x430) fits
- * the window's client rect 1:1 (client_w = winw-2, client_h = winh-TH-1). */
+typedef struct { int x,y,w,h; const char *label; gfx_u32 tint; const char *cmd; int winw, winh; const char *arg; } icon_t;
+#define ICON_N 12
+/* Two-column desktop icon grid (col x = 24 / 128, rows step 84).  winw/winh are
+ * sized so each client's fixed surface (mxterm 640x400, mxfiles 560x380,
+ * mxedit 620x420, mxtasks 560x360, doom 640x400, mxabout 560x430, mxclock
+ * 360x200, mxcalc 240x300) fits the window's client rect 1:1 (client_w =
+ * winw-2, client_h = winh-TH-1). */
 static icon_t icons[ICON_N] = {
-    { 24,  40, 96,70, "Terminal", RGB(0x4c,0x8d,0xff), "/apps/mxterm.elf",  648,424 },
-    { 24, 124, 96,70, "Files",    RGB(0xf0,0xa8,0x30), "/apps/mxfiles.elf", 568,404 },
-    { 24, 208, 96,70, "Editor",   RGB(0x35,0xc7,0x59), "/apps/mxedit.elf",  628,444 },
-    { 24, 292, 96,70, "Tasks",    RGB(0x9b,0x6c,0xff), "/apps/mxtasks.elf", 568,384 },
-    { 24, 376, 96,70, "Doom",     RGB(0xc0,0x40,0x40), "/apps/doom.elf",    648,424 },
-    { 24, 460, 96,70, "About",    RGB(0x35,0x6a,0xa8), "/apps/mxabout.elf", 568,454 },
+    {  24,  40, 96,70, "Terminal", RGB(0x4c,0x8d,0xff), "/apps/mxterm.elf",  648,424 },
+    { 128,  40, 96,70, "Files",    RGB(0xf0,0xa8,0x30), "/apps/mxfiles.elf", 568,404 },
+    {  24, 124, 96,70, "Editor",   RGB(0x35,0xc7,0x59), "/apps/mxedit.elf",  628,444 },
+    { 128, 124, 96,70, "Tasks",    RGB(0x9b,0x6c,0xff), "/apps/mxtasks.elf", 568,384 },
+    {  24, 208, 96,70, "Doom",     RGB(0xc0,0x40,0x40), "/apps/doom.elf",    648,424 },
+    { 128, 208, 96,70, "About",    RGB(0x35,0x6a,0xa8), "/apps/mxabout.elf", 568,454 },
+    {  24, 292, 96,70, "Clock",    RGB(0x40,0xc0,0xb0), "/apps/mxclock.elf", 384,232 },
+    { 128, 292, 96,70, "Calc",     RGB(0xe0,0x80,0x40), "/apps/mxcalc.elf",  264,324 },
+    {  24, 376, 96,70, "Net",      RGB(0x4c,0xb0,0xff), "/apps/mxnet.elf",   468,344 },
+    { 128, 376, 96,70, "Disk",     RGB(0xc0,0xa0,0x40), "/apps/mxdisk.elf",  528,384 },
+    /* Install: the graphical installer (mxinstall.elf).  It drives the kernel's
+     * stepped install engine one file per frame, so the desktop stays responsive
+     * during the copy (the TUI installer is for shell mode). */
+    {  24, 460, 96,70, "Install",  RGB(0xff,0x70,0x70), "/apps/mxinstall.elf", 588,492 },
+    { 128, 460, 96,70, "Image",    RGB(0x70,0xb0,0x70), "/apps/mximg.elf",   608,468 },
 };
 
 /* Fork+exec a client, handing it `-makx <server-pid>` and a stdout/stderr pipe
@@ -205,7 +216,8 @@ static void launch_icon(int ii)
         sys_dup2(op[1],0); sys_dup2(op[1],1); sys_dup2(op[1],2);
         sys_close(op[1]);
         char pids[12]; u2s((unsigned)server_pid, pids);
-        char *av[4]={ (char*)icons[ii].cmd, "-makx", pids, 0 };
+        char *av[5]={ (char*)icons[ii].cmd, "-makx", pids, 0, 0 };
+        if (icons[ii].arg) av[3]=(char*)icons[ii].arg;   /* e.g. Install -> "install" */
         sys_execve(icons[ii].cmd, av, (char *const*)0);
         sys_exit(127);
     }
@@ -440,6 +452,46 @@ static void icon_glyph(int idx, int gx, int gy)
         gfx_round(&scr,gx+2,gy,28,26,RGB(0x35,0x6a,0xa8),bg);
         gfx_fill(&scr,gx+15,gy+5,3,3,0xFFFFFF);
         gfx_fill(&scr,gx+15,gy+10,3,11,0xFFFFFF);
+        break;
+    case 6: /* Clock: round face with hour/minute hands */
+        gfx_round(&scr,gx+2,gy,28,26,RGB(0x10,0x2a,0x26),bg);
+        gfx_outline(&scr,gx+2,gy,28,26,RGB(0x40,0xc0,0xb0));
+        gfx_fill(&scr,gx+15,gy+5,2,9,0xFFFFFF);          /* minute hand (up) */
+        gfx_fill(&scr,gx+16,gy+12,7,2,0xFFFFFF);         /* hour hand (right) */
+        gfx_fill(&scr,gx+15,gy+12,3,3,RGB(0x40,0xc0,0xb0)); /* hub */
+        break;
+    case 7: /* Calc: display over a 3x3 keypad */
+        gfx_round(&scr,gx+3,gy,26,26,RGB(0x20,0x24,0x2c),bg);
+        gfx_fill(&scr,gx+6,gy+3,20,6,RGB(0x8a,0xe2,0x34)); /* display */
+        for(int r=0;r<3;r++) for(int k=0;k<3;k++)
+            gfx_fill(&scr,gx+6+k*7,gy+12+r*5,5,3,RGB(0xe0,0x80,0x40));
+        break;
+    case 8: /* Net: ascending signal bars */
+        gfx_round(&scr,gx,gy,32,26,RGB(0x10,0x20,0x38),bg);
+        gfx_fill(&scr,gx+6, gy+15,5,7, RGB(0x4c,0xb0,0xff));
+        gfx_fill(&scr,gx+14,gy+10,5,12,RGB(0x4c,0xb0,0xff));
+        gfx_fill(&scr,gx+22,gy+5, 5,17,RGB(0x4c,0xb0,0xff));
+        break;
+    case 9: /* Disk: drive body with platter + spindle */
+        gfx_round(&scr,gx,gy,32,26,RGB(0x20,0x1c,0x10),bg);
+        gfx_outline(&scr,gx+4,gy+4,24,18,RGB(0xc0,0xa0,0x40));
+        gfx_round(&scr,gx+9,gy+7,10,10,RGB(0x80,0x6a,0x28),RGB(0x20,0x1c,0x10));
+        gfx_fill(&scr,gx+13,gy+11,3,3,RGB(0xc0,0xa0,0x40)); /* spindle */
+        gfx_fill(&scr,gx+22,gy+16,3,3,RGB(0xc0,0xa0,0x40)); /* corner screw */
+        break;
+    case 10: /* Install: download arrow into a tray */
+        gfx_round(&scr,gx,gy,32,26,RGB(0x30,0x16,0x16),bg);
+        gfx_fill(&scr,gx+14,gy+3, 4,9, RGB(0xff,0xc0,0xc0)); /* shaft */
+        gfx_fill(&scr,gx+10,gy+11,12,2,RGB(0xff,0xc0,0xc0)); /* arrowhead */
+        gfx_fill(&scr,gx+12,gy+13,8, 2,RGB(0xff,0xc0,0xc0));
+        gfx_fill(&scr,gx+14,gy+15,4, 2,RGB(0xff,0xc0,0xc0));
+        gfx_fill(&scr,gx+5, gy+20,22,3,RGB(0xff,0x70,0x70)); /* tray */
+        break;
+    case 11: /* Image: framed picture with sun and hill */
+        gfx_round(&scr,gx,gy,32,26,RGB(0x10,0x22,0x12),bg);
+        gfx_outline(&scr,gx+3,gy+2,26,22,RGB(0x70,0xb0,0x70));
+        gfx_fill(&scr,gx+8,gy+6,5,5,RGB(0xff,0xe0,0x60));    /* sun */
+        gfx_fill(&scr,gx+5,gy+15,22,7,RGB(0x40,0x90,0x50));  /* hill/ground */
         break;
     default:
         gfx_round(&scr,gx,gy,32,26,RGB(0x4c,0x8d,0xff),bg);

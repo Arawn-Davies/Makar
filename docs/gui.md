@@ -183,7 +183,45 @@ Clients (each an independent process, `src/userspace/mx*.c`):
   parent). (Cross-client "open in editor" is a follow-up; each client is
   self-contained for now.)
 - **mxtasks** parses `/proc/tasks`, Kill via `SYS_KILL`, refresh-interval slider.
+- **mxclock** draws a large digital time + date from `/proc/rtc` (GUI peer of the
+  fullscreen `clock.elf`; reuses the same parse, scaled-glyph rendering).
+- **mxcalc** is a button-grid calculator over the same integer expression
+  evaluator as `calc.elf` (`+ - * / %`, parens, unary); mouse or keyboard input.
+- **mxnet** shows the eth0/DHCP/DNS state (`SYS_NET_INFO`) with Renew / Release /
+  Flush-DNS buttons (`SYS_NET_CTL`) — the GUI peer of `maknetcfg.elf`.
+- **mxdisk** is a read-only view of the drives + partition table + FAT32 BPB
+  (`SYS_DISK_INFO`), GUI peer of `diskinfo.elf` (destructive partitioning stays
+  in `cfdisk`/`fdisk`).
+- **mximg** is an image viewer: an Open dialog (shared `gui_browser`) or a path
+  argument, decode, and aspect-fit-to-window via `gfx_blit_scaled`. Decodes BMP
+  (24/32-bpp uncompressed) and GIF (87a/89a first frame, LZW + interlace);
+  PNG/JPEG are the next slice. mmap-backed file + pixel buffers (no libc).
+- **mxinstall** is the graphical OS installer (see "Installer" below).
 - **doom** is the windowed makx client (see below).
+
+`ui_password` fields render a small round dot per character (not `*`).
+
+### Installer (`mxinstall.elf`)
+
+The **Install** desktop icon launches `mxinstall.elf`, a graphical makx wizard:
+Welcome → target drive → filesystem + optional components → hostname → accounts
+(root + optional user) → confirm → progress → done. It collects an
+`install_params_t` and drives the kernel's **shared, stepped install engine**
+(`SYS_INSTALL_EXEC`: `install_exec_begin` / `install_exec_step` / `_finish`,
+declared in `kernel/installer.h`) — one file copied per `step` over a
+pre-counted total, so the client repaints a live percentage bar between files.
+The same engine backs the text installer (`installer_run`, shell mode), so the
+two front-ends are functionally identical; only the presentation differs.
+
+The engine runs **preemptibly** (interrupts enabled), so the compositor keeps
+running at full frame rate while files copy — the install never freezes the
+desktop. Per-file progress is also written to the serial log
+(`INSTALL>copy <n>/<total> (<pct>%) <name>`). Unlike a server install there is
+**no auto-reboot**: the completion screen offers *Continue (live)* or *Reboot
+now*, so on a live CD the operator stays in control (Ubuntu-style).
+
+The text installer renders as a real ANSI/VT100 byte stream to its stdout, so it
+also works from a shell VT and inside an `mxterm` window with one code path.
 
 An always-on **top menu bar** (drawn after the windows, never occluded) carries
 the Makar brand, the focused window's title, and a **power icon** at the

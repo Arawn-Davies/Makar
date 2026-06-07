@@ -13,6 +13,13 @@ Implements a simple first-fit linked-list allocator for the kernel heap.
 The heap occupies the virtual address range **8 MiB – 24 MiB** (16 MiB
 total), immediately above the identity-mapped boot window.
 
+`kmalloc`/`kfree` briefly disable interrupts (`irq_save`/`restore`) around the
+freelist critical sections (the list walk / split / coalesce). This keeps the
+freelist consistent when a long syscall runs **preemptibly** (interrupts
+enabled) — e.g. the installer — and the timer preempts it to another task that
+also allocates. The masked regions are short, so interrupt latency is
+negligible.
+
 ---
 
 ## Constants

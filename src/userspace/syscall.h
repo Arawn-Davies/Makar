@@ -666,6 +666,13 @@ static inline int sys_install(void)
 {
     return (int)syscall1(SYS_INSTALL, 0);
 }
+/* Stepped headless installer for the GUI front-end.  cmd: 0 begin / 1 step /
+ * 2 finish; ptr -> install_params_t (begin/finish) or install_progress_t (step).
+ * See <kernel/installer.h> for the structs. */
+static inline int sys_install_exec(int cmd, void *ptr)
+{
+    return (int)syscall2(SYS_INSTALL_EXEC, (long)cmd, (long)ptr);
+}
 static inline int sys_mount(const char *dev, const char *mnt)
 {
     return (int)syscall2(SYS_MOUNT, (long)dev, (long)mnt);

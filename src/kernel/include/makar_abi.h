@@ -97,4 +97,40 @@ struct dirent {
 };
 #endif
 
+/* ------------------------------------------------------------------------
+ * Installer ABI -- shared by the in-kernel install engine (installer.c) and the
+ * GUI installer client (mxinstall.elf), driven via SYS_INSTALL_EXEC.
+ * ------------------------------------------------------------------------ */
+#define INSTALL_FS_EXT2    0
+#define INSTALL_FS_FAT32   1
+#define INSTALL_MAX_DRIVES 4
+
+#ifndef _MAKAR_STRUCT_INSTALL_DEFINED
+#define _MAKAR_STRUCT_INSTALL_DEFINED
+typedef struct {
+    unsigned char drive;          /* IDE drive index (target) */
+    unsigned char fs;             /* INSTALL_FS_EXT2 / INSTALL_FS_FAT32 (data part) */
+    unsigned char install_docs;   /* copy /docs */
+    unsigned char install_src;    /* copy /src  */
+    char          hostname[64];   /* "" -> "makar" */
+    char          autologin[64];  /* "" -> none */
+    char          root_pw[128];   /* "" -> leave root password unset */
+    char          user_name[64];  /* "" -> no extra user */
+    char          user_pw[128];
+} install_params_t;
+
+typedef struct {
+    int          done;            /* 1 once every tree has been copied */
+    unsigned int files;           /* files copied so far */
+    unsigned int total;           /* total files to copy (for the % bar) */
+    char         current[64];     /* name of the file just copied */
+} install_progress_t;
+
+typedef struct {
+    unsigned char index;          /* IDE drive index -> install_params_t.drive */
+    unsigned int  size_mib;
+    char          model[40];
+} install_drive_t;
+#endif
+
 #endif /* _MAKAR_ABI_H */
