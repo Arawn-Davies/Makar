@@ -95,6 +95,53 @@ static int stdin_pipe_getchar(task_t *t)
     }
 }
 
+/* ---- cell-API -> ANSI bridge (GUI terminal) -----------------------------
+ * A task forked by the GUI terminal (mxterm) has no live VT slot and its
+ * stdout is a pipe, so its cell-API calls (SYS_PUTCH_AT / SET_CURSOR /
+ * TTY_CLEAR) have nowhere to land.  Translate them to ANSI escapes written to
+ * fd 1 -- mxterm's vt100 emulator renders them -- so every cell-API TUI app
+ * (maktop, vix, cfdisk, the installer, ...) works inside a terminal window
+ * unchanged.  The real text-VT path (vtty_buf_current() != NULL) is untouched;
+ * grandchildren inherit the piped fd 1 so they're covered too.
+ */
+static fd_entry_t *ansi_bridge_fd(void)
+{
+    task_t *cur = task_current();
+    if (!cur || vtty_buf_current() != NULL) return NULL;   /* has a live VT */
+    fd_entry_t *e = fd_get(cur->fd_table, 1);
+    if (e && e->kind == FD_KIND_PIPE && e->pipe_is_writer && e->pipe) return e;
+    return NULL;
+}
+static void ansi_pipe_write(fd_entry_t *e, const char *s, uint32_t n)
+{
+    pipe_ring_t *r = e->pipe;
+    uint32_t w = 0; uint32_t spins = 0;
+    while (w < n) {
+        if (r->refcount_r == 0) break;                     /* reader gone */
+        uint32_t space = PIPE_RING_CAP - (r->head - r->tail);
+        if (space == 0) { if (++spins > 200000u) break; task_yield(); continue; }
+        uint32_t chunk = n - w; if (chunk > space) chunk = space;
+        for (uint32_t i = 0; i < chunk; i++)
+            r->buf[(r->head + i) % PIPE_RING_CAP] = (uint8_t)s[w + i];
+        r->head += chunk; w += chunk; spins = 0;
+    }
+}
+static int ansi_u(char *b, unsigned v)
+{ char t[10]; int n = 0; if (!v) { b[0] = '0'; return 1; }
+  while (v) { t[n++] = (char)('0' + v % 10); v /= 10; }
+  for (int i = 0; i < n; i++) b[i] = t[n-1-i]; return n; }
+/* VGA colour index -> ANSI index (VGA swaps red/blue vs ANSI). */
+static const unsigned char s_vga2ansi[8] = {0,4,2,6,1,5,3,7};
+static int ansi_sgr(char *b, unsigned char vga)
+{   unsigned f = vga & 0x0F, g = (vga >> 4) & 0x0F;
+    unsigned fc = (f < 8) ? 30u + s_vga2ansi[f]   : 90u  + s_vga2ansi[f-8];
+    unsigned bc = (g < 8) ? 40u + s_vga2ansi[g]   : 100u + s_vga2ansi[g-8];
+    int o = 0; b[o++] = 0x1b; b[o++] = '['; b[o++] = '0'; b[o++] = ';';
+    o += ansi_u(b+o, fc); b[o++] = ';'; o += ansi_u(b+o, bc); b[o++] = 'm'; return o; }
+static int ansi_cup(char *b, unsigned row, unsigned col)
+{   int o = 0; b[o++] = 0x1b; b[o++] = '[';
+    o += ansi_u(b+o, row+1); b[o++] = ';'; o += ansi_u(b+o, col+1); b[o++] = 'H'; return o; }
+
 /* Callback + context for SYS_LS_DIR using vfs_complete. */
 typedef struct { char *buf; uint32_t cap; uint32_t off; } ls_ctx_t;
 static void ls_cb(const char *name, int is_dir, void *ctx)
@@ -782,6 +829,19 @@ void syscall_dispatch(registers_t *regs)
     case SYS_CAD_PENDING:
         regs->eax = (uint32_t)kb_take_cad_pending();
         break;
+
+    /* SYS_PTY_WINSIZE(272): a GUI terminal publishes its grid size onto a pipe
+     * so the piped child's SYS_TERM_SIZE reports it.  EBX=fd, ECX=(cols<<16)|rows. */
+    case SYS_PTY_WINSIZE: {
+        task_t *cur = task_current();
+        fd_entry_t *e = fd_get(cur ? cur->fd_table : NULL, (int)regs->ebx);
+        if (e && e->kind == FD_KIND_PIPE && e->pipe) {
+            e->pipe->cols = (uint16_t)(regs->ecx >> 16);
+            e->pipe->rows = (uint16_t)(regs->ecx & 0xFFFF);
+            regs->eax = 0;
+        } else regs->eax = (uint32_t)-1;
+        break;
+    }
 
     case SYS_GUI_CLOSE: {
         vtty_switch_root_text();
@@ -1585,6 +1645,28 @@ void syscall_dispatch(registers_t *regs)
         const tty_cell_t *cells = (const tty_cell_t *)(uintptr_t)regs->ebx;
         uint32_t n = regs->ecx;
         if (!cells || n == 0) { regs->eax = 0; break; }
+
+        /* GUI terminal: no live VT + piped stdout -> emit ANSI for mxterm. */
+        { fd_entry_t *abr = ansi_bridge_fd();
+          if (abr) {
+              char out[64]; int lr = -1, lc = -2, lclr = -1;
+              for (uint32_t i = 0; i < n; i++) {
+                  int row = cells[i].row, col = cells[i].col;
+                  int clr = cells[i].clr; char ch = (char)cells[i].ch;
+                  if (row != lr || col != lc + 1) {        /* reposition */
+                      int o = ansi_cup(out, (unsigned)row, (unsigned)col);
+                      ansi_pipe_write(abr, out, (uint32_t)o); lclr = -1;
+                  }
+                  if (clr != lclr) {
+                      int o = ansi_sgr(out, (unsigned char)clr);
+                      ansi_pipe_write(abr, out, (uint32_t)o); lclr = clr;
+                  }
+                  ansi_pipe_write(abr, &ch, 1);
+                  lr = row; lc = col;
+              }
+              { char rst[3] = { 0x1b, '[', 'm' }; ansi_pipe_write(abr, rst, 3); }
+              regs->eax = 0; break;
+          } }
         /* Mark this task as "touched the framebuffer".  shell_exec_elf
          * inspects this flag after the child dies and reissues
          * shell_clear_screen if set, so fullscreen apps that exit via
@@ -1668,6 +1750,9 @@ void syscall_dispatch(registers_t *regs)
      * EBX = col, ECX = row.
      * ------------------------------------------------------------------ */
     case SYS_SET_CURSOR: {
+        { fd_entry_t *abr = ansi_bridge_fd();
+          if (abr) { char out[24]; int o = ansi_cup(out, regs->ecx, regs->ebx);
+                     ansi_pipe_write(abr, out, (uint32_t)o); break; } }
         /* Record into the backing grid so the cursor lands correctly on
          * repaint; only move the visible hardware cursor when focused. */
         vt_buf_t *vt = vtty_buf_current();
@@ -1682,6 +1767,11 @@ void syscall_dispatch(registers_t *regs)
      * EBX = VGA colour attribute (e.g. 0x07 = white-on-black).
      * ------------------------------------------------------------------ */
     case SYS_TTY_CLEAR: {
+        { fd_entry_t *abr = ansi_bridge_fd();
+          if (abr) { char out[24]; int o = ansi_sgr(out, (unsigned char)regs->ebx);
+                     ansi_pipe_write(abr, out, (uint32_t)o);
+                     const char cl[] = { 0x1b,'[','2','J', 0x1b,'[','H' };
+                     ansi_pipe_write(abr, cl, 7); break; } }
         { task_t *cur = task_current(); if (cur) cur->fb_touched = 1; }
         /* Clear the backing grid to the requested attribute always; wipe
          * the live screen only when focused. */
@@ -1702,6 +1792,12 @@ void syscall_dispatch(registers_t *regs)
      * Returns EAX = (cols << 16) | rows.
      * ------------------------------------------------------------------ */
     case SYS_TERM_SIZE: {
+        /* GUI terminal child: report the terminal's published pty size. */
+        { fd_entry_t *abr = ansi_bridge_fd();
+          if (abr && abr->pipe->cols && abr->pipe->rows) {
+              regs->eax = ((uint32_t)abr->pipe->cols << 16) | abr->pipe->rows;
+              break;
+          } }
         /* Report the *drawable* area (vesa_tty_usable_rows), which excludes
          * the bottom status row whenever the status bar is enabled (reserved)
          * -- so shells/apps stay above it and statusbar.elf draws at row =

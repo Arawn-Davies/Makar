@@ -227,6 +227,8 @@ than user/credential based.
 | 260 `SYS_LOGOUT` | — | end the root login session; `0` ok, `-1` |
 | 266 `SYS_LOGIN` | `user, pass` | `shadow_verify` + set session user; `0` ok, `-1` bad creds |
 | 270 `SYS_PASSWD` | `old, new` | change the current session user's password (`shadow_verify` old + `shadow_set_password` new); `0` ok, `-2` wrong current password, `-1` otherwise (bad args / read-only live rootfs) |
+| 271 `SYS_CAD_PENDING` | — | test-and-clear the Ctrl-Alt-Del flag; `1` if it was pressed. The GUI server polls it each frame to open its power menu |
+| 272 `SYS_PTY_WINSIZE` | `fd, (cols<<16)\|rows` | publish a pty window size onto a pipe fd so a piped child's `SYS_TERM_SIZE` reports it (GUI terminal → shell); `0` ok, `-1` if not a pipe |
 
 `SYS_LOGIN` backs the GUI graphical login (`gui.elf`'s `do_login`); `SYS_PASSWD`
 backs its change-password dialog (the power menu's "Change password..."). Both

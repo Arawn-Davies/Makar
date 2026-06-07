@@ -631,6 +631,13 @@ static inline int sys_cad_pending(void)
 {
     return (int)syscall1(SYS_CAD_PENDING, 0);
 }
+/* Publish a pty window size onto a pipe fd so a piped child's SYS_TERM_SIZE
+ * reports it (GUI terminal -> shell).  0 ok, -1 if fd isn't a pipe. */
+static inline int sys_pty_winsize(int fd, int cols, int rows)
+{
+    return (int)syscall2(SYS_PTY_WINSIZE, fd,
+                         ((long)(cols & 0xFFFF) << 16) | (rows & 0xFFFF));
+}
 static inline int sys_gui_close(void)
 {
     return (int)syscall1(SYS_GUI_CLOSE, 0);

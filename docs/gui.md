@@ -83,6 +83,25 @@ and reusable by future surface-rendering apps.
   Used by `mxterm` (and reusable by a future serial console); freestanding (no
   libc). The front-end renders the grid via a 16-colour palette → `gfx_char`.
 
+### Text-mode (TUI) apps in the GUI terminal — cell-API → ANSI bridge
+
+The existing TUI apps (`maktop`, `vix`, `cfdisk`, the `install` flow, …) don't
+write bytes; they call the kernel **cell API** (`SYS_PUTCH_AT`, `SYS_SET_CURSOR`,
+`SYS_TTY_CLEAR`, `SYS_TERM_SIZE`) which targets a per-task VT backing grid. A
+process forked by `mxterm` has **no live VT slot** and its stdout is a pipe, so
+those calls would have nowhere to land.
+
+The kernel bridges them: when a cell-API call comes from a task with
+`vtty_buf_current() == NULL` **and** fd 1 is a pipe, it is translated to the
+equivalent **ANSI escape** written to fd 1 — `SYS_PUTCH_AT` → `CUP`+`SGR`+chars
+(coalescing same-row runs, VGA→ANSI colour remap), `SYS_SET_CURSOR` → `CUP`,
+`SYS_TTY_CLEAR` → `SGR`+`ED`+home — which `mxterm`'s vt100 core then renders.
+`SYS_TERM_SIZE` reports the terminal's published size: `mxterm` calls
+`SYS_PTY_WINSIZE` to stamp its grid dimensions onto the child's pipe. Grand-
+children inherit the piped fd 1, so a TUI app launched from the shell in the
+window works unchanged. The real text-VT path (non-NULL `vtty_buf_current()`) is
+untouched, so console/Alt-Fn VTs behave exactly as before.
+
 ## makx protocol (`makx.h` / `makx.c`)
 
 Control travels over the kernel's MINIX-style synchronous IPC (`kernel/ipc.h`,

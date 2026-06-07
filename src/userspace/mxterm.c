@@ -48,6 +48,9 @@ static void term_spawn(void){
     sys_close(ip[0]);sys_close(op[1]);
     sys_fcntl(term_out,F_SETFL,O_NONBLOCK);
     sys_fcntl(term_in,F_SETFL,O_NONBLOCK);
+    /* Publish our grid size so the child's SYS_TERM_SIZE (and any TUI app it
+     * runs) reports the terminal window's real dimensions, not the VT's. */
+    sys_pty_winsize(term_out, vt.cols, vt.rows);
 }
 static void term_kill(void){
     if(term_pid>0){sys_kill(term_pid,SIGKILL);int st;sys_wait4(term_pid,&st,0);}
@@ -68,7 +71,10 @@ static void term_key(int k){ if(term_in<0)return; unsigned char b=(unsigned char
 static void term_fit(gfx_surface *s){
     int cols=(s->w-8)/8, rows=(s->h-8)/8;
     if(cols<1)cols=1; if(rows<1)rows=1;
-    if(cols!=vt.cols||rows!=vt.rows) vt_resize(&vt,cols,rows);
+    if(cols!=vt.cols||rows!=vt.rows){
+        vt_resize(&vt,cols,rows);
+        if(term_out>=0) sys_pty_winsize(term_out, vt.cols, vt.rows);
+    }
 }
 static void term_draw(gfx_surface *s, int focused){
     gfx_fill(s,0,0,s->w,s->h,PAL[0]);
