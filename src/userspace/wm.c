@@ -165,7 +165,7 @@ static void win_free(int i)
 /* Each icon names a client *.elf and the default outer window geometry.  The
  * program path is launcher data -- the server bakes in no application. */
 typedef struct { int x,y,w,h; const char *label; gfx_u32 tint; const char *cmd; int winw, winh; const char *arg; } icon_t;
-#define ICON_N 11
+#define ICON_N 12
 /* Two-column desktop icon grid (col x = 24 / 128, rows step 84).  winw/winh are
  * sized so each client's fixed surface (mxterm 640x400, mxfiles 560x380,
  * mxedit 620x420, mxtasks 560x360, doom 640x400, mxabout 560x430, mxclock
@@ -185,6 +185,7 @@ static icon_t icons[ICON_N] = {
     /* Install: run the in-OS installer inside a terminal window (Phase-11 ANSI
      * bridge renders its TUI).  arg "install" -> mxterm runs `sh.elf -c install`. */
     {  24, 460, 96,70, "Install",  RGB(0xff,0x70,0x70), "/apps/mxterm.elf",  648,424, "install" },
+    { 128, 460, 96,70, "Image",    RGB(0x70,0xb0,0x70), "/apps/mximg.elf",   608,468 },
 };
 
 /* Fork+exec a client, handing it `-makx <server-pid>` and a stdout/stderr pipe
