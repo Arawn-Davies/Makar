@@ -26,6 +26,8 @@ typedef struct vt_cell {
     uint32_t bg;      /* framebuffer-pixel-encoded background */
 } vt_cell_t;
 
+#define VT_NPARAM 8       /* max CSI numeric parameters tracked */
+
 typedef struct vt_buf {
     uint32_t   cols;
     uint32_t   rows;
@@ -35,6 +37,18 @@ typedef struct vt_buf {
     uint32_t   fg;        /* current attribute applied to incoming chars */
     uint32_t   bg;
     vt_cell_t *cells;     /* row-major: cells[row * cols + col] */
+
+    /* ANSI/VT100 escape-sequence parser.  Modelled on Linux's in-kernel
+     * console VT layer (drivers/tty/vt/vt.c): the backing grid itself
+     * interprets CSI/SGR so userspace drives it with escape bytes, not a
+     * cell-poke syscall.  GROUND-state bytes fall through to the plain
+     * \n/\r/\b + glyph path below. */
+    uint8_t    esc_state;     /* 0 ground, 1 ESC, 2 CSI, 3 OSC, 4 swallow1, 5 OSC-ESC */
+    uint8_t    esc_nparam;
+    uint8_t    esc_priv;      /* '?' private CSI seen */
+    uint16_t   esc_param[VT_NPARAM];
+    uint32_t   saved_col, saved_row;  /* ESC 7/8 + CSI s/u */
+    uint32_t   def_fg, def_bg;         /* SGR-reset colours (set in vt_init) */
 } vt_buf_t;
 
 /* Result of vt_putchar - lets the renderer know what to repaint without

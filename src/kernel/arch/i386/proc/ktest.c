@@ -239,6 +239,79 @@ static void test_vt_status_scroll(void)
     ktest_summary();
 }
 
+static void test_vt_ansi(void)
+{
+    ktest_begin("vt_ansi", "VT backing grid parses ANSI/VT100 escapes");
+
+    vt_buf_t vt;
+    memset(&vt, 0, sizeof vt);
+    KTEST_ASSERT(vt_init(&vt, 20, 6, 0x00FFFFFFu, 0x00000000u));
+    if (!vt.cells) { ktest_summary(); return; }
+
+    /* CUP: ESC[3;5H -> row 2, col 4 (1-based -> 0-based). */
+    const char *cup = "\x1b[3;5H";
+    for (const char *p = cup; *p; p++) vt_putchar(&vt, *p);
+    KTEST_ASSERT(vt.cur_row == 2);
+    KTEST_ASSERT(vt.cur_col == 4);
+
+    /* A glyph lands at the addressed cell, cursor advances. */
+    vt_putchar(&vt, 'X');
+    KTEST_ASSERT(vt_get_cell(&vt, 4, 2).ch == 'X');
+    KTEST_ASSERT(vt.cur_col == 5);
+
+    /* SGR red-on-default then a glyph: cell carries the red fg. */
+    const char *sgr = "\x1b[31m";
+    for (const char *p = sgr; *p; p++) vt_putchar(&vt, *p);
+    vt_putchar(&vt, 'R');
+    KTEST_ASSERT(vt_get_cell(&vt, 5, 2).ch == 'R');
+    KTEST_ASSERT(vt_get_cell(&vt, 5, 2).fg == 0x00AA0000u);
+
+    /* SGR reset returns to the default fg. */
+    const char *rst = "\x1b[0m";
+    for (const char *p = rst; *p; p++) vt_putchar(&vt, *p);
+    vt_putchar(&vt, 'W');
+    KTEST_ASSERT(vt_get_cell(&vt, 6, 2).fg == 0x00FFFFFFu);
+
+    /* EL(2): ESC[2K clears the whole current line. */
+    vt_set_cursor(&vt, 0, 0);
+    vt_putchar(&vt, 'a'); vt_putchar(&vt, 'b'); vt_putchar(&vt, 'c');
+    vt_set_cursor(&vt, 1, 0);
+    const char *el = "\x1b[2K";
+    for (const char *p = el; *p; p++) vt_putchar(&vt, *p);
+    KTEST_ASSERT(vt_get_cell(&vt, 0, 0).ch == ' ');
+    KTEST_ASSERT(vt_get_cell(&vt, 2, 0).ch == ' ');
+
+    /* ED(2): ESC[2J clears the screen. */
+    vt_set_cursor(&vt, 0, 3);
+    vt_putchar(&vt, 'Z');
+    const char *ed = "\x1b[2J";
+    for (const char *p = ed; *p; p++) vt_putchar(&vt, *p);
+    KTEST_ASSERT(vt_get_cell(&vt, 0, 3).ch == ' ');
+
+    /* Plain text + control chars still behave exactly as before. */
+    vt_set_cursor(&vt, 0, 0);
+    vt_putchar(&vt, 'h'); vt_putchar(&vt, 'i');
+    vt_putchar(&vt, '\r');
+    KTEST_ASSERT(vt.cur_col == 0);
+    vt_putchar(&vt, '\n');
+    KTEST_ASSERT(vt.cur_row == 1);
+    KTEST_ASSERT(vt_get_cell(&vt, 0, 0).ch == 'h');
+    KTEST_ASSERT(vt_get_cell(&vt, 1, 0).ch == 'i');
+
+    /* An unterminated/long CSI must never wedge: cursor save/restore. */
+    vt_set_cursor(&vt, 7, 3);
+    const char *sv = "\x1b[s";
+    for (const char *p = sv; *p; p++) vt_putchar(&vt, *p);
+    vt_set_cursor(&vt, 0, 0);
+    const char *rs = "\x1b[u";
+    for (const char *p = rs; *p; p++) vt_putchar(&vt, *p);
+    KTEST_ASSERT(vt.cur_col == 7);
+    KTEST_ASSERT(vt.cur_row == 3);
+
+    kfree(vt.cells);
+    ktest_summary();
+}
+
 /* ---------------------------------------------------------------------------
  * Suite: partition helpers
  *
@@ -3429,6 +3502,7 @@ int ktest_run_all(void)
     total_fail += ktest_fail_count;
 
     test_vt_status_scroll();
+    test_vt_ansi();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
