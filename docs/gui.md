@@ -194,8 +194,8 @@ Clients (each an independent process, `src/userspace/mx*.c`):
   in `cfdisk`/`fdisk`).
 - **mximg** is an image viewer: an Open dialog (shared `gui_browser`) or a path
   argument, decode, and aspect-fit-to-window via `gfx_blit_scaled`. Decodes BMP
-  (24/32-bpp uncompressed) today; GIF/PNG/JPEG are the next slice. mmap-backed
-  file + pixel buffers (no libc).
+  (24/32-bpp uncompressed) and GIF (87a/89a first frame, LZW + interlace);
+  PNG/JPEG are the next slice. mmap-backed file + pixel buffers (no libc).
 - **doom** is the windowed makx client (see below).
 
 The **Install** desktop icon launches `mxterm` with a one-shot command

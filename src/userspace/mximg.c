@@ -1,9 +1,9 @@
 /*
  * mximg.elf -- an image viewer, as a makx client.  Opens an image (Open dialog
  * or a path argument), decodes it, and scales it to fit the window (aspect-
- * preserving, nearest-neighbour).  This first cut decodes BMP (24/32-bpp
- * uncompressed); GIF/PNG/JPEG land next.  Reuses the shared gui_browser file
- * dialog (like mxedit) so it's usable straight from its desktop icon.
+ * preserving, nearest-neighbour).  Decodes BMP (24/32-bpp uncompressed) and GIF
+ * (87a/89a first frame, LZW, interlace); PNG/JPEG land next.  Reuses the shared
+ * gui_browser file dialog (like mxedit) so it's usable straight from its icon.
  */
 #include "syscall.h"
 #include "gui_gfx.h"
@@ -24,7 +24,7 @@
 static gfx_u32 *img_px;          /* decoded pixels (mmap, IMG_MAXW*IMG_MAXH) */
 static unsigned char *fbuf;            /* file read buffer (mmap, FILE_CAP)        */
 static int img_w, img_h;         /* current image size (0 = none)           */
-static char msg[96] = "Open an image (BMP).";
+static char msg[96] = "Open an image (BMP/GIF).";
 
 static void scpy(char *d,const char *s,int max){int i=0;while(s[i]&&i<max-1){d[i]=s[i];i++;}d[i]=0;}
 static unsigned rd32(const unsigned char *p){ return p[0]|(p[1]<<8)|(p[2]<<16)|((unsigned)p[3]<<24); }
@@ -59,6 +59,87 @@ static int decode_bmp(unsigned n)
     return 0;
 }
 
+/* ---- GIF (87a/89a): first frame, LZW, global/local palette, interlace ---- */
+static unsigned short g_pfx[4096];
+static unsigned char  g_sfx[4096];
+static unsigned char  g_stk[4096];
+static unsigned char  g_pal[256][3];
+
+static const unsigned char *g_dp,*g_dend; static int g_dsub;     /* sub-block byte source */
+static int gbyte(void){
+    if(g_dsub==0){ if(g_dp>=g_dend) return -1; g_dsub=*g_dp++; if(g_dsub==0) return -1; }
+    if(g_dp>=g_dend) return -1;
+    g_dsub--; return *g_dp++;
+}
+static unsigned g_acc; static int g_nb;
+static int gcode(int w){
+    while(g_nb<w){ int b=gbyte(); if(b<0) return -1; g_acc|=((unsigned)b)<<g_nb; g_nb+=8; }
+    int c=(int)(g_acc&((1u<<w)-1)); g_acc>>=w; g_nb-=w; return c;
+}
+
+static int decode_gif(unsigned n)
+{
+    if(n<13 || fbuf[0]!='G'||fbuf[1]!='I'||fbuf[2]!='F'){ scpy(msg,"not a GIF file",sizeof msg); return -1; }
+    int sw=rd16(fbuf+6), sh=rd16(fbuf+8);
+    unsigned char packed=fbuf[10];
+    unsigned p=13;
+    int gct = packed&0x80, gctsz = 2<<(packed&7);
+    if(gct){ for(int i=0;i<gctsz && p+3<=n;i++){ g_pal[i][0]=fbuf[p];g_pal[i][1]=fbuf[p+1];g_pal[i][2]=fbuf[p+2];p+=3; } }
+    (void)sw;(void)sh;
+    /* walk blocks to the first image descriptor (skip extensions). */
+    while(p<n){
+        unsigned char b=fbuf[p++];
+        if(b==0x3B) break;                       /* trailer, no image */
+        if(b==0x21){ p++; while(p<n){ int len=fbuf[p++]; if(!len)break; p+=len; } continue; } /* extension */
+        if(b!=0x2C) continue;                    /* unknown */
+        if(p+9>n){ scpy(msg,"truncated GIF",sizeof msg); return -1; }
+        int iw=rd16(fbuf+p+4), ih=rd16(fbuf+p+6);
+        unsigned char ip=fbuf[p+8]; p+=9;
+        int interlace = ip&0x40;
+        if(ip&0x80){ int lsz=2<<(ip&7); for(int i=0;i<lsz && p+3<=n;i++){ g_pal[i][0]=fbuf[p];g_pal[i][1]=fbuf[p+1];g_pal[i][2]=fbuf[p+2];p+=3; } }
+        if(iw<1||ih<1||iw>IMG_MAXW||ih>IMG_MAXH){ scpy(msg,"image too large",sizeof msg); return -1; }
+        if(p>=n){ scpy(msg,"truncated GIF",sizeof msg); return -1; }
+        int mincode=fbuf[p++];
+        if(mincode<1||mincode>8){ scpy(msg,"bad GIF LZW",sizeof msg); return -1; }
+        g_dp=fbuf+p; g_dend=fbuf+n; g_dsub=0; g_acc=0; g_nb=0;
+        int clear=1<<mincode, end=clear+1, csz=mincode+1, avail=end+1, oldc=-1;
+        unsigned char first=0;
+        int starts[4]={0,4,2,1}, steps[4]={8,8,4,2}, npass=interlace?4:1;
+        int pass=0, gx=0, gy=interlace?0:0;
+        for(;;){
+            int code=gcode(csz);
+            if(code<0||code==end) break;
+            if(code==clear){ csz=mincode+1; avail=end+1; oldc=-1; continue; }
+            int sp=0, c;
+            if(oldc<0){ first=(unsigned char)code; c=code; }
+            else { if(code<avail) c=code; else { g_stk[sp++]=first; c=oldc; } }
+            while(c>=clear){ if(sp>=4096)break; g_stk[sp++]=g_sfx[c]; c=g_pfx[c]; }
+            first=(unsigned char)c; g_stk[sp++]=(unsigned char)c;
+            while(sp>0){
+                unsigned char idx=g_stk[--sp];
+                if(gy<ih){ img_px[(unsigned)gy*iw+gx]=RGB(g_pal[idx][0],g_pal[idx][1],g_pal[idx][2]); }
+                if(++gx>=iw){ gx=0; gy+=steps[pass];
+                    while(gy>=ih && pass+1<npass){ pass++; gy=starts[pass]; } }
+            }
+            if(oldc>=0 && avail<4096){ g_pfx[avail]=(unsigned short)oldc; g_sfx[avail]=first; avail++;
+                if(avail==(1<<csz) && csz<12) csz++; }
+            oldc=code;
+        }
+        img_w=iw; img_h=ih;
+        return 0;
+    }
+    scpy(msg,"no image in GIF",sizeof msg);
+    return -1;
+}
+
+static int decode_image(unsigned n)
+{
+    if(n>=2 && fbuf[0]=='B'&&fbuf[1]=='M') return decode_bmp(n);
+    if(n>=3 && fbuf[0]=='G'&&fbuf[1]=='I'&&fbuf[2]=='F') return decode_gif(n);
+    scpy(msg,"unsupported format (BMP/GIF)",sizeof msg);
+    return -1;
+}
+
 static void load_image(const char *path)
 {
     img_w = img_h = 0;
@@ -74,7 +155,7 @@ static void load_image(const char *path)
         got += (unsigned)r;
     }
     sys_close(fd);
-    if (decode_bmp(got) == 0) {
+    if (decode_image(got) == 0) {
         /* path basename into msg */
         const char *b = path; for (const char *p=path; *p; p++) if (*p=='/') b=p+1;
         scpy(msg, b, sizeof msg);
@@ -141,7 +222,7 @@ int main(int argc, char **argv)
             dim[o]=0;
             gfx_str(s, s->w-gfx_text_w(dim)-6, s->h-12, dim, COL_TEXT);
         } else {
-            const char *h="No image. Click Open to choose a BMP file.";
+            const char *h="No image. Click Open to choose a BMP or GIF file.";
             gfx_str(s,(s->w-gfx_text_w(h))/2, s->h/2, h, (msg[0]&&msg[slen(msg)-1]!='.')?COL_ERR:COL_TEXT);
         }
         mx_present(&c);
