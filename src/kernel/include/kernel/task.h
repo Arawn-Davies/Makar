@@ -207,6 +207,21 @@ task_t *task_create(const char *name, void (*entry)(void));
  */
 void task_yield(void);
 
+/* -------------------------------------------------------------------------
+ * Preemptive syscalls (CONFIG_PREEMPT-style).
+ *
+ * g_preempt_enabled gates whether the int-0x80 dispatcher re-enables interrupts
+ * (so a syscall can be preempted by the timer), set 0 by the `nopreempt` cmdline
+ * for the legacy serialized behaviour.  preempt_disable/enable bump a counter the
+ * timer consults (sched_can_preempt): while it is non-zero the timer charges the
+ * tick but does not yield, so a short section can stay atomic without masking
+ * interrupts.  Single-CPU; the counter is a plain atomic.
+ * ------------------------------------------------------------------------- */
+extern volatile int g_preempt_enabled;
+void preempt_disable(void);
+void preempt_enable(void);
+int  sched_can_preempt(void);   /* 1 iff the timer may yield right now */
+
 /*
  * task_exit – terminate the calling task.
  *

@@ -263,7 +263,7 @@ volatile uint32_t g_ring3_last_cp = 0;
  * syscall_dispatch
  * ------------------------------------------------------------------------- */
 
-void syscall_dispatch(registers_t *regs)
+static void syscall_dispatch_inner(registers_t *regs)
 {
     switch (regs->eax) {
 
@@ -2551,6 +2551,30 @@ void syscall_dispatch(registers_t *regs)
      * (and unmasked) before iret returns to ring 3.  No-op when the
      * frame is ring 0 or no handler is installed. */
     signal_check_user(regs);
+}
+
+/*
+ * syscall_dispatch -- int 0x80 entry.  The gate clears IF; when preemptive
+ * syscalls are enabled we re-enable interrupts for the duration of the call so
+ * the timer can preempt a long syscall (the whole point of Phase C), then
+ * disable again so the ISR epilogue's register-restore + iret runs atomically
+ * (iret restores ring 3's IF=1).  Shared kernel state is protected by the
+ * heap / PMM / task-pool / FS-disk / page-cache / net locks; noreturn paths
+ * (task_exit, ring3_enter) manage IF themselves and never fall through here.
+ */
+void syscall_dispatch(registers_t *regs)
+{
+    /* Save the caller's IF and restore it on exit rather than forcing it.
+     * Via int 0x80 the gate cleared IF, so this restores cli and the ISR
+     * epilogue's restore+iret runs atomically (iret restores ring 3's IF=1).
+     * ktest also calls this *directly* from a kernel task with IF=1; restoring
+     * the caller's flags keeps the timer running for it (an unconditional cli
+     * here froze a CLOCK_MONOTONIC busy-wait). */
+    uint32_t fl;
+    __asm__ volatile("pushfl; popl %0" : "=r"(fl) :: "memory");
+    if (g_preempt_enabled) __asm__ volatile("sti");
+    syscall_dispatch_inner(regs);
+    __asm__ volatile("pushl %0; popfl" :: "r"(fl) : "memory", "cc");
 }
 
 void syscall_init(void)

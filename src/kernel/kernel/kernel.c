@@ -416,6 +416,11 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 						kbtest = 1;
 					if (strstr(cmd->string, "console=ttyS0"))
 						console_serial = 1;
+					/* `nopreempt` -> legacy serialized syscalls (the
+					 * int-0x80 dispatcher keeps IF=0).  Escape hatch if
+					 * preemptive syscalls ever misbehave. */
+					if (strstr(cmd->string, "nopreempt"))
+						g_preempt_enabled = 0;
 					const char *rp = strstr(cmd->string, "root=");
 					if (rp) {
 						rp += 5;
