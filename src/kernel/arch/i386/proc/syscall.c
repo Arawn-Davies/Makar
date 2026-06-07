@@ -36,6 +36,7 @@
 #include <kernel/shell.h>
 #include <kernel/vfs.h>
 #include <kernel/pagecache.h>
+#include <kernel/video.h>
 #include <kernel/heap.h>
 #include <kernel/vmm.h>
 #include <kernel/pmm.h>
@@ -1097,11 +1098,8 @@ static void syscall_dispatch_inner(registers_t *regs)
             task_t *cur = task_current(); if (cur) cur->fb_touched = 1;
             regs->eax = 0; break;
         }
-        const uint8_t *src = (const uint8_t *)(uintptr_t)regs->ebx;
-        uint8_t *dst = (uint8_t *)fb->addr;
-        uint32_t row_bytes = fb->width * 4u;
-        for (uint32_t y = 0; y < fb->height; y++)
-            memcpy(dst + y * fb->pitch, src + y * row_bytes, row_bytes);
+        const void *src = (const void *)(uintptr_t)regs->ebx;
+        video_present_rect(src, 0, 0, fb->width, fb->height);
         { task_t *cur = task_current(); if (cur) cur->fb_touched = 1; }
         regs->eax = 0;
         break;
@@ -1124,17 +1122,8 @@ static void syscall_dispatch_inner(registers_t *regs)
         uint32_t rx = (regs->ecx >> 16) & 0xFFFFu, ry = regs->ecx & 0xFFFFu;
         uint32_t rw = (regs->edx >> 16) & 0xFFFFu, rh = regs->edx & 0xFFFFu;
         if (rx >= fb->width || ry >= fb->height) { regs->eax = 0; break; }
-        if (rx + rw > fb->width)  rw = fb->width  - rx;
-        if (ry + rh > fb->height) rh = fb->height - ry;
-        const uint8_t *src = (const uint8_t *)(uintptr_t)regs->ebx;
-        uint8_t *dst = (uint8_t *)fb->addr;
-        uint32_t fb_row = fb->width * 4u;            /* back-buffer stride */
-        uint32_t copy_bytes = rw * 4u;
-        for (uint32_t y = 0; y < rh; y++) {
-            uint32_t line = ry + y;
-            memcpy(dst + line * fb->pitch + rx * 4u,
-                   src + line * fb_row    + rx * 4u, copy_bytes);
-        }
+        const void *src = (const void *)(uintptr_t)regs->ebx;
+        video_present_rect(src, rx, ry, rw, rh);
         { task_t *cur = task_current(); if (cur) cur->fb_touched = 1; }
         regs->eax = 0;
         break;

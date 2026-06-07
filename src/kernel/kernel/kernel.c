@@ -16,6 +16,7 @@
 #include <kernel/vesa.h>
 #include <kernel/vesa_tty.h>
 #include <kernel/bochs_vbe.h>
+#include <kernel/video.h>
 #include <kernel/heap.h>
 
 #include <kernel/paging.h>
@@ -330,6 +331,11 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			terminal_set_rows(50);
 		}
 	}
+
+	/* Bind a display driver now that the framebuffer geometry is settled:
+	 * an accelerated backend (SVGA II / Hyper-V synthvid) if its hardware is
+	 * present, else the dumb LFB.  SYS_FB_PRESENT[_RECT] route through it. */
+	video_init();
 
 	t_writestring("Starting timer (250 Hz)");
 	kprint_ok();
