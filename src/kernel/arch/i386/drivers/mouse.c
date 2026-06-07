@@ -59,7 +59,33 @@ static void mouse_cmd(uint8_t b)
     ps2_wait_output(); (void)inb(PS2_DATA);   /* 0xFA ACK */
 }
 
-/* ---- packet assembly ---------------------------------------------------- */
+/* ---- device-independent event sink -------------------------------------- */
+
+/*
+ * mouse_post_event - queue one decoded motion/button event.  This is the input
+ * layer's device-independent entry point: the PS/2 packet assembler below feeds
+ * it, and a USB HID boot-mouse driver feeds it the same way, so the mouse is no
+ * longer tied to PS/2.  dx/+x is right, dy/+y is screen-down, buttons bit0=left
+ * bit1=right bit2=middle.  Safe to call from IRQ context (SPSC ring).
+ */
+void mouse_post_event(int dx, int dy, int buttons)
+{
+    if (dx >  127) dx =  127; else if (dx < -127) dx = -127;
+    if (dy >  127) dy =  127; else if (dy < -127) dy = -127;
+
+    uint32_t ev = (1u << 31)
+                | (uint32_t)(buttons & 0x07)
+                | ((uint32_t)(dx & 0xFF) << 8)
+                | ((uint32_t)(dy & 0xFF) << 16);
+
+    uint32_t next = (s_head + 1) % MOUSE_RING;
+    if (next != s_tail) {       /* drop on full */
+        s_ring[s_head] = ev;
+        s_head = next;
+    }
+}
+
+/* ---- PS/2 packet assembly ----------------------------------------------- */
 
 void mouse_feed_byte(uint8_t b)
 {
@@ -84,19 +110,7 @@ void mouse_feed_byte(uint8_t b)
     if (vm_kind() != VM_HYPERV)
         dy = -dy;
 
-    if (dx >  127) dx =  127; else if (dx < -127) dx = -127;
-    if (dy >  127) dy =  127; else if (dy < -127) dy = -127;
-
-    uint32_t ev = (1u << 31)
-                | (uint32_t)(flags & 0x07)
-                | ((uint32_t)(dx & 0xFF) << 8)
-                | ((uint32_t)(dy & 0xFF) << 16);
-
-    uint32_t next = (s_head + 1) % MOUSE_RING;
-    if (next != s_tail) {       /* drop on full */
-        s_ring[s_head] = ev;
-        s_head = next;
-    }
+    mouse_post_event(dx, dy, flags & 0x07);
 }
 
 uint32_t mouse_pop_event(void)
@@ -119,10 +133,14 @@ void mouse_inject_packet(uint8_t b0, uint8_t b1, uint8_t b2)
 static void mouse_irq_handler(registers_t *regs)
 {
     (void)regs;
+    /* Take only AUX (mouse) bytes; a keyboard byte is left for IRQ1 (reading it
+     * here would steal keystrokes -- the keyboard-injection test relies on this).
+     * NOTE: on a strict 8042 (VirtualBox/VMware) a left-behind byte can stall the
+     * mouse; the robust path there is a USB HID mouse, not fighting the 8042. */
     for (int i = 0; i < 16; i++) {
         uint8_t status = inb(PS2_STATUS);
         if (!(status & PS2_OBF)) break;
-        if (!(status & PS2_AUXB)) break;   /* keyboard byte -- leave for IRQ1 */
+        if (!(status & PS2_AUXB)) break;
         mouse_feed_byte(inb(PS2_DATA));
     }
 }
