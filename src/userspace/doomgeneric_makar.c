@@ -21,19 +21,14 @@ static unsigned int *fullfb;
 
 /* Windowed mode: Doom is a makx *client* (launched by the display server with
  * `-makx <server-pid>`).  It renders into a shared surface the server
- * composites, takes decoded keys the server forwards over IPC (not the raw
- * scancode stream), and never calls SYS_FB_PRESENT -- only the server owns
- * scanout.  See makx.h / docs/gui.md.  Without -makx, Doom runs its normal
+ * composites and never calls SYS_FB_PRESENT -- only the server owns scanout.
+ * It connects with MX_F_RAWKEYS, so while it holds focus the server forwards
+ * the raw make/break scancode stream as MXEV_KEY values -- the same stream the
+ * fullscreen path reads directly -- giving true key-up events (no synthesized
+ * releases).  See makx.h / docs/gui.md.  Without -makx, Doom runs its normal
  * fullscreen path (shell `doom`). */
 static int     s_windowed = 0;
 static mx_conn s_mc;
-
-/* stdin in windowed mode carries decoded key-*down* bytes only (no break
- * codes), so a held movement key would stick.  Synthesize a release a short
- * time after each press: tap-to-move.  Crude but playable for menus/turning. */
-#define HOLD_TICS 12            /* ~120ms at 100Hz */
-#define HELD_MAX  8
-static struct { unsigned char key; unsigned int expire; } s_held[HELD_MAX];
 
 static void kq_push(int pressed, unsigned char k)
 {
@@ -72,28 +67,6 @@ static unsigned char convertToDoomKey(unsigned char sc)
     }
 }
 
-/* Windowed mode: map a decoded key byte (ASCII or KEY_ARROW_* sentinel, as the
- * WM forwards) to a Doom key.  Returns 0 for keys we don't bind. */
-static unsigned char convertWinKey(unsigned char a)
-{
-    switch (a) {
-        case 13: case 10: return KEY_ENTER;
-        case 27:          return KEY_ESCAPE;
-        case 0x82:        return KEY_LEFTARROW;   /* KEY_ARROW_LEFT  */
-        case 0x83:        return KEY_RIGHTARROW;  /* KEY_ARROW_RIGHT */
-        case 0x80:        return KEY_UPARROW;     /* KEY_ARROW_UP    */
-        case 0x81:        return KEY_DOWNARROW;   /* KEY_ARROW_DOWN  */
-        case ' ':         return KEY_FIRE;
-        case '\t':        return KEY_TAB;
-        case 'e': case 'E': return KEY_USE;
-        default:
-            if (a >= '1' && a <= '9') return a;
-            if (a >= 'a' && a <= 'z') return a;
-            if (a >= 'A' && a <= 'Z') return (unsigned char)(a + 32);
-            return 0;
-    }
-}
-
 void DG_Init(void)
 {
     if (s_windowed) {
@@ -125,25 +98,18 @@ void DG_Init(void)
 static void handle_input(void)
 {
     if (s_windowed) {
-        unsigned int now = sys_uptime();
-        /* expire held keys -> synthesize releases */
-        for (int i = 0; i < HELD_MAX; i++)
-            if (s_held[i].key && (int)(now - s_held[i].expire) >= 0) {
-                kq_push(0, s_held[i].key);
-                s_held[i].key = 0;
-            }
+        /* The WM forwards the raw make/break scancode stream (MX_F_RAWKEYS), so
+         * the windowed path is the fullscreen path with mx_key() as the source:
+         * real key-up events, no synthesized releases. */
         mx_pump(&s_mc);
         if (s_mc.closed) sys_exit(0);        /* server closed our window */
         int a;
         while ((a = mx_key(&s_mc)) >= 0) {
-            unsigned char k = convertWinKey((unsigned char)a);
+            unsigned char sc = (unsigned char)a;
+            int pressed = (sc & 0x80) ? 0 : 1;
+            unsigned char k = convertToDoomKey(sc & 0x7F);
             if (!k) continue;
-            kq_push(1, k);
-            /* (re)arm an auto-release slot for this key */
-            int slot = -1;
-            for (int i = 0; i < HELD_MAX; i++) { if (s_held[i].key == k) { slot = i; break; } }
-            if (slot < 0) for (int i = 0; i < HELD_MAX; i++) if (!s_held[i].key) { slot = i; break; }
-            if (slot >= 0) { s_held[slot].key = k; s_held[slot].expire = now + HOLD_TICS; }
+            kq_push(pressed, k);
         }
         return;
     }
@@ -219,7 +185,8 @@ int main(int argc, char **argv)
      * makx client and request a 640x400 surface up front -- DG_Init then renders
      * into it.  Strip the flag so doomgeneric never sees it.  No -makx -> the
      * normal fullscreen path (shell `doom`). */
-    if (mx_connect(&s_mc, argc, argv, DOOMGENERIC_RESX, DOOMGENERIC_RESY, 0) == 0)
+    if (mx_connect(&s_mc, argc, argv, DOOMGENERIC_RESX, DOOMGENERIC_RESY,
+                   MX_F_RAWKEYS) == 0)
         s_windowed = 1;
 
     static char *fa[34];

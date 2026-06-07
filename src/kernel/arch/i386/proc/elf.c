@@ -52,6 +52,44 @@ static inline uint32_t align_down(uint32_t v, uint32_t a) { return v & ~(a - 1u)
 static inline uint32_t align_up  (uint32_t v, uint32_t a) { return (v + a - 1u) & ~(a - 1u); }
 
 /* -------------------------------------------------------------------------
+ * execve serialization lock.
+ *
+ * SYS_EXECVE copies the caller's argv into a single large file-scope scratch
+ * buffer (its user PD is about to be freed), which elf_exec then packs onto the
+ * new task's stack.  Under preemptible syscalls two execves would clobber that
+ * scratch, so SYS_EXECVE takes this lock on entry; elf_exec releases it the
+ * moment argv has been consumed onto the new stack (execve_unlock below), just
+ * before the no-return ring3_enter -- so the success path frees it too.  Owner-
+ * based, so the fresh-task / ktest callers of elf_exec (which don't take it)
+ * unlock as a no-op.  Yields while held by another task; irq-guarded test/set.
+ * ------------------------------------------------------------------------- */
+static inline uint32_t elf_irq_save(void)
+{ uint32_t f; __asm__ volatile("pushfl; popl %0; cli" : "=r"(f) :: "memory"); return f; }
+static inline void elf_irq_restore(uint32_t f)
+{ __asm__ volatile("pushl %0; popfl" :: "r"(f) : "memory", "cc"); }
+
+static volatile int s_execve_owner = -1;
+void execve_lock(void)
+{
+    task_t *t = task_current();
+    int me = t ? t->pid : -2;
+    for (;;) {
+        uint32_t fl = elf_irq_save();
+        if (s_execve_owner == -1) { s_execve_owner = me; elf_irq_restore(fl); return; }
+        elf_irq_restore(fl);
+        task_yield();
+    }
+}
+void execve_unlock(void)
+{
+    task_t *t = task_current();
+    int me = t ? t->pid : -2;
+    uint32_t fl = elf_irq_save();
+    if (s_execve_owner == me) s_execve_owner = -1;   /* no-op if we never held it */
+    elf_irq_restore(fl);
+}
+
+/* -------------------------------------------------------------------------
  * elf_exec
  * ------------------------------------------------------------------------- */
 
@@ -186,6 +224,7 @@ int elf_exec(const char *path, int argc, const char *const *argv)
         if (end > top_vaddr) top_vaddr = end;
     }
     task_current()->user_brk = top_vaddr;
+    task_current()->user_brk_base = top_vaddr;  /* lower bound of the lazy brk region */
     task_current()->mmap_next = 0;   /* fresh address space: reset anon-mmap window */
     task_current()->tls_gs = 0x23u;  /* fresh image: drop any prior TLS */
     task_current()->tls_active = 0;
@@ -308,6 +347,11 @@ int elf_exec(const char *path, int argc, const char *const *argv)
     *(uint32_t *)(spage + off) = (uint32_t)argc;
 
     uint32_t initial_esp = stack_virt + off;
+
+    /* argv has now been fully packed onto the new task's stack; the caller's
+     * execve scratch is free to reuse, so drop the execve lock before the
+     * no-return ring3 entry (no-op for non-SYS_EXECVE callers). */
+    execve_unlock();
 
     /* 7. Activate the address space and enter ring 3.
      *

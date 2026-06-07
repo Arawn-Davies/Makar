@@ -857,6 +857,47 @@ static void gpf_handler(registers_t *regs)
 #define PFE_PAGE_WRITABLE 0x2u
 #define PFE_PAGE_LARGE    0x80u
 
+/* Demand-paging handler (lazy brk + anonymous mmap).
+ *
+ * SYS_BRK and SYS_MMAP2 only *reserve* address ranges; the actual frames are
+ * mapped here on first touch -- the WWLD model (Linux brk/anon-mmap are lazy).
+ * This keeps a multi-MiB allocation (doom's 6 MiB zone) from mapping every
+ * page in one interrupts-off syscall and stalling the whole system.
+ *
+ * Returns 1 if the fault hit a reserved-but-unmapped page in the current
+ * task's heap [user_brk_base, user_brk) or anon-mmap [USER_MMAP_BASE,
+ * mmap_next) window and we mapped a fresh zeroed frame; 0 otherwise (caller
+ * falls through to the COW check / SIGSEGV). */
+static int try_handle_anon_fault(uint32_t fault_addr, uint32_t err_code)
+{
+    /* A present-page fault here means a protection violation, not a missing
+     * page -- leave it to COW / SIGSEGV. */
+    if (err_code & PF_ERR_PRESENT)
+        return 0;
+
+    task_t *t = task_current();
+    if (!t || t->user_brk == 0)
+        return 0;                       /* not a user process */
+
+    int in_heap = (t->user_brk_base && fault_addr >= t->user_brk_base &&
+                   fault_addr <  t->user_brk);
+    int in_mmap = (t->mmap_next && fault_addr >= USER_MMAP_BASE &&
+                   fault_addr <  t->mmap_next);
+    if (!in_heap && !in_mmap)
+        return 0;                       /* genuine wild access */
+
+    uint32_t phys = pmm_alloc_frame();
+    if (phys == PMM_ALLOC_ERROR)
+        return 0;                       /* OOM: fall through to SIGSEGV/panic */
+
+    /* Frame is kernel-identity-mapped (< 256 MiB) so we can zero it directly. */
+    memset((void *)phys, 0, 0x1000u);
+    vmm_map_page(t->page_dir, fault_addr & ~0xFFFu, phys,
+                 VMM_FLAG_USER | VMM_FLAG_WRITABLE);
+    asm volatile("invlpg (%0)" :: "r"(fault_addr & ~0xFFFu) : "memory");
+    return 1;
+}
+
 static int try_handle_cow_fault(uint32_t fault_addr, uint32_t err_code)
 {
     /* Not a write fault?  Can't be COW.  (A read against a present
@@ -919,6 +960,9 @@ static void page_fault_handler(registers_t *regs)
 {
     uint32_t fault_addr;
     asm volatile("mov %%cr2, %0" : "=r"(fault_addr));
+
+    if (try_handle_anon_fault(fault_addr, regs->err_code))
+        return;
 
     if (try_handle_cow_fault(fault_addr, regs->err_code))
         return;

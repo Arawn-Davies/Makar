@@ -322,57 +322,128 @@ static int vfs_route(const char *abs, const char **drv_path)
  * call so the higher-level vfs_* functions stay legible.
  * ---------------------------------------------------------------------- */
 
+static int fs_backend_disk(vfs_backend_t b);   /* defined after the dispatchers */
+
 static int backend_ls(vfs_mount_t *m, const char *p)
 {
+    int r;
+    int _dk = fs_backend_disk(m->backend); if (_dk) vfs_fs_lock();
     switch (m->backend) {
-    case VFS_BACKEND_EXT2:    return ext2_ls(p);
-    case VFS_BACKEND_FAT32:   return fat32_ls(p);
-    case VFS_BACKEND_ISO9660: return iso9660_ls(m->drive, p);
-    case VFS_BACKEND_DEVFS:   return devfs_ls(p);
-    case VFS_BACKEND_PROCFS:  return procfs_ls(p);
-    case VFS_BACKEND_TMPFS:   return tmpfs_ls(p);
-    case VFS_BACKEND_LOGFS:   return logfs_ls(p);
-    default:                  return -1;
+    case VFS_BACKEND_EXT2:    r = ext2_ls(p); break;
+    case VFS_BACKEND_FAT32:   r = fat32_ls(p); break;
+    case VFS_BACKEND_ISO9660: r = iso9660_ls(m->drive, p); break;
+    case VFS_BACKEND_DEVFS:   r = devfs_ls(p); break;
+    case VFS_BACKEND_PROCFS:  r = procfs_ls(p); break;
+    case VFS_BACKEND_TMPFS:   r = tmpfs_ls(p); break;
+    case VFS_BACKEND_LOGFS:   r = logfs_ls(p); break;
+    default:                  r = -1; break;
     }
+    if (_dk) vfs_fs_unlock();
+    return r;
 }
 
 static int backend_cd(vfs_mount_t *m, const char *p)
 {
+    int r;
+    int _dk = fs_backend_disk(m->backend); if (_dk) vfs_fs_lock();
     switch (m->backend) {
-    case VFS_BACKEND_EXT2:  return ext2_cd(p);
-    case VFS_BACKEND_FAT32: return fat32_cd(p);
-    default:                return 0;   /* flat backends accept any "/X" */
+    case VFS_BACKEND_EXT2:  r = ext2_cd(p); break;
+    case VFS_BACKEND_FAT32: r = fat32_cd(p); break;
+    default:                r = 0; break;   /* flat backends accept any "/X" */
     }
+    if (_dk) vfs_fs_unlock();
+    return r;
+}
+
+/* -------------------------------------------------------------------------
+ * Filesystem big-lock.
+ *
+ * The on-disk FS backends (ext2/fat32/iso9660) share static scratch buffers
+ * (s_blk/s_sec/s_sector + mount state), so two tasks running FS operations at
+ * once would corrupt each other.  With non-preemptible (interrupts-off)
+ * syscalls that could never happen; as the kernel moves to preemptible
+ * syscalls it can, so a single recursive lock serialises FS access across
+ * tasks.  Recursive (owner pid + depth) so a VFS op that nests into another
+ * locked op never self-deadlocks; the test/set is irq-guarded so it is correct
+ * from both interrupts-off and interrupts-on contexts.  A task that finds the
+ * lock held by another yields until it frees.  Wired at the backend dispatch
+ * chokepoints here + the installer's direct backend calls.
+ * ------------------------------------------------------------------------- */
+static inline uint32_t fs_irq_save(void)
+{ uint32_t f; __asm__ volatile("pushfl; popl %0; cli" : "=r"(f) :: "memory"); return f; }
+static inline void fs_irq_restore(uint32_t f)
+{ __asm__ volatile("pushl %0; popfl" :: "r"(f) : "memory", "cc"); }
+
+static volatile int s_fs_owner = -1;   /* pid (or -2 boot) holding the lock */
+static volatile int s_fs_depth = 0;
+
+void vfs_fs_lock(void)
+{
+    task_t *t = task_current();
+    int me = t ? t->pid : -2;          /* -2 = pre-tasking / no-task context */
+    for (;;) {
+        uint32_t fl = fs_irq_save();
+        if (s_fs_owner == -1 || s_fs_owner == me) {
+            s_fs_owner = me; s_fs_depth++;
+            fs_irq_restore(fl);
+            return;
+        }
+        fs_irq_restore(fl);
+        task_yield();
+    }
+}
+void vfs_fs_unlock(void)
+{
+    uint32_t fl = fs_irq_save();
+    if (s_fs_depth > 0 && --s_fs_depth == 0) s_fs_owner = -1;
+    fs_irq_restore(fl);
+}
+
+/* Only the on-disk backends share the static FS scratch and so need the lock.
+ * procfs/tmpfs/logfs/devfs are independent in-memory backends -- locking them
+ * against a long disk operation (e.g. the installer holding the lock for a
+ * whole file) would needlessly block statusbar's /proc polling and starve the
+ * compositor. */
+static int fs_backend_disk(vfs_backend_t b)
+{
+    return b == VFS_BACKEND_EXT2 || b == VFS_BACKEND_FAT32 || b == VFS_BACKEND_ISO9660;
 }
 
 static int backend_read_file(vfs_mount_t *m, const char *p,
                               void *buf, uint32_t bufsz, uint32_t *out_sz)
 {
+    int _dk = fs_backend_disk(m->backend); if (_dk) vfs_fs_lock();
+    int r;
     switch (m->backend) {
-    case VFS_BACKEND_EXT2:    return ext2_read_file(p, buf, bufsz, out_sz);
-    case VFS_BACKEND_FAT32:   return fat32_read_file(p, buf, bufsz, out_sz);
-    case VFS_BACKEND_ISO9660: return iso9660_read_file(m->drive, p, buf, bufsz, out_sz);
-    case VFS_BACKEND_PROCFS:  return procfs_read_file(p, buf, bufsz, out_sz);
-    case VFS_BACKEND_LOGFS:   return (logfs_read(p, buf, bufsz, out_sz) < 0) ? -1 : 0;
-    case VFS_BACKEND_TMPFS:   return (tmpfs_read(p, buf, bufsz, out_sz) < 0) ? -1 : 0;
+    case VFS_BACKEND_EXT2:    r = ext2_read_file(p, buf, bufsz, out_sz); break;
+    case VFS_BACKEND_FAT32:   r = fat32_read_file(p, buf, bufsz, out_sz); break;
+    case VFS_BACKEND_ISO9660: r = iso9660_read_file(m->drive, p, buf, bufsz, out_sz); break;
+    case VFS_BACKEND_PROCFS:  r = procfs_read_file(p, buf, bufsz, out_sz); break;
+    case VFS_BACKEND_LOGFS:   r = (logfs_read(p, buf, bufsz, out_sz) < 0) ? -1 : 0; break;
+    case VFS_BACKEND_TMPFS:   r = (tmpfs_read(p, buf, bufsz, out_sz) < 0) ? -1 : 0; break;
     case VFS_BACKEND_DEVFS: {
         int idx = devfs_lookup(p);
-        if (idx < 0) return -1;
-        long r = devfs_pread(idx, buf, bufsz, 0);
-        if (r < 0) return -1;
-        if (out_sz) *out_sz = (uint32_t)r;
-        return 0;
+        if (idx < 0) { r = -1; break; }
+        long dr = devfs_pread(idx, buf, bufsz, 0);
+        if (dr < 0) { r = -1; break; }
+        if (out_sz) *out_sz = (uint32_t)dr;
+        r = 0;
+        break;
     }
-    default: return -1;
+    default: r = -1; break;
     }
+    if (_dk) vfs_fs_unlock();
+    return r;
 }
 
 static int backend_write_file(vfs_mount_t *m, const char *p,
                                const void *buf, uint32_t size)
 {
+    int r;
+    int _dk = fs_backend_disk(m->backend); if (_dk) vfs_fs_lock();
     switch (m->backend) {
-    case VFS_BACKEND_EXT2:  return ext2_write_file(p, buf, size);
-    case VFS_BACKEND_FAT32: return fat32_write_file(p, buf, size);
+    case VFS_BACKEND_EXT2:  r = ext2_write_file(p, buf, size); break;
+    case VFS_BACKEND_FAT32: r = fat32_write_file(p, buf, size); break;
     case VFS_BACKEND_LOGFS:
         /* /log is kernel-write only (Linux's /var/log model).  klog_write
          * + friends in logfs.c reach the ring directly via ring_append;
@@ -381,68 +452,90 @@ static int backend_write_file(vfs_mount_t *m, const char *p,
          * vfs_mkdir.  Use /tmp for user-writable scratch files. */
         (void)p; (void)buf; (void)size;
         t_writestring("write: read-only filesystem (/log)\n");
-        return -1;
-    case VFS_BACKEND_TMPFS: return (tmpfs_write(p, buf, size) < 0) ? -1 : 0;
-    default: return -1;   /* read-only or non-writable backend */
+        r = -1; break;
+    case VFS_BACKEND_TMPFS: r = (tmpfs_write(p, buf, size) < 0) ? -1 : 0; break;
+    default: r = -1; break;   /* read-only or non-writable backend */
     }
+    if (_dk) vfs_fs_unlock();
+    return r;
 }
 
 static int backend_mkdir(vfs_mount_t *m, const char *p)
 {
+    int r;
+    int _dk = fs_backend_disk(m->backend); if (_dk) vfs_fs_lock();
     switch (m->backend) {
-    case VFS_BACKEND_EXT2:  return ext2_mkdir(p);
-    case VFS_BACKEND_FAT32: return fat32_mkdir(p);
-    case VFS_BACKEND_TMPFS: return tmpfs_mkdir(p);
-    default: return -1;
+    case VFS_BACKEND_EXT2:  r = ext2_mkdir(p); break;
+    case VFS_BACKEND_FAT32: r = fat32_mkdir(p); break;
+    case VFS_BACKEND_TMPFS: r = tmpfs_mkdir(p); break;
+    default: r = -1; break;
     }
+    if (_dk) vfs_fs_unlock();
+    return r;
 }
 
 static int backend_delete_file(vfs_mount_t *m, const char *p)
 {
+    int r;
+    int _dk = fs_backend_disk(m->backend); if (_dk) vfs_fs_lock();
     switch (m->backend) {
-    case VFS_BACKEND_EXT2:  return ext2_delete_file(p);
-    case VFS_BACKEND_FAT32: return fat32_delete_file(p);
-    case VFS_BACKEND_TMPFS: return tmpfs_delete(p);
-    default: return -1;
+    case VFS_BACKEND_EXT2:  r = ext2_delete_file(p); break;
+    case VFS_BACKEND_FAT32: r = fat32_delete_file(p); break;
+    case VFS_BACKEND_TMPFS: r = tmpfs_delete(p); break;
+    default: r = -1; break;
     }
+    if (_dk) vfs_fs_unlock();
+    return r;
 }
 
 static int backend_delete_dir(vfs_mount_t *m, const char *p)
 {
+    int r;
+    int _dk = fs_backend_disk(m->backend); if (_dk) vfs_fs_lock();
     switch (m->backend) {
-    case VFS_BACKEND_EXT2:  return ext2_delete_dir(p);
-    case VFS_BACKEND_FAT32: return fat32_delete_dir(p);
-    default: return -1;
+    case VFS_BACKEND_EXT2:  r = ext2_delete_dir(p); break;
+    case VFS_BACKEND_FAT32: r = fat32_delete_dir(p); break;
+    default: r = -1; break;
     }
+    if (_dk) vfs_fs_unlock();
+    return r;
 }
 
 static int backend_file_exists(vfs_mount_t *m, const char *p)
 {
+    int r;
+    int _dk = fs_backend_disk(m->backend); if (_dk) vfs_fs_lock();
     switch (m->backend) {
-    case VFS_BACKEND_EXT2:    return ext2_file_exists(p);
-    case VFS_BACKEND_FAT32:   return fat32_file_exists(p);
-    case VFS_BACKEND_ISO9660: return iso9660_file_exists(m->drive, p);
-    case VFS_BACKEND_PROCFS:  return procfs_file_exists(p);
-    case VFS_BACKEND_DEVFS:   return devfs_file_exists(p);
-    case VFS_BACKEND_LOGFS:   return logfs_file_exists(p);
-    case VFS_BACKEND_TMPFS:   return tmpfs_file_exists(p);
-    default: return 0;
+    case VFS_BACKEND_EXT2:    r = ext2_file_exists(p); break;
+    case VFS_BACKEND_FAT32:   r = fat32_file_exists(p); break;
+    case VFS_BACKEND_ISO9660: r = iso9660_file_exists(m->drive, p); break;
+    case VFS_BACKEND_PROCFS:  r = procfs_file_exists(p); break;
+    case VFS_BACKEND_DEVFS:   r = devfs_file_exists(p); break;
+    case VFS_BACKEND_LOGFS:   r = logfs_file_exists(p); break;
+    case VFS_BACKEND_TMPFS:   r = tmpfs_file_exists(p); break;
+    default: r = 0; break;
     }
+    if (_dk) vfs_fs_unlock();
+    return r;
 }
 
 static int backend_complete(vfs_mount_t *m, const char *p, const char *pre,
                              fat32_complete_cb_t cb, void *ctx)
 {
+    int r;
+    int _dk = fs_backend_disk(m->backend); if (_dk) vfs_fs_lock();
     switch (m->backend) {
-    case VFS_BACKEND_EXT2:    return ext2_complete(p, pre, cb, ctx);
-    case VFS_BACKEND_FAT32:   return fat32_complete(p, pre, cb, ctx);
-    case VFS_BACKEND_ISO9660: return iso9660_complete(m->drive, p, pre, cb, ctx);
-    case VFS_BACKEND_PROCFS:  return procfs_complete(p, pre, cb, ctx);
-    case VFS_BACKEND_DEVFS:   return devfs_complete(p, pre, cb, ctx);
-    case VFS_BACKEND_LOGFS:   return logfs_complete(p, pre, cb, ctx);
-    case VFS_BACKEND_TMPFS:   return tmpfs_complete(p, pre, cb, ctx);
-    default: return -1;
+    case VFS_BACKEND_EXT2:    r = ext2_complete(p, pre, cb, ctx); break;
+    case VFS_BACKEND_FAT32:   r = fat32_complete(p, pre, cb, ctx); break;
+    case VFS_BACKEND_ISO9660: r = iso9660_complete(m->drive, p, pre, cb, ctx); break;
+    case VFS_BACKEND_PROCFS:  r = procfs_complete(p, pre, cb, ctx); break;
+    case VFS_BACKEND_DEVFS:   r = devfs_complete(p, pre, cb, ctx); break;
+    case VFS_BACKEND_LOGFS:   r = logfs_complete(p, pre, cb, ctx); break;
+    case VFS_BACKEND_TMPFS:   r = tmpfs_complete(p, pre, cb, ctx); break;
+    default: r = -1; break;
     }
+    if (_dk) vfs_fs_unlock();
+    return r;
 }
 
 static void backend_unmount(vfs_backend_t b)

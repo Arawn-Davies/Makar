@@ -191,9 +191,19 @@ bit 3: RSVD  1 if a reserved-bit was set in a page-table entry
 bit 4: I/D   1 on an instruction fetch (PAE/long mode only)
 ```
 
-`debug/page_fault.c` decodes these and prints a panic screen. There is no
-page-fault *handler* yet — every fault is fatal. The eventual demand-paged
-allocator and CoW (§11) live here.
+The handler in `debug/debug.c` (`page_fault_handler`) resolves three cases
+before giving up, in order:
+
+1. **Demand paging** (`try_handle_anon_fault`) — a *not-present* fault inside the
+   faulting task's reserved heap `[user_brk_base, user_brk)` or anonymous-mmap
+   `[USER_MMAP_BASE, mmap_next)` window maps a fresh zeroed frame and retries.
+   `SYS_BRK`/`SYS_MMAP2` only reserve the range (Linux's lazy model), so a
+   multi-MiB allocation costs O(1) in the syscall and the per-page work is spread
+   across short faults instead of stalling the system in one interrupts-off loop.
+2. **Copy-on-write** (`try_handle_cow_fault`) — a *write* to a present RO+COW page
+   (fork) copies or re-promotes it (§11).
+3. Otherwise: a ring-3 fault delivers `SIGSEGV` (the offender is reaped); a ring-0
+   fault is a real kernel bug and panics.
 
 ---
 
@@ -212,6 +222,12 @@ gets its own page directory. Construction (`vmm_create_pd`):
    though we only ever populate two slots:
    - `USER_CODE_BASE = 0x40000000` (PDE 256) — one 4 KiB page for code.
    - `USER_STACK_TOP = 0xBFFF0000` (PDE 767) — `USER_STACK_PAGES = 8` pages (32 KiB) eagerly mapped at exec, occupying `[USER_STACK_TOP − 32 KiB, USER_STACK_TOP)`.  Was one 4 KiB page until TCC's recursive-descent parser overflowed it on sh.c.
+   - **Heap** (`brk`, grows up from the end of the image) and the **anonymous
+     mmap window** (`USER_MMAP_BASE = 0x90000000`, PDE 576) are *demand-paged*:
+     `SYS_BRK`/`SYS_MMAP2` only advance the reservation pointer, and the
+     page-fault handler maps zeroed frames on first touch (§4). This is what
+     keeps a big `malloc` (e.g. DOOM's 6 MiB zone) from mapping ~1500 pages in
+     one interrupts-off syscall.
 
 The mirror is a one-time snapshot, not a live shadow. If something maps a new
 kernel PDE *after* `vmm_create_pd` runs (e.g., the heap grows past 16 MiB), the
@@ -305,9 +321,21 @@ of `task_t` and `vesa_pane_t` and a few KiB of FAT32 buffers.
 
 ## 7. Tasking
 
-`src/kernel/arch/i386/proc/task.c`. Fixed-size pool of 8 `task_t` slots,
-round-robin scheduler, voluntary `task_yield()` *and* preemptive timer-driven
-yields (PIT 100 Hz, `SCHED_QUANTUM=4` ticks → 40 ms time slice).
+`src/kernel/arch/i386/proc/task.c`. Fixed-size pool of `MAX_TASKS` (32) `task_t`
+slots, round-robin scheduler, voluntary `task_yield()` *and* preemptive
+timer-driven yields (PIT `TIMER_HZ` = 250 Hz, `g_sched_quantum = 1` tick → 4 ms
+time slice).
+
+Ring-3 is preemptible (the timer yields between slices); **syscalls are still
+serialized** — the `int 0x80` gate clears IF and the handler keeps it clear, so
+a syscall runs to completion or yields voluntarily (§10). Long operations opt
+into preemption explicitly instead (`sti` inside the installer's stepped copy),
+and the worst eager stalls were removed structurally (demand-paged `brk`/`mmap`,
+§4). The shared mutable structures a future global `sti` would expose —
+`schedule()`, `task_exit`, the kernel heap, the task pool (`task_create`/
+`task_fork`) and the PMM buddy lists — are already `cli`-guarded so flipping it
+is gateable; the remaining prerequisite is an lwIP net lock plus fork/exec
+stress testing.
 
 ### `task_t` (abbreviated)
 

@@ -111,10 +111,27 @@ the server with no name service.
 
 Client → server requests (sent with `sys_ipc_sendrec`):
 
-- `MX_HELLO(w,h)` → reply `(win, sid)`: create a window + a `w×h` surface.
+- `MX_HELLO(w,h,flags)` → reply `(win, sid)`: create a window + a `w×h` surface.
+  `flags` is a bitmask: `MX_F_RESIZABLE` (the client re-flows to fill the window;
+  the server blits 1:1 and sends `MXEV_RESIZE` instead of scaling) and
+  `MX_F_RAWKEYS` (see *Keyboard delivery* below).
 - `MX_PRESENT(win)` → reply = one input event: "I drew a frame, composite it."
 - `MX_POLL(win)` → reply = one input event (drain input without presenting).
 - `MX_BYE(win)` → ack; the client is exiting.
+
+### Keyboard delivery (cooked vs raw)
+
+By default `MXEV_KEY` carries a **cooked** byte (ASCII or a `KEY_*` sentinel) —
+key-down only, the right thing for terminals, editors and text fields. A game
+needs real key *up* events, so a client may set `MX_F_RAWKEYS` in its HELLO. While
+such a client holds focus the WM switches the kernel keyboard to
+scancode-passthrough (`sys_keyboard_raw(2)`) and forwards the raw set-1 make/break
+scancode stream as the `MXEV_KEY` value (`low7 | 0x80` = break); on focus loss,
+and around its own modal dialogs (login/power/passwd) and teardown, it restores
+cooked mode. This is how windowed **DOOM** shares the exact input path its
+fullscreen mode uses, with no synthesized releases. `Ctrl-Alt-Del` is detected
+ahead of the passthrough in the kernel, so it still raises the power menu (and the
+mash-twice hard reset) even while a raw-keys client is focused.
 
 Each reply carries **one** input event (`MXEV_KEY/MOUSE/FOCUS/CLOSE/NONE`) plus
 a "still pending" count in `data[MX_PENDING]`, so a client drains its input by

@@ -230,20 +230,23 @@ static void ls_cb(const char *name, int is_dir, void *ctx)
     c->buf[c->off] = '\0';
 }
 
-/* Callback + context for SYS_READDIR.  Static name buffer is OK: the
- * complete() backends can be re-entered but the kernel context is not. */
-struct rd_ctx { uint32_t target; uint32_t cur; int found; };
-static char s_name[DIRENT_NAME_MAX];
-static int  s_is_dir;
+/* Callback + context for SYS_READDIR.  The found name/type live in the ctx (on
+ * the caller's stack), not in file-scope statics -- so two tasks running
+ * readdir concurrently under preemptible syscalls don't clobber each other. */
+struct rd_ctx {
+    uint32_t target; uint32_t cur; int found;
+    char     name[DIRENT_NAME_MAX];
+    int      is_dir;
+};
 static void readdir_collect_cb(const char *n, int is_dir, void *vctx)
 {
     struct rd_ctx *c = (struct rd_ctx *)vctx;
     if (c->found) return;
     if (c->cur == c->target) {
         uint32_t i = 0;
-        while (n[i] && i < DIRENT_NAME_MAX - 1) { s_name[i] = n[i]; i++; }
-        s_name[i] = '\0';
-        s_is_dir = is_dir;
+        while (n[i] && i < DIRENT_NAME_MAX - 1) { c->name[i] = n[i]; i++; }
+        c->name[i] = '\0';
+        c->is_dir = is_dir;
         c->found = 1;
     }
     c->cur++;
@@ -418,6 +421,12 @@ void syscall_dispatch(registers_t *regs)
 
         if (!upath) { regs->eax = (uint32_t)-14; break; }   /* -EFAULT */
 
+        /* Serialise execve so the shared argv scratch below is safe under
+         * preemptible syscalls.  elf_exec releases the lock once argv is packed
+         * onto the new stack (covering its no-return success path); we release
+         * it here on the error-return path. */
+        execve_lock();
+
         enum { EXECVE_MAX_ARGC = 128, EXECVE_ARG_MAX = 256 };  /* full kernel-rebuild link line */
         static char  s_path[256];
         static char  s_argbuf[EXECVE_MAX_ARGC * EXECVE_ARG_MAX];
@@ -512,6 +521,7 @@ void syscall_dispatch(registers_t *regs)
          * (never returns).  Any return value here means it failed; pass
          * the negative errno back to the caller via EAX. */
         int rc = elf_exec(s_path, kargc, (const char *const *)s_argv);
+        execve_unlock();   /* only reached when elf_exec failed (success no-returns) */
         regs->eax = (uint32_t)(int32_t)rc;
         break;
     }
@@ -585,8 +595,10 @@ void syscall_dispatch(registers_t *regs)
                 }
                 break;
             }
-            /* Line-buffered stdin with echo, backspace, and cursor editing. */
-            static char s_stdin_line[256];
+            /* Line-buffered stdin with echo, backspace, and cursor editing.
+             * On the stack (not static) so concurrent readers under preemptible
+             * syscalls don't share one line buffer. */
+            char s_stdin_line[256];
             uint32_t cap = (len < sizeof(s_stdin_line)) ? len : (uint32_t)sizeof(s_stdin_line);
             shell_readline(s_stdin_line, (size_t)cap);
             uint32_t n = (uint32_t)strlen(s_stdin_line);
@@ -1397,25 +1409,14 @@ void syscall_dispatch(registers_t *regs)
             break;
         }
 
-        /* Align the current break up to the next page boundary, then map
-         * all pages needed to reach new_brk. */
-        uint32_t cur_page = (t->user_brk + 0xFFFu) & ~0xFFFu;
-        uint32_t new_page = (new_brk     + 0xFFFu) & ~0xFFFu;
-
-        for (uint32_t va = cur_page; va < new_page; va += 0x1000u) {
-            uint32_t phys = pmm_alloc_frame();
-            if (phys == PMM_ALLOC_ERROR) {
-                /* Return what we managed to allocate so far. */
-                regs->eax = t->user_brk;
-                goto brk_done;
-            }
-            memset((void *)phys, 0, 0x1000u);
-            vmm_map_page(t->page_dir, va, phys,
-                         VMM_FLAG_USER | VMM_FLAG_WRITABLE);
-        }
+        /* Demand-paged heap (WWLD: Linux brk only reserves; pages are mapped
+         * lazily on first touch).  Just advance the break -- the page-fault
+         * handler maps a zeroed frame for any access in [user_brk_base,
+         * user_brk).  This keeps a multi-MiB growth (e.g. doom's 6 MiB zone)
+         * from stalling every other task in one interrupts-off syscall. */
+        if (t->user_brk_base == 0) t->user_brk_base = t->user_brk;
         t->user_brk = new_brk;
         regs->eax   = new_brk;
-    brk_done:
         break;
     }
 
@@ -1429,7 +1430,6 @@ void syscall_dispatch(registers_t *regs)
      * a hosted malloc (musl mallocng) needs beyond brk.
      * ------------------------------------------------------------------ */
     case SYS_MMAP2: {
-        #define USER_MMAP_BASE 0x90000000u
         #define MMAP_MAP_ANONYMOUS 0x20u
         #define MMAP_MAP_FIXED     0x10u
         uint32_t len   = regs->ecx;
@@ -1450,20 +1450,9 @@ void syscall_dispatch(registers_t *regs)
             regs->eax = (uint32_t)-1; break;
         }
 
-        for (uint32_t i = 0; i < pages; i++) {
-            uint32_t phys = pmm_alloc_frame();
-            if (phys == PMM_ALLOC_ERROR) {
-                /* Roll back what we mapped so far. */
-                for (uint32_t j = 0; j < i; j++) {
-                    uint32_t va = base + (j << 12);
-                    vmm_unmap_page(t->page_dir, va);
-                }
-                regs->eax = (uint32_t)-1; break;
-            }
-            memset((void *)phys, 0, 0x1000u);
-            vmm_map_page(t->page_dir, base + (i << 12), phys,
-                         VMM_FLAG_USER | VMM_FLAG_WRITABLE);
-        }
+        /* Demand-paged anonymous mmap: reserve the window only; the page-fault
+         * handler maps a zeroed frame on first touch in [USER_MMAP_BASE,
+         * mmap_next).  Same WWLD lazy model as brk above. */
         t->mmap_next = base + (pages << 12);
         regs->eax = base;
         break;
@@ -1653,18 +1642,18 @@ void syscall_dispatch(registers_t *regs)
         uint32_t       idx  = regs->ecx;
         struct dirent *ude  = (struct dirent *)(uintptr_t)regs->edx;
         if (!path || !ude) { regs->eax = (uint32_t)-1; break; }
-        struct rd_ctx ctx = { idx, 0, 0 };
+        struct rd_ctx ctx = { idx, 0, 0, {0}, 0 };
         if (vfs_complete(path, "", readdir_collect_cb, &ctx) != 0) {
             regs->eax = (uint32_t)-1; break;
         }
         if (!ctx.found) { regs->eax = 0; break; }
         memset(ude, 0, sizeof(*ude));
         uint32_t h = 2166136261u;
-        for (const char *q = s_name; *q; q++) { h ^= (uint8_t)*q; h *= 16777619u; }
+        for (const char *q = ctx.name; *q; q++) { h ^= (uint8_t)*q; h *= 16777619u; }
         ude->d_ino  = h;
-        ude->d_type = s_is_dir ? DT_DIR : DT_REG;
+        ude->d_type = ctx.is_dir ? DT_DIR : DT_REG;
         uint32_t i = 0;
-        while (s_name[i] && i < DIRENT_NAME_MAX - 1) { ude->d_name[i] = s_name[i]; i++; }
+        while (ctx.name[i] && i < DIRENT_NAME_MAX - 1) { ude->d_name[i] = ctx.name[i]; i++; }
         ude->d_name[i] = '\0';
         regs->eax = 1;
         break;
@@ -2300,6 +2289,13 @@ void syscall_dispatch(registers_t *regs)
         if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
         int   cmd = (int)regs->ebx;
         void *ptr = (void *)(uintptr_t)regs->ecx;
+        /* NOTE: the install engine runs WITHOUT the FS big-lock held across the
+         * step.  Holding vfs_fs_lock across a whole begin/step (the engine is
+         * preemptible) stalled the copy, so we keep the v0.10.0 behaviour: the
+         * engine's direct backend calls go unlocked.  The remaining race is the
+         * installer's iso9660 read vs. another task's iso9660 read on the shared
+         * sector scratch -- low severity (read/read, contained), to be closed in
+         * the preemption phase by per-op locking of the engine's backend calls. */
         if      (cmd == 0) regs->eax = (uint32_t)install_exec_begin((const install_params_t *)ptr);
         else if (cmd == 1) regs->eax = (uint32_t)install_exec_step((install_progress_t *)ptr);
         else if (cmd == 2) regs->eax = (uint32_t)install_exec_finish((const install_params_t *)ptr);

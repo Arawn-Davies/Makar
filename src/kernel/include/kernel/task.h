@@ -21,6 +21,10 @@
 /* TTY index meaning "not bound to any TTY". */
 #define TASK_TTY_NONE    (-1)
 
+/* Base of the per-task anonymous-mmap bump window (below the ring-3 stack).
+ * Shared by SYS_MMAP2 and the demand-paging fault handler. */
+#define USER_MMAP_BASE   0x90000000u
+
 typedef enum {
     TASK_READY   = 0,
     TASK_RUNNING = 1,
@@ -60,6 +64,7 @@ typedef struct task {
 
     /* --- user memory --- */
     uint32_t      user_brk;  /* current user-space heap break (0 = not a user process) */
+    uint32_t      user_brk_base; /* initial heap break: lower bound of the lazy brk region */
     uint32_t      mmap_next; /* bump pointer for anonymous mmap (0 = lazily init to USER_MMAP_BASE) */
     uint8_t       fpu_state[512] __attribute__((aligned(16))); /* x87/SSE fxsave area, saved/restored on context switch */
     /* Thread-Local Storage (set_thread_area): per-task %gs.  tls_gs defaults

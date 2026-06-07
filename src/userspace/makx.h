@@ -47,6 +47,12 @@
  * scaled).  Without it the surface is fixed-size and the server scales it to the
  * window (e.g. doom, a fixed-resolution game). */
 #define MX_F_RESIZABLE  1
+/* MX_F_RAWKEYS: the client wants the raw set-1 make/break scancode stream (a
+ * game -- doom) rather than cooked key-down bytes.  While such a client holds
+ * focus the server puts the keyboard in scancode-passthrough mode and forwards
+ * each scancode (low7 | 0x80=break) as the MXEV_KEY value; on focus loss it
+ * restores cooked mode.  Mirrors a display server flipping evdev/tty modes. */
+#define MX_F_RAWKEYS    2
 
 /* server -> client reply event kinds (carried in the reply ipc_msg_t.type).
  * data[5] always carries the count of further events still queued, so the
