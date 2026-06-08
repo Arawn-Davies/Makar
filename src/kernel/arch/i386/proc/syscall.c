@@ -327,9 +327,18 @@ static void syscall_dispatch_inner(registers_t *regs)
                     /* Counterpart to SYS_EXECVE's "child takes focus" rule:
                      * when the reaper sees the foreground child go zombie,
                      * hand focus back to the wait4-ing parent so its REPL
-                     * (sh.elf, kernel shell, ...) becomes the next reader. */
-                    keyboard_set_focus(me);
-                    vtty_set_foreground(me->tty, me);
+                     * (sh.elf, kernel shell, ...) becomes the next reader.
+                     * Gate it the SAME way execve gates the grab: only if the
+                     * reaper's stdin is the keyboard.  A GUI terminal's shell
+                     * reads from a pipe (mxterm feeds it; the WM holds the real
+                     * keyboard focus), so reaping `ls`/`cat` here must NOT yank
+                     * focus away from the WM -- doing so left the GUI terminal
+                     * dead after the first external command. */
+                    fd_entry_t *me_stdin = fd_get(me->fd_table, 0);
+                    if (me_stdin && me_stdin->kind == FD_KIND_KEYBOARD) {
+                        keyboard_set_focus(me);
+                        vtty_set_foreground(me->tty, me);
+                    }
                     /* Userspace sh.elf runs fullscreen apps via fork+execve+
                      * wait4; unlike the kernel shell it has no snapshot/
                      * restore path.  Clear the screen on the child's way out
