@@ -180,18 +180,30 @@ static int svga_init(void)
     extern uint32_t g_video_pref_w, g_video_pref_h;
     uint32_t max_w = reg_read(SVGA_REG_MAX_WIDTH);
     uint32_t max_h = reg_read(SVGA_REG_MAX_HEIGHT);
-    uint32_t want_w = g_video_pref_w ? g_video_pref_w : max_w;
-    uint32_t want_h = g_video_pref_h ? g_video_pref_h : max_h;
-    /* 1080p is the supported ceiling.  A device max can be the host's full
-     * monitor resolution (e.g. 4K on VMware), whose framebuffer + GUI back
-     * buffer would exhaust memory and overflow the text-console grid -- which
-     * panicked.  Cap here, then clamp to whatever the adapter actually allows. */
-    if (want_w > 1920) want_w = 1920;
-    if (want_h > 1080) want_h = 1080;
+    uint32_t want_w, want_h;
+    if (g_video_pref_w && g_video_pref_h) {
+        /* Explicit vmode= request, capped at the 1080p ceiling. */
+        want_w = g_video_pref_w > 1920 ? 1920 : g_video_pref_w;
+        want_h = g_video_pref_h > 1080 ? 1080 : g_video_pref_h;
+    } else {
+        /* Default: the largest *standard* mode the adapter supports, up to
+         * 1080p.  Use a named resolution rather than the device's raw maximum --
+         * that max is often the host monitor size (4K on VMware, which panicked
+         * a too-large framebuffer) or an odd value the display app wouldn't
+         * recognise, leaving it showing "640x480". */
+        static const struct { uint32_t w, h; } cand[] = {
+            { 1920, 1080 }, { 1280, 720 }, { 1024, 768 }, { 800, 600 }, { 640, 480 },
+        };
+        want_w = 1280; want_h = 720;   /* fallback if the adapter reports no max */
+        for (unsigned i = 0; i < sizeof(cand)/sizeof(cand[0]); i++)
+            if ((!max_w || cand[i].w <= max_w) && (!max_h || cand[i].h <= max_h)) {
+                want_w = cand[i].w; want_h = cand[i].h; break;
+            }
+    }
     if (max_w && want_w > max_w) want_w = max_w;
     if (max_h && want_h > max_h) want_h = max_h;
-    if (!want_w || want_w < 640) want_w = 1280;   /* device gave nothing usable */
-    if (!want_h || want_h < 480) want_h = 720;
+    if (!want_w) want_w = 1280;
+    if (!want_h) want_h = 720;
 
     reg_write(SVGA_REG_ENABLE, 0);
     reg_write(SVGA_REG_WIDTH, want_w);
