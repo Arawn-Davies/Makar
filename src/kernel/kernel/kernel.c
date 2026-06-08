@@ -332,11 +332,6 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 		}
 	}
 
-	/* Bind a display driver now that the framebuffer geometry is settled:
-	 * an accelerated backend (SVGA II / Hyper-V synthvid) if its hardware is
-	 * present, else the dumb LFB.  SYS_FB_PRESENT[_RECT] route through it. */
-	video_init();
-
 	t_writestring("Starting timer (250 Hz)");
 	kprint_ok();
 	init_timer(TIMER_HZ);
@@ -367,6 +362,12 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	pci_init();
 	pci_probe_all();   /* bind registered drivers to scanned devices */
 	KLOG("pci: bus scan complete\n");
+
+	/* Bind a display driver now that PCI is scanned and the framebuffer
+	 * geometry is settled: an accelerated backend (SVGA II / Hyper-V synthvid)
+	 * if its hardware is present, else the dumb LFB.  SYS_FB_PRESENT[_RECT]
+	 * route through it; nothing presents via the framework before the GUI runs. */
+	video_init();
 	usb_init();        /* report USB host controllers (HID driver TBD) */
 
 	/* Parse Multiboot 2 tags: boot device and kernel command line. */
