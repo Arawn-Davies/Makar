@@ -59,6 +59,12 @@ int g_gui_session = 0;
  * boot log + background ktest output stay visible instead. */
 int g_verbose_boot = 0;
 
+/* Resolution the user/kernel prefers (vmode= or the 720p default), uncapped by
+ * what the boot VBE happens to support.  A driver that can set arbitrary modes
+ * (SVGA II) uses this so VirtualBox/VMware get a real resolution instead of the
+ * low mode their Bochs-VBE compat layer reports.  0 = no preference. */
+uint32_t g_video_pref_w = 0, g_video_pref_h = 0;
+
 /*
  * Column at which "[ OK ]" starts, counting from 0.
  * "[ OK ]" is 6 characters wide, so it occupies columns 74–79 on an
@@ -241,6 +247,28 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			}
 		}
 
+		/* Record the preferred resolution (vmode= or the 720p default) before
+		 * the boot mode-set, so a driver that can set arbitrary modes (SVGA II)
+		 * uses it even when the boot VBE is capped lower (VirtualBox/VMware). */
+		g_video_pref_w = 1280; g_video_pref_h = 720;
+		if (vmode[0]) {
+			uint32_t pw = 0, ph = 0;
+			if      (!strcmp(vmode,"1080p")) { pw=1920; ph=1080; }
+			else if (!strcmp(vmode,"900p"))  { pw=1600; ph=900;  }
+			else if (!strcmp(vmode,"720p"))  { pw=1280; ph=720;  }
+			else if (!strcmp(vmode,"480p"))  { pw=640;  ph=480;  }
+			else {
+				const char *p = vmode; uint32_t v = 0;
+				while (*p >= '0' && *p <= '9') v = v*10 + (uint32_t)(*p++ - '0');
+				if (*p == 'x' || *p == 'X') {
+					pw = v; p++; v = 0;
+					while (*p >= '0' && *p <= '9') v = v*10 + (uint32_t)(*p++ - '0');
+					ph = v;
+				}
+			}
+			if (pw && ph) { g_video_pref_w = pw; g_video_pref_h = ph; }
+		}
+
 		if (bochs_vbe_available()) {
 			/* Highest mode the adapter can scan out: this is the framebuffer
 			 * span we pre-map below, before any task PD is snapshotted, so a
@@ -391,7 +419,20 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	 * geometry is settled: an accelerated backend (SVGA II / Hyper-V synthvid)
 	 * if its hardware is present, else the dumb LFB.  SYS_FB_PRESENT[_RECT]
 	 * route through it; nothing presents via the framework before the GUI runs. */
-	video_init();
+	{
+		const vesa_fb_t *fb0 = vesa_get_fb();
+		uint32_t prev_w = fb0 ? fb0->width : 0, prev_h = fb0 ? fb0->height : 0;
+		video_init();
+		/* An accelerated backend (SVGA II) may set a proper resolution the boot
+		 * VBE couldn't (e.g. on VirtualBox/VMware) and repoint the framebuffer.
+		 * Re-fit the text console to the new geometry so it uses the full
+		 * screen instead of the old low-res corner. */
+		const vesa_fb_t *fb1 = vesa_get_fb();
+		if (fb1 && (fb1->width != prev_w || fb1->height != prev_h)) {
+			vesa_tty_set_scale(fb1->width >= 1280 ? 2 : 1);
+			vesa_tty_init();
+		}
+	}
 	usb_init();        /* report USB host controllers (HID driver TBD) */
 
 	/* Parse Multiboot 2 tags: boot device and kernel command line. */

@@ -33,6 +33,8 @@
 #define SVGA_REG_ENABLE          1u
 #define SVGA_REG_WIDTH           2u
 #define SVGA_REG_HEIGHT          3u
+#define SVGA_REG_MAX_WIDTH       4u
+#define SVGA_REG_MAX_HEIGHT      5u
 #define SVGA_REG_BITS_PER_PIXEL  7u
 #define SVGA_REG_BYTES_PER_LINE  12u
 #define SVGA_REG_FB_START        13u
@@ -164,12 +166,25 @@ static int svga_init(void)
 
     pci_enable_bus_master(s_dev);
 
-    /* Mode-set to the geometry the rest of the kernel already uses, then adopt
-     * the FB base + stride the device reports.  Enabling SVGA without a mode-set
-     * drops the VBE mode into an unconfigured 0x0 SVGA mode (blank scanout), so
-     * the explicit WIDTH/HEIGHT/BPP is required. */
+    /* Mode-set, then adopt the FB base + stride the device reports.  Enabling
+     * SVGA without a mode-set drops into an unconfigured 0x0 SVGA mode (blank
+     * scanout), so an explicit WIDTH/HEIGHT/BPP is required.
+     *
+     * Use the kernel's preferred resolution (vmode= or the 720p default) rather
+     * than the geometry the boot VBE left us in: VirtualBox/VMware expose only a
+     * low mode through their Bochs-VBE compat layer, but the SVGA registers here
+     * set arbitrary modes -- so the text console + GUI get a real resolution.
+     * Clamp to the device's advertised maximum. */
+    extern uint32_t g_video_pref_w, g_video_pref_h;
     const vesa_fb_t *cur = vesa_get_fb();
-    uint32_t want_w = cur->width, want_h = cur->height;
+    uint32_t want_w = g_video_pref_w ? g_video_pref_w : cur->width;
+    uint32_t want_h = g_video_pref_h ? g_video_pref_h : cur->height;
+    uint32_t max_w = reg_read(SVGA_REG_MAX_WIDTH);
+    uint32_t max_h = reg_read(SVGA_REG_MAX_HEIGHT);
+    if (max_w && want_w > max_w) want_w = max_w;
+    if (max_h && want_h > max_h) want_h = max_h;
+    if (want_w < 640) want_w = 640;
+    if (want_h < 480) want_h = 480;
 
     reg_write(SVGA_REG_ENABLE, 0);
     reg_write(SVGA_REG_WIDTH, want_w);
