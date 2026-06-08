@@ -183,13 +183,10 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	fpu_init();
 	KLOG("fpu: x87 armed (fninit) + per-task fxsave/fxrstor on context switch\n");
 
-	/* Identify the hypervisor/VM early so later drivers can apply per-platform
-	 * quirks (e.g. the Hyper-V PS/2 mouse Y convention). */
-	vm_detect();
-	t_writestring("Virtualization: ");
-	t_writestring(vm_name());
-	t_putchar('\n');
-	KLOG("vm: detected platform\n");
+	/* Hypervisor/VM detection runs after the PCI scan (below) so it can use bus
+	 * signals -- e.g. VirtualBox's VMM device -- not just the paravirt-dependent
+	 * CPUID leaf.  Nothing before that point consumes vm_kind(); the per-platform
+	 * quirks (Hyper-V PS/2 mouse Y) are applied at runtime, well after boot. */
 
 	t_writestring("Installing exception handlers");
 	kprint_ok();
@@ -380,6 +377,15 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	pci_init();
 	pci_probe_all();   /* bind registered drivers to scanned devices */
 	KLOG("pci: bus scan complete\n");
+
+	/* Identify the hypervisor/VM now that the PCI bus is enumerated, so the
+	 * detection can use bus signals (e.g. VirtualBox's VMM device) alongside
+	 * the CPUID hypervisor leaf.  Later drivers read vm_kind() at runtime. */
+	vm_detect();
+	t_writestring("Virtualization: ");
+	t_writestring(vm_name());
+	t_putchar('\n');
+	KLOG("vm: detected platform\n");
 
 	/* Bind a display driver now that PCI is scanned and the framebuffer
 	 * geometry is settled: an accelerated backend (SVGA II / Hyper-V synthvid)
