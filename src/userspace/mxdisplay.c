@@ -27,17 +27,25 @@ static char *u2s(unsigned v,char *o){char t[12];int i=0;if(!v)t[i++]='0';while(v
 typedef struct { const char *name; unsigned w, h; } dmode;
 /* Names the kernel's admin_setmode accepts (vesa_modes[]); offered widest-first. */
 static const dmode MODES[] = {
-    { "640x480",   640,  480  },
-    { "1280x720",  1280, 720  },
     { "1920x1080", 1920, 1080 },
+    { "1280x720",  1280, 720  },
+    { "1024x768",  1024, 768  },
+    { "800x600",   800,  600  },
+    { "640x480",   640,  480  },
 };
 #define NMODES ((int)(sizeof(MODES)/sizeof(MODES[0])))
 
-/* Map the live geometry to one of our mode names (else "640x480" as a floor). */
+/* Map the live geometry to a mode name.  If it isn't one of the listed modes
+ * (e.g. a non-standard SVGA II mode), format the real "WxH" rather than flooring
+ * to 640x480 -- so this agrees with the resolution the about panel shows. */
 static const char *mode_for(unsigned w, unsigned h)
 {
     for (int i=0;i<NMODES;i++) if (MODES[i].w==w && MODES[i].h==h) return MODES[i].name;
-    return MODES[0].name;
+    static char buf[16]; char num[12]; int n=0;
+    u2s(w,num); for (int i=0;num[i];i++) buf[n++]=num[i];
+    buf[n++]='x';
+    u2s(h,num); for (int i=0;num[i];i++) buf[n++]=num[i];
+    buf[n]=0; return buf;
 }
 
 enum { ST_LIST, ST_CONFIRM };

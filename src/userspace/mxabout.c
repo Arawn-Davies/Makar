@@ -59,8 +59,6 @@ int main(int argc, char **argv)
     if (!net[0])     scpy(net, "none",       sizeof net);
     char host[64] = {0}, user[64] = {0};
     sys_gethostname(host, sizeof host); sys_whoami(user, sizeof user);
-    unsigned info = sys_fb_info();
-    unsigned fbw = (info >> 16) & 0xFFFF, fbh = info & 0xFFFF;
 
     int first = 1, lfocus = -1;
     unsigned last_up = 0;
@@ -75,6 +73,10 @@ int main(int argc, char **argv)
         char meminfo[512]; readfile("/proc/meminfo", meminfo, sizeof meminfo);
         char memtot[24]; field(meminfo, "MemTotal", memtot, sizeof memtot);
         unsigned tkb = 0, fkb = 0; sys_statfs(&tkb, &fkb);
+        /* Live framebuffer geometry (same source mxdisplay uses), re-read each
+         * refresh so a resolution change in the display app shows up here too. */
+        unsigned info = sys_fb_info();
+        unsigned fbw = (info >> 16) & 0xFFFF, fbh = info & 0xFFFF;
 
         gfx_surface *s = &c.surf;
         gfx_fill(s, 0, 0, s->w, s->h, RGB(0x16,0x1b,0x24));
