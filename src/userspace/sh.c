@@ -94,6 +94,24 @@ static int  s_atoi(const char *s)
     return v * sign;
 }
 
+/* pid of the foreground child currently being wait4()'d, or 0 at the prompt.
+ * The SIGINT handler forwards to it so Ctrl-C interrupts the running command
+ * rather than the shell. */
+static volatile int g_fg_child = 0;
+
+/* SIGINT handler: forward the interrupt to the foreground command if one is
+ * running, otherwise do nothing (the line editor handles ^C at the prompt via
+ * the 0x03 byte).  Installed for every interactive shell -- on the classic VT
+ * the kernel already delivers SIGINT straight to the focused child, but in the
+ * GUI terminal the child isn't keyboard-focused, so mxterm signals the shell
+ * and we relay it here.  Never terminates the shell. */
+static void on_sigint(int sig)
+{
+    (void)sig;
+    int c = g_fg_child;
+    if (c > 0) sys_kill(c, SIGINT);
+}
+
 static void ignore_login_shell_signals(void)
 {
     sys_signal(SIGHUP,  SIG_IGN);
@@ -1028,7 +1046,9 @@ static int spawn(const char *path, char **argv)
         sys_exit(127);
     }
     int status = 0;
+    g_fg_child = pid;            /* let the SIGINT handler reach this command */
     sys_wait4(pid, &status, 0);
+    g_fg_child = 0;
     return status & 0xFF;
 }
 
@@ -1920,6 +1940,9 @@ int main(int argc, char **argv, char **envp)
 
     if (g_login)
         ignore_login_shell_signals();
+    /* Forward Ctrl-C to the foreground command instead of ignoring it (login)
+     * or dying (default).  Installed last so it overrides the login SIG_IGN. */
+    sys_signal(SIGINT, on_sigint);
 
     /* Resolve hostname (best-effort). */
     char hbuf[HOST_MAX];
