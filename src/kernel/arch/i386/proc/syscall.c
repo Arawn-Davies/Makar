@@ -176,6 +176,9 @@ long kfd_stdout_write(const char *buf, unsigned int len)
         for (unsigned int i = 0; i < len; i++) t_putchar(buf[i]);
         if (e->kind == FD_KIND_VGA_SERIAL && !g_serial_verbose)
             for (unsigned int i = 0; i < len; i++) Serial_WriteChar(buf[i]);
+        /* Scan out the text console after this write(2) so SVGA II shows it
+         * (no-op on a live LFB); coalesced per write, not per glyph. */
+        vesa_tty_flush();
         return (long)len;
     }
     if (e->kind == FD_KIND_SERIAL) {

@@ -1,5 +1,6 @@
 #include <kernel/vesa_tty.h>
 #include <kernel/vesa.h>
+#include <kernel/video.h>
 #include <kernel/vesa_font.h>
 #include <kernel/paging.h>
 #include <kernel/serial.h>
@@ -224,6 +225,20 @@ bool vesa_tty_init(void)
 
 bool vesa_tty_is_ready(void) { return tty_ready; }
 void vesa_tty_disable(void)  { tty_ready = false; }
+
+/* Scan out the text console's framebuffer.  vesa_tty paints fb->addr directly,
+ * which is live on a plain VBE LFB but invisible on SVGA II until an explicit
+ * UPDATE -- so flush through the video driver (no-op when it has no flush_rect).
+ * Called at output batch boundaries (a kernel print, a console write(2), a
+ * clear/scroll/repaint), so it coalesces rather than flushing per glyph. */
+void vesa_tty_flush(void)
+{
+    if (!tty_ready)
+        return;
+    const vesa_fb_t *fb = vesa_get_fb();
+    if (fb)
+        video_flush_rect(0, 0, fb->width, fb->height);
+}
 
 uint32_t vesa_tty_get_cols(void) { return tty_cols; }
 uint32_t vesa_tty_get_rows(void) { return tty_rows; }
@@ -581,6 +596,7 @@ void vesa_tty_paint_buf(const vt_buf_t *vt)
 	default_pane.bg = vt->bg;
 	vesa_tty_pane_set_cursor(&default_pane,
 	                         default_pane.cur_col, default_pane.cur_row);
+	vesa_tty_flush();
 }
 
 /* ------------------------------------------------------------------ */
@@ -688,6 +704,7 @@ void vesa_tty_clear(void)
 	 * next set_cursor saves fresh pixels instead of restoring stale
 	 * ones over the now-blank cell. */
 	caret_drawn = false;
+	vesa_tty_flush();
 }
 
 void vesa_tty_spinner_tick(uint32_t tick)
@@ -702,6 +719,9 @@ void vesa_tty_spinner_tick(uint32_t tick)
 	last_frame_idx = idx;
 	/* Always top-right of the physical screen, regardless of pane carve-up. */
 	draw_char(&default_pane, frames[idx], tty_cols - 1, 0);
+	/* Drives the periodic scan-out during the boot loading screen (and any
+	 * other quiet-but-changing console), so progress is visible on SVGA II. */
+	vesa_tty_flush();
 }
 
 void vesa_tty_set_scale(uint32_t scale)

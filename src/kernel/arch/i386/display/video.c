@@ -58,3 +58,9 @@ void video_present(const void *src)
     if (fb)
         video_present_rect(src, 0, 0, fb->width, fb->height);
 }
+
+void video_flush_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h)
+{
+    if (s_active && s_active->flush_rect)
+        s_active->flush_rect(x, y, w, h);
+}

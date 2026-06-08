@@ -54,6 +54,11 @@ bool vesa_tty_is_ready(void);
 /* Disable the renderer (marks not-ready).  Call before switching to VGA. */
 void vesa_tty_disable(void);
 
+/* Scan out the text-console framebuffer through the video driver (needed on
+ * SVGA II, where direct writes aren't visible until an UPDATE).  Call at output
+ * batch boundaries; no-op on a live-LFB backend. */
+void vesa_tty_flush(void);
+
 /* Total character columns / rows on the physical screen. */
 uint32_t vesa_tty_get_cols(void);
 uint32_t vesa_tty_get_rows(void);

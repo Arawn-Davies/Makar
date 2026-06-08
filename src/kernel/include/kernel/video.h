@@ -39,6 +39,13 @@ typedef struct vid_driver {
     void (*present_rect)(const void *src, uint32_t x, uint32_t y,
                          uint32_t w, uint32_t h);
 
+    /* Scan out a rectangle the caller has already written directly into the
+     * framebuffer (no copy).  NULL for backends whose framebuffer is live (plain
+     * VBE LFB); SVGA II needs it because direct writes aren't visible until an
+     * explicit UPDATE.  The text console paints the FB directly, so it flushes
+     * through here. */
+    void (*flush_rect)(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+
     /* Hardware cursor (only meaningful with VID_CAP_HW_CURSOR).  define takes a
      * w*h ARGB sprite; move positions its hotspot; show toggles visibility. */
     int  (*cursor_define)(const uint32_t *argb, int w, int h,
@@ -63,5 +70,9 @@ uint32_t video_caps(void);
 void video_present(const void *src);                       /* full frame */
 void video_present_rect(const void *src, uint32_t x, uint32_t y,
                         uint32_t w, uint32_t h);
+
+/* Scan out a rectangle already written directly into the framebuffer (text
+ * console path).  No-op on backends with a live framebuffer. */
+void video_flush_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
 
 #endif /* _KERNEL_VIDEO_H */

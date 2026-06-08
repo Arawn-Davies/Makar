@@ -263,6 +263,28 @@ static void svga_present_rect(const void *src, uint32_t x, uint32_t y,
     fifo_write(h);
 }
 
+/* Scan out a rect already written into the FB by someone else (the text
+ * console paints fb->addr directly): no copy, just the UPDATE command -- the
+ * device won't show direct writes otherwise. */
+static void svga_flush_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h)
+{
+    const vesa_fb_t *fb = vesa_get_fb();
+    if (!fb || !s_up)
+        return;
+    if (x >= fb->width || y >= fb->height)
+        return;
+    if (x + w > fb->width)  w = fb->width  - x;
+    if (y + h > fb->height) h = fb->height - y;
+    if (!w || !h)
+        return;
+
+    fifo_write(SVGA_CMD_UPDATE);
+    fifo_write(x);
+    fifo_write(y);
+    fifo_write(w);
+    fifo_write(h);
+}
+
 static int svga_cursor_define(const uint32_t *argb, int w, int h,
                               int hot_x, int hot_y)
 {
@@ -321,6 +343,7 @@ const vid_driver_t video_svga2 = {
     .probe         = svga_probe,
     .init          = svga_init,
     .present_rect  = svga_present_rect,
+    .flush_rect    = svga_flush_rect,
     .cursor_define = svga_cursor_define,
     .cursor_move   = svga_cursor_move,
     .cursor_show   = svga_cursor_show,

@@ -134,6 +134,10 @@ void t_write(const char *data, size_t size)
 void t_writestring(const char *data)
 {
 	t_write(data, strlen(data));
+	/* Scan out the text-console framebuffer at this batch boundary so it is
+	 * visible on backends that need an explicit update (SVGA II); no-op on a
+	 * live LFB.  Coalesces -- one update per string, not per glyph. */
+	vesa_tty_flush();
 }
 
 // Credit: lja83/OSDEV
