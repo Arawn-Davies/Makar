@@ -32,4 +32,9 @@ uint32_t mouse_pop_event(void);
 /* Test hook: inject a raw 3-byte PS/2 packet as if from hardware. */
 void mouse_inject_packet(uint8_t b0, uint8_t b1, uint8_t b2);
 
+/* Format a text snapshot of the input chain (irq12 -> bytes -> packets ->
+ * events -> position) into buf.  Backs /dev/mouse for diagnosing dead pointers.
+ * Returns the byte count written (excluding the NUL terminator). */
+int mouse_render_stats(char *buf, int cap);
+
 #endif

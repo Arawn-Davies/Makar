@@ -3,6 +3,7 @@
  */
 
 #include <kernel/devfs.h>
+#include <kernel/mouse.h>
 #include <kernel/ide.h>
 #include <kernel/partition.h>
 #include <kernel/tty.h>
@@ -18,7 +19,10 @@ typedef enum {
     DEV_PART,       /* ATA partition window    */
     DEV_CDROM,      /* ATAPI optical drive     */
     DEV_TTY,        /* virtual terminal (/dev/ttyN -> vtty slot) */
+    DEV_MOUSE,      /* /dev/mouse -- text snapshot of pointer input state */
 } dev_kind_t;
+
+#define MOUSE_SNAP_CAP  256u   /* /dev/mouse snapshot upper bound */
 
 typedef struct {
     char       name[16];   /* node name, no leading '/' (e.g. "hda1")   */
@@ -115,6 +119,11 @@ void devfs_init(void)
         uint8_t slot = (t == 0) ? (uint8_t)VTTY_ROOT_SLOT : (uint8_t)(t - 1);
         add_node(nm, slot, DEV_TTY, 0, 0, 0);
     }
+
+    /* /dev/mouse -- read-only text snapshot of the pointer input chain
+     * (IRQ12 -> AUX bytes -> packets -> events -> position) for diagnosing a
+     * dead pointer.  Not block-backed: reads render the current counters. */
+    add_node("mouse", 0, DEV_MOUSE, 1, 0, 0);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -145,6 +154,7 @@ int devfs_file_exists(const char *path)
 uint32_t devfs_node_size(int idx)
 {
     if (idx < 0 || idx >= s_count) return 0;
+    if (s_nodes[idx].kind == DEV_MOUSE) return MOUSE_SNAP_CAP;
     return s_nodes[idx].sectors * node_sector_size(&s_nodes[idx]);
 }
 
@@ -157,7 +167,8 @@ int devfs_node_readonly(int idx)
 int devfs_node_location(int idx, uint8_t *out_drive, uint32_t *out_base_lba)
 {
     if (idx < 0 || idx >= s_count) return -1;
-    if (s_nodes[idx].kind == DEV_TTY) return -1;   /* not a block device */
+    if (s_nodes[idx].kind == DEV_TTY)   return -1;   /* not a block device */
+    if (s_nodes[idx].kind == DEV_MOUSE) return -1;   /* not a block device */
     if (out_drive)    *out_drive    = s_nodes[idx].drive;
     if (out_base_lba) *out_base_lba = s_nodes[idx].base_lba;
     return 0;
@@ -183,6 +194,15 @@ long devfs_pread(int idx, void *buf, uint32_t len, uint32_t off)
     if (idx < 0 || idx >= s_count || !buf) return -1;
     dev_node_t *n = &s_nodes[idx];
     if (n->kind == DEV_TTY) return 0;       /* VT sink: nothing to read back */
+    if (n->kind == DEV_MOUSE) {             /* render the live input snapshot */
+        char snap[MOUSE_SNAP_CAP];
+        int  slen = mouse_render_stats(snap, (int)sizeof snap);
+        if (off >= (uint32_t)slen) return 0;
+        uint32_t avail = (uint32_t)slen - off;
+        if (len > avail) len = avail;
+        memcpy(buf, snap + off, len);
+        return (long)len;
+    }
     uint32_t ssz   = node_sector_size(n);
     uint32_t total = n->sectors * ssz;
 
