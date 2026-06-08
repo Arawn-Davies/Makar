@@ -62,7 +62,8 @@ int g_verbose_boot = 0;
 /* Explicit resolution request from the cmdline (vmode=), uncapped by what the
  * boot VBE happens to support.  A driver that can set arbitrary modes (SVGA II)
  * honours it so VirtualBox/VMware aren't stuck at the low mode their Bochs-VBE
- * compat layer reports.  0 = no request -> the driver uses the device max. */
+ * compat layer reports.  0 = no request -> the driver uses the device max,
+ * capped at the 1080p supported ceiling. */
 uint32_t g_video_pref_w = 0, g_video_pref_h = 0;
 
 /*

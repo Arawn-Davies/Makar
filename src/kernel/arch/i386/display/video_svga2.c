@@ -182,12 +182,14 @@ static int svga_init(void)
     uint32_t max_h = reg_read(SVGA_REG_MAX_HEIGHT);
     uint32_t want_w = g_video_pref_w ? g_video_pref_w : max_w;
     uint32_t want_h = g_video_pref_h ? g_video_pref_h : max_h;
+    /* 1080p is the supported ceiling.  A device max can be the host's full
+     * monitor resolution (e.g. 4K on VMware), whose framebuffer + GUI back
+     * buffer would exhaust memory and overflow the text-console grid -- which
+     * panicked.  Cap here, then clamp to whatever the adapter actually allows. */
+    if (want_w > 1920) want_w = 1920;
+    if (want_h > 1080) want_h = 1080;
     if (max_w && want_w > max_w) want_w = max_w;
     if (max_h && want_h > max_h) want_h = max_h;
-    uint32_t vram = reg_read(SVGA_REG_VRAM_SIZE);
-    if (vram && (unsigned long long)want_w * want_h * 4ull > vram) {
-        want_w = 1280; want_h = 720;   /* safe fallback that fits any sane VRAM */
-    }
     if (!want_w || want_w < 640) want_w = 1280;   /* device gave nothing usable */
     if (!want_h || want_h < 480) want_h = 720;
 
