@@ -249,8 +249,12 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			 * span we pre-map below, before any task PD is snapshotted, so a
 			 * later setmode up to this size never reaches an unmapped FB region
 			 * (the 1080p page-fault-at-0xFD400000 bug). */
+			/* Highest -> lowest; the first the adapter supports is the max FB
+			 * span we pre-map, so any selectable mode up to it is safe to set
+			 * later without faulting on an unmapped FB region. */
 			static const struct { uint32_t w, h; } prefs[] = {
-				{ 1280, 720 }, { 640, 480 },   /* 720p is the supported ceiling */
+				{ 1920, 1080 }, { 1600, 900 }, { 1280, 1024 },
+				{ 1280, 720 },  { 1024, 768 }, { 640, 480 },
 			};
 			uint32_t max_w = 0, max_h = 0;
 			for (uint32_t i = 0; i < sizeof(prefs)/sizeof(prefs[0]); i++) {
@@ -261,14 +265,28 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			if (max_w == 0) { max_w = 1280; max_h = 720; }
 
 			/* Active boot mode: vmode= if given and supported; else default
-			 * 720p; else the max the adapter supports. */
+			 * 720p; else the max the adapter supports.  Accepts named aliases
+			 * (480p/720p/900p/1080p) and an explicit "<w>x<h>" (e.g. 1600x900),
+			 * so a GRUB/Limine resolution submenu can pass any mode the adapter
+			 * advertises -- gated by bochs_vbe_mode_supported() so an unsupported
+			 * request (e.g. 1080p on a Hyper-V VBE that only does 1024x768)
+			 * cleanly falls back instead of scanning out garbage. */
 			uint32_t bw = 0, bh = 0;
 			if (vmode[0]) {
 				uint32_t rw = 0, rh = 0;
-				/* 720p is the cap; 1080p requests clamp to it. */
-				if (!strcmp(vmode,"1080p") || !strcmp(vmode,"1920x1080")) { rw=1280; rh=720; }
-				else if (!strcmp(vmode,"720p") || !strcmp(vmode,"1280x720")) { rw=1280; rh=720; }
-				else if (!strcmp(vmode,"480p") || !strcmp(vmode,"640x480")) { rw=640; rh=480; }
+				if      (!strcmp(vmode,"1080p")) { rw=1920; rh=1080; }
+				else if (!strcmp(vmode,"900p"))  { rw=1600; rh=900;  }
+				else if (!strcmp(vmode,"720p"))  { rw=1280; rh=720;  }
+				else if (!strcmp(vmode,"480p"))  { rw=640;  rh=480;  }
+				else {                                  /* generic "<w>x<h>" */
+					const char *p = vmode; uint32_t v = 0;
+					while (*p >= '0' && *p <= '9') v = v*10 + (uint32_t)(*p++ - '0');
+					if (*p == 'x' || *p == 'X') {
+						rw = v; p++; v = 0;
+						while (*p >= '0' && *p <= '9') v = v*10 + (uint32_t)(*p++ - '0');
+						rh = v;
+					}
+				}
 				if (rw && bochs_vbe_mode_supported(rw, rh, 32)) { bw = rw; bh = rh; }
 			}
 			if (bw == 0) {

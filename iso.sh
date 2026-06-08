@@ -167,6 +167,20 @@ menuentry "Makar OS (serial console)" {
 	multiboot2 /boot/makar.kernel live console=ttyS0
 }
 
+# Pick a specific resolution.  Each entry both asks GRUB for that LFB
+# (gfxpayload, honoured by VMware/VBox/QEMU/bare metal) and passes vmode= so the
+# kernel sets it via Bochs DISPI where available.  Unsupported modes fall back
+# cleanly (the kernel gates on bochs_vbe_mode_supported); on Hyper-V Gen1, whose
+# VBE has no 16:9 modes, prefer 1024x768.
+submenu "Makar OS (choose resolution...)" {
+	menuentry "1920x1080" { set gfxpayload=1920x1080x32; multiboot2 /boot/makar.kernel live vmode=1920x1080 }
+	menuentry "1600x900"  { set gfxpayload=1600x900x32;  multiboot2 /boot/makar.kernel live vmode=1600x900 }
+	menuentry "1280x1024" { set gfxpayload=1280x1024x32; multiboot2 /boot/makar.kernel live vmode=1280x1024 }
+	menuentry "1280x720"  { set gfxpayload=1280x720x32;  multiboot2 /boot/makar.kernel live vmode=1280x720 }
+	menuentry "1024x768"  { set gfxpayload=1024x768x32;  multiboot2 /boot/makar.kernel live vmode=1024x768 }
+	menuentry "800x600"   { set gfxpayload=800x600x32;   multiboot2 /boot/makar.kernel live vmode=800x600 }
+}
+
 menuentry "Show video modes (Hyper-V/VMware resolution diagnostic)" {
 	videoinfo
 	echo ""
@@ -231,6 +245,20 @@ menuentry "Makar OS (verbose boot)" {
 
 menuentry "Makar OS (serial console)" {
 	multiboot2 /boot/makar.kernel live console=ttyS0
+}
+
+# Pick a specific resolution.  Each entry both asks GRUB for that LFB
+# (gfxpayload, honoured by VMware/VBox/QEMU/bare metal) and passes vmode= so the
+# kernel sets it via Bochs DISPI where available.  Unsupported modes fall back
+# cleanly (the kernel gates on bochs_vbe_mode_supported); on Hyper-V Gen1, whose
+# VBE has no 16:9 modes, prefer 1024x768.
+submenu "Makar OS (choose resolution...)" {
+	menuentry "1920x1080" { set gfxpayload=1920x1080x32; multiboot2 /boot/makar.kernel live vmode=1920x1080 }
+	menuentry "1600x900"  { set gfxpayload=1600x900x32;  multiboot2 /boot/makar.kernel live vmode=1600x900 }
+	menuentry "1280x1024" { set gfxpayload=1280x1024x32; multiboot2 /boot/makar.kernel live vmode=1280x1024 }
+	menuentry "1280x720"  { set gfxpayload=1280x720x32;  multiboot2 /boot/makar.kernel live vmode=1280x720 }
+	menuentry "1024x768"  { set gfxpayload=1024x768x32;  multiboot2 /boot/makar.kernel live vmode=1024x768 }
+	menuentry "800x600"   { set gfxpayload=800x600x32;   multiboot2 /boot/makar.kernel live vmode=800x600 }
 }
 
 menuentry "Show video modes (Hyper-V/VMware resolution diagnostic)" {
