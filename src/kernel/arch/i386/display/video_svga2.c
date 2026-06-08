@@ -312,7 +312,12 @@ static void svga_cursor_show(int on)
 }
 
 const vid_driver_t video_svga2 = {
-    .name          = "vmware-svga2",
+    /* The SVGA II / VMSVGA protocol is presented by both VMware and VirtualBox
+     * (and QEMU's -device vmware-svga), so the driver name is platform-neutral;
+     * the actual host shows up separately as the "hypervisor" line in
+     * /proc/cpuinfo (and the about command).  Mirrors Linux using one vmwgfx
+     * driver for the device on every host. */
+    .name          = "svga-ii",
     .probe         = svga_probe,
     .init          = svga_init,
     .present_rect  = svga_present_rect,
