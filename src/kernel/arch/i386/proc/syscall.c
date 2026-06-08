@@ -110,7 +110,16 @@ static int stdin_pipe_getchar(task_t *t)
 static fd_entry_t *ansi_bridge_fd(void)
 {
     task_t *cur = task_current();
-    if (!cur || vtty_buf_current() != NULL) return NULL;   /* has a live VT */
+    if (!cur) return NULL;
+    /* Bridge cell-API output to ANSI whenever stdout is a pipe we're writing to
+     * -- i.e. the task runs inside the GUI terminal (mxterm) or its output is
+     * piped.  A real text-console app has fd 1 = FD_KIND_VGA (never a pipe), so
+     * it is naturally excluded and keeps the direct VT path.
+     *
+     * We must NOT additionally gate on "the task has no VT slot": GUI-terminal
+     * children inherit the GUI session's tty from the WM, so that test wrongly
+     * suppressed the bridge and their frames vanished into the hidden VT instead
+     * of reaching the window (clock/maktop/etc. showed nothing in mxterm). */
     fd_entry_t *e = fd_get(cur->fd_table, 1);
     if (e && e->kind == FD_KIND_PIPE && e->pipe_is_writer && e->pipe) return e;
     return NULL;
