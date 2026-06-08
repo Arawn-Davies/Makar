@@ -14,6 +14,7 @@
  */
 
 #include <kernel/mouse.h>
+#include <kernel/i8042.h>
 #include <kernel/isr.h>
 #include <kernel/asm.h>
 #include <kernel/vm.h>
@@ -133,16 +134,14 @@ void mouse_inject_packet(uint8_t b0, uint8_t b1, uint8_t b2)
 static void mouse_irq_handler(registers_t *regs)
 {
     (void)regs;
-    /* Take only AUX (mouse) bytes; a keyboard byte is left for IRQ1 (reading it
-     * here would steal keystrokes -- the keyboard-injection test relies on this).
-     * NOTE: on a strict 8042 (VirtualBox/VMware) a left-behind byte can stall the
-     * mouse; the robust path there is a USB HID mouse, not fighting the 8042. */
-    for (int i = 0; i < 16; i++) {
-        uint8_t status = inb(PS2_STATUS);
-        if (!(status & PS2_OBF)) break;
-        if (!(status & PS2_AUXB)) break;
-        mouse_feed_byte(inb(PS2_DATA));
-    }
+    /* IRQ12 (AUX/mouse) and the keyboard's IRQ1 both funnel into the shared
+     * controller router, which drains the 8042 and dispatches each byte by its
+     * AUXB bit.  Servicing the controller from whichever line fires means a byte
+     * is never left in the output buffer -- a left-behind byte stops a strict
+     * 8042 (VirtualBox/VMware) raising further IRQ12s, which froze the mouse
+     * after a few packets.  The AUX-only handler this replaces is what left
+     * keyboard bytes stuck. */
+    i8042_service();
 }
 
 void mouse_init(void)

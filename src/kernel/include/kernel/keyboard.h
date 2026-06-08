@@ -12,6 +12,11 @@
 #define KB_PANE_BOTTOM  1
 
 void keyboard_init(void);
+
+/* Push one raw set-1 scancode byte into the keyboard decoder.  Called by the
+ * i8042 controller router (i8042.c) for every non-AUX byte it drains. */
+void keyboard_feed_scancode(uint8_t sc);
+
 unsigned char keyboard_getchar(void);
 unsigned char keyboard_poll(void);
 

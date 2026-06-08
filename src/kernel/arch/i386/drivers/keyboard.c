@@ -104,6 +104,7 @@
 
 #include <kernel/keyboard.h>
 #include <kernel/mouse.h>
+#include <kernel/i8042.h>
 #include <kernel/auth.h>
 #include <kernel/vtty.h>
 #include <kernel/isr.h>
@@ -1441,20 +1442,33 @@ void keyboard_test_driver(void)
  * cannot interleave reads on 0x60 and produce a torn scancode stream. The
  * lock is irq-safe; on UP the spin path is never taken.
  */
+/*
+ * keyboard_feed_scancode - push one raw set-1 byte into the decoder.
+ *
+ * The public entry the i8042 controller router (i8042.c) calls for every
+ * non-AUX byte it drains.  Holds kb_io_lock so the decoder state machine -- also
+ * touched by the test-injection path (keyboard_test_feed) -- is mutated
+ * atomically with respect to the rest of the keyboard pipeline.
+ */
+void keyboard_feed_scancode(uint8_t sc)
+{
+    uint32_t flags = kb_spin_lock_irqsave(&kb_io_lock);
+    decoder_feed(sc);
+    kb_spin_unlock_irqrestore(&kb_io_lock, flags);
+}
+
+/*
+ * keyboard_irq_handler - IRQ1 service routine.
+ *
+ * IRQ1 (keyboard) and the mouse's IRQ12 both funnel into i8042_service(), the
+ * shared controller router: it drains the 8042 output buffer and dispatches
+ * each byte to the keyboard decoder or the mouse by its AUXB status bit, so a
+ * byte is never left stuck in the buffer regardless of which line fired.
+ */
 static void keyboard_irq_handler(registers_t *regs)
 {
     (void)regs;
-    uint32_t flags = kb_spin_lock_irqsave(&kb_io_lock);
-
-    for (int i = 0; i < 16; i++) {
-        uint8_t status = inb(PS2_STATUS_PORT);
-        if (!(status & PS2_STAT_OBF)) break;
-        uint8_t sc = inb(PS2_DATA_PORT);
-        if (status & PS2_STAT_AUXB) { mouse_feed_byte(sc); continue; }
-        decoder_feed(sc);
-    }
-
-    kb_spin_unlock_irqrestore(&kb_io_lock, flags);
+    i8042_service();
 }
 
 /* ===========================================================================
