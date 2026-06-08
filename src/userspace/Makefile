@@ -260,6 +260,11 @@ install: all
 # the window manager; copied to the installed system with the rest of /usr).
 	mkdir -p $(ISODIR)/usr/share/icons/makar
 	cp ../../data/icons/*.bmp $(ISODIR)/usr/share/icons/makar/
+# Example wallpapers (/usr/share/backgrounds) + logos (/usr/share/pixmaps), the
+# XFCE-style asset paths -- usable by the image viewer and the desktop wallpaper.
+	mkdir -p $(ISODIR)/usr/share/backgrounds $(ISODIR)/usr/share/pixmaps
+	cp ../../data/backgrounds/*.bmp $(ISODIR)/usr/share/backgrounds/
+	cp ../../data/logos/*.bmp ../../data/logos/*.png $(ISODIR)/usr/share/pixmaps/
 # tcc.elf rides along with the rest of the apps so PATH lookup resolves
 # `tcc` from the kernel shell.  Only present when build-tcc.sh has been
 # run with vendor/tinycc/ populated.

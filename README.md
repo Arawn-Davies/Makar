@@ -1,5 +1,7 @@
 # Makar
 
+<p align="center"><img src="docs/img/makar-logo.png" alt="Makar" width="320"></p>
+
 [![Build & Test](https://github.com/Arawn-Davies/makar/actions/workflows/build-test.yml/badge.svg)](https://github.com/Arawn-Davies/makar/actions/workflows/build-test.yml)
 [![Release](https://github.com/Arawn-Davies/makar/actions/workflows/release.yml/badge.svg)](https://github.com/Arawn-Davies/makar/actions/workflows/release.yml)
 
