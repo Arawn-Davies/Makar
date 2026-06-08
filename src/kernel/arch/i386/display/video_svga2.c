@@ -51,12 +51,30 @@
 
 #define SVGA_ID_2   0x90000002u   /* magic | version 2 */
 
-/* FIFO layout: the first words are control registers (32-bit indices). */
-#define SVGA_FIFO_MIN       0u
-#define SVGA_FIFO_MAX       1u
-#define SVGA_FIFO_NEXT_CMD  2u
-#define SVGA_FIFO_STOP      3u
-#define SVGA_FIFO_NUM_REGS  4u
+/* FIFO layout: the first words are control registers (32-bit word indices). */
+#define SVGA_FIFO_MIN           0u
+#define SVGA_FIFO_MAX           1u
+#define SVGA_FIFO_NEXT_CMD      2u
+#define SVGA_FIFO_STOP          3u
+/* Extended FIFO registers.  Usable only when the driver reserves space for them
+ * below SVGA_FIFO_MIN *and* the matching capability bit is set in
+ * SVGA_FIFO_CAPABILITIES.  The cursor-bypass registers are how VMware/VBox
+ * VMSVGA position the hardware cursor -- the legacy SVGA_REG_CURSOR_* index
+ * registers are ignored on those devices. */
+#define SVGA_FIFO_CAPABILITIES        4u
+#define SVGA_FIFO_FLAGS               5u
+#define SVGA_FIFO_FENCE               6u
+#define SVGA_FIFO_CURSOR_ON           9u
+#define SVGA_FIFO_CURSOR_X            10u
+#define SVGA_FIFO_CURSOR_Y            11u
+#define SVGA_FIFO_CURSOR_COUNT        12u
+#define SVGA_FIFO_CURSOR_LAST_UPDATED 13u
+/* Reserve through the cursor registers so the device treats words 0..15 as
+ * registers; the command ring then starts at SVGA_FIFO_MIN = NUM_REGS * 4. */
+#define SVGA_FIFO_NUM_REGS      16u
+
+/* SVGA_FIFO_CAPABILITIES bits. */
+#define SVGA_FIFO_CAP_CURSOR_BYPASS_3  (1u << 4)
 
 /* FIFO commands. */
 #define SVGA_CMD_UPDATE              1u
@@ -73,6 +91,7 @@ static volatile uint32_t *s_fifo;
 static uint32_t   s_fifo_words;
 static pci_device_t *s_dev;
 static int        s_up;
+static int        s_cursor_bypass;   /* device honours FIFO cursor-bypass regs */
 
 static uint32_t reg_read(uint32_t index)
 {
@@ -189,6 +208,15 @@ static int svga_init(void)
     s_fifo[SVGA_FIFO_STOP]     = SVGA_FIFO_NUM_REGS * 4u;
     reg_write(SVGA_REG_CONFIG_DONE, 1);
 
+    /* The HW cursor is positioned through the FIFO cursor-bypass registers when
+     * the device advertises the capability (VMware/VBox VMSVGA); the legacy
+     * SVGA_REG_CURSOR_X/Y index registers are ignored there, which left the
+     * sprite stuck at (0,0).  Falls back to the legacy registers otherwise. */
+    s_cursor_bypass =
+        (s_fifo[SVGA_FIFO_CAPABILITIES] & SVGA_FIFO_CAP_CURSOR_BYPASS_3) ? 1 : 0;
+    Serial_WriteString("svga2: cursor bypass ");
+    Serial_WriteString(s_cursor_bypass ? "on\n" : "off (legacy regs)\n");
+
     /* Repoint the kernel's framebuffer at the SVGA FB. */
     vesa_set_framebuffer((uint32_t *)(uintptr_t)(fb_phys + fb_off),
                          pitch, got_w, got_h, 32);
@@ -257,13 +285,29 @@ static int svga_cursor_define(const uint32_t *argb, int w, int h,
 static void svga_cursor_move(int x, int y)
 {
     if (!s_up) return;
-    reg_write(SVGA_REG_CURSOR_X, (uint32_t)(x < 0 ? 0 : x));
-    reg_write(SVGA_REG_CURSOR_Y, (uint32_t)(y < 0 ? 0 : y));
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (s_cursor_bypass) {
+        /* Bypass protocol: set ON/X/Y, then bump CURSOR_COUNT so the device
+         * latches the new position (mirrors vmwgfx's update sequence). */
+        s_fifo[SVGA_FIFO_CURSOR_ON]    = SVGA_CURSOR_ON_SHOW;
+        s_fifo[SVGA_FIFO_CURSOR_X]     = (uint32_t)x;
+        s_fifo[SVGA_FIFO_CURSOR_Y]     = (uint32_t)y;
+        s_fifo[SVGA_FIFO_CURSOR_COUNT] = s_fifo[SVGA_FIFO_CURSOR_COUNT] + 1u;
+        return;
+    }
+    reg_write(SVGA_REG_CURSOR_X, (uint32_t)x);
+    reg_write(SVGA_REG_CURSOR_Y, (uint32_t)y);
 }
 
 static void svga_cursor_show(int on)
 {
     if (!s_up) return;
+    if (s_cursor_bypass) {
+        s_fifo[SVGA_FIFO_CURSOR_ON]    = on ? SVGA_CURSOR_ON_SHOW : SVGA_CURSOR_ON_HIDE;
+        s_fifo[SVGA_FIFO_CURSOR_COUNT] = s_fifo[SVGA_FIFO_CURSOR_COUNT] + 1u;
+        return;
+    }
     reg_write(SVGA_REG_CURSOR_ON, on ? SVGA_CURSOR_ON_SHOW : SVGA_CURSOR_ON_HIDE);
 }
 
