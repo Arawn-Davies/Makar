@@ -39,6 +39,7 @@
 #define SVGA_REG_BYTES_PER_LINE  12u
 #define SVGA_REG_FB_START        13u
 #define SVGA_REG_FB_OFFSET       14u
+#define SVGA_REG_VRAM_SIZE       15u
 #define SVGA_REG_FB_SIZE         16u
 #define SVGA_REG_CAPABILITIES    17u
 #define SVGA_REG_FIFO_START      18u
@@ -170,21 +171,25 @@ static int svga_init(void)
      * SVGA without a mode-set drops into an unconfigured 0x0 SVGA mode (blank
      * scanout), so an explicit WIDTH/HEIGHT/BPP is required.
      *
-     * Use the kernel's preferred resolution (vmode= or the 720p default) rather
-     * than the geometry the boot VBE left us in: VirtualBox/VMware expose only a
-     * low mode through their Bochs-VBE compat layer, but the SVGA registers here
-     * set arbitrary modes -- so the text console + GUI get a real resolution.
-     * Clamp to the device's advertised maximum. */
+     * Pick the resolution from the device's own capabilities rather than the
+     * geometry the boot VBE left us in: VirtualBox/VMware expose only a low mode
+     * through their Bochs-VBE compat layer, but the SVGA registers here set
+     * arbitrary modes.  Default to the adapter's advertised maximum
+     * (SVGA_REG_MAX_WIDTH/HEIGHT); an explicit vmode= request overrides it.
+     * Bound by VRAM so a max-by-max frame can't exceed what the adapter has. */
     extern uint32_t g_video_pref_w, g_video_pref_h;
-    const vesa_fb_t *cur = vesa_get_fb();
-    uint32_t want_w = g_video_pref_w ? g_video_pref_w : cur->width;
-    uint32_t want_h = g_video_pref_h ? g_video_pref_h : cur->height;
     uint32_t max_w = reg_read(SVGA_REG_MAX_WIDTH);
     uint32_t max_h = reg_read(SVGA_REG_MAX_HEIGHT);
+    uint32_t want_w = g_video_pref_w ? g_video_pref_w : max_w;
+    uint32_t want_h = g_video_pref_h ? g_video_pref_h : max_h;
     if (max_w && want_w > max_w) want_w = max_w;
     if (max_h && want_h > max_h) want_h = max_h;
-    if (want_w < 640) want_w = 640;
-    if (want_h < 480) want_h = 480;
+    uint32_t vram = reg_read(SVGA_REG_VRAM_SIZE);
+    if (vram && (unsigned long long)want_w * want_h * 4ull > vram) {
+        want_w = 1280; want_h = 720;   /* safe fallback that fits any sane VRAM */
+    }
+    if (!want_w || want_w < 640) want_w = 1280;   /* device gave nothing usable */
+    if (!want_h || want_h < 480) want_h = 720;
 
     reg_write(SVGA_REG_ENABLE, 0);
     reg_write(SVGA_REG_WIDTH, want_w);

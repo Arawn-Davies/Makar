@@ -59,10 +59,10 @@ int g_gui_session = 0;
  * boot log + background ktest output stay visible instead. */
 int g_verbose_boot = 0;
 
-/* Resolution the user/kernel prefers (vmode= or the 720p default), uncapped by
- * what the boot VBE happens to support.  A driver that can set arbitrary modes
- * (SVGA II) uses this so VirtualBox/VMware get a real resolution instead of the
- * low mode their Bochs-VBE compat layer reports.  0 = no preference. */
+/* Explicit resolution request from the cmdline (vmode=), uncapped by what the
+ * boot VBE happens to support.  A driver that can set arbitrary modes (SVGA II)
+ * honours it so VirtualBox/VMware aren't stuck at the low mode their Bochs-VBE
+ * compat layer reports.  0 = no request -> the driver uses the device max. */
 uint32_t g_video_pref_w = 0, g_video_pref_h = 0;
 
 /*
@@ -247,10 +247,11 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			}
 		}
 
-		/* Record the preferred resolution (vmode= or the 720p default) before
-		 * the boot mode-set, so a driver that can set arbitrary modes (SVGA II)
-		 * uses it even when the boot VBE is capped lower (VirtualBox/VMware). */
-		g_video_pref_w = 1280; g_video_pref_h = 720;
+		/* Record an explicit resolution request (vmode=) for a driver that can
+		 * set arbitrary modes (SVGA II), so it isn't stuck at the low mode the
+		 * boot VBE reports on VirtualBox/VMware.  Left 0 when unset -- the driver
+		 * then uses the device's advertised maximum rather than a magic number. */
+		g_video_pref_w = 0; g_video_pref_h = 0;
 		if (vmode[0]) {
 			uint32_t pw = 0, ph = 0;
 			if      (!strcmp(vmode,"1080p")) { pw=1920; ph=1080; }
