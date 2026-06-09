@@ -28,7 +28,23 @@ void br_load(browser *b)
     sys_getcwd(b->cwd, sizeof b->cwd);       /* normalised absolute cwd          */
     for (int i=0;i<b->n;i++) b->ptr[i]=b->name[i];
     if (b->sel>=b->n) b->sel = b->n?b->n-1:0;
+    scpy(b->pathedit, b->cwd, sizeof b->pathedit);   /* sync the editable path box */
     b->loaded=1;
+}
+
+/* Navigate the file dialog to a typed path.  If it's a directory, descend into
+ * it (stay in the dialog) and return 0; otherwise hand it back as the chosen
+ * file path (return 1) for the caller to open. */
+int br_goto(browser *b, const char *path, char *out, int outcap)
+{
+    sys_chdir(b->cwd);
+    if (path[0] && sys_chdir(path)==0){
+        sys_getcwd(b->cwd, sizeof b->cwd);
+        b->sel=b->scroll=0; b->loaded=0; br_load(b);
+        return 0;
+    }
+    scpy(out, path, outcap);                  /* not a dir -> treat as a file */
+    return 1;
 }
 
 int br_sel_isdir(browser *b){ return b->sel>=0 && b->sel<b->n && b->type[b->sel]==DT_DIR; }
@@ -91,9 +107,19 @@ int br_dialog(browser *b, ui_ctx *u, gfx_surface *s,
     int up_c  = ui_button(u, s, bx,     by, 52, 20, "Up");
     int act_c = ui_button(u, s, bx+60,  by, 76, 20, mode==1?"Open":"Save");
     int can_c = ui_button(u, s, bx+144, by, 72, 20, "Cancel");
-    gfx_str_clip(s, bx+224, by+6, b->cwd, UI_COL_MUTED, x+w-4);
+    /* editable path box: type a directory to jump to it, or a file to open it
+     * (Enter while it's focused), instead of only clicking through the list. */
+    if (!b->pathedit[0]) scpy(b->pathedit, b->cwd, sizeof b->pathedit);
+    int _pbx = bx+224, _pbw = (x+w-6) - _pbx;
+    int _pb_id = u->cur_id + 1;
+    ui_textbox(u, s, _pbx, by, _pbw<60?60:_pbw, 20, b->pathedit, sizeof b->pathedit);
+    int _pb_focused = (u->focus == _pb_id);
     if (up_c)  br_up(b);
     if (can_c) return 2;
+    if (_pb_focused && u->key=='\n'){
+        if (br_goto(b, b->pathedit, out, outcap)==1) return 1;   /* a file -> open */
+        return 0;                                                /* a dir -> navigated */
+    }
 
     int rowy=by+26, listy=rowy;
     if (mode==2){

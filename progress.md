@@ -45,6 +45,7 @@ Last reordered 2026-06-09.
 - [x] **T41** — Real DOOM desktop logo: `M_DOOM` lump extracted from `DOOM1.WAD` (DOOM patch format + `PLAYPAL`) rendered onto the icon tile
 - [x] **T32** — Desktop wallpaper (X11 root-pixmap style): `mximg` "Set Wallpaper" (1) persists the path to `~/.mxrc` (`Wallpaper=`, reloaded at next boot via `load_image_any`) and (2) hands the WM the decoded pixels **now** as a shared surface over `MX_WALLPAPER` (`sid`/`w`/`h`) — applied instantly, no cross-process file read (which the page cache made unreliable). The WM blits it stretched behind the icons (flat `COL_DESK` when unset); a ~1s `.mxrc` poll covers external edits. `bmp_load_max` lifts the icon-sized 256px cap for wallpaper BMPs. guitest asserts a staged `~/.mxrc` wallpaper renders (`GUITEST=1` + `tests/guitest_wallpaper_check.py`). (Introduces the `~/.mxrc` per-user profile — T34 groundwork.)
 - [x] **T27** — Busy mouse cursor: an hourglass sprite replaces the arrow while a launched client has no surface yet (`wm_busy()`); swaps the HW-cursor sprite on the accelerated path, software bitmap otherwise
+- [x] **T29** — File-path text-entry box in the shared file dialog (`gui_browser`): editable path field replaces the static cwd label; typing a directory + Enter jumps there, a file + Enter opens it (`br_goto`). Covers mximg / editor / Files at once.
 
 ---
 
@@ -56,7 +57,6 @@ Last reordered 2026-06-09.
 - [ ] **T23** — Hyper-V synthvid (VMBus) display backend
 - [ ] **T24** — `mxweb` — HTTP over lwIP + a minimal HTML renderer
 - [ ] **T28** — GUI responsiveness: fix one-event click lag / double-click
-- [ ] **T29** — File-path boxes become text-entry boxes (mximg, editor, Files)
 - [ ] **T30** — Windowed framebuffer for console-launched graphical apps (Doom in a makx window)
 - [ ] **T31** — Doom IWAD/PWAD selection launcher
 - [ ] **T33** — GPU-usage stat on the dock tray

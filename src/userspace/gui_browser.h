@@ -20,6 +20,7 @@ typedef struct {
     unsigned char type[BR_MAX];
     const char   *ptr[BR_MAX];             /* listbox item pointers            */
     int           n, sel, scroll, loaded;
+    char          pathedit[256];            /* editable path box (file dialog)   */
 } browser;
 
 void br_load(browser *b);                  /* (re)read b->cwd into the model    */
@@ -28,6 +29,7 @@ void br_up(browser *b);                    /* navigate to parent + reload       
 void br_enter_sel(browser *b);             /* descend into the selected dir     */
 void br_sel_path(browser *b, char *out, int max);   /* abs path of selection    */
 void br_join(browser *b, const char *leaf, char *out, int max); /* cwd/leaf      */
+int  br_goto(browser *b, const char *path, char *out, int max); /* type-a-path: 0 dir (navigated), 1 file (out set) */
 
 /* path helpers (used by the open/save dialog) */
 void path_dir(const char *path, char *out, int max);   /* dir part (def "/")    */
