@@ -33,4 +33,16 @@
  *        focus-gain prompt rebuild, autostart). */
 #define SHELL_VERSION "0.9.0"
 
+/* MAKX_VERSION -- the makx display server + desktop, versioned separately from
+ * the kernel (the GUI moves at its own pace).
+ *   0.1 -- the X11-style display-server/client split over IPC + shared surfaces,
+ *          plus the first mx* apps (introduced at kernel 0.10).
+ *   0.2 -- ANSI terminal parity, the graphical installer, display settings, and
+ *          the dock/tray consolidation (kernel 0.10.5).
+ *   0.3 -- "a real desktop": image decoding (PNG/ICO), XFCE-style .desktop
+ *          shortcuts, draggable + selectable icons, wallpaper, the per-user
+ *          ~/.mxrc profile + dock tray toggles, and the video-backend readout.
+ *          Still sub-1.0: single workspace, no theming/compositing effects. */
+#define MAKX_VERSION "0.3.0"
+
 #endif /* _KERNEL_VERSION_H */
