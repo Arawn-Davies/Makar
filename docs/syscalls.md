@@ -19,20 +19,21 @@ EDI = arg4
 EAX = return value
 ```
 
-The authoritative kernel definitions live in:
+The ABI is **shared verbatim** between kernel and userspace (Linux-uapi style).
+The authoritative definitions live in:
 
 ```text
-src/kernel/include/kernel/syscall.h
+src/kernel/include/makar_syscalls.h   # the SYS_* numbers
+src/kernel/include/makar_abi.h         # clockids, struct timeval/timespec/stat/dirent,
+                                       # tty_cell_t, open/fcntl flags, S_IF* + DT_* bits
+src/kernel/include/makar_signals.h     # signal numbers
+src/kernel/include/makar_keys.h        # keycodes / sentinels
 ```
 
-The userspace inline wrappers live in:
-
-```text
-src/userspace/syscall.h
-```
-
-Keep those files synchronized. Userspace objects now use generated dependency
-files so changes to `syscall.h` rebuild dependent apps.
+Both `kernel/syscall.h` (kernel-internal dispatch) and `src/userspace/syscall.h`
+(the ring-3 inline wrappers) **include** those headers — they never re-declare
+the numbers, so the two sides cannot drift. Userspace objects use generated
+dependency files, so editing the ABI headers rebuilds the dependent apps.
 
 ## Return Conventions
 
@@ -98,7 +99,7 @@ Makar extensions provide functionality that would normally be handled by
 termios, ioctl, framebuffer drivers, devfs, procfs, or shell helpers on a
 larger Unix system.
 
-The exact list is in `src/kernel/include/kernel/syscall.h`; the groups below
+The exact list is in `src/kernel/include/makar_syscalls.h`; the groups below
 explain the design intent.
 
 ### Terminal and Framebuffer

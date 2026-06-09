@@ -122,7 +122,7 @@ The `sh` builtin writes the script's final `$?` to serial as `sh: exit=N` so tes
 | `read VAR` | One line of input → `VAR`. |
 | `env` / `unset` | Variable table dump / remove. |
 | `[ ... ]` | Test (also usable interactively). |
-| `sleep N` | Busy-yield N seconds (100 Hz PIT). |
+| `sleep N` | Busy-yield N seconds (250 Hz PIT). |
 | `true` / `false` | POSIX status helpers. |
 | `datetime` / `date` / `time` | One-line `YYYY-MM-DD HH:MM:SS` from `/proc/rtc`.  For the fullscreen wall clock, use `clock.elf`. |
 

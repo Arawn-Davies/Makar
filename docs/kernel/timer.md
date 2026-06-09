@@ -41,8 +41,10 @@ The command byte `0x36` written to port `0x43` selects:
 - Mode 3: square-wave generator (bits 3–1 = `011`)
 - Binary counting (bit 0 = `0`)
 
-At boot Makar calls `init_timer(100)`, giving a tick rate of **100 Hz** (one
-tick every 10 ms).
+At boot Makar calls `init_timer(TIMER_HZ)` with `TIMER_HZ = 250`, giving a tick
+rate of **250 Hz** (one tick every 4 ms). The frequency lives in
+`kernel/timer.h`; user-facing time is reported through a stable `USER_HZ`
+(`timer_to_user_ticks`) so it stays HZ-independent like Linux.
 
 Each IRQ 0 fires `timer_callback`, which:
 
@@ -50,11 +52,13 @@ Each IRQ 0 fires `timer_callback`, which:
 2. Invokes every registered **per-tick hook** with the current tick (see
    below) - this is how the boot spinner and the status-bar clock get
    driven without the timer knowing about the display layer.
-3. Every `SCHED_QUANTUM = 4` ticks (≈ 80 ms at 50 Hz), sends End-Of-Interrupt
-   to the master PIC and calls `task_yield()`. This drives **preemptive task
-   switching** - a busy-loop ring-0 task that never voluntarily yields will
-   still surrender the CPU at the next quantum boundary. EOI is sent before
-   the yield so further timer IRQs can fire while the new task runs.
+3. Every `g_sched_quantum` ticks (a tunable global, default **1** tick ≈ 4 ms,
+   clamped to `[SCHED_QUANTUM_MIN, SCHED_QUANTUM_MAX]` = `[1, 250]`; an optional
+   per-task `sched_weight` scales it), sends End-Of-Interrupt to the master PIC
+   and calls `task_yield()`. This drives **preemptive task switching** - a
+   busy-loop ring-0 task that never voluntarily yields will still surrender the
+   CPU at the next quantum boundary. EOI is sent before the yield so further
+   timer IRQs can fire while the new task runs.
 
 ### Per-tick hooks
 
@@ -100,7 +104,7 @@ uint32_t timer_get_ticks(void);
 ```
 
 Return the current tick count.  The counter starts at 0 and increments by 1
-on every timer interrupt.  At 100 Hz it wraps after approximately 497 days
+on every timer interrupt.  At 250 Hz it wraps after approximately 199 days
 of continuous uptime.
 
 ### `ksleep`
@@ -110,7 +114,7 @@ void ksleep(uint32_t ticks);
 ```
 
 Busy-wait until at least `ticks` timer ticks have elapsed since the call.
-At 100 Hz, `ksleep(100)` sleeps for approximately one second.
+At 250 Hz, `ksleep(250)` sleeps for approximately one second.
 
 This is a spin-wait - the CPU executes a tight loop and does not yield.  It
 is suitable for short post-boot delays but should be replaced with an

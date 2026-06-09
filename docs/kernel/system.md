@@ -9,7 +9,10 @@ grand_parent: Reference
 **Headers:** `kernel/include/kernel/system.h`  
 **Source:** `kernel/arch/i386/system.c`
 
-Low-level CPU control and unrecoverable-error reporting.
+Low-level CPU control and the `PANIC`/`ASSERT` macros. These are the lightweight
+early-boot / assertion helpers; the **fail-safe panic screen** Makar drops to on
+an unrecoverable fault (VGA-text render, Context/Resolve diagnostics, spin-then-
+reboot) is the `kpanic`/`KPANIC` path in [debug](debug.md).
 
 ---
 

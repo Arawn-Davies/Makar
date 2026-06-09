@@ -300,6 +300,12 @@ back to the CLI shell), **Shut down** (→ `sys_shutdown`), **Reboot**
 SIGKILL + reap every client child and restore statusbar state. Desktop + menu
 bar + dock are unconditional: the GUI is never chromeless.
 
+The **bottom dock** carries the open-window tabs on the left and a **system
+tray** on the right — all status in one place: CPU/RAM load, a Vista-style
+network indicator (green/amber/grey+X = connected/limited/down), and an HH:MM
+clock + DD/MM/YY date (`draw_dock`/`tray_poll`/`draw_net_icon` in `wm.c`). The
+top bar keeps only the brand, focused title, and the power icon.
+
 **Change-password dialog** (`show_passwd_dialog`): a centred modal with masked
 Current / New / Confirm fields (`ui_password`, Tab cycles, Esc cancels). OK
 calls **`SYS_PASSWD`** (`sys_passwd`, syscall 270) → `shadow_verify` the old

@@ -122,7 +122,7 @@ that shell.
 |---|---|
 | `echo [args…]` | Print arguments to terminal |
 | `meminfo` | Heap used/free in bytes |
-| `uptime` | Humanised h/m/s + raw 100 Hz tick count |
+| `uptime` | Humanised h/m/s + raw 250 Hz tick count |
 | `tasks` | List kernel tasks and their states (`cat /proc/tasks` is the richer variant) |
 | `shutdown` | Flush + unmount the FAT32 volume, then ACPI S5 power-off |
 | `reboot` | Flush + unmount the FAT32 volume, then ACPI reboot |

@@ -107,6 +107,34 @@ void vesa_clear(uint32_t colour);
 Fill the entire framebuffer with a single colour by calling `vesa_put_pixel`
 for every pixel.  Used by `vesa_tty_init()` to clear the screen.
 
+### `vesa_draw_splash` / `vesa_splash_progress`
+
+```c
+void vesa_draw_splash(uint32_t fg, uint32_t bg);
+void vesa_splash_progress(int done, int total);
+```
+
+The graphical boot splash for GUI mode.  `vesa_draw_splash` fills the background,
+draws the compiled-in disc emblem (`logo_emblem.h`) + the MAKAR wordmark + an
+empty loading-bar frame, and flushes; `vesa_splash_progress` fills the bar to
+`done/total`.  It is drawn the instant the framebuffer settles in `kernel_main`
+and animated to a ~5 s floor by `shell_login_loop` while the background
+self-tests run (see [boot modes](../internals.md)).  Compiled-in assets only, so
+it works before any filesystem is mounted.
+
+---
+
+## Presentation goes through the video vtable
+
+`vesa_*` here is the **dumb linear-framebuffer** layer: the descriptor, geometry,
+and direct pixel writes.  Composited presentation (`SYS_FB_PRESENT[_RECT]`, the WM
+cursor) now routes through the **[video](video.md)** driver vtable, so an
+accelerated backend (VMware/VirtualBox **SVGA II**) can intercept the blit and own
+a hardware cursor; the default `video_vbe` driver falls back to a per-line copy
+into this framebuffer.  Runtime mode changes go through [bochs_vbe](bochs_vbe.md)
+(DISPI) or the SVGA II driver's own registers.  The boot resolution defaults to
+**720p**.
+
 ---
 
 ## Future work

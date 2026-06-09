@@ -64,9 +64,12 @@ harness. Full detail: **`docs/testing.md`**.
 
 **Boot (`kernel_main`)**: descriptor tables → `fpu_init` (x87 armed + per-task
 `fxsave`/`fxrstor` on context switch) → exceptions/PMM/paging/heap → VESA (720p
-Bochs VBE, else VGA 80×50) → timer(100Hz)/keyboard/IDE → cmdline parse
-(`test_mode`, `console=ttyS0`, `root=<spec>`) → `vfs_init`/`vfs_mount_root`/
+Bochs VBE, else VGA 80×50) → timer(250Hz)/keyboard/IDE → cmdline parse
+(`test_mode`, `console=ttyS0`, `root=<spec>`, boot modes `autoboot=gui`/`verbose`/
+`sysadmin`/`hwspecs`/`shell=rescue`, `vmode=`) → `vfs_init`/`vfs_mount_root`/
 `vfs_auto_mount` → `tasking_init` + shell/ktest tasks → `syscall_init` → idle.
+An early cmdline peek picks the boot mode before the display comes up — see
+**boot modes** in `docs/internals.md`.
 
 **Memory map** (higher-half kernel): kernel linked at `0xC0000000` (loaded at
 phys 1 MiB via `AT()`); runtime page directory keeps `0x0–0x0FFFFFFF` as a low
@@ -79,13 +82,15 @@ low-half (`KERNEL_VBASE=0`).
 
 **Subsystems** (source is the source of truth):
 - Tasking/scheduler, per-task `task_t`: `kernel/task.h`, `proc/task.c`
-  (round-robin, PIT preempt `SCHED_QUANTUM=4`, ring-3 faults → SIGSEGV not panic).
+  (round-robin, 250 Hz PIT preempt, tunable quantum `g_sched_quantum` default 1;
+  ring-3 faults → SIGSEGV not panic).
 - VFS mount table (`s_mounts[]`, longest-prefix routing, ext2/FAT32/ISO9660 +
   `/dev` `/proc` `/tmp` `/log` overlays): `fs/vfs.c`.
 - Keyboard layered driver (PS/2→scancode→keycode→ASCII/sentinel→per-task ring):
   `drivers/keyboard.c`, `docs/kernel/`.
-- Syscall ABI (`int 0x80`, Linux i386): `kernel/syscall.h` (numbers),
-  `src/userspace/syscall.h` (wrappers), **`docs/syscalls.md`** (table).
+- Syscall ABI (`int 0x80`, Linux i386), shared verbatim kernel⇄userspace:
+  `include/makar_syscalls.h` (numbers) + `makar_abi.h` (structs/flags), wrapped by
+  `src/userspace/syscall.h`, **`docs/syscalls.md`** (table).
 - Two shells: in-kernel `shell/shell.c` (+ `shell_cmd_*.c`) and ring-3
   `src/userspace/sh.c` (freestanding). Scripting: **`docs/scripting.md`**.
 - VMM per-task page dirs: `mm/vmm.c`. Ring-3 entry: `proc/ring3.S`.
@@ -111,13 +116,15 @@ tests/                       GDB boot-test suite
 ## Companion docs
 - **`CLAUDE.history.md`** — shipped state, PR log, FOSS attribution.
 - **`CLAUDE.roadmap.md`** — slice queue + porting/hardware roadmap.
-- `docs/` — `testing.md`, `posix.md`, `syscalls.md`, `scripting.md`,
-  `internals.md`, `gui.md` (windowing/compositor + shared surfaces), `kernel/`;
-  `SURVEY.md`; `toolchain/README.md`.
+- `docs/` — **`conventions.md`** (style + house rules), `testing.md`, `posix.md`,
+  `syscalls.md`, `scripting.md`, `internals.md` (incl. **boot modes**), `gui.md`
+  (windowing/compositor + shared surfaces), `kernel/`; `SURVEY.md`;
+  `toolchain/README.md`.
 
 ## Conventions
-- Full house rules + style: the **`makar-conventions`** Claude skill
-  (`.claude/skills/makar-conventions/SKILL.md`) — read it before non-trivial work.
+- Full house rules + style: **`docs/conventions.md`** (human doc) and the
+  **`makar-conventions`** Claude skill (`.claude/skills/makar-conventions/SKILL.md`,
+  its terse mirror) — read before non-trivial work.
 - Paths follow Linux: `/usr` `/apps` `/root` `/proc` `/dev` `/mnt/<name>`
   `/mnt/cdrom`; apps at `/apps/*.elf`, libc at `/usr/lib/libc.a`.
 - **Commits**: one per discrete work item; **no `Co-Authored-By`, no "Generated

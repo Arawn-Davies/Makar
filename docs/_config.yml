@@ -1,8 +1,8 @@
 title: Makar
 description: >-
-  A bare-metal i686 hobby OS in C — preemptive 100 Hz scheduler, 4-TTY
-  multitasking shell, FAT32 + ISO9660 + synthetic /proc, ring-3 ELF
-  userspace, VIX editor.  Sibling project of Medli (C# / Cosmos).
+  A bare-metal i686 hobby OS in C — preemptive 250 Hz multitasking, a makx
+  GUI desktop, ext2 + FAT32 + ISO9660 + synthetic /proc, networking (lwIP),
+  ring-3 ELF userspace with an in-OS C compiler.  Sibling of Medli (C# / Cosmos).
 
 # Remote theme so the native GitHub Pages build (Deploy from a branch, /docs)
 # can resolve just-the-docs without a Gemfile — same setup as the Medli3 site
