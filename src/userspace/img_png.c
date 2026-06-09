@@ -340,15 +340,24 @@ int png_decode(const unsigned char *file, unsigned n, gfx_u32 *out,
                 }
                 s[ch] = raw_s;
             }
-            int r, g, bl;
+            int r, g, bl, a = 255;
             if (ct == 3) {                 /* indexed: s[0] is a palette index */
                 int idx = s[0] & 0xff;
                 r = pal[idx][0]; g = pal[idx][1]; bl = pal[idx][2];
             } else if (ct == 0 || ct == 4) { /* grayscale (+alpha) */
                 int v = (depth < 8) ? s[0] * 255 / maxval : s[0];
                 r = g = bl = v;
+                if (ct == 4) a = (depth < 8) ? s[1] * 255 / maxval : s[1];
             } else {                       /* truecolour (+alpha) */
                 r = s[0]; g = s[1]; bl = s[2];
+                if (ct == 6) a = (depth < 8) ? s[3] * 255 / maxval : s[3];
+            }
+            /* No alpha channel in XRGB8888 -- composite over white so transparent
+             * regions read as the page/background instead of a black box. */
+            if (a < 255) {
+                r  = (r  * a + 255 * (255 - a) + 127) / 255;
+                g  = (g  * a + 255 * (255 - a) + 127) / 255;
+                bl = (bl * a + 255 * (255 - a) + 127) / 255;
             }
             dst[xp] = RGB(r, g, bl);
         }

@@ -116,12 +116,22 @@ def i_display(im):                      # monitor + stand
     rect(im, 6, 5, 20, 11, (0x10, 0x40, 0x60))
     rect(im, 13, 19, 6, 3, (0x60, 0x90, 0xc0)); rect(im, 9, 22, 14, 2, (0x60, 0x90, 0xc0))
 
+def i_web(im):                          # globe -- ocean disc + continents + rim
+    disc(im, 16, 13, 11, (0x1c, 0x5a, 0xa0))
+    disc(im, 12, 8, 3, (0x3a, 0xa0, 0x50)); disc(im, 20, 12, 4, (0x3a, 0xa0, 0x50))
+    disc(im, 13, 18, 3, (0x3a, 0xa0, 0x50)); disc(im, 22, 19, 2, (0x3a, 0xa0, 0x50))
+    ring(im, 16, 13, 11, (0x7c, 0xc8, 0xff))
+
+# NOTE: doom.bmp/.ico are hand-customised art (a real Doom logo) committed under
+# data/icons/ -- intentionally NOT regenerated here, so re-running this script
+# never clobbers them.  (i_doom() above is the original placeholder, kept for
+# reference only.)
 ICONS = [
     ("terminal", i_terminal), ("files", i_files), ("editor", i_editor),
-    ("tasks", i_tasks), ("doom", i_doom), ("about", i_about),
+    ("tasks", i_tasks), ("about", i_about),
     ("clock", i_clock), ("calc", i_calc), ("net", i_net),
     ("disk", i_disk), ("install", i_install), ("image", i_image),
-    ("display", i_display),
+    ("display", i_display), ("web", i_web),
 ]
 
 def main():
