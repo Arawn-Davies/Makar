@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Doom
+Icon=doom
+Exec=/apps/doom.elf
+X-Makar-WinW=648
+X-Makar-WinH=424
+X-Makar-Tint=c04040
+X-Makar-IconX=24
+X-Makar-IconY=208

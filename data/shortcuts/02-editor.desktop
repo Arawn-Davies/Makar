@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Editor
+Icon=editor
+Exec=/apps/mxedit.elf
+X-Makar-WinW=628
+X-Makar-WinH=444
+X-Makar-Tint=35c759
+X-Makar-IconX=24
+X-Makar-IconY=124

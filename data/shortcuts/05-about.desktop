@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=About
+Icon=about
+Exec=/apps/mxabout.elf
+X-Makar-WinW=568
+X-Makar-WinH=454
+X-Makar-Tint=356aa8
+X-Makar-IconX=128
+X-Makar-IconY=208

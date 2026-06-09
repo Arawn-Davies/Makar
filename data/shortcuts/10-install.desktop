@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Install
+Icon=install
+Exec=/apps/mxinstall.elf
+X-Makar-Arg=install
+X-Makar-WinW=588
+X-Makar-WinH=492
+X-Makar-Tint=ff7070
+X-Makar-IconX=24
+X-Makar-IconY=460

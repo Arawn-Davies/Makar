@@ -1,8 +1,10 @@
 /*
  * mximg.elf -- an image viewer, as a makx client.  Opens an image (Open dialog
  * or a path argument), decodes it, and scales it to fit the window (aspect-
- * preserving, nearest-neighbour).  Decodes BMP (24/32-bpp uncompressed) and GIF
- * (87a/89a first frame, LZW, interlace); PNG/JPEG land next.  Reuses the shared
+ * preserving, nearest-neighbour).  Decodes BMP (24/32-bpp uncompressed), GIF
+ * (87a/89a first frame, LZW, interlace) and PNG (the shared from-scratch
+ * inflate + all scanline filters, bit depths 1-16, colour types 0/2/3/4/6,
+ * non-interlaced); JPEG lands next.  Reuses the shared
  * gui_browser file dialog (like mxedit) so it's usable straight from its icon.
  */
 #include "syscall.h"
@@ -10,6 +12,7 @@
 #include "gui_ui.h"
 #include "gui_browser.h"
 #include "img_bmp.h"
+#include "img_png.h"
 #include "makx.h"
 
 #define RGB GFX_RGB
@@ -25,7 +28,7 @@
 static gfx_u32 *img_px;          /* decoded pixels (mmap, IMG_MAXW*IMG_MAXH) */
 static unsigned char *fbuf;            /* file read buffer (mmap, FILE_CAP)        */
 static int img_w, img_h;         /* current image size (0 = none)           */
-static char msg[96] = "Open an image (BMP/GIF).";
+static char msg[96] = "Open an image (BMP/GIF/PNG).";
 
 static void scpy(char *d,const char *s,int max){int i=0;while(s[i]&&i<max-1){d[i]=s[i];i++;}d[i]=0;}
 static unsigned rd32(const unsigned char *p){ return p[0]|(p[1]<<8)|(p[2]<<16)|((unsigned)p[3]<<24); }
@@ -39,6 +42,16 @@ static int decode_bmp(unsigned n)
         scpy(msg, "unsupported BMP (need 24/32-bpp uncompressed)", sizeof msg);
         return -1;
     }
+    return 0;
+}
+
+/* Decode a PNG from fbuf[0..n) into img_px.  Thin wrapper over the shared
+ * png_decode (img_png.c); it writes its own reason into msg on failure. */
+static int decode_png(unsigned n)
+{
+    if (png_decode(fbuf, n, img_px, IMG_MAXW, IMG_MAXH, &img_w, &img_h,
+                   msg, sizeof msg) != 0)
+        return -1;
     return 0;
 }
 
@@ -119,7 +132,8 @@ static int decode_image(unsigned n)
 {
     if(n>=2 && fbuf[0]=='B'&&fbuf[1]=='M') return decode_bmp(n);
     if(n>=3 && fbuf[0]=='G'&&fbuf[1]=='I'&&fbuf[2]=='F') return decode_gif(n);
-    scpy(msg,"unsupported format (BMP/GIF)",sizeof msg);
+    if(n>=8 && fbuf[0]==0x89&&fbuf[1]=='P'&&fbuf[2]=='N'&&fbuf[3]=='G') return decode_png(n);
+    scpy(msg,"unsupported format (BMP/GIF/PNG)",sizeof msg);
     return -1;
 }
 
@@ -205,7 +219,7 @@ int main(int argc, char **argv)
             dim[o]=0;
             gfx_str(s, s->w-gfx_text_w(dim)-6, s->h-12, dim, COL_TEXT);
         } else {
-            const char *h="No image. Click Open to choose a BMP or GIF file.";
+            const char *h="No image. Click Open to choose a BMP, GIF or PNG file.";
             gfx_str(s,(s->w-gfx_text_w(h))/2, s->h/2, h, (msg[0]&&msg[slen(msg)-1]!='.')?COL_ERR:COL_TEXT);
         }
         mx_present(&c);

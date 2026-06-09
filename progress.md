@@ -37,27 +37,31 @@ The XP/Vista boot overhaul, the desktop tray, and the documentation pass.
 - [x] **T16** — Conventions doc (`docs/conventions.md`) + repo-wide docs & roadmap audit
 - [x] **T17** — Per-module docs sweep: 7 new `docs/kernel/*.md` (video/mouse/vm/fpu/bochs_vbe/pci/acpi) + existing-doc drift fixes (debug panic, vesa vtable+splash, paging 32→128, procfs `/proc/rtc`, keyboard i8042/chord, system→debug xref)
 - [x] **T18** — Screenshots of the GUI + boot modes → `images/` + a README gallery, captured by `tools/capture-screens.sh`
-- [ ] **T19** — Build, `copy.sh`, commit, push, update the PR body
+- [x] **T19** — Build, `copy.sh`, commit, push, update the PR body (shipped as the 0.10.5 release PR #202)
 
 ---
 
 ## Backlog (future PRs)
 
-- [ ] **T19** — AHCI (SATA) + a `blkdev` vtable
-- [ ] **T20** — USB HID keyboard + mouse (UHCI → xHCI)
-- [ ] **T21** — UEFI boot survivability (OVMF)
-- [ ] **T22** — Hyper-V synthvid (VMBus) display backend
-- [ ] **T23** — `mxweb` — HTTP over lwIP + a minimal HTML renderer
-- [ ] **T24** — `mximg` PNG + JPEG decode (vendor stb_image / inflate)
-- [ ] **T25** — Real `.ico` desktop icons in `/usr/share/img` + loader
-- [ ] **T26** — Busy mouse cursor (hourglass/beachball) during heavy ops
-- [ ] **T27** — GUI responsiveness: fix one-event click lag / double-click
-- [ ] **T28** — File-path boxes become text-entry boxes (mximg, editor, Files)
-- [ ] **T29** — Windowed framebuffer for console-launched graphical apps (Doom in a makx window)
-- [ ] **T30** — Doom IWAD/PWAD selection launcher
-- [ ] **T31** — Desktop wallpaper: "set as background" from the image app + WM stretch
-- [ ] **T32** — GPU-usage stat on the dock tray
-- [ ] **T33** — `~/.mxrc` per-user GUI profile (tray toggles + wallpaper; `/home/user/.mxrc` on the livecd)
-- [ ] **T34** — Memory management continuation (PMM accounting + reclaim/GC tuning)
-- [ ] **T35** — Self-hosted i686-makar toolchain → GHCR (parked)
-- [ ] **T36** — Linux-ification: cut the ~101-syscall surface toward UNIX idioms (device files, ioctl, getdents)
+- [ ] **T20** — AHCI (SATA) + a `blkdev` vtable
+- [ ] **T21** — USB HID keyboard + mouse (UHCI → xHCI)
+- [ ] **T22** — UEFI boot survivability (OVMF)
+- [ ] **T23** — Hyper-V synthvid (VMBus) display backend
+- [ ] **T24** — `mxweb` — HTTP over lwIP + a minimal HTML renderer
+- [x] **T25** — `mximg` PNG decode — shared `img_png.c` (from-scratch RFC1951 inflate + all 5 scanline filters, bit depths 1-16, colour types 0/2/3/4/6, non-interlaced); host-validated byte-for-byte + decodes the shipped `/usr/share/pixmaps` logos. JPEG split out to T38.
+- [x] **T26** — Real `.ico` desktop icons + shared loader (`img_ico.c`: BMP-DIB 32/24/8/4/1-bit + PNG-embedded entries, best-size pick; host-validated). WM loads `.ico`/`.png`/`.bmp`; `tools/bmp2ico.py` generates `data/icons/*.ico` shipped to `/usr/share/icons/makar`.
+- [x] **T39** — XFCE-style `.desktop` shortcuts: system-wide `/usr/share/shortcuts` + user overlay `~/.shortcuts` (overrides by filename); WM parses Name/Icon/Exec + `X-Makar-*` extensions (built-in default set as fallback)
+- [x] **T40** — Draggable + selectable desktop icons (click selects/highlights + hover lift; a no-move click launches; a drag drops and persists `X-Makar-IconX/Y` back into the source `.desktop`, best-effort)
+- [x] **T41** — Real DOOM desktop logo: `M_DOOM` lump extracted from `DOOM1.WAD` (DOOM patch format + `PLAYPAL`) rendered onto the icon tile
+- [ ] **T27** — Busy mouse cursor (hourglass/beachball) during heavy ops
+- [ ] **T28** — GUI responsiveness: fix one-event click lag / double-click
+- [ ] **T29** — File-path boxes become text-entry boxes (mximg, editor, Files)
+- [ ] **T30** — Windowed framebuffer for console-launched graphical apps (Doom in a makx window)
+- [ ] **T31** — Doom IWAD/PWAD selection launcher
+- [ ] **T32** — Desktop wallpaper: "set as background" from the image app + WM stretch
+- [ ] **T33** — GPU-usage stat on the dock tray
+- [ ] **T34** — `~/.mxrc` per-user GUI profile (tray toggles + wallpaper; `/home/user/.mxrc` on the livecd)
+- [ ] **T35** — Memory management continuation (PMM accounting + reclaim/GC tuning)
+- [ ] **T36** — Self-hosted i686-makar toolchain → GHCR (parked)
+- [ ] **T37** — Linux-ification: cut the ~101-syscall surface toward UNIX idioms (device files, ioctl, getdents)
+- [ ] **T38** — `mximg` JPEG decode (baseline DCT + Huffman + upsampling; split from T25)

@@ -32,6 +32,8 @@
 #include "gui_ui.h"
 #include "gui_browser.h"
 #include "img_bmp.h"
+#include "img_png.h"
+#include "img_ico.h"
 #include "makx.h"
 
 /* ---- framebuffer / back buffer ----------------------------------------- */
@@ -171,58 +173,233 @@ static void win_free(int i)
     g_dirty=1; damage_full();   /* area behind the closed window must repaint */
 }
 
-/* ===================== desktop icons (client launchers) ================== */
-/* Each icon names a client *.elf and the default outer window geometry.  The
- * program path is launcher data -- the server bakes in no application. */
-typedef struct { int x,y,w,h; const char *label; gfx_u32 tint; const char *cmd; int winw, winh; const char *arg; } icon_t;
-#define ICON_N 13
-/* Two-column desktop icon grid (col x = 24 / 128, rows step 84).  winw/winh are
- * sized so each client's fixed surface (mxterm 640x400, mxfiles 560x380,
- * mxedit 620x420, mxtasks 560x360, doom 640x400, mxabout 560x430, mxclock
- * 360x200, mxcalc 240x300) fits the window's client rect 1:1 (client_w =
- * winw-2, client_h = winh-TH-1). */
-static icon_t icons[ICON_N] = {
-    {  24,  40, 96,70, "Terminal", RGB(0x4c,0x8d,0xff), "/apps/mxterm.elf",  648,424 },
-    { 128,  40, 96,70, "Files",    RGB(0xf0,0xa8,0x30), "/apps/mxfiles.elf", 568,404 },
-    {  24, 124, 96,70, "Editor",   RGB(0x35,0xc7,0x59), "/apps/mxedit.elf",  628,444 },
-    { 128, 124, 96,70, "Tasks",    RGB(0x9b,0x6c,0xff), "/apps/mxtasks.elf", 568,384 },
-    {  24, 208, 96,70, "Doom",     RGB(0xc0,0x40,0x40), "/apps/doom.elf",    648,424 },
-    { 128, 208, 96,70, "About",    RGB(0x35,0x6a,0xa8), "/apps/mxabout.elf", 568,454 },
-    {  24, 292, 96,70, "Clock",    RGB(0x40,0xc0,0xb0), "/apps/mxclock.elf", 384,232 },
-    { 128, 292, 96,70, "Calc",     RGB(0xe0,0x80,0x40), "/apps/mxcalc.elf",  264,324 },
-    {  24, 376, 96,70, "Net",      RGB(0x4c,0xb0,0xff), "/apps/mxnet.elf",   468,344 },
-    { 128, 376, 96,70, "Disk",     RGB(0xc0,0xa0,0x40), "/apps/mxdisk.elf",  528,384 },
-    /* Install: the graphical installer (mxinstall.elf).  It drives the kernel's
-     * stepped install engine one file per frame, so the desktop stays responsive
-     * during the copy (the TUI installer is for shell mode). */
-    {  24, 460, 96,70, "Install",  RGB(0xff,0x70,0x70), "/apps/mxinstall.elf", 588,492 },
-    { 128, 460, 96,70, "Image",    RGB(0x70,0xb0,0x70), "/apps/mximg.elf",   608,468 },
-    { 24,  544, 96,70, "Display",  RGB(0x60,0x90,0xc0), "/apps/mxdisplay.elf", 380,300 },
-};
+/* ===================== desktop icons (.desktop shortcuts) ================ */
+/* Each desktop icon is an XFCE-style ".desktop" shortcut: Name + Icon (artwork
+ * basename or absolute path) + Exec (the client *.elf), plus Makar extensions
+ * for the launch window size (X-Makar-WinW/H), an optional extra argv
+ * (X-Makar-Arg), the dock/glyph tint (X-Makar-Tint) and the grid position
+ * (X-Makar-IconX/Y).  At startup we scan the system-wide /usr/share/shortcuts
+ * plus the user overlay ~/.shortcuts (which overrides by filename); if neither
+ * has any entries (a stripped image) the built-in default set below is used so
+ * the desktop is never empty.  Icons are draggable -- a drop rewrites the
+ * X-Makar-IconX/Y back into the source .desktop (best-effort; a silent no-op on
+ * a read-only live ISO).  Click selects (highlight); a no-move click launches. */
+typedef struct {
+    int x, y, w, h;         /* desktop grid cell                              */
+    gfx_u32 tint;           /* dock/glyph accent                              */
+    int winw, winh;         /* launch window outer size                       */
+    char label[24];         /* Name=                                          */
+    char cmd[80];           /* Exec= (first token)                            */
+    char arg[24];           /* X-Makar-Arg= (optional)                        */
+    char icon[40];          /* Icon= (artwork basename or absolute path)      */
+    char src[112];          /* source .desktop path ("" = built-in default)   */
+} icon_t;
+#define ICON_MAX 24
+static icon_t icons[ICON_MAX];
+static int    g_icon_n = 0;
 
-/* Desktop icon artwork: real BMP tiles under the XFCE-style asset path
- * /usr/share/icons/makar/<name>.bmp, loaded once at startup.  If a file is
- * missing (e.g. a live boot without the assets) the procedural icon_glyph()
- * draws instead, so the desktop always has icons. */
-static const char *icon_img[ICON_N] = {
-    "terminal","files","editor","tasks","doom","about",
-    "clock","calc","net","disk","install","image","display",
+/* Built-in default app set (used when no .desktop files are present).  winw/winh
+ * are sized so each client's fixed surface fits the window client rect 1:1. */
+typedef struct { const char *label; gfx_u32 tint; const char *cmd; int winw, winh; const char *arg; const char *icon; } icon_def_t;
+static const icon_def_t icon_defs[] = {
+    {"Terminal",RGB(0x4c,0x8d,0xff),"/apps/mxterm.elf",   648,424, 0,        "terminal"},
+    {"Files",   RGB(0xf0,0xa8,0x30),"/apps/mxfiles.elf",  568,404, 0,        "files"},
+    {"Editor",  RGB(0x35,0xc7,0x59),"/apps/mxedit.elf",   628,444, 0,        "editor"},
+    {"Tasks",   RGB(0x9b,0x6c,0xff),"/apps/mxtasks.elf",  568,384, 0,        "tasks"},
+    {"Doom",    RGB(0xc0,0x40,0x40),"/apps/doom.elf",     648,424, 0,        "doom"},
+    {"About",   RGB(0x35,0x6a,0xa8),"/apps/mxabout.elf",  568,454, 0,        "about"},
+    {"Clock",   RGB(0x40,0xc0,0xb0),"/apps/mxclock.elf",  384,232, 0,        "clock"},
+    {"Calc",    RGB(0xe0,0x80,0x40),"/apps/mxcalc.elf",   264,324, 0,        "calc"},
+    {"Net",     RGB(0x4c,0xb0,0xff),"/apps/mxnet.elf",    468,344, 0,        "net"},
+    {"Disk",    RGB(0xc0,0xa0,0x40),"/apps/mxdisk.elf",   528,384, 0,        "disk"},
+    {"Install", RGB(0xff,0x70,0x70),"/apps/mxinstall.elf",588,492, "install","install"},
+    {"Image",   RGB(0x70,0xb0,0x70),"/apps/mximg.elf",    608,468, 0,        "image"},
+    {"Display", RGB(0x60,0x90,0xc0),"/apps/mxdisplay.elf",380,300, 0,        "display"},
 };
-static gfx_surface icon_surf[ICON_N];
-static int         icon_has[ICON_N];
+#define ICON_DEF_N (int)(sizeof icon_defs / sizeof icon_defs[0])
+
+static gfx_surface icon_surf[ICON_MAX];
+static int         icon_has[ICON_MAX];
+static int         g_sel_icon  = -1;   /* clicked/selected icon (highlight)   */
+static int         g_hover_icon= -1;   /* icon under the pointer (hover tint)  */
+
+/* small string helpers (freestanding -- no libc) */
+static int  wstreq(const char *a, const char *b){ int i=0; while(a[i]&&a[i]==b[i])i++; return a[i]==0&&b[i]==0; }
+static int  wendswith(const char *s, const char *suf){ int n=slen(s),m=slen(suf); return n>=m && wstreq(s+n-m,suf); }
+static int  wstrle(const char *a, const char *b){ int i=0; while(a[i]&&a[i]==b[i])i++; return (unsigned char)a[i]<=(unsigned char)b[i]; }
+static int  watoi(const char *s){ int v=0,neg=0; if(*s=='-'){neg=1;s++;} while(*s>='0'&&*s<='9'){v=v*10+(*s-'0');s++;} return neg?-v:v; }
+static gfx_u32 whex(const char *s){ unsigned v=0; for(int i=0;i<6&&s[i];i++){ char c=s[i]; int d=(c>='0'&&c<='9')?c-'0':(((c|32)>='a'&&(c|32)<='f')?(c|32)-'a'+10:0); v=(v<<4)|(unsigned)d; } return v&0xFFFFFFu; }
+static int  iabs(int v){ return v<0?-v:v; }
+
+/* Two-column desktop grid: col x = 24 / 128, rows step 84. */
+static void icon_grid_pos(int idx, int *x, int *y){ int col=idx&1, row=idx>>1; *x=24+col*104; *y=40+row*84; }
+
+/* Resolve and load one icon's artwork.  `spec` is an absolute path (loaded by
+ * its extension, or probed if none) or a basename resolved under
+ * /usr/share/icons/makar with .ico -> .png -> .bmp probing. */
+static int load_one_icon(const char *spec, gfx_surface *out)
+{
+    char base[160];
+    if (spec[0] == '/') {
+        scpy(base, spec, sizeof base);
+        if (wendswith(base,".ico")) return ico_load(base, out);
+        if (wendswith(base,".png")) return png_load(base, out);
+        if (wendswith(base,".bmp")) return bmp_load(base, out);
+    } else {
+        int n=0; const char *pre="/usr/share/icons/makar/";
+        for (const char *p=pre; *p; p++) base[n++]=*p;
+        for (const char *p=spec; *p && n<(int)sizeof base-1; p++) base[n++]=*p;
+        base[n]=0;
+    }
+    const char *exts[3] = {".ico",".png",".bmp"};
+    for (int e=0; e<3; e++){
+        char path[176]; scpy(path, base, sizeof path);
+        int n=slen(path); scpy(path+n, exts[e], (int)sizeof path - n);
+        int rc = (e==0) ? ico_load(path,out) : (e==1) ? png_load(path,out) : bmp_load(path,out);
+        if (rc==0) return 0;
+    }
+    return -1;
+}
 
 static void load_icon_assets(void)
 {
-    for (int i = 0; i < ICON_N; i++){
-        char path[64]; int n = 0;
-        const char *pre = "/usr/share/icons/makar/";
-        for (const char *p = pre; *p; p++) path[n++] = *p;
-        for (const char *p = icon_img[i]; *p; p++) path[n++] = *p;
-        const char *ext = ".bmp";
-        for (const char *p = ext; *p; p++) path[n++] = *p;
-        path[n] = 0;
-        icon_has[i] = (bmp_load(path, &icon_surf[i]) == 0);
+    for (int i = 0; i < g_icon_n; i++)
+        icon_has[i] = (load_one_icon(icons[i].icon, &icon_surf[i]) == 0);
+}
+
+/* Parse one .desktop file into *c.  Returns 0 if it carries an Exec=. */
+static int parse_desktop_file(const char *path, icon_t *c)
+{
+    int fd = sys_open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    static char buf[4096];
+    int n=0; long r;
+    while (n < (int)sizeof buf - 1 && (r = sys_read(fd, buf+n, (unsigned)((int)sizeof buf-1-n))) > 0) n += (int)r;
+    sys_close(fd); buf[n]=0;
+
+    for (unsigned b=0; b<sizeof *c; b++) ((unsigned char*)c)[b]=0;
+    c->x=-1; c->y=-1; c->w=96; c->h=70; c->winw=480; c->winh=360; c->tint=RGB(0x40,0x60,0x90);
+
+    int i=0;
+    while (i<n) {
+        int s=i; while (i<n && buf[i]!='\n' && buf[i]!='\r') i++; buf[i]=0;
+        char *line=buf+s; i++; while (i<n && (buf[i]=='\n'||buf[i]=='\r')) i++;
+        if (line[0]=='#' || line[0]=='[' || line[0]==0) continue;
+        char *eq=line; while (*eq && *eq!='=') eq++; if (*eq!='=') continue; *eq=0;
+        char *key=line, *val=eq+1;
+        if      (wstreq(key,"Name"))          scpy(c->label, val, sizeof c->label);
+        else if (wstreq(key,"Exec"))        { char *sp=val; while (*sp && *sp!=' ') sp++; *sp=0; scpy(c->cmd, val, sizeof c->cmd); }
+        else if (wstreq(key,"Icon"))          scpy(c->icon, val, sizeof c->icon);
+        else if (wstreq(key,"X-Makar-Arg"))   scpy(c->arg, val, sizeof c->arg);
+        else if (wstreq(key,"X-Makar-WinW"))  c->winw = watoi(val);
+        else if (wstreq(key,"X-Makar-WinH"))  c->winh = watoi(val);
+        else if (wstreq(key,"X-Makar-IconX")) c->x = watoi(val);
+        else if (wstreq(key,"X-Makar-IconY")) c->y = watoi(val);
+        else if (wstreq(key,"X-Makar-Tint"))  c->tint = whex(val);
     }
+    return c->cmd[0] ? 0 : -1;
+}
+
+static void add_default_icons(void)
+{
+    g_icon_n=0;
+    for (int i=0; i<ICON_DEF_N && g_icon_n<ICON_MAX; i++){
+        icon_t *c=&icons[g_icon_n];
+        for (unsigned b=0; b<sizeof *c; b++) ((unsigned char*)c)[b]=0;
+        icon_grid_pos(g_icon_n, &c->x, &c->y); c->w=96; c->h=70;
+        c->tint=icon_defs[i].tint; c->winw=icon_defs[i].winw; c->winh=icon_defs[i].winh;
+        scpy(c->label, icon_defs[i].label, sizeof c->label);
+        scpy(c->cmd,   icon_defs[i].cmd,   sizeof c->cmd);
+        if (icon_defs[i].arg) scpy(c->arg, icon_defs[i].arg, sizeof c->arg);
+        scpy(c->icon,  icon_defs[i].icon,  sizeof c->icon);
+        g_icon_n++;
+    }
+}
+
+/* Merge the *.desktop shortcuts in `dir` into tmp[]/names[] (count *cnt), with
+ * basename override: a shortcut whose filename already collected is replaced
+ * in place (so ~/.shortcuts entries override the system-wide ones by name). */
+static void merge_shortcuts(const char *dir, icon_t *tmp, char names[][64], int *cnt)
+{
+    struct dirent de;
+    for (unsigned idx=0; idx<4096; idx++){
+        int rc=sys_readdir(dir, idx, &de);
+        if (rc!=1) break;
+        if (de.d_type==DT_DIR) continue;
+        if (!wendswith(de.d_name, ".desktop")) continue;
+        char path[160]; int p=0;
+        for (const char *q=dir; *q; q++) path[p++]=*q; path[p++]='/';
+        for (int k=0; de.d_name[k] && p<(int)sizeof path-1; k++) path[p++]=de.d_name[k];
+        path[p]=0;
+        icon_t e;
+        if (parse_desktop_file(path, &e)!=0) continue;
+        scpy(e.src, path, sizeof e.src);
+        int slot=-1;
+        for (int j=0; j<*cnt; j++) if (wstreq(names[j], de.d_name)){ slot=j; break; }
+        if (slot<0){ if (*cnt>=ICON_MAX) continue; slot=(*cnt)++; }
+        tmp[slot]=e; scpy(names[slot], de.d_name, sizeof names[slot]);
+    }
+}
+
+/* Build the desktop icon set from the system-wide /usr/share/shortcuts plus the
+ * user-local ~/.shortcuts overlay (overrides by filename), sorted by filename
+ * for a stable layout, falling back to the built-in defaults if empty. */
+static void load_desktop_entries(void)
+{
+    static icon_t tmp[ICON_MAX]; static char names[ICON_MAX][64];
+    int cnt=0;
+    merge_shortcuts("/usr/share/shortcuts", tmp, names, &cnt);
+    /* ~/.shortcuts: resolve the home dir from the logged-in user. */
+    char home[96], u[64]={0};
+    sys_whoami(u, sizeof u);
+    if (u[0]){
+        int n=0;
+        if (wstreq(u,"root")){ const char *r="/root/.shortcuts"; while (*r) home[n++]=*r++; }
+        else { const char *pre="/home/"; while (*pre) home[n++]=*pre++;
+               for (int k=0; u[k] && n<(int)sizeof home-12; k++) home[n++]=u[k];
+               const char *suf="/.shortcuts"; while (*suf) home[n++]=*suf++; }
+        home[n]=0;
+        merge_shortcuts(home, tmp, names, &cnt);
+    }
+    if (cnt==0){ add_default_icons(); return; }
+    /* insertion sort by filename for a deterministic layout */
+    for (int a=1; a<cnt; a++){
+        icon_t t=tmp[a]; char nm[64]; scpy(nm, names[a], sizeof nm);
+        int b=a-1;
+        while (b>=0 && !wstrle(names[b], nm)){ tmp[b+1]=tmp[b]; scpy(names[b+1], names[b], sizeof names[b+1]); b--; }
+        tmp[b+1]=t; scpy(names[b+1], nm, sizeof names[b+1]);
+    }
+    for (int i=0; i<cnt; i++){
+        if (tmp[i].x<0 || tmp[i].y<0) icon_grid_pos(i, &tmp[i].x, &tmp[i].y);
+        icons[i]=tmp[i];
+    }
+    g_icon_n=cnt;
+}
+
+/* Best-effort: rewrite a dragged icon's position back into its .desktop file.
+ * Built-in defaults (src=="") and a read-only live ISO are silent no-ops. */
+static char *wcat(char *p, const char *s){ while (*s) *p++=*s++; return p; }
+static char *wcatint(char *p, int v){ char b[12]; if (v<0){*p++='-'; v=-v;} u2s((unsigned)v, b); return wcat(p, b); }
+static char *wcathex(char *p, gfx_u32 v){ const char *h="0123456789abcdef"; for (int i=20; i>=0; i-=4) *p++=h[(v>>i)&0xf]; return p; }
+static void icon_save_pos(int ii)
+{
+    icon_t *c=&icons[ii];
+    if (!c->src[0]) return;
+    static char out[640]; char *p=out;
+    p=wcat(p,"[Desktop Entry]\nType=Application\nName="); p=wcat(p,c->label);
+    p=wcat(p,"\nIcon="); p=wcat(p,c->icon);
+    p=wcat(p,"\nExec="); p=wcat(p,c->cmd);
+    if (c->arg[0]){ p=wcat(p,"\nX-Makar-Arg="); p=wcat(p,c->arg); }
+    p=wcat(p,"\nX-Makar-WinW="); p=wcatint(p,c->winw);
+    p=wcat(p,"\nX-Makar-WinH="); p=wcatint(p,c->winh);
+    p=wcat(p,"\nX-Makar-Tint="); p=wcathex(p,c->tint);
+    p=wcat(p,"\nX-Makar-IconX="); p=wcatint(p,c->x);
+    p=wcat(p,"\nX-Makar-IconY="); p=wcatint(p,c->y);
+    p=wcat(p,"\n"); *p=0;
+    int fd=sys_open(c->src, O_WRONLY|O_CREAT|O_TRUNC);
+    if (fd<0) return;
+    sys_write(fd, out, (unsigned)(p-out));
+    sys_close(fd);
 }
 
 /* Fork+exec a client, handing it `-makx <server-pid>` and a stdout/stderr pipe
@@ -253,7 +430,7 @@ static void launch_icon(int ii)
         sys_close(op[1]);
         char pids[12]; u2s((unsigned)server_pid, pids);
         char *av[5]={ (char*)icons[ii].cmd, "-makx", pids, 0, 0 };
-        if (icons[ii].arg) av[3]=(char*)icons[ii].arg;   /* e.g. Install -> "install" */
+        if (icons[ii].arg[0]) av[3]=(char*)icons[ii].arg;   /* e.g. Install -> "install" */
         sys_execve(icons[ii].cmd, av, (char *const*)0);
         sys_exit(127);
     }
@@ -537,7 +714,14 @@ static void icon_glyph(int idx, int gx, int gy)
 }
 static void draw_icons(void)
 {
-    for(int i=0;i<ICON_N;i++){ icon_t *c=&icons[i];
+    for(int i=0;i<g_icon_n;i++){ icon_t *c=&icons[i];
+        /* selection / hover highlight: a rounded plate behind the icon tile
+         * (selected = brighter blue + outline, hover = subtle lift). */
+        if (i==g_sel_icon || i==g_hover_icon){
+            gfx_u32 hl = (i==g_sel_icon) ? RGB(0x35,0x4f,0x78) : RGB(0x26,0x33,0x49);
+            gfx_round(&scr,c->x-3,c->y-3,c->w+6,c->h+6,hl,COL_DESK);
+            if (i==g_sel_icon) gfx_outline(&scr,c->x-3,c->y-3,c->w+6,c->h+6,RGB(0x5a,0x86,0xcc));
+        }
         gfx_round(&scr,c->x,c->y,c->w,c->h,RGB(0x2a,0x38,0x50),COL_DESK);
         int gx=c->x+c->w/2-16, gy=c->y+9;
         if (icon_has[i]){
@@ -551,7 +735,7 @@ static void draw_icons(void)
         gfx_str(&scr,c->x+(c->w-gfx_text_w(c->label))/2,c->y+c->h-16,c->label,0xFFFFFF);
     }
 }
-static int icon_hit(int px,int py){ for(int i=0;i<ICON_N;i++){icon_t*c=&icons[i]; if(in_rect(px,py,c->x,c->y,c->w,c->h)) return i;} return -1; }
+static int icon_hit(int px,int py){ for(int i=0;i<g_icon_n;i++){icon_t*c=&icons[i]; if(in_rect(px,py,c->x,c->y,c->w,c->h)) return i;} return -1; }
 
 /* ---- system stats for the right of the dock (CPU% + RAM%) --------------- */
 static unsigned dock_meminfo_kb(const char *label)
@@ -655,7 +839,7 @@ static int dock_order[MAXWIN], dock_n;
 static void dock_rebuild(void)
 {
     dock_n=0;
-    for(int ii=0;ii<ICON_N;ii++) for(int i=0;i<MAXWIN;i++) if(W[i].in_use && W[i].icon==ii) dock_order[dock_n++]=i;
+    for(int ii=0;ii<g_icon_n;ii++) for(int i=0;i<MAXWIN;i++) if(W[i].in_use && W[i].icon==ii) dock_order[dock_n++]=i;
     for(int i=0;i<MAXWIN;i++) if(W[i].in_use && W[i].icon<0) dock_order[dock_n++]=i;
 }
 static int dock_btn_x(int slot){ return 8 + slot*60; }
@@ -1052,13 +1236,15 @@ int main(int argc, char **argv, char **envp)
 
     if (want_login) do_login(login_user);
 
-    load_icon_assets();         /* desktop icon BMPs (glyph fallback if absent) */
+    load_desktop_entries();     /* /usr/share/applications/*.desktop (or defaults) */
+    load_icon_assets();         /* per-icon artwork (.ico/.png/.bmp; glyph fallback) */
     hwcursor_setup();           /* use the display driver's HW cursor if it has one */
     znum=0; focus=-1;
     launch_icon(0);             /* open a terminal client on the desktop */
 
     int cx=(int)FBW/2, cy=(int)FBH/2, prev_left=0;
     int dragging=0, resizing=0, drag_win=-1, drag_dx=0, drag_dy=0;
+    int drag_icon=-1, icon_moved=0, icon_dx=0, icon_dy=0, icon_px=0, icon_py=0;
     int announced=0, exit_to_shell=0, power_action=0;
     unsigned stat_up=0;
 
@@ -1104,6 +1290,7 @@ int main(int argc, char **argv, char **envp)
 
         if (mpressed){
             int dk;
+            g_sel_icon=-1;                    /* clear selection unless an icon is hit */
             if (power_hit(cx,cy)) want_power_menu=1;
             else if (dock_hit(cx,cy,&dk)){ W[dk].minimized=0; z_raise(dk); set_focus(dk); g_dirty=1; damage_full(); }
             else {
@@ -1117,7 +1304,12 @@ int main(int argc, char **argv, char **envp)
                     else if (in_titlebar(&W[hk],cx,cy)){ dragging=1; drag_win=hk; drag_dx=cx-W[hk].x; drag_dy=cy-W[hk].y; W[hk].maximized=0; }
                 } else {
                     int ii=icon_hit(cx,cy);
-                    if (ii>=0) launch_icon(ii);
+                    if (ii>=0){           /* select + begin a potential drag (launch on release if not moved) */
+                        g_sel_icon=ii;
+                        drag_icon=ii; icon_moved=0;
+                        icon_dx=cx-icons[ii].x; icon_dy=cy-icons[ii].y;
+                        icon_px=cx; icon_py=cy;
+                    }
                 }
             }
         }
@@ -1125,6 +1317,25 @@ int main(int argc, char **argv, char **envp)
             /* On finishing a resize drag, re-flow the client to the new size. */
             if (resizing && drag_win>=0) maybe_send_resize(drag_win);
             dragging=0; resizing=0;
+            /* Icon: a plain click (no drag) launches; a drag drops + persists. */
+            if (drag_icon>=0){
+                if (!icon_moved) launch_icon(drag_icon);
+                else            icon_save_pos(drag_icon);
+                drag_icon=-1; icon_moved=0;
+            }
+        }
+        /* ---- icon drag: move the desktop icon under the pointer ---- */
+        if (drag_icon>=0 && mdown && drag_icon<g_icon_n){
+            if (!icon_moved && (iabs(cx-icon_px)>4 || iabs(cy-icon_py)>4)) icon_moved=1;
+            if (icon_moved){
+                icon_t *c=&icons[drag_icon];
+                damage(c->x,c->y,c->w,c->h);          /* erase old cell */
+                c->x=cx-icon_dx; c->y=cy-icon_dy;
+                if(c->x<0)c->x=0; if(c->y<MENU_H)c->y=MENU_H;
+                if(c->x+c->w>(int)FBW)c->x=(int)FBW-c->w;
+                if(c->y+c->h>(int)FBH-DOCK_H)c->y=(int)FBH-DOCK_H-c->h;
+                g_dirty=1; damage(c->x,c->y,c->w,c->h); /* new cell */
+            }
         }
         if (dragging && drag_win>=0 && W[drag_win].in_use){ swin *w=&W[drag_win];
             damage_win(drag_win);                /* old position (erase trail) */
@@ -1141,6 +1352,15 @@ int main(int argc, char **argv, char **envp)
             if(w->x+w->w>(int)FBW)w->w=(int)FBW-w->x;
             if(w->y+w->h>(int)FBH-DOCK_H)w->h=(int)FBH-DOCK_H-w->y;
             g_dirty=1; damage_win(drag_win);     /* new size */
+        }
+
+        /* ---- desktop icon hover highlight: repaint only when it changes ---- */
+        { int hv = (drag_icon<0) ? icon_hit(cx,cy) : -1;
+          if (hv != g_hover_icon){
+              int prev=g_hover_icon; g_hover_icon=hv; g_dirty=1;
+              if (prev>=0) damage(icons[prev].x-3,icons[prev].y-3,icons[prev].w+6,icons[prev].h+6);
+              if (hv>=0)   damage(icons[hv].x-3,  icons[hv].y-3,  icons[hv].w+6,  icons[hv].h+6);
+          }
         }
 
         /* ---- Ctrl-Alt-Del opens the power menu instantly (kernel sets the

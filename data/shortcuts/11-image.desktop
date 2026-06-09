@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Image
+Icon=image
+Exec=/apps/mximg.elf
+X-Makar-WinW=608
+X-Makar-WinH=468
+X-Makar-Tint=70b070
+X-Makar-IconX=128
+X-Makar-IconY=460

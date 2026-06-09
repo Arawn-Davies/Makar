@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Disk
+Icon=disk
+Exec=/apps/mxdisk.elf
+X-Makar-WinW=528
+X-Makar-WinH=384
+X-Makar-Tint=c0a040
+X-Makar-IconX=128
+X-Makar-IconY=376
