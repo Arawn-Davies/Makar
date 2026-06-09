@@ -15,7 +15,7 @@ implementation stacks.
 This README is an entry point, not the manual. Current implementation detail
 lives in [`docs/`](docs/) and in the source.
 
-Current kernel version: `0.10.0`
+Current kernel version: `0.10.5`
 ([`src/kernel/include/kernel/version.h`](src/kernel/include/kernel/version.h)).
 
 ## Screenshots
