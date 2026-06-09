@@ -62,3 +62,6 @@ gui-screendump.*
 # accidentally committed in effbe90, breaking CI path resolution)
 vendor/lwip/**/*.o
 vendor/lwip/**/*.d
+vendor/bearssl/**/*.o
+vendor/bearssl/**/*.d
+vendor/bearssl/libbearssl.a
