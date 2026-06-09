@@ -56,8 +56,7 @@ wads/
 HANDOFF.md
 
 # GUI smoke-test screendumps (run.sh guitest)
-gui-screendump.ppm
-gui-screendump.bmp
+gui-screendump.*
 
 # Vendored build artefacts (compiled from source per-build; were
 # accidentally committed in effbe90, breaking CI path resolution)

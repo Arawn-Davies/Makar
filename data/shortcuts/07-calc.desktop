@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Calc
+Icon=calc
+Exec=/apps/mxcalc.elf
+X-Makar-WinW=264
+X-Makar-WinH=324
+X-Makar-Tint=e08040
+X-Makar-IconX=128
+X-Makar-IconY=292

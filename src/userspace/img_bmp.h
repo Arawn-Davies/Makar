@@ -23,4 +23,8 @@ int bmp_decode(const unsigned char *file, unsigned n, gfx_u32 *out,
  * done; for a handful of small icons it's fine to leave mapped for the run. */
 int bmp_load(const char *path, gfx_surface *out);
 
+/* As bmp_load but with a caller-chosen size bound (bmp_load uses 256x256 for
+ * icons; wallpapers pass a larger bound). */
+int bmp_load_max(const char *path, gfx_surface *out, int max_w, int max_h);
+
 #endif /* IMG_BMP_H */

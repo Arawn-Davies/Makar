@@ -84,6 +84,7 @@ int main(int argc, char **argv)
 
         int x = 18, y = 16;
         gfx_str(s, x, y, "Makar " MAKAR_VERSION " -- The GCC/C++ sibling of Medli", RGB(0x8a,0xe2,0x34)); y += 16;
+        gfx_str(s, x, y, "makx desktop " MAKX_VERSION "  -  shell " SHELL_VERSION, RGB(0x7a,0xc0,0x90)); y += 16;
         gfx_str(s, x, y, "Copyright (C) 2026 Arawn Davies", RGB(0xd3,0xd7,0xcf)); y += 13;
         gfx_str(s, x, y, "Released under the BSD-3 Clause Clear license", RGB(0x90,0xa0,0xb5)); y += 13;
         gfx_str(s, x, y, "A hobby x86 (i386) bare-metal OS kernel in C + AT&T asm.", RGB(0x90,0xa0,0xb5)); y += 22;

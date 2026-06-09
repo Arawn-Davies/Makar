@@ -48,11 +48,16 @@ int bmp_decode(const unsigned char *file, unsigned n, gfx_u32 *out,
 
 int bmp_load(const char *path, gfx_surface *out)
 {
+    return bmp_load_max(path, out, BMP_LOAD_MAXW, BMP_LOAD_MAXH);
+}
+
+int bmp_load_max(const char *path, gfx_surface *out, int max_w, int max_h)
+{
     int fd = sys_open(path, O_RDONLY);
     if (fd < 0) return -1;
     long sz = sys_lseek(fd, 0, SEEK_END);
     sys_lseek(fd, 0, 0);
-    if (sz <= 54 || sz > (long)(BMP_LOAD_MAXW * BMP_LOAD_MAXH * 4 + 1024)) {
+    if (sz <= 54 || sz > (long)max_w * max_h * 4 + 1024) {
         sys_close(fd); return -1;
     }
 
@@ -76,7 +81,7 @@ int bmp_load(const char *path, gfx_surface *out)
     int iw = (int)rd32(fbuf + 18);
     int ih = (int)rd32(fbuf + 22);
     if (ih < 0) ih = -ih;
-    if (iw < 1 || ih < 1 || iw > BMP_LOAD_MAXW || ih > BMP_LOAD_MAXH) {
+    if (iw < 1 || ih < 1 || iw > max_w || ih > max_h) {
         sys_munmap(fbuf, cap); return -1;
     }
 

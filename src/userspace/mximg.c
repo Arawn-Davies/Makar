@@ -1,8 +1,10 @@
 /*
  * mximg.elf -- an image viewer, as a makx client.  Opens an image (Open dialog
  * or a path argument), decodes it, and scales it to fit the window (aspect-
- * preserving, nearest-neighbour).  Decodes BMP (24/32-bpp uncompressed) and GIF
- * (87a/89a first frame, LZW, interlace); PNG/JPEG land next.  Reuses the shared
+ * preserving, nearest-neighbour).  Decodes BMP (24/32-bpp uncompressed), GIF
+ * (87a/89a first frame, LZW, interlace) and PNG (the shared from-scratch
+ * inflate + all scanline filters, bit depths 1-16, colour types 0/2/3/4/6,
+ * non-interlaced); JPEG lands next.  Reuses the shared
  * gui_browser file dialog (like mxedit) so it's usable straight from its icon.
  */
 #include "syscall.h"
@@ -10,6 +12,8 @@
 #include "gui_ui.h"
 #include "gui_browser.h"
 #include "img_bmp.h"
+#include "img_png.h"
+#include "mxrc.h"
 #include "makx.h"
 
 #define RGB GFX_RGB
@@ -25,7 +29,8 @@
 static gfx_u32 *img_px;          /* decoded pixels (mmap, IMG_MAXW*IMG_MAXH) */
 static unsigned char *fbuf;            /* file read buffer (mmap, FILE_CAP)        */
 static int img_w, img_h;         /* current image size (0 = none)           */
-static char msg[96] = "Open an image (BMP/GIF).";
+static char msg[96] = "Open an image (BMP/GIF/PNG).";
+static char g_cur_path[256];     /* full path of the loaded image (for wallpaper) */
 
 static void scpy(char *d,const char *s,int max){int i=0;while(s[i]&&i<max-1){d[i]=s[i];i++;}d[i]=0;}
 static unsigned rd32(const unsigned char *p){ return p[0]|(p[1]<<8)|(p[2]<<16)|((unsigned)p[3]<<24); }
@@ -39,6 +44,16 @@ static int decode_bmp(unsigned n)
         scpy(msg, "unsupported BMP (need 24/32-bpp uncompressed)", sizeof msg);
         return -1;
     }
+    return 0;
+}
+
+/* Decode a PNG from fbuf[0..n) into img_px.  Thin wrapper over the shared
+ * png_decode (img_png.c); it writes its own reason into msg on failure. */
+static int decode_png(unsigned n)
+{
+    if (png_decode(fbuf, n, img_px, IMG_MAXW, IMG_MAXH, &img_w, &img_h,
+                   msg, sizeof msg) != 0)
+        return -1;
     return 0;
 }
 
@@ -119,7 +134,8 @@ static int decode_image(unsigned n)
 {
     if(n>=2 && fbuf[0]=='B'&&fbuf[1]=='M') return decode_bmp(n);
     if(n>=3 && fbuf[0]=='G'&&fbuf[1]=='I'&&fbuf[2]=='F') return decode_gif(n);
-    scpy(msg,"unsupported format (BMP/GIF)",sizeof msg);
+    if(n>=8 && fbuf[0]==0x89&&fbuf[1]=='P'&&fbuf[2]=='N'&&fbuf[3]=='G') return decode_png(n);
+    scpy(msg,"unsupported format (BMP/GIF/PNG)",sizeof msg);
     return -1;
 }
 
@@ -139,10 +155,43 @@ static void load_image(const char *path)
     }
     sys_close(fd);
     if (decode_image(got) == 0) {
+        scpy(g_cur_path, path, sizeof g_cur_path);
         /* path basename into msg */
         const char *b = path; for (const char *p=path; *p; p++) if (*p=='/') b=p+1;
         scpy(msg, b, sizeof msg);
     }
+}
+
+static int g_wp_sid = -1;        /* our shared wallpaper surface (destroy on replace) */
+
+/* Set the loaded image as the desktop wallpaper.  Two parts, mirroring a Linux
+ * desktop: (1) persist the path to ~/.mxrc so the WM reloads it at next boot,
+ * and (2) hand the WM the decoded pixels *now* as a shared surface (X11
+ * root-pixmap style) so it applies instantly without a cross-process file read. */
+static void set_wallpaper(mx_conn *c)
+{
+    if (!g_cur_path[0] || img_w < 1){ scpy(msg,"open an image first",sizeof msg); return; }
+
+    /* (1) persistence: ~/.mxrc Wallpaper=<path> (preserves other keys) */
+    mxrc_set("Wallpaper", g_cur_path);
+
+    /* (2) live: copy the decoded pixels into a shared surface + hand off the id */
+    int sid=sys_surface_create(img_w, img_h);
+    if (sid>=0){
+        gfx_u32 *base=(gfx_u32*)sys_surface_map(sid);
+        if (base && base!=(gfx_u32*)MAP_FAILED){
+            long npx=(long)img_w*img_h;
+            for (long i=0;i<npx;i++) base[i]=img_px[i];
+            sys_surface_unmap(sid);                  /* WM holds it via the sid */
+            if (g_wp_sid>=0) sys_surface_destroy(g_wp_sid);   /* release previous */
+            g_wp_sid=sid;
+            mx_set_wallpaper(c, sid, img_w, img_h);
+            scpy(msg,"wallpaper set", sizeof msg);
+            return;
+        }
+        sys_surface_destroy(sid);
+    }
+    scpy(msg, "wallpaper saved (applies next boot)", sizeof msg);  /* surface failed; .mxrc persisted */
 }
 
 static int slen(const char*s){int n=0;while(s[n])n++;return n;}
@@ -180,8 +229,10 @@ int main(int argc, char **argv)
         gfx_fill(s,0,0,s->w,30,COL_BAR);
         ui_begin(&u,c.mx,c.my,c.mdown,c.mpressed,c.mreleased,-1);
         int open_c=ui_button(&u,s,6,5,64,20,"Open");
-        gfx_str_clip(s,80,11,msg,COL_TEXT,s->w-8);
+        int wp_c=ui_button(&u,s,74,5,112,20,"Set Wallpaper");
+        gfx_str_clip(s,194,11,msg,COL_TEXT,s->w-8);
         if(open_c){ scpy(brz.cwd,"/apps",sizeof brz.cwd); brz.sel=brz.scroll=0; brz.loaded=0; br_load(&brz); dlg=1; }
+        if(wp_c && img_w>0) set_wallpaper(&c);
 
         if(dlg){
             char full[256];
@@ -205,7 +256,7 @@ int main(int argc, char **argv)
             dim[o]=0;
             gfx_str(s, s->w-gfx_text_w(dim)-6, s->h-12, dim, COL_TEXT);
         } else {
-            const char *h="No image. Click Open to choose a BMP or GIF file.";
+            const char *h="No image. Click Open to choose a BMP, GIF or PNG file.";
             gfx_str(s,(s->w-gfx_text_w(h))/2, s->h/2, h, (msg[0]&&msg[slen(msg)-1]!='.')?COL_ERR:COL_TEXT);
         }
         mx_present(&c);

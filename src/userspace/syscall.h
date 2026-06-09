@@ -237,6 +237,12 @@ static inline unsigned sys_video_caps(void)
 {
     return (unsigned)syscall0(SYS_VIDEO_CAPS);
 }
+/* Copy the active video backend's name (e.g. "SVGA II", "Bochs VBE") into buf;
+ * returns the length written, or -1 on bad args. */
+static inline int sys_video_name(char *buf, int cap)
+{
+    return (int)syscall2(SYS_VIDEO_NAME, (long)buf, (long)cap);
+}
 static inline int sys_hwcursor_define(const void *argb, int w, int h,
                                       int hot_x, int hot_y)
 {

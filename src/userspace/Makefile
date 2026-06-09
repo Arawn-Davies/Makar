@@ -83,7 +83,7 @@ ktest_uspace.elf: crt0.o ktest_uspace.o
 vix.elf: crt0.o vix.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-gui.elf: crt0.o wm.o gui_gfx.o gui_ui.o gui_browser.o img_bmp.o makx.o
+gui.elf: crt0.o wm.o gui_gfx.o gui_ui.o gui_browser.o img_bmp.o img_png.o img_ico.o mxrc.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 # makx clients: each links the gui_gfx/gui_ui/gui_browser helpers it uses plus
@@ -122,7 +122,7 @@ mxinstall.elf: crt0.o mxinstall.o gui_gfx.o gui_ui.o makx.o
 mxdisplay.elf: crt0.o mxdisplay.o gui_gfx.o gui_ui.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-mximg.elf: crt0.o mximg.o gui_gfx.o gui_ui.o gui_browser.o img_bmp.o makx.o
+mximg.elf: crt0.o mximg.o gui_gfx.o gui_ui.o gui_browser.o img_bmp.o img_png.o mxrc.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 files.elf: crt0.o files.o
@@ -266,6 +266,19 @@ install: all
 # the window manager; copied to the installed system with the rest of /usr).
 	mkdir -p $(ISODIR)/usr/share/icons/makar
 	cp ../../data/icons/*.bmp $(ISODIR)/usr/share/icons/makar/
+	-cp ../../data/icons/*.ico $(ISODIR)/usr/share/icons/makar/ 2>/dev/null || true
+# XFCE-style desktop shortcuts (Name/Icon/Exec + Makar X- extensions): the window
+# manager scans /usr/share/shortcuts/*.desktop (system-wide) plus ~/.shortcuts
+# (user overlay, overrides by filename) to build the draggable desktop icon set
+# (falls back to its built-in default list if both are empty).
+	mkdir -p $(ISODIR)/usr/share/shortcuts
+	-cp ../../data/shortcuts/*.desktop $(ISODIR)/usr/share/shortcuts/ 2>/dev/null || true
+# guitest only: stage a per-user ~/.mxrc so the WM loads a known wallpaper at
+# startup and the smoke test can assert it rendered.  Off for normal builds.
+ifeq ($(GUITEST),1)
+	mkdir -p $(ISODIR)/home/user
+	printf 'Wallpaper=/usr/share/pixmaps/makar-mark.png\n' > $(ISODIR)/home/user/.mxrc
+endif
 # Example wallpapers (/usr/share/backgrounds) + logos (/usr/share/pixmaps), the
 # XFCE-style asset paths -- usable by the image viewer and the desktop wallpaper.
 	mkdir -p $(ISODIR)/usr/share/backgrounds $(ISODIR)/usr/share/pixmaps

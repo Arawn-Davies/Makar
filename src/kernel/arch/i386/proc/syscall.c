@@ -1212,6 +1212,18 @@ static void syscall_dispatch_inner(registers_t *regs)
     case SYS_VIDEO_CAPS:
         regs->eax = video_caps();
         break;
+    case SYS_VIDEO_NAME: {
+        char *buf = (char *)regs->ebx;
+        uint32_t size = regs->ecx;
+        if (!buf || size == 0) { regs->eax = (uint32_t)-1; break; }
+        const vid_driver_t *d = video_active();
+        const char *nm = (d && d->name) ? d->name : "VGA";
+        uint32_t i = 0;
+        while (nm[i] && i < size - 1) { buf[i] = nm[i]; i++; }
+        buf[i] = 0;
+        regs->eax = i;
+        break;
+    }
     case SYS_HWCURSOR_DEFINE: {
         const uint32_t *argb = (const uint32_t *)(uintptr_t)regs->ebx;
         int w  = (int)((regs->ecx >> 16) & 0xFFFFu), h  = (int)(regs->ecx & 0xFFFFu);

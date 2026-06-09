@@ -32,6 +32,9 @@
 #include "gui_ui.h"
 #include "gui_browser.h"
 #include "img_bmp.h"
+#include "img_png.h"
+#include "img_ico.h"
+#include "mxrc.h"
 #include "makx.h"
 
 /* ---- framebuffer / back buffer ----------------------------------------- */
@@ -171,58 +174,268 @@ static void win_free(int i)
     g_dirty=1; damage_full();   /* area behind the closed window must repaint */
 }
 
-/* ===================== desktop icons (client launchers) ================== */
-/* Each icon names a client *.elf and the default outer window geometry.  The
- * program path is launcher data -- the server bakes in no application. */
-typedef struct { int x,y,w,h; const char *label; gfx_u32 tint; const char *cmd; int winw, winh; const char *arg; } icon_t;
-#define ICON_N 13
-/* Two-column desktop icon grid (col x = 24 / 128, rows step 84).  winw/winh are
- * sized so each client's fixed surface (mxterm 640x400, mxfiles 560x380,
- * mxedit 620x420, mxtasks 560x360, doom 640x400, mxabout 560x430, mxclock
- * 360x200, mxcalc 240x300) fits the window's client rect 1:1 (client_w =
- * winw-2, client_h = winh-TH-1). */
-static icon_t icons[ICON_N] = {
-    {  24,  40, 96,70, "Terminal", RGB(0x4c,0x8d,0xff), "/apps/mxterm.elf",  648,424 },
-    { 128,  40, 96,70, "Files",    RGB(0xf0,0xa8,0x30), "/apps/mxfiles.elf", 568,404 },
-    {  24, 124, 96,70, "Editor",   RGB(0x35,0xc7,0x59), "/apps/mxedit.elf",  628,444 },
-    { 128, 124, 96,70, "Tasks",    RGB(0x9b,0x6c,0xff), "/apps/mxtasks.elf", 568,384 },
-    {  24, 208, 96,70, "Doom",     RGB(0xc0,0x40,0x40), "/apps/doom.elf",    648,424 },
-    { 128, 208, 96,70, "About",    RGB(0x35,0x6a,0xa8), "/apps/mxabout.elf", 568,454 },
-    {  24, 292, 96,70, "Clock",    RGB(0x40,0xc0,0xb0), "/apps/mxclock.elf", 384,232 },
-    { 128, 292, 96,70, "Calc",     RGB(0xe0,0x80,0x40), "/apps/mxcalc.elf",  264,324 },
-    {  24, 376, 96,70, "Net",      RGB(0x4c,0xb0,0xff), "/apps/mxnet.elf",   468,344 },
-    { 128, 376, 96,70, "Disk",     RGB(0xc0,0xa0,0x40), "/apps/mxdisk.elf",  528,384 },
-    /* Install: the graphical installer (mxinstall.elf).  It drives the kernel's
-     * stepped install engine one file per frame, so the desktop stays responsive
-     * during the copy (the TUI installer is for shell mode). */
-    {  24, 460, 96,70, "Install",  RGB(0xff,0x70,0x70), "/apps/mxinstall.elf", 588,492 },
-    { 128, 460, 96,70, "Image",    RGB(0x70,0xb0,0x70), "/apps/mximg.elf",   608,468 },
-    { 24,  544, 96,70, "Display",  RGB(0x60,0x90,0xc0), "/apps/mxdisplay.elf", 380,300 },
-};
+/* ===================== desktop icons (.desktop shortcuts) ================ */
+/* Each desktop icon is an XFCE-style ".desktop" shortcut: Name + Icon (artwork
+ * basename or absolute path) + Exec (the client *.elf), plus Makar extensions
+ * for the launch window size (X-Makar-WinW/H), an optional extra argv
+ * (X-Makar-Arg), the dock/glyph tint (X-Makar-Tint) and the grid position
+ * (X-Makar-IconX/Y).  At startup we scan the system-wide /usr/share/shortcuts
+ * plus the user overlay ~/.shortcuts (which overrides by filename); if neither
+ * has any entries (a stripped image) the built-in default set below is used so
+ * the desktop is never empty.  Icons are draggable -- a drop rewrites the
+ * X-Makar-IconX/Y back into the source .desktop (best-effort; a silent no-op on
+ * a read-only live ISO).  Click selects (highlight); a no-move click launches. */
+typedef struct {
+    int x, y, w, h;         /* desktop grid cell                              */
+    gfx_u32 tint;           /* dock/glyph accent                              */
+    int winw, winh;         /* launch window outer size                       */
+    char label[24];         /* Name=                                          */
+    char cmd[80];           /* Exec= (first token)                            */
+    char arg[24];           /* X-Makar-Arg= (optional)                        */
+    char icon[40];          /* Icon= (artwork basename or absolute path)      */
+    char src[112];          /* source .desktop path ("" = built-in default)   */
+} icon_t;
+#define ICON_MAX 24
+static icon_t icons[ICON_MAX];
+static int    g_icon_n = 0;
 
-/* Desktop icon artwork: real BMP tiles under the XFCE-style asset path
- * /usr/share/icons/makar/<name>.bmp, loaded once at startup.  If a file is
- * missing (e.g. a live boot without the assets) the procedural icon_glyph()
- * draws instead, so the desktop always has icons. */
-static const char *icon_img[ICON_N] = {
-    "terminal","files","editor","tasks","doom","about",
-    "clock","calc","net","disk","install","image","display",
+/* Built-in default app set (used when no .desktop files are present).  winw/winh
+ * are sized so each client's fixed surface fits the window client rect 1:1. */
+typedef struct { const char *label; gfx_u32 tint; const char *cmd; int winw, winh; const char *arg; const char *icon; } icon_def_t;
+static const icon_def_t icon_defs[] = {
+    {"Terminal",RGB(0x4c,0x8d,0xff),"/apps/mxterm.elf",   648,424, 0,        "terminal"},
+    {"Files",   RGB(0xf0,0xa8,0x30),"/apps/mxfiles.elf",  568,404, 0,        "files"},
+    {"Editor",  RGB(0x35,0xc7,0x59),"/apps/mxedit.elf",   628,444, 0,        "editor"},
+    {"Tasks",   RGB(0x9b,0x6c,0xff),"/apps/mxtasks.elf",  568,384, 0,        "tasks"},
+    {"Doom",    RGB(0xc0,0x40,0x40),"/apps/doom.elf",     648,424, 0,        "doom"},
+    {"About",   RGB(0x35,0x6a,0xa8),"/apps/mxabout.elf",  568,454, 0,        "about"},
+    {"Clock",   RGB(0x40,0xc0,0xb0),"/apps/mxclock.elf",  384,232, 0,        "clock"},
+    {"Calc",    RGB(0xe0,0x80,0x40),"/apps/mxcalc.elf",   264,324, 0,        "calc"},
+    {"Net",     RGB(0x4c,0xb0,0xff),"/apps/mxnet.elf",    468,344, 0,        "net"},
+    {"Disk",    RGB(0xc0,0xa0,0x40),"/apps/mxdisk.elf",   528,384, 0,        "disk"},
+    {"Install", RGB(0xff,0x70,0x70),"/apps/mxinstall.elf",588,492, "install","install"},
+    {"Image",   RGB(0x70,0xb0,0x70),"/apps/mximg.elf",    608,468, 0,        "image"},
+    {"Display", RGB(0x60,0x90,0xc0),"/apps/mxdisplay.elf",380,300, 0,        "display"},
 };
-static gfx_surface icon_surf[ICON_N];
-static int         icon_has[ICON_N];
+#define ICON_DEF_N (int)(sizeof icon_defs / sizeof icon_defs[0])
+
+static gfx_surface icon_surf[ICON_MAX];
+static int         icon_has[ICON_MAX];
+static int         g_sel_icon  = -1;   /* clicked/selected icon (highlight)   */
+static int         g_hover_icon= -1;   /* icon under the pointer (hover tint)  */
+
+/* small string helpers (freestanding -- no libc) */
+static int  wstreq(const char *a, const char *b){ int i=0; while(a[i]&&a[i]==b[i])i++; return a[i]==0&&b[i]==0; }
+static int  wendswith(const char *s, const char *suf){ int n=slen(s),m=slen(suf); return n>=m && wstreq(s+n-m,suf); }
+static int  wstrle(const char *a, const char *b){ int i=0; while(a[i]&&a[i]==b[i])i++; return (unsigned char)a[i]<=(unsigned char)b[i]; }
+static int  watoi(const char *s){ int v=0,neg=0; if(*s=='-'){neg=1;s++;} while(*s>='0'&&*s<='9'){v=v*10+(*s-'0');s++;} return neg?-v:v; }
+static gfx_u32 whex(const char *s){ unsigned v=0; for(int i=0;i<6&&s[i];i++){ char c=s[i]; int d=(c>='0'&&c<='9')?c-'0':(((c|32)>='a'&&(c|32)<='f')?(c|32)-'a'+10:0); v=(v<<4)|(unsigned)d; } return v&0xFFFFFFu; }
+static int  iabs(int v){ return v<0?-v:v; }
+
+/* Two-column desktop grid: col x = 24 / 128, rows step 84. */
+static void icon_grid_pos(int idx, int *x, int *y){ int col=idx&1, row=idx>>1; *x=24+col*104; *y=40+row*84; }
+
+/* Resolve and load one icon's artwork.  `spec` is an absolute path (loaded by
+ * its extension, or probed if none) or a basename resolved under
+ * /usr/share/icons/makar with .ico -> .png -> .bmp probing. */
+static int load_one_icon(const char *spec, gfx_surface *out)
+{
+    char base[160];
+    if (spec[0] == '/') {
+        scpy(base, spec, sizeof base);
+        if (wendswith(base,".ico")) return ico_load(base, out);
+        if (wendswith(base,".png")) return png_load(base, out);
+        if (wendswith(base,".bmp")) return bmp_load(base, out);
+    } else {
+        int n=0; const char *pre="/usr/share/icons/makar/";
+        for (const char *p=pre; *p; p++) base[n++]=*p;
+        for (const char *p=spec; *p && n<(int)sizeof base-1; p++) base[n++]=*p;
+        base[n]=0;
+    }
+    const char *exts[3] = {".ico",".png",".bmp"};
+    for (int e=0; e<3; e++){
+        char path[176]; scpy(path, base, sizeof path);
+        int n=slen(path); scpy(path+n, exts[e], (int)sizeof path - n);
+        int rc = (e==0) ? ico_load(path,out) : (e==1) ? png_load(path,out) : bmp_load(path,out);
+        if (rc==0) return 0;
+    }
+    return -1;
+}
 
 static void load_icon_assets(void)
 {
-    for (int i = 0; i < ICON_N; i++){
-        char path[64]; int n = 0;
-        const char *pre = "/usr/share/icons/makar/";
-        for (const char *p = pre; *p; p++) path[n++] = *p;
-        for (const char *p = icon_img[i]; *p; p++) path[n++] = *p;
-        const char *ext = ".bmp";
-        for (const char *p = ext; *p; p++) path[n++] = *p;
-        path[n] = 0;
-        icon_has[i] = (bmp_load(path, &icon_surf[i]) == 0);
+    for (int i = 0; i < g_icon_n; i++)
+        icon_has[i] = (load_one_icon(icons[i].icon, &icon_surf[i]) == 0);
+}
+
+/* Parse one .desktop file into *c.  Returns 0 if it carries an Exec=. */
+static int parse_desktop_file(const char *path, icon_t *c)
+{
+    int fd = sys_open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    static char buf[4096];
+    int n=0; long r;
+    while (n < (int)sizeof buf - 1 && (r = sys_read(fd, buf+n, (unsigned)((int)sizeof buf-1-n))) > 0) n += (int)r;
+    sys_close(fd); buf[n]=0;
+
+    for (unsigned b=0; b<sizeof *c; b++) ((unsigned char*)c)[b]=0;
+    c->x=-1; c->y=-1; c->w=96; c->h=70; c->winw=480; c->winh=360; c->tint=RGB(0x40,0x60,0x90);
+
+    int i=0;
+    while (i<n) {
+        int s=i; while (i<n && buf[i]!='\n' && buf[i]!='\r') i++; buf[i]=0;
+        char *line=buf+s; i++; while (i<n && (buf[i]=='\n'||buf[i]=='\r')) i++;
+        if (line[0]=='#' || line[0]=='[' || line[0]==0) continue;
+        char *eq=line; while (*eq && *eq!='=') eq++; if (*eq!='=') continue; *eq=0;
+        char *key=line, *val=eq+1;
+        if      (wstreq(key,"Name"))          scpy(c->label, val, sizeof c->label);
+        else if (wstreq(key,"Exec"))        { char *sp=val; while (*sp && *sp!=' ') sp++; *sp=0; scpy(c->cmd, val, sizeof c->cmd); }
+        else if (wstreq(key,"Icon"))          scpy(c->icon, val, sizeof c->icon);
+        else if (wstreq(key,"X-Makar-Arg"))   scpy(c->arg, val, sizeof c->arg);
+        else if (wstreq(key,"X-Makar-WinW"))  c->winw = watoi(val);
+        else if (wstreq(key,"X-Makar-WinH"))  c->winh = watoi(val);
+        else if (wstreq(key,"X-Makar-IconX")) c->x = watoi(val);
+        else if (wstreq(key,"X-Makar-IconY")) c->y = watoi(val);
+        else if (wstreq(key,"X-Makar-Tint"))  c->tint = whex(val);
     }
+    return c->cmd[0] ? 0 : -1;
+}
+
+static void add_default_icons(void)
+{
+    g_icon_n=0;
+    for (int i=0; i<ICON_DEF_N && g_icon_n<ICON_MAX; i++){
+        icon_t *c=&icons[g_icon_n];
+        for (unsigned b=0; b<sizeof *c; b++) ((unsigned char*)c)[b]=0;
+        icon_grid_pos(g_icon_n, &c->x, &c->y); c->w=96; c->h=70;
+        c->tint=icon_defs[i].tint; c->winw=icon_defs[i].winw; c->winh=icon_defs[i].winh;
+        scpy(c->label, icon_defs[i].label, sizeof c->label);
+        scpy(c->cmd,   icon_defs[i].cmd,   sizeof c->cmd);
+        if (icon_defs[i].arg) scpy(c->arg, icon_defs[i].arg, sizeof c->arg);
+        scpy(c->icon,  icon_defs[i].icon,  sizeof c->icon);
+        g_icon_n++;
+    }
+}
+
+/* ~/.mxrc + home resolution live in the shared mxrc module (mxrc.h). */
+
+/* Load an image by extension into `out` (wallpaper-sized bound). */
+static int load_image_any(const char *path, gfx_surface *out)
+{
+    if (wendswith(path,".png")) return png_load(path, out);
+    if (wendswith(path,".ico")) return ico_load(path, out);
+    if (wendswith(path,".bmp")) return bmp_load_max(path, out, (int)FBW, (int)FBH);
+    if (bmp_load_max(path, out, (int)FBW, (int)FBH)==0) return 0;
+    return png_load(path, out);
+}
+
+/* Desktop wallpaper: path comes from ~/.mxrc (Wallpaper=...).  Blitted stretched
+ * behind the icons; empty/missing -> the flat COL_DESK fill.  apply_wallpaper()
+ * is cheap when unchanged (re-reads the tiny .mxrc, only reloads on a new path)
+ * so the WM can poll it for live "set as wallpaper" updates. */
+static gfx_surface g_wallpaper; static int g_has_wp=0; static char g_wp_path[160]={0};
+static int g_wp_src=0;     /* 0 none, 1 file (mmap'd px), 2 shared surface       */
+static int g_wp_sid=-1;    /* surface id when g_wp_src==2                          */
+
+/* Release the current wallpaper backing (mmap or shared surface). */
+static void wp_clear(void)
+{
+    if (!g_has_wp) return;
+    if (g_wp_src==1) sys_munmap(g_wallpaper.px, (unsigned long)g_wallpaper.w*g_wallpaper.h*4u);
+    else if (g_wp_src==2 && g_wp_sid>=0) sys_surface_unmap(g_wp_sid);
+    g_has_wp=0; g_wp_src=0; g_wp_sid=-1; g_wallpaper.px=0;
+}
+
+/* Startup + ~1s-poll path: load the persisted wallpaper from ~/.mxrc (file).
+ * A live surface wallpaper (set this session via MX_WALLPAPER) takes precedence
+ * and is never clobbered by the poll. */
+static int apply_wallpaper(void)
+{
+    if (g_wp_src==2) return 0;                            /* live surface wins */
+    char wp[160]={0};
+    if (mxrc_get("Wallpaper", wp, sizeof wp)!=0) wp[0]=0;
+    if (wstreq(wp, g_wp_path)) return 0;                  /* unchanged */
+    scpy(g_wp_path, wp, sizeof g_wp_path);
+    wp_clear();
+    if (wp[0] && load_image_any(wp, &g_wallpaper)==0){ g_has_wp=1; g_wp_src=1; }
+    return 1;
+}
+
+/* Merge the *.desktop shortcuts in `dir` into tmp[]/names[] (count *cnt), with
+ * basename override: a shortcut whose filename already collected is replaced
+ * in place (so ~/.shortcuts entries override the system-wide ones by name). */
+static void merge_shortcuts(const char *dir, icon_t *tmp, char names[][64], int *cnt)
+{
+    struct dirent de;
+    for (unsigned idx=0; idx<4096; idx++){
+        int rc=sys_readdir(dir, idx, &de);
+        if (rc!=1) break;
+        if (de.d_type==DT_DIR) continue;
+        if (!wendswith(de.d_name, ".desktop")) continue;
+        char path[160]; int p=0;
+        for (const char *q=dir; *q; q++) path[p++]=*q; path[p++]='/';
+        for (int k=0; de.d_name[k] && p<(int)sizeof path-1; k++) path[p++]=de.d_name[k];
+        path[p]=0;
+        icon_t e;
+        if (parse_desktop_file(path, &e)!=0) continue;
+        scpy(e.src, path, sizeof e.src);
+        int slot=-1;
+        for (int j=0; j<*cnt; j++) if (wstreq(names[j], de.d_name)){ slot=j; break; }
+        if (slot<0){ if (*cnt>=ICON_MAX) continue; slot=(*cnt)++; }
+        tmp[slot]=e; scpy(names[slot], de.d_name, sizeof names[slot]);
+    }
+}
+
+/* Build the desktop icon set from the system-wide /usr/share/shortcuts plus the
+ * user-local ~/.shortcuts overlay (overrides by filename), sorted by filename
+ * for a stable layout, falling back to the built-in defaults if empty. */
+static void load_desktop_entries(void)
+{
+    static icon_t tmp[ICON_MAX]; static char names[ICON_MAX][64];
+    int cnt=0;
+    merge_shortcuts("/usr/share/shortcuts", tmp, names, &cnt);
+    /* ~/.shortcuts user overlay (overrides system-wide by filename). */
+    char home[96]; mxrc_home("/.shortcuts", home, sizeof home);
+    merge_shortcuts(home, tmp, names, &cnt);
+    if (cnt==0){ add_default_icons(); return; }
+    /* insertion sort by filename for a deterministic layout */
+    for (int a=1; a<cnt; a++){
+        icon_t t=tmp[a]; char nm[64]; scpy(nm, names[a], sizeof nm);
+        int b=a-1;
+        while (b>=0 && !wstrle(names[b], nm)){ tmp[b+1]=tmp[b]; scpy(names[b+1], names[b], sizeof names[b+1]); b--; }
+        tmp[b+1]=t; scpy(names[b+1], nm, sizeof names[b+1]);
+    }
+    for (int i=0; i<cnt; i++){
+        if (tmp[i].x<0 || tmp[i].y<0) icon_grid_pos(i, &tmp[i].x, &tmp[i].y);
+        icons[i]=tmp[i];
+    }
+    g_icon_n=cnt;
+}
+
+/* Best-effort: rewrite a dragged icon's position back into its .desktop file.
+ * Built-in defaults (src=="") and a read-only live ISO are silent no-ops. */
+static char *wcat(char *p, const char *s){ while (*s) *p++=*s++; return p; }
+static char *wcatint(char *p, int v){ char b[12]; if (v<0){*p++='-'; v=-v;} u2s((unsigned)v, b); return wcat(p, b); }
+static char *wcathex(char *p, gfx_u32 v){ const char *h="0123456789abcdef"; for (int i=20; i>=0; i-=4) *p++=h[(v>>i)&0xf]; return p; }
+static void icon_save_pos(int ii)
+{
+    icon_t *c=&icons[ii];
+    if (!c->src[0]) return;
+    static char out[640]; char *p=out;
+    p=wcat(p,"[Desktop Entry]\nType=Application\nName="); p=wcat(p,c->label);
+    p=wcat(p,"\nIcon="); p=wcat(p,c->icon);
+    p=wcat(p,"\nExec="); p=wcat(p,c->cmd);
+    if (c->arg[0]){ p=wcat(p,"\nX-Makar-Arg="); p=wcat(p,c->arg); }
+    p=wcat(p,"\nX-Makar-WinW="); p=wcatint(p,c->winw);
+    p=wcat(p,"\nX-Makar-WinH="); p=wcatint(p,c->winh);
+    p=wcat(p,"\nX-Makar-Tint="); p=wcathex(p,c->tint);
+    p=wcat(p,"\nX-Makar-IconX="); p=wcatint(p,c->x);
+    p=wcat(p,"\nX-Makar-IconY="); p=wcatint(p,c->y);
+    p=wcat(p,"\n"); *p=0;
+    int fd=sys_open(c->src, O_WRONLY|O_CREAT|O_TRUNC);
+    if (fd<0) return;
+    sys_write(fd, out, (unsigned)(p-out));
+    sys_close(fd);
 }
 
 /* Fork+exec a client, handing it `-makx <server-pid>` and a stdout/stderr pipe
@@ -253,7 +466,7 @@ static void launch_icon(int ii)
         sys_close(op[1]);
         char pids[12]; u2s((unsigned)server_pid, pids);
         char *av[5]={ (char*)icons[ii].cmd, "-makx", pids, 0, 0 };
-        if (icons[ii].arg) av[3]=(char*)icons[ii].arg;   /* e.g. Install -> "install" */
+        if (icons[ii].arg[0]) av[3]=(char*)icons[ii].arg;   /* e.g. Install -> "install" */
         sys_execve(icons[ii].cmd, av, (char *const*)0);
         sys_exit(127);
     }
@@ -347,6 +560,20 @@ static void serve_requests(void)
             else r.type=MXEV_CLOSE;
         } else if (m.type==MX_BYE){
             /* The client acks then exits; the reap loop frees the slot. */
+            r.type=MXEV_NONE;
+        } else if (m.type==MX_WALLPAPER){
+            /* A client (mximg) handed us a decoded wallpaper as a shared surface
+             * (X11 root-pixmap style): map it and blit it behind the icons.  No
+             * file read -- immune to cross-process FS-cache coherence. */
+            int sid=(int)m.data[0], w=(int)m.data[1], h=(int)m.data[2];
+            void *base = (sid>=0 && w>0 && h>0) ? sys_surface_map(sid) : 0;
+            if (base){
+                wp_clear();
+                g_wallpaper.px=(gfx_u32*)base; g_wallpaper.w=w; g_wallpaper.h=h;
+                g_has_wp=1; g_wp_src=2; g_wp_sid=sid;
+                g_wp_path[0]=0;                       /* poll won't fight the surface */
+                g_dirty=1; damage_full();
+            }
             r.type=MXEV_NONE;
         }
         sys_ipc_send(src, &r);
@@ -537,7 +764,14 @@ static void icon_glyph(int idx, int gx, int gy)
 }
 static void draw_icons(void)
 {
-    for(int i=0;i<ICON_N;i++){ icon_t *c=&icons[i];
+    for(int i=0;i<g_icon_n;i++){ icon_t *c=&icons[i];
+        /* selection / hover highlight: a rounded plate behind the icon tile
+         * (selected = brighter blue + outline, hover = subtle lift). */
+        if (i==g_sel_icon || i==g_hover_icon){
+            gfx_u32 hl = (i==g_sel_icon) ? RGB(0x35,0x4f,0x78) : RGB(0x26,0x33,0x49);
+            gfx_round(&scr,c->x-3,c->y-3,c->w+6,c->h+6,hl,COL_DESK);
+            if (i==g_sel_icon) gfx_outline(&scr,c->x-3,c->y-3,c->w+6,c->h+6,RGB(0x5a,0x86,0xcc));
+        }
         gfx_round(&scr,c->x,c->y,c->w,c->h,RGB(0x2a,0x38,0x50),COL_DESK);
         int gx=c->x+c->w/2-16, gy=c->y+9;
         if (icon_has[i]){
@@ -551,7 +785,7 @@ static void draw_icons(void)
         gfx_str(&scr,c->x+(c->w-gfx_text_w(c->label))/2,c->y+c->h-16,c->label,0xFFFFFF);
     }
 }
-static int icon_hit(int px,int py){ for(int i=0;i<ICON_N;i++){icon_t*c=&icons[i]; if(in_rect(px,py,c->x,c->y,c->w,c->h)) return i;} return -1; }
+static int icon_hit(int px,int py){ for(int i=0;i<g_icon_n;i++){icon_t*c=&icons[i]; if(in_rect(px,py,c->x,c->y,c->w,c->h)) return i;} return -1; }
 
 /* ---- system stats for the right of the dock (CPU% + RAM%) --------------- */
 static unsigned dock_meminfo_kb(const char *label)
@@ -609,6 +843,18 @@ static void dock_stats(char *out)
 
 /* ---- system tray: net status + clock/date (lives in the dock, far right) - */
 static int      g_net_state = -1;        /* 0 down, 1 limited, 2 connected   */
+/* Dock tray element visibility (toggled via the dock right-click menu, persisted
+ * in ~/.mxrc).  Default all on. */
+static int g_tray_clock=1, g_tray_date=1, g_tray_net=1, g_tray_stats=1, g_tray_gpu=1;
+static char g_gpu_name[20] = "";          /* active video backend (queried once)  */
+static void load_tray_prefs(void){
+    g_tray_clock = mxrc_get_int("TrayClock", 1);
+    g_tray_date  = mxrc_get_int("TrayDate",  1);
+    g_tray_net   = mxrc_get_int("TrayNet",   1);
+    g_tray_stats = mxrc_get_int("TrayStats", 1);
+    g_tray_gpu   = mxrc_get_int("TrayGpu",   1);
+    if (sys_video_name(g_gpu_name, sizeof g_gpu_name) <= 0) scpy(g_gpu_name, "VGA", sizeof g_gpu_name);
+}
 static char     g_clk[8]   = "--:--";    /* HH:MM                            */
 static char     g_date[10] = "--/--/--"; /* DD/MM/YY                         */
 static unsigned g_tray_sec = 0xffffffffu;/* last poll second (uptime/100)    */
@@ -655,7 +901,7 @@ static int dock_order[MAXWIN], dock_n;
 static void dock_rebuild(void)
 {
     dock_n=0;
-    for(int ii=0;ii<ICON_N;ii++) for(int i=0;i<MAXWIN;i++) if(W[i].in_use && W[i].icon==ii) dock_order[dock_n++]=i;
+    for(int ii=0;ii<g_icon_n;ii++) for(int i=0;i<MAXWIN;i++) if(W[i].in_use && W[i].icon==ii) dock_order[dock_n++]=i;
     for(int i=0;i<MAXWIN;i++) if(W[i].in_use && W[i].icon<0) dock_order[dock_n++]=i;
 }
 static int dock_btn_x(int slot){ return 8 + slot*60; }
@@ -679,17 +925,56 @@ static void draw_dock(void)
      * reading left-to-right "CPU x% RAM y%  [net]  HH:MM  DD/MM/YY". */
     tray_poll();
     unsigned tcol = RGB(0xc8,0xd0,0xdc); int ty = y0+(DOCK_H-8)/2; int rx = (int)FBW-10;
-    rx -= gfx_text_w(g_date); gfx_str(&scr, rx, ty, g_date, tcol); rx -= 12;
-    rx -= gfx_text_w(g_clk);  gfx_str(&scr, rx, ty, g_clk,  tcol); rx -= 16;
-    rx -= 16; draw_net_icon(rx, y0+(DOCK_H-12)/2, g_net_state); rx -= 14;
-    char st[32]; dock_stats(st);
-    rx -= gfx_text_w(st); gfx_str(&scr, rx, ty, st, RGB(0x90,0xa0,0xb5));
+    if (g_tray_date){ rx -= gfx_text_w(g_date); gfx_str(&scr, rx, ty, g_date, tcol); rx -= 12; }
+    if (g_tray_clock){ rx -= gfx_text_w(g_clk);  gfx_str(&scr, rx, ty, g_clk,  tcol); rx -= 16; }
+    if (g_tray_net){ rx -= 16; draw_net_icon(rx, y0+(DOCK_H-12)/2, g_net_state); rx -= 14; }
+    if (g_tray_stats){ char st[32]; dock_stats(st);
+        rx -= gfx_text_w(st); gfx_str(&scr, rx, ty, st, RGB(0x90,0xa0,0xb5)); rx -= 12; }
+    if (g_tray_gpu && g_gpu_name[0]){
+        char gp[28]; int o=0; const char *p="GPU "; while(*p)gp[o++]=*p++;
+        for(const char *q=g_gpu_name; *q && o<(int)sizeof gp-1; q++) gp[o++]=*q; gp[o]=0;
+        rx -= gfx_text_w(gp); gfx_str(&scr, rx, ty, gp, RGB(0x7a,0xc0,0x90)); }
 }
 static int dock_hit(int px,int py,int *out_win)
 {
     int y0=(int)FBH-DOCK_H; if(py<y0) return 0;
     for(int s=0;s<dock_n;s++){ int bx=dock_btn_x(s); if(in_rect(px,py,bx,y0+5,54,DOCK_H-10)){ *out_win=dock_order[s]; return 1; } }
     return 0;
+}
+
+/* ---- dock right-click menu: toggle which tray elements show (persist ~/.mxrc) */
+#define TRAYMENU_W 150
+#define TRAYMENU_N 5
+static const char *TRAY_LABELS[TRAYMENU_N] = {"Clock","Date","Network","CPU / RAM","GPU"};
+static const char *TRAY_KEYS[TRAYMENU_N]   = {"TrayClock","TrayDate","TrayNet","TrayStats","TrayGpu"};
+static int g_tray_menu=0, g_tray_menu_x=0;     /* open flag + anchor x (pops up from dock) */
+static int *tray_flag(int i){ return i==0?&g_tray_clock : i==1?&g_tray_date : i==2?&g_tray_net : i==3?&g_tray_stats : &g_tray_gpu; }
+static void tray_menu_box(int *x,int *y,int *w,int *h){
+    int rh=22; *w=TRAYMENU_W; *h=6+TRAYMENU_N*rh+6;
+    *x=g_tray_menu_x; if(*x+*w>(int)FBW)*x=(int)FBW-*w; if(*x<0)*x=0;
+    *y=(int)FBH-DOCK_H-*h;                       /* sit just above the dock */
+}
+static void draw_tray_menu(void){
+    if(!g_tray_menu) return;
+    int x,y,w,h,rh=22; tray_menu_box(&x,&y,&w,&h);
+    gfx_round(&scr,x,y,w,h,COL_WIN,COL_BORDER);
+    for(int i=0;i<TRAYMENU_N;i++){ int ry=y+6+i*rh;
+        gfx_str(&scr,x+10,ry+(rh-8)/2, *tray_flag(i)?"x":" ", RGB(0x8a,0xe2,0x34));
+        gfx_str(&scr,x+26,ry+(rh-8)/2, TRAY_LABELS[i], 0xFFFFFF);
+    }
+}
+/* Handle a left-click while the menu is open: toggle a row, or close on an
+ * outside click.  Returns 1 if the click was consumed (menu was open). */
+static int tray_menu_click(int px,int py){
+    if(!g_tray_menu) return 0;
+    int x,y,w,h,rh=22; tray_menu_box(&x,&y,&w,&h);
+    if(in_rect(px,py,x,y,w,h)){
+        for(int i=0;i<TRAYMENU_N;i++){ int ry=y+6+i*rh;
+            if(in_rect(px,py,x,ry,w,rh)){ int *f=tray_flag(i); *f=!*f; mxrc_set_int(TRAY_KEYS[i],*f); break; }
+        }
+    }
+    g_tray_menu=0;                               /* any click closes the menu */
+    return 1;
 }
 
 /* top menu bar -------------------------------------------------------------- */
@@ -727,14 +1012,31 @@ static void draw_menubar(void)
 static int power_hit(int px,int py){ int x0=(int)FBW-POWER_W-4; return in_rect(px,py,x0,2,POWER_W,MENU_H-4); }
 
 /* ---- mouse cursor ------------------------------------------------------- */
+/* Two 11-wide (+NUL) sprites: the arrow and a busy hourglass shown while a
+ * client is launching (forked but no surface yet).  'X' = outline, '.' = body,
+ * space = transparent.  Rows are 11 chars so the HW-cursor upload's fixed
+ * 12-column scan reads the trailing NUL (transparent) without overrunning. */
 static const char *CURSOR[16]={
  "X          ","XX         ","X.X        ","X..X       ","X...X      ","X....X     ",
  "X.....X    ","X......X   ","X.......X  ","X........X ","X....XXXXXX","X..X.X     ",
  "X.X X.X    ","XX  X.X    ","X    X.X   ","      XX   " };
+static const char *BUSY[16]={
+ "XXXXXXXX   ","X......X   "," X....X    ","  X..X     ","   XX      ","   XX      ",
+ "  X..X     "," X....X    ","X......X   ","XXXXXXXX   ","           ","           ",
+ "           ","           ","           ","           " };
+static int g_busy = 0;                  /* 1 while a client is launching */
 static void draw_cursor(int cx,int cy)
 {
-    for(int r=0;r<16;r++) for(int c=0;CURSOR[r][c];c++){ char p=CURSOR[r][c];
+    const char *const *bm = g_busy ? BUSY : CURSOR;
+    for(int r=0;r<16;r++) for(int c=0;bm[r][c];c++){ char p=bm[r][c];
         if(p=='X')gfx_px(&scr,cx+c,cy+r,0); else if(p=='.')gfx_px(&scr,cx+c,cy+r,0xFFFFFF); }
+}
+
+/* Any window forked but not yet showing a surface -> show the busy cursor. */
+static int wm_busy(void)
+{
+    for(int i=0;i<MAXWIN;i++) if(W[i].in_use && W[i].client>=0 && W[i].sid<0) return 1;
+    return 0;
 }
 
 /* Cursor save-under: so the cursor can be moved without recompositing the whole
@@ -752,14 +1054,25 @@ static int     cur_sx=-1, cur_sy=-1;   /* where cur_save was captured (-1 = none
  * software save-under compositing entirely -- a pure mouse move then costs no
  * framebuffer traffic at all.  0 = software cursor (the universal path). */
 static int g_hwcursor = 0;
+/* Upload one of the sprites (arrow / busy hourglass) to the HW cursor overlay. */
+static void hwcursor_upload(const char *const bm[]){
+    static gfx_u32 spr[CURW*CURH];
+    for (int r=0;r<CURH;r++) for (int c=0;c<CURW;c++){
+        char p = bm[r][c];                     /* row strings are 11+NUL; c=11 -> 0 */
+        spr[r*CURW+c] = (p=='X') ? 0xFF000000u      /* outline: opaque black */
+                       : (p=='.') ? 0xFFFFFFFFu      /* body: opaque white    */
+                       : 0x00000000u;                /* transparent           */
+    }
+    sys_hwcursor_define(spr, CURW, CURH, 0, 0);
+}
 static void hwcursor_setup(void){
     if (!(sys_video_caps() & VIDEO_CAP_HW_CURSOR)) return;
     static gfx_u32 spr[CURW*CURH];
     for (int r=0;r<CURH;r++) for (int c=0;c<CURW;c++){
         char p = CURSOR[r][c];                 /* row strings are 11+NUL; c=11 -> 0 */
-        spr[r*CURW+c] = (p=='X') ? 0xFF000000u      /* outline: opaque black */
-                       : (p=='.') ? 0xFFFFFFFFu      /* body: opaque white    */
-                       : 0x00000000u;                /* transparent           */
+        spr[r*CURW+c] = (p=='X') ? 0xFF000000u
+                       : (p=='.') ? 0xFFFFFFFFu
+                       : 0x00000000u;
     }
     if (sys_hwcursor_define(spr, CURW, CURH, 0, 0) == 0){
         g_hwcursor = 1;
@@ -1052,13 +1365,18 @@ int main(int argc, char **argv, char **envp)
 
     if (want_login) do_login(login_user);
 
-    load_icon_assets();         /* desktop icon BMPs (glyph fallback if absent) */
+    load_desktop_entries();     /* /usr/share/shortcuts + ~/.shortcuts (or defaults) */
+    load_icon_assets();         /* per-icon artwork (.ico/.png/.bmp; glyph fallback) */
+    apply_wallpaper();          /* ~/.mxrc Wallpaper= (flat desktop if unset) */
+    load_tray_prefs();          /* ~/.mxrc dock tray visibility (default all on) */
     hwcursor_setup();           /* use the display driver's HW cursor if it has one */
     znum=0; focus=-1;
     launch_icon(0);             /* open a terminal client on the desktop */
 
     int cx=(int)FBW/2, cy=(int)FBH/2, prev_left=0;
     int dragging=0, resizing=0, drag_win=-1, drag_dx=0, drag_dy=0;
+    int drag_icon=-1, icon_moved=0, icon_dx=0, icon_dy=0, icon_px=0, icon_py=0;
+    int prev_right=0;
     int announced=0, exit_to_shell=0, power_action=0;
     unsigned stat_up=0;
 
@@ -1071,17 +1389,18 @@ int main(int argc, char **argv, char **envp)
               if (cy>=(int)FBH) cy=(int)FBH-1;
           } }
         /* ---- gather hardware input ---- */
-        int mpressed=0, mreleased=0;
+        int mpressed=0, mreleased=0, rpressed=0;
         unsigned int ev;
         while((ev=sys_mouse_read())!=0){
             cx += (int)(signed char)((ev>>8)&0xFF);
             cy += (int)(signed char)((ev>>16)&0xFF);
             if(cx<0)cx=0; if(cx>=(int)FBW)cx=(int)FBW-1;
             if(cy<0)cy=0; if(cy>=(int)FBH)cy=(int)FBH-1;
-            int left=ev&1;
+            int left=ev&1, right=ev&2;
             if(left&&!prev_left) mpressed=1;
             if(!left&&prev_left) mreleased=1;
-            prev_left=left;
+            if(right&&!prev_right) rpressed=1;
+            prev_left=left; prev_right=right;
             /* NB: a pure cursor move does NOT dirty the scene -- it's handled by
              * the cheap cursor-only path below.  Scene changes (clicks, drags,
              * client repaints, focus) set g_dirty in their own handlers. */
@@ -1102,8 +1421,14 @@ int main(int argc, char **argv, char **envp)
          * (polled below) -- both set this so the action dispatch lives once. */
         int want_power_menu = 0;
 
-        if (mpressed){
+        /* right-click on the dock opens the tray-visibility menu */
+        if (rpressed && cy >= (int)FBH-DOCK_H){ g_tray_menu_x=cx; g_tray_menu=1; g_dirty=1; damage_full(); }
+
+        if (mpressed && g_tray_menu){          /* a click while the menu is open: toggle/close */
+            tray_menu_click(cx,cy); g_dirty=1; damage_full();
+        } else if (mpressed){
             int dk;
+            g_sel_icon=-1;                    /* clear selection unless an icon is hit */
             if (power_hit(cx,cy)) want_power_menu=1;
             else if (dock_hit(cx,cy,&dk)){ W[dk].minimized=0; z_raise(dk); set_focus(dk); g_dirty=1; damage_full(); }
             else {
@@ -1117,7 +1442,12 @@ int main(int argc, char **argv, char **envp)
                     else if (in_titlebar(&W[hk],cx,cy)){ dragging=1; drag_win=hk; drag_dx=cx-W[hk].x; drag_dy=cy-W[hk].y; W[hk].maximized=0; }
                 } else {
                     int ii=icon_hit(cx,cy);
-                    if (ii>=0) launch_icon(ii);
+                    if (ii>=0){           /* select + begin a potential drag (launch on release if not moved) */
+                        g_sel_icon=ii;
+                        drag_icon=ii; icon_moved=0;
+                        icon_dx=cx-icons[ii].x; icon_dy=cy-icons[ii].y;
+                        icon_px=cx; icon_py=cy;
+                    }
                 }
             }
         }
@@ -1125,6 +1455,25 @@ int main(int argc, char **argv, char **envp)
             /* On finishing a resize drag, re-flow the client to the new size. */
             if (resizing && drag_win>=0) maybe_send_resize(drag_win);
             dragging=0; resizing=0;
+            /* Icon: a plain click (no drag) launches; a drag drops + persists. */
+            if (drag_icon>=0){
+                if (!icon_moved) launch_icon(drag_icon);
+                else            icon_save_pos(drag_icon);
+                drag_icon=-1; icon_moved=0;
+            }
+        }
+        /* ---- icon drag: move the desktop icon under the pointer ---- */
+        if (drag_icon>=0 && mdown && drag_icon<g_icon_n){
+            if (!icon_moved && (iabs(cx-icon_px)>4 || iabs(cy-icon_py)>4)) icon_moved=1;
+            if (icon_moved){
+                icon_t *c=&icons[drag_icon];
+                damage(c->x,c->y,c->w,c->h);          /* erase old cell */
+                c->x=cx-icon_dx; c->y=cy-icon_dy;
+                if(c->x<0)c->x=0; if(c->y<MENU_H)c->y=MENU_H;
+                if(c->x+c->w>(int)FBW)c->x=(int)FBW-c->w;
+                if(c->y+c->h>(int)FBH-DOCK_H)c->y=(int)FBH-DOCK_H-c->h;
+                g_dirty=1; damage(c->x,c->y,c->w,c->h); /* new cell */
+            }
         }
         if (dragging && drag_win>=0 && W[drag_win].in_use){ swin *w=&W[drag_win];
             damage_win(drag_win);                /* old position (erase trail) */
@@ -1141,6 +1490,15 @@ int main(int argc, char **argv, char **envp)
             if(w->x+w->w>(int)FBW)w->w=(int)FBW-w->x;
             if(w->y+w->h>(int)FBH-DOCK_H)w->h=(int)FBH-DOCK_H-w->y;
             g_dirty=1; damage_win(drag_win);     /* new size */
+        }
+
+        /* ---- desktop icon hover highlight: repaint only when it changes ---- */
+        { int hv = (drag_icon<0) ? icon_hit(cx,cy) : -1;
+          if (hv != g_hover_icon){
+              int prev=g_hover_icon; g_hover_icon=hv; g_dirty=1;
+              if (prev>=0) damage(icons[prev].x-3,icons[prev].y-3,icons[prev].w+6,icons[prev].h+6);
+              if (hv>=0)   damage(icons[hv].x-3,  icons[hv].y-3,  icons[hv].w+6,  icons[hv].h+6);
+          }
         }
 
         /* ---- Ctrl-Alt-Del opens the power menu instantly (kernel sets the
@@ -1184,20 +1542,27 @@ int main(int argc, char **argv, char **envp)
         /* ---- service clients + reap exited ones ---- */
         serve_requests();
         if (reap_clients()){ g_dirty=1; damage_full(); }
+        /* busy cursor: hourglass while any launched client has no surface yet */
+        { int busy=wm_busy(); if (busy!=g_busy){ g_busy=busy; g_dirty=1;
+            if (g_hwcursor) hwcursor_upload(busy?BUSY:CURSOR);
+            else damage(cur_sx<0?cx:cur_sx, cur_sy<0?cy:cur_sy, CURW, CURH); } }
         { unsigned now=sys_uptime(); if (now-stat_up>=100u){ stat_up=now; g_dirty=1;
             damage(0,0,(int)FBW,MENU_H);                       /* top bar title  */
-            damage(0,(int)FBH-DOCK_H,(int)FBW,DOCK_H); } }      /* dock stats+tray */
+            damage(0,(int)FBH-DOCK_H,(int)FBW,DOCK_H);          /* dock stats+tray */
+            if (apply_wallpaper()) damage_full(); } }           /* live "set as wallpaper" */
 
         if (!g_dirty && !cmoved){ sys_yield(); continue; }
 
         if (g_dirty){
             /* ---- recompose the WHOLE back buffer (cheap, cacheable RAM) ---- */
-            gfx_fill(&scr,0,0,(int)FBW,(int)FBH,COL_DESK);
+            if (g_has_wp) gfx_blit_scaled(&scr,0,0,(int)FBW,(int)FBH,&g_wallpaper);
+            else          gfx_fill(&scr,0,0,(int)FBW,(int)FBH,COL_DESK);
             gfx_str(&scr,8,MENU_H+6,"Makar desktop -- click an icon; drag a title bar; click a window to focus",RGB(0x90,0xa0,0xb5));
             draw_icons();
             for (int j=0;j<znum;j++){ int i=zorder[j]; if(!W[i].in_use || W[i].minimized) continue; draw_window_frame(i); }
             draw_dock();
             draw_menubar();
+            draw_tray_menu();
             int ox=cur_sx, oy=cur_sy;
             if (!g_hwcursor){ cursor_capture(cx,cy); draw_cursor(cx,cy); }
             /* ---- but PUSH only the damaged region to the framebuffer ---- */
