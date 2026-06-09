@@ -278,7 +278,7 @@ volatile uint32_t g_ring3_last_cp = 0;
  * too-small buffer -- e.g. one handed across a racing runtime mode switch,
  * before the WM has reallocated it for the new geometry -- would otherwise make
  * the kernel read past the mapping and take a ring-0 page fault, which panics.
- * A bad pointer from userspace must instead fail the syscall (WWLD: -EFAULT,
+ * A bad pointer from userspace must instead fail the syscall (Linux: -EFAULT,
  * never take the kernel down).  Walks the PD the same way the COW/#PF handler
  * does (page tables live in the low identity map).  Returns 1 if the whole
  * range is safe to read, 0 otherwise. */
@@ -1325,7 +1325,7 @@ static void syscall_dispatch_inner(registers_t *regs)
             vfs_stat_info_t si;
             int have_stat = (vfs_stat(path, &si) == 0);
 
-            /* Lazy read-only path (WWLD): a read-only open on a seekable disk
+            /* Lazy read-only path (Linux-style): a read-only open on a seekable disk
              * backend is *not* eager-loaded.  We record the size and stream the
              * file a page at a time through the kernel page cache on each read
              * (see SYS_READ) -- so opening a 29 MiB WAD costs ~0 heap instead of
@@ -1524,7 +1524,7 @@ static void syscall_dispatch_inner(registers_t *regs)
             break;
         }
 
-        /* Demand-paged heap (WWLD: Linux brk only reserves; pages are mapped
+        /* Demand-paged heap (Linux brk only reserves; pages are mapped
          * lazily on first touch).  Just advance the break -- the page-fault
          * handler maps a zeroed frame for any access in [user_brk_base,
          * user_brk).  This keeps a multi-MiB growth (e.g. doom's 6 MiB zone)
@@ -1567,7 +1567,7 @@ static void syscall_dispatch_inner(registers_t *regs)
 
         /* Demand-paged anonymous mmap: reserve the window only; the page-fault
          * handler maps a zeroed frame on first touch in [USER_MMAP_BASE,
-         * mmap_next).  Same WWLD lazy model as brk above. */
+         * mmap_next).  Same lazy model as brk above. */
         t->mmap_next = base + (pages << 12);
         regs->eax = base;
         break;

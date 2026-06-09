@@ -967,7 +967,7 @@ static int run_builtin(int argc, char **argv, int *should_exit, int *exit_status
          * inside the GUI terminal (mxterm) -- our stdout is a pipe there.  Both
          * the kernel VT parser (vt.c) and mxterm's vt100 honour \033[2J\033[H,
          * so this clears correctly in the classic shell AND the GUI terminal.
-         * WWLD: this is exactly what terminfo's `clear` capability emits. */
+         * This is exactly what terminfo's `clear` capability emits. */
         put_s("\033[2J\033[H"); g_last_status = 0; return 1;
     }
     if (s_eq(argv[0], "exec")) {
