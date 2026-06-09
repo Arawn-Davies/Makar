@@ -52,6 +52,7 @@ Last reordered 2026-06-09.
 ### Image viewer + Doom UX (branch `feat/jpeg-doom-clicklag`)
 
 - [x] **T38** — `mximg` baseline JPEG decode — shared `img_jpg.c` (integer-only: marker parse + Huffman + dequant + fixed-point 8x8 IDCT + chroma upsample + YCbCr→RGB; 4:4:4 / 4:2:2 / 4:2:0 + grayscale + restart markers; progressive rejected). Host-validated against the Go baseline test JPEGs (all subsamplings + grayscale render correctly). Wired into mximg (BMP/GIF/PNG/JPEG).
+- [x] **T31** — Doom95-style launcher (`mxdoom.elf`): a makx dialog to pick the IWAD (scanned from `/usr/share/games/doom` + `/apps`), an optional PWAD (Browse via the shared file dialog), skill, episode/map, and monster options (No Monsters / Fast / Respawn); "New Game" forks `doom.elf` with the matching `-iwad`/`-file`/`-skill`/`-warp`/`-nomonsters`/`-fast`/`-respawn` args (separate process → its own window) and closes the launcher. The Doom desktop shortcut now opens the launcher.
 
 ---
 
@@ -64,7 +65,6 @@ Last reordered 2026-06-09.
 - [ ] **T24** — `mxweb` — HTTP over lwIP + a minimal HTML renderer
 - [ ] **T28** — GUI responsiveness: fix one-event click lag / double-click
 - [ ] **T30** — Windowed framebuffer for console-launched graphical apps (Doom in a makx window)
-- [ ] **T31** — Doom IWAD/PWAD selection launcher
 - [ ] **T35** — Memory management continuation (PMM accounting + reclaim/GC tuning)
 - [ ] **T36** — Self-hosted i686-makar toolchain → GHCR (parked)
 - [ ] **T37** — Linux-ification: cut the ~101-syscall surface toward UNIX idioms (device files, ioctl, getdents)

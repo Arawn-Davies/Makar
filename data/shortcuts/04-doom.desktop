@@ -2,9 +2,9 @@
 Type=Application
 Name=Doom
 Icon=doom
-Exec=/apps/doom.elf
-X-Makar-WinW=648
-X-Makar-WinH=424
+Exec=/apps/mxdoom.elf
+X-Makar-WinW=468
+X-Makar-WinH=310
 X-Makar-Tint=c04040
 X-Makar-IconX=24
 X-Makar-IconY=208
