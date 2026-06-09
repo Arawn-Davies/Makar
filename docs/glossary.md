@@ -83,7 +83,7 @@ this page — open an issue.
 | **SCI / SCI_EN** | System Control Interrupt / SCI Enable | SCI_EN (PM1 bit 0) = "ACPI mode is on". Hyper-V Gen1 boots with it **off**; we run the enable handshake first. |
 | **SMI / SMI_CMD** | System Management Interrupt / SMI Command port | Writing `ACPI_ENABLE` to SMI_CMD asks firmware to switch into ACPI mode. |
 | **PS/2** | Personal System/2 | The legacy keyboard/mouse port interface. |
-| **PIT** | Programmable Interval Timer | The 100 Hz timer that drives preemption. |
+| **PIT** | Programmable Interval Timer | The 250 Hz timer that drives preemption (TIMER_HZ). |
 | **PCI** | Peripheral Component Interconnect | The bus; its **MMIO hole** is the high physical region devices (incl. the framebuffer) live in. |
 | **MMIO** | Memory-Mapped I/O | Device registers/memory accessed as if they were RAM. |
 | **IDE / ATA / ATAPI** | Integrated Drive Electronics / AT Attachment / ATA Packet Interface | The disk (and CD-ROM, ATAPI) interface; Makar uses PIO and DMA. |

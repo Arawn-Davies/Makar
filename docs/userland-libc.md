@@ -176,7 +176,7 @@ Implemented or declared:
 - `usleep`
 - `_exit`
 
-`sleep` and `usleep` spin-yield on the 100 Hz uptime tick. There is no
+`sleep` and `usleep` spin-yield on the 250 Hz uptime tick. There is no
 `nanosleep` syscall and no `SIGALRM` interruption behavior.
 
 ### `<time.h>`

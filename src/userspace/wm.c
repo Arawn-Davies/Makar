@@ -175,7 +175,7 @@ static void win_free(int i)
 /* Each icon names a client *.elf and the default outer window geometry.  The
  * program path is launcher data -- the server bakes in no application. */
 typedef struct { int x,y,w,h; const char *label; gfx_u32 tint; const char *cmd; int winw, winh; const char *arg; } icon_t;
-#define ICON_N 12
+#define ICON_N 13
 /* Two-column desktop icon grid (col x = 24 / 128, rows step 84).  winw/winh are
  * sized so each client's fixed surface (mxterm 640x400, mxfiles 560x380,
  * mxedit 620x420, mxtasks 560x360, doom 640x400, mxabout 560x430, mxclock
@@ -197,6 +197,7 @@ static icon_t icons[ICON_N] = {
      * during the copy (the TUI installer is for shell mode). */
     {  24, 460, 96,70, "Install",  RGB(0xff,0x70,0x70), "/apps/mxinstall.elf", 588,492 },
     { 128, 460, 96,70, "Image",    RGB(0x70,0xb0,0x70), "/apps/mximg.elf",   608,468 },
+    { 24,  544, 96,70, "Display",  RGB(0x60,0x90,0xc0), "/apps/mxdisplay.elf", 380,300 },
 };
 
 /* Desktop icon artwork: real BMP tiles under the XFCE-style asset path
@@ -205,7 +206,7 @@ static icon_t icons[ICON_N] = {
  * draws instead, so the desktop always has icons. */
 static const char *icon_img[ICON_N] = {
     "terminal","files","editor","tasks","doom","about",
-    "clock","calc","net","disk","install","image",
+    "clock","calc","net","disk","install","image","display",
 };
 static gfx_surface icon_surf[ICON_N];
 static int         icon_has[ICON_N];
@@ -606,6 +607,49 @@ static void dock_stats(char *out)
     out[o]=0;
 }
 
+/* ---- system tray: net status + clock/date (lives in the dock, far right) - */
+static int      g_net_state = -1;        /* 0 down, 1 limited, 2 connected   */
+static char     g_clk[8]   = "--:--";    /* HH:MM                            */
+static char     g_date[10] = "--/--/--"; /* DD/MM/YY                         */
+static unsigned g_tray_sec = 0xffffffffu;/* last poll second (uptime/100)    */
+
+static void tray_poll(void)
+{
+    unsigned sec = sys_uptime() / 100u;          /* 100 Hz ticks -> seconds  */
+    if (sec == g_tray_sec) return;               /* poll at most once/second */
+    g_tray_sec = sec;
+    g_net_state = sys_net_ctl(NET_CTL_STATUS);
+    if (g_net_state < 0) g_net_state = 0;
+    /* /proc/rtc = "YYYY-MM-DD HH:MM:SS" -> HH:MM and DD/MM/YY. */
+    char b[40];
+    int fd = sys_open("/proc/rtc", O_RDONLY);
+    if (fd >= 0) {
+        long n = sys_read(fd, b, (long)sizeof b - 1);
+        sys_close(fd);
+        if (n >= 19) {
+            g_clk[0]=b[11]; g_clk[1]=b[12]; g_clk[2]=':'; g_clk[3]=b[14]; g_clk[4]=b[15]; g_clk[5]=0;
+            g_date[0]=b[8]; g_date[1]=b[9]; g_date[2]='/'; g_date[3]=b[5]; g_date[4]=b[6];
+            g_date[5]='/'; g_date[6]=b[2]; g_date[7]=b[3]; g_date[8]=0;
+        }
+    }
+}
+
+/* Vista-style network indicator: 4 ascending bars; green = connected,
+ * amber = up-but-limited, grey + red X = down / no interface. */
+static void draw_net_icon(int x, int y, int state)
+{
+    unsigned col = state >= 2 ? RGB(0x57,0xc2,0x4d)
+                 : state == 1 ? RGB(0xe0,0xb0,0x20)
+                              : RGB(0x55,0x60,0x70);
+    static const int bh[4] = { 3, 6, 9, 12 };
+    for (int i = 0; i < 4; i++)
+        gfx_fill(&scr, x + i*4, y + 12 - bh[i], 3, bh[i], col);
+    if (state <= 0) {                            /* red X = no connection */
+        unsigned r = RGB(0xe0,0x40,0x30);
+        for (int k = 0; k <= 8; k++) { gfx_px(&scr,x+3+k,y+2+k,r); gfx_px(&scr,x+11-k,y+2+k,r); }
+    }
+}
+
 /* dock: one tile per open window (kind/icon order for stable positions) */
 static int dock_order[MAXWIN], dock_n;
 static void dock_rebuild(void)
@@ -631,8 +675,15 @@ static void draw_dock(void)
         char lbl[8]; dock_short(i,lbl);
         gfx_str(&scr,bx+(54-gfx_text_w(lbl))/2, y0+(DOCK_H-8)/2, lbl, 0xFFFFFF);
     }
+    /* status tray (bottom-right -- one place): CPU/RAM, net, clock, date,
+     * reading left-to-right "CPU x% RAM y%  [net]  HH:MM  DD/MM/YY". */
+    tray_poll();
+    unsigned tcol = RGB(0xc8,0xd0,0xdc); int ty = y0+(DOCK_H-8)/2; int rx = (int)FBW-10;
+    rx -= gfx_text_w(g_date); gfx_str(&scr, rx, ty, g_date, tcol); rx -= 12;
+    rx -= gfx_text_w(g_clk);  gfx_str(&scr, rx, ty, g_clk,  tcol); rx -= 16;
+    rx -= 16; draw_net_icon(rx, y0+(DOCK_H-12)/2, g_net_state); rx -= 14;
     char st[32]; dock_stats(st);
-    gfx_str(&scr,(int)FBW-gfx_text_w(st)-10, y0+(DOCK_H-8)/2, st, RGB(0x90,0xa0,0xb5));
+    rx -= gfx_text_w(st); gfx_str(&scr, rx, ty, st, RGB(0x90,0xa0,0xb5));
 }
 static int dock_hit(int px,int py,int *out_win)
 {
@@ -661,12 +712,14 @@ static void draw_power_icon(int bx,int by,gfx_u32 col)
     for(int r=0;r<11;r++) for(int c=0;PWR_ICON[r][c];c++)
         if(PWR_ICON[r][c]=='X') gfx_px(&scr,bx+c,by+r,col);
 }
+
 static void draw_menubar(void)
 {
     gfx_fill(&scr,0,0,(int)FBW,MENU_H,COL_MENU);
     gfx_fill(&scr,0,MENU_H-1,(int)FBW,1,RGB(0x28,0x32,0x44));
     gfx_str(&scr,8,(MENU_H-8)/2,"Makar",RGB(0x8a,0xe2,0x34));
     gfx_str(&scr,64,(MENU_H-8)/2, (focus>=0&&W[focus].in_use)?W[focus].title:"Desktop", RGB(0x90,0xa0,0xb5));
+    /* power button stays top-right; the net/clock/date tray moved to the dock */
     int px0=(int)FBW-POWER_W-4;
     gfx_fill(&scr,px0,2,POWER_W,MENU_H-4,UI_COL_BTN);
     draw_power_icon(px0+(POWER_W-11)/2,(MENU_H-11)/2,0xFFFFFF);
@@ -694,6 +747,26 @@ static void draw_cursor(int cx,int cy)
 static gfx_u32 cur_save[CURW*CURH];
 static int     cur_sx=-1, cur_sy=-1;   /* where cur_save was captured (-1 = none) */
 
+/* Hardware cursor: when the display driver advertises one (SVGA II), the WM
+ * uploads the arrow sprite once and just moves the HW overlay, skipping the
+ * software save-under compositing entirely -- a pure mouse move then costs no
+ * framebuffer traffic at all.  0 = software cursor (the universal path). */
+static int g_hwcursor = 0;
+static void hwcursor_setup(void){
+    if (!(sys_video_caps() & VIDEO_CAP_HW_CURSOR)) return;
+    static gfx_u32 spr[CURW*CURH];
+    for (int r=0;r<CURH;r++) for (int c=0;c<CURW;c++){
+        char p = CURSOR[r][c];                 /* row strings are 11+NUL; c=11 -> 0 */
+        spr[r*CURW+c] = (p=='X') ? 0xFF000000u      /* outline: opaque black */
+                       : (p=='.') ? 0xFFFFFFFFu      /* body: opaque white    */
+                       : 0x00000000u;                /* transparent           */
+    }
+    if (sys_hwcursor_define(spr, CURW, CURH, 0, 0) == 0){
+        g_hwcursor = 1;
+        sys_hwcursor_show(1);
+    }
+}
+
 static void cursor_capture(int x,int y){
     for(int r=0;r<CURH;r++) for(int c=0;c<CURW;c++){
         int px=x+c, py=y+r;
@@ -713,6 +786,37 @@ static void present_rect(int x,int y,int w,int h){
     if(x<0){w+=x;x=0;} if(y<0){h+=y;y=0;}
     if(x+w>(int)FBW)w=(int)FBW-x; if(y+h>(int)FBH)h=(int)FBH-y;
     if(w>0&&h>0) sys_fb_present_rect(scr.px,x,y,w,h);
+}
+
+/* Re-initialise the display after a runtime resolution change (mxdisplay calls
+ * SYS_SETMODE; the kernel repoints the framebuffer; we notice the new geometry
+ * each frame and reflow in place -- no process restart / re-login).  Reallocates
+ * the back buffer, clamps/re-fits windows, and recomposites. */
+static void wm_reinit_display(unsigned nw, unsigned nh)
+{
+    gfx_u32 *nb = (gfx_u32*)sys_mmap(0,(unsigned long)nw*nh*4,
+                                     PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    if (nb==(gfx_u32*)MAP_FAILED || !nb) return;     /* keep the old mode on OOM */
+    if (scr.px) sys_munmap(scr.px,(unsigned long)FBW*FBH*4);
+    scr.px=nb; scr.w=(int)nw; scr.h=(int)nh;
+    FBW=nw; FBH=nh;
+
+    for(int i=0;i<MAXWIN;i++){ if(!W[i].in_use) continue;
+        if (W[i].maximized){
+            W[i].x=0; W[i].y=MENU_H; W[i].w=(int)FBW; W[i].h=(int)FBH-MENU_H-DOCK_H;
+            maybe_send_resize(i);
+        } else {
+            if (W[i].w>(int)FBW) W[i].w=(int)FBW;
+            if (W[i].h>(int)FBH-MENU_H-DOCK_H) W[i].h=(int)FBH-MENU_H-DOCK_H;
+            if (W[i].x+W[i].w>(int)FBW) W[i].x=(int)FBW-W[i].w;
+            if (W[i].x<0) W[i].x=0;
+            if (W[i].y+W[i].h>(int)FBH-DOCK_H) W[i].y=(int)FBH-DOCK_H-W[i].h;
+            if (W[i].y<MENU_H) W[i].y=MENU_H;
+        }
+    }
+    cur_sx=cur_sy=-1;                 /* SW cursor save-under is stale */
+    if (g_hwcursor) sys_hwcursor_show(1);
+    g_dirty=1; damage_full();
 }
 
 /* ============================== self-tests ============================== */
@@ -804,7 +908,7 @@ static void do_login(const char *prefill_user)
             scpy(err,"Incorrect credentials",sizeof err);
             pass[0]=0; u.focus=2;
         }
-        draw_cursor(cx,cy);
+        if (g_hwcursor) sys_hwcursor_move(cx,cy); else draw_cursor(cx,cy);
         sys_fb_present(scr.px);
         dirty=0; sys_yield();
     }
@@ -854,7 +958,7 @@ static int show_power_menu(int cx, int cy)
         for(int i=0;i<6;i++)
             if(ui_button(&u,&scr,px+24,py+40+i*40,pw-48,30,labels[i])) ret=acts[i];
 
-        draw_cursor(cx,cy);
+        if (g_hwcursor) sys_hwcursor_move(cx,cy); else draw_cursor(cx,cy);
         sys_fb_present(scr.px);
         dirty=0;
         if(ret!=PWR_NONE) return ret;
@@ -918,7 +1022,7 @@ static void show_passwd_dialog(int cx, int cy)
                 else           { scpy(err,"Could not change (read-only?)",sizeof err); }
             }
         }
-        draw_cursor(cx,cy);
+        if (g_hwcursor) sys_hwcursor_move(cx,cy); else draw_cursor(cx,cy);
         sys_fb_present(scr.px);
         dirty=0; sys_yield();
     }
@@ -949,6 +1053,7 @@ int main(int argc, char **argv, char **envp)
     if (want_login) do_login(login_user);
 
     load_icon_assets();         /* desktop icon BMPs (glyph fallback if absent) */
+    hwcursor_setup();           /* use the display driver's HW cursor if it has one */
     znum=0; focus=-1;
     launch_icon(0);             /* open a terminal client on the desktop */
 
@@ -958,6 +1063,13 @@ int main(int argc, char **argv, char **envp)
     unsigned stat_up=0;
 
     for(;;){
+        /* ---- pick up a runtime resolution change (mxdisplay -> SYS_SETMODE) ---- */
+        { unsigned gi=sys_fb_info(); unsigned nw=(gi>>16)&0xFFFF, nh=gi&0xFFFF;
+          if (nw && nh && (nw!=FBW || nh!=FBH)){
+              wm_reinit_display(nw,nh);
+              if (cx>=(int)FBW) cx=(int)FBW-1;
+              if (cy>=(int)FBH) cy=(int)FBH-1;
+          } }
         /* ---- gather hardware input ---- */
         int mpressed=0, mreleased=0;
         unsigned int ev;
@@ -1073,8 +1185,8 @@ int main(int argc, char **argv, char **envp)
         serve_requests();
         if (reap_clients()){ g_dirty=1; damage_full(); }
         { unsigned now=sys_uptime(); if (now-stat_up>=100u){ stat_up=now; g_dirty=1;
-            damage(0,0,(int)FBW,MENU_H);                       /* menu-bar clock */
-            damage(0,(int)FBH-DOCK_H,(int)FBW,DOCK_H); } }      /* dock stats     */
+            damage(0,0,(int)FBW,MENU_H);                       /* top bar title  */
+            damage(0,(int)FBH-DOCK_H,(int)FBW,DOCK_H); } }      /* dock stats+tray */
 
         if (!g_dirty && !cmoved){ sys_yield(); continue; }
 
@@ -1087,15 +1199,21 @@ int main(int argc, char **argv, char **envp)
             draw_dock();
             draw_menubar();
             int ox=cur_sx, oy=cur_sy;
-            cursor_capture(cx,cy);          /* stash scene under the cursor */
-            draw_cursor(cx,cy);
+            if (!g_hwcursor){ cursor_capture(cx,cy); draw_cursor(cx,cy); }
             /* ---- but PUSH only the damaged region to the framebuffer ---- */
             if (!dmg_v) damage_full();      /* safety net for any untracked change */
             present_rect(dmg_x0,dmg_y0,dmg_x1-dmg_x0,dmg_y1-dmg_y0);
-            if (cmoved && ox>=0) present_rect(ox,oy,CURW,CURH);  /* erase old cursor */
-            present_rect(cx,cy,CURW,CURH);                       /* draw new cursor  */
+            if (!g_hwcursor){
+                if (cmoved && ox>=0) present_rect(ox,oy,CURW,CURH);  /* erase old cursor */
+                present_rect(cx,cy,CURW,CURH);                       /* draw new cursor  */
+            } else if (cmoved){
+                sys_hwcursor_move(cx,cy); cur_sx=cx; cur_sy=cy;      /* HW overlay follows */
+            }
             if (!announced){ sys_write_serial("GUI: READY\n", 11); announced=1; }
             g_dirty=0; dmg_v=0;
+        } else if (g_hwcursor){
+            /* ---- cursor-only with a HW cursor: move the overlay, no FB push ---- */
+            sys_hwcursor_move(cx,cy); cur_sx=cx; cur_sy=cy;
         } else {
             /* ---- cursor-only: O(cursor) regardless of window count ---- */
             int ox=cur_sx, oy=cur_sy;

@@ -256,6 +256,17 @@ int net_lwip_gateway(uint8_t out[4])
 
 static int net_lwip_control_locked(int cmd)
 {
+    /* Status works even when the stack isn't configured (reports "down"). */
+    if (cmd == NET_CTL_STATUS) {
+        if (!netdev_present() || !s_ready || s_released ||
+            !netif_is_link_up(&s_netif))
+            return 0;                                  /* down / no interface */
+        if (ip4_addr_get_u32(netif_ip4_addr(&s_netif)) == 0)
+            return 1;                                  /* up but no address   */
+        const ip4_addr_t *gw = netif_ip4_gw(&s_netif);
+        return (gw && ip4_addr_get_u32(gw) != 0) ? 2 : 1;  /* gw => connected */
+    }
+
     if (!s_ready)
         return -1;
 

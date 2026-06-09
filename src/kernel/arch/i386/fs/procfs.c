@@ -11,6 +11,9 @@
 #include <kernel/timer.h>
 #include <kernel/version.h>
 #include <kernel/vm.h>      /* vm_name() for the cpuinfo hypervisor line */
+#include <kernel/video.h>   /* video_active() -> bound GPU driver name */
+#include <kernel/pci.h>     /* identify the actual PCI display device       */
+#include <kernel/netdev.h>  /* netdev_present()/netdev_name() -> NIC driver */
 #include <kernel/rtc.h>     /* CMOS RTC reader for /proc/rtc */
 #include <string.h>
 #include <stdio.h>
@@ -122,6 +125,25 @@ static void render_cpuinfo(pf_writer_t *w)
     pf_puts(w, vendor);
     pf_putc(w, '\n');
 
+    /* Processor brand string (CPUID 0x80000002-4): the marketing name like
+     * "Intel(R) Core(TM) i5-12400F @ 2.50GHz" or "AMD Ryzen 5 ...".  Reported
+     * by most real CPUs and by QEMU; absent on a few very old parts. */
+    cpuid_raw(0x80000000u, &eax, &ebx, &ecx, &edx);
+    if (eax >= 0x80000004u) {
+        char brand[49];
+        uint32_t *bp = (uint32_t *)brand;
+        for (uint32_t leaf = 0x80000002u, i = 0; leaf <= 0x80000004u; leaf++) {
+            cpuid_raw(leaf, &eax, &ebx, &ecx, &edx);
+            bp[i++] = eax; bp[i++] = ebx; bp[i++] = ecx; bp[i++] = edx;
+        }
+        brand[48] = '\0';
+        const char *bs = brand;       /* brand strings are often space-padded */
+        while (*bs == ' ') bs++;
+        pf_puts(w, "model name  : ");
+        pf_puts(w, bs);
+        pf_putc(w, '\n');
+    }
+
     if (max_leaf >= 1) {
         cpuid_raw(1, &eax, &ebx, &ecx, &edx);
         uint32_t family   = (eax >> 8)  & 0xF;
@@ -155,6 +177,43 @@ static void render_cpuinfo(pf_writer_t *w)
 
     pf_puts(w, "arch        : i386 (protected mode)\n");
     pf_puts(w, "hypervisor  : "); pf_puts(w, vm_name()); pf_putc(w, '\n');
+
+    /* Bound device drivers (also surfaced on the GUI About panel). */
+    {
+        extern const vid_driver_t video_svga2;
+        const vid_driver_t *vd = video_active();
+        pf_puts(w, "gpu         : ");
+        if (vd == &video_svga2) {
+            /* The accelerated SVGA II device (PCI 15ad:0405) is the same silicon
+             * on every host; report it by each host's product name for it. */
+            switch (vm_kind()) {
+            case VM_VIRTUALBOX: pf_puts(w, "VMSVGA");        break;
+            case VM_VMWARE:     pf_puts(w, "VMware SVGA II"); break;
+            default:            pf_puts(w, "VMware SVGA II"); break;  /* QEMU vmware-svga */
+            }
+            pf_puts(w, " [accelerated]");
+        } else {
+            /* Dumb-framebuffer path: name the actual PCI display device in use
+             * (VirtualBox Graphics Adapter / QEMU Standard VGA / ...), not the
+             * generic backend, so the real GPU shows through. */
+            const pci_device_t *g = (const pci_device_t *)0;
+            for (int i = 0; i < pci_device_count; i++)
+                if (pci_devices[i].class_code == 0x03) { g = &pci_devices[i]; break; }
+            if (g) {
+                const char *vn = pci_vendor_name(g->vendor_id);
+                const char *dn = pci_device_name(g->vendor_id, g->device_id);
+                if (vn) { pf_puts(w, vn); pf_putc(w, ' '); }
+                pf_puts(w, dn ? dn : "display controller");
+            } else {
+                pf_puts(w, "firmware framebuffer");
+            }
+            pf_puts(w, " [framebuffer]");
+        }
+        pf_putc(w, '\n');
+    }
+    pf_puts(w, "netdev      : ");
+    pf_puts(w, netdev_present() ? (netdev_name() ? netdev_name() : "unknown") : "none");
+    pf_putc(w, '\n');
 }
 
 /* -------------------------------------------------------------------------

@@ -104,6 +104,7 @@
 
 #include <kernel/keyboard.h>
 #include <kernel/mouse.h>
+#include <kernel/i8042.h>
 #include <kernel/auth.h>
 #include <kernel/vtty.h>
 #include <kernel/isr.h>
@@ -115,6 +116,7 @@
 #include <kernel/vesa_tty.h>
 #include <kernel/serial.h>
 #include <kernel/ktest.h>
+#include <kernel/debug.h>   /* KPANIC -- debug panic chord */
 
 /* ===========================================================================
  * Memory-ordering primitives
@@ -272,6 +274,7 @@ typedef uint8_t kc_t;
 #define KC_TAB          0x0F
 #define KC_ENTER        0x1C
 #define KC_LCTRL        0x1D
+#define KC_P            0x19   /* set-1 make code for 'P' (debug panic chord) */
 #define KC_LSHIFT       0x2A
 #define KC_RSHIFT       0x36
 #define KC_LALT         0x38
@@ -1165,6 +1168,17 @@ static void deliver_kc(kc_t kc, int is_break)
         return;
     }
 
+    /* Debug panic chord: Ctrl+Alt+Shift+P deliberately raises a kernel panic so
+     * the panic path can be exercised on real hardware / hypervisors where
+     * there's no QEMU monitor (the equivalent of Linux's Magic-SysRq 'c' crash
+     * or Windows' keyboard-initiated crashdump).  Detected here in the decode
+     * path so it fires from text, GUI and fullscreen-game (scancode) modes
+     * alike.  Distinct from Ctrl-Alt-Del -- it requires Shift and uses 'P', so
+     * the power-menu chord is untouched and this can't be hit by accident.
+     * Fires immediately: we're halting regardless, so IRQ context is fine. */
+    if (!is_break && mod_ctrl && mod_alt && mod_shift && kc == KC_P)
+        KPANIC("debug panic chord (Ctrl+Alt+Shift+P)");
+
     /* Scancode passthrough: raw set-1 byte (low7 | 0x80-break) for make AND
      * break, no translation.  e0-extended keys collapse to their low7 (e.g.
      * arrow up -> 0x48), matching the soso/doom scancode convention. */
@@ -1441,20 +1455,33 @@ void keyboard_test_driver(void)
  * cannot interleave reads on 0x60 and produce a torn scancode stream. The
  * lock is irq-safe; on UP the spin path is never taken.
  */
+/*
+ * keyboard_feed_scancode - push one raw set-1 byte into the decoder.
+ *
+ * The public entry the i8042 controller router (i8042.c) calls for every
+ * non-AUX byte it drains.  Holds kb_io_lock so the decoder state machine -- also
+ * touched by the test-injection path (keyboard_test_feed) -- is mutated
+ * atomically with respect to the rest of the keyboard pipeline.
+ */
+void keyboard_feed_scancode(uint8_t sc)
+{
+    uint32_t flags = kb_spin_lock_irqsave(&kb_io_lock);
+    decoder_feed(sc);
+    kb_spin_unlock_irqrestore(&kb_io_lock, flags);
+}
+
+/*
+ * keyboard_irq_handler - IRQ1 service routine.
+ *
+ * IRQ1 (keyboard) and the mouse's IRQ12 both funnel into i8042_service(), the
+ * shared controller router: it drains the 8042 output buffer and dispatches
+ * each byte to the keyboard decoder or the mouse by its AUXB status bit, so a
+ * byte is never left stuck in the buffer regardless of which line fired.
+ */
 static void keyboard_irq_handler(registers_t *regs)
 {
     (void)regs;
-    uint32_t flags = kb_spin_lock_irqsave(&kb_io_lock);
-
-    for (int i = 0; i < 16; i++) {
-        uint8_t status = inb(PS2_STATUS_PORT);
-        if (!(status & PS2_STAT_OBF)) break;
-        uint8_t sc = inb(PS2_DATA_PORT);
-        if (status & PS2_STAT_AUXB) { mouse_feed_byte(sc); continue; }
-        decoder_feed(sc);
-    }
-
-    kb_spin_unlock_irqrestore(&kb_io_lock, flags);
+    i8042_service();
 }
 
 /* ===========================================================================

@@ -14,4 +14,11 @@
 /* TODO: controller init, port reset, device enumeration, HID class */
 void usb_init(void);
 
+/* USB HID boot-protocol report decoders -- route into the shared input layer
+ * (mouse_post_event / the keycode ring) so input is not tied to PS/2.  Called by
+ * the (future) HCI poll loop with an 8-byte boot report; the mouse path is
+ * functional, the keyboard path covers the common US keys.  See usb.c. */
+void usb_hid_mouse_report(const uint8_t *report8);
+void usb_hid_keyboard_report(const uint8_t *report8);
+
 #endif

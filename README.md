@@ -1,5 +1,7 @@
 # Makar
 
+<p align="center"><img src="docs/img/makar-logo.png" alt="Makar" width="320"></p>
+
 [![Build & Test](https://github.com/Arawn-Davies/makar/actions/workflows/build-test.yml/badge.svg)](https://github.com/Arawn-Davies/makar/actions/workflows/build-test.yml)
 [![Release](https://github.com/Arawn-Davies/makar/actions/workflows/release.yml/badge.svg)](https://github.com/Arawn-Davies/makar/actions/workflows/release.yml)
 
@@ -13,8 +15,19 @@ implementation stacks.
 This README is an entry point, not the manual. Current implementation detail
 lives in [`docs/`](docs/) and in the source.
 
-Current kernel version: `0.9.5`
+Current kernel version: `0.10.0`
 ([`src/kernel/include/kernel/version.h`](src/kernel/include/kernel/version.h)).
+
+## Screenshots
+
+| | |
+|---|---|
+| ![GUI desktop](images/gui-desktop.png) | ![GUI boot splash](images/gui-splash.png) |
+| **GUI desktop** — the makx window server: a terminal window, dock, launcher icons, and the bottom status tray (CPU/RAM, network, clock + date). | **GUI boot splash** — raised the instant the framebuffer settles and tracks the background self-tests; the desktop boot never shows a text console. |
+| ![Sysadmin mode](images/mode-sysadmin.png) | ![Hardware info](images/mode-hwspecs.png) |
+| **Sysadmin mode** — a pure 80×50 VGA text console with the self-tests shown verbosely; type `go32` to bring up the display + network and start the desktop. | **Hardware info** — the one-shot specs screen (CPU / platform / GPU / NIC / memory), then press a key to reboot. |
+
+These are captured headlessly by [`tools/capture-screens.sh`](tools/capture-screens.sh).
 
 ## What It Currently Is
 
@@ -23,10 +36,15 @@ ELF userspace, a userspace shell, a small hosted libc, an in-OS TinyCC, FAT32
 and ext2 storage, copy-on-write `fork`, `execve`, `wait4`, pipes, signals,
 anonymous `mmap`, i386 TLS, and x87/SSE task-state handling.
 
-There is an experimental double-buffered **GUI** (type `gui`): a PS/2-mouse-driven
-desktop with a draggable terminal window, a dock, and launcher icons. A userspace
-**Doom** port (`doom.elf`, vendored doomgeneric, no sound) compiles and links;
-fetch a WAD with `getwad.sh` from a plain-HTTP mirror. See `docs/plans/gui-wm.md`.
+The **default boot is a graphical desktop** — the makx window server: a
+mouse-driven desktop with draggable/resizable windows, a dock with a status tray
+(CPU/RAM, network, clock + date), launcher icons, and a suite of `mx*` clients
+(terminal, files, editor, image viewer, clock, calculator, disk, net, display
+settings, installer). Other boot modes (console, verbose, sysadmin, hardware
+info, rescue) live under the bootloader's **Advanced options**. A userspace
+**Doom** port (`doom.elf`, vendored doomgeneric, no sound) runs windowed or
+fullscreen; the FreeDOOM WADs are fetched by `getfreedoom.sh`. See
+[`docs/gui.md`](docs/gui.md).
 
 Networking is in: an in-kernel lwIP stack over a NIC-agnostic `netdev` layer with
 four polled PCI drivers (virtio-net, RTL8139, Intel E1000, AMD PCNet), DHCP with a
@@ -46,18 +64,20 @@ PCs that meet the CPU/firmware needs below.
 | Resource | Minimum | Notes |
 |---|---|---|
 | CPU | 32-bit x86, i686-class (Pentium II era or newer) | runs in protected mode; uses 4 MiB pages (`CR4.PSE`), the x87 FPU, and `FXSAVE`/SSE for per-task FP state |
-| Firmware / boot | Legacy BIOS + GRUB (Multiboot 2) | the ISO is a BIOS / El-Torito hybrid image; there is no UEFI boot path yet |
-| RAM | 32 MiB | the default `./run.sh` QEMU config boots with `-m 32`; more is fine |
-| Storage | ~30 MiB for `makar.iso` | optional FAT32/ext2 HDD image (default 96 MiB) for persistence |
-| Display | VBE-capable adapter | Bochs VBE / VESA linear framebuffer; falls back to VGA 80×50 text |
+| Firmware / boot | Legacy BIOS; GRUB (Multiboot 2) on the live ISO, Limine on an installed disk | the ISO is a BIOS / El-Torito hybrid image; no UEFI boot path yet |
+| RAM | 64 MiB (256 MiB recommended) | `./run.sh` boots interactive with `-m 64`; read-only files stream through a page cache so DOOM + the GUI fit, but more headroom is comfortable |
+| Storage (live) | ~120 MiB for `makar.iso` | the ISO ships the apps, the FreeDOOM WAD, `/usr` (libc + headers), and the full `docs/` + `src/` tree, so it's large by hobby-OS standards |
+| Storage (installed) | ~256 MiB disk | a full install copies that whole tree: the release image is a 32 MiB boot partition + a 224 MiB rootfs (apps + src + docs + user data + headroom). The `./run.sh hdd` dev image defaults to a smaller 96 MiB |
+| Display | VBE-capable adapter | Bochs VBE / VESA linear framebuffer (or VMware/VBox SVGA II); falls back to VGA 80×50 text |
 
 ### Supported devices / drivers
 
-- **Display:** VESA/VBE linear framebuffer (Bochs VBE, up to 720p), VGA text fallback
+- **Display:** VMware/VBox SVGA II (accelerated, HW cursor) or VESA/VBE linear framebuffer (Bochs VBE, 720p default), VGA 80×50 text fallback
 - **Storage:** IDE/ATA (PIO); filesystems ext2, FAT32, ISO9660, plus `/dev` `/proc` `/tmp` `/log` overlays
-- **Input:** PS/2 keyboard
-- **Timer / clock:** PIT (100 Hz), RTC
-- **Bus / power:** PCI, ACPI (RSDP + table discovery)
+- **Input:** PS/2 keyboard + mouse (shared i8042 controller module)
+- **Networking:** virtio-net / RTL8139 / e1000 / PCnet over an lwIP TCP/IP stack (DHCP + DNS)
+- **Timer / clock:** PIT (250 Hz), RTC/CMOS
+- **Bus / power:** PCI, ACPI (RSDP + table discovery, reboot/poweroff)
 - **Serial:** 16550 UART (COM1)
 - **Network (PCI):** virtio-net, RTL8139, Intel E1000, AMD PCNet — over QEMU user-mode (slirp); no TLS
 

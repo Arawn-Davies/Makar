@@ -36,6 +36,7 @@
 #include <kernel/shell.h>
 #include <kernel/vfs.h>
 #include <kernel/pagecache.h>
+#include <kernel/video.h>
 #include <kernel/heap.h>
 #include <kernel/vmm.h>
 #include <kernel/pmm.h>
@@ -109,7 +110,16 @@ static int stdin_pipe_getchar(task_t *t)
 static fd_entry_t *ansi_bridge_fd(void)
 {
     task_t *cur = task_current();
-    if (!cur || vtty_buf_current() != NULL) return NULL;   /* has a live VT */
+    if (!cur) return NULL;
+    /* Bridge cell-API output to ANSI whenever stdout is a pipe we're writing to
+     * -- i.e. the task runs inside the GUI terminal (mxterm) or its output is
+     * piped.  A real text-console app has fd 1 = FD_KIND_VGA (never a pipe), so
+     * it is naturally excluded and keeps the direct VT path.
+     *
+     * We must NOT additionally gate on "the task has no VT slot": GUI-terminal
+     * children inherit the GUI session's tty from the WM, so that test wrongly
+     * suppressed the bridge and their frames vanished into the hidden VT instead
+     * of reaching the window (clock/maktop/etc. showed nothing in mxterm). */
     fd_entry_t *e = fd_get(cur->fd_table, 1);
     if (e && e->kind == FD_KIND_PIPE && e->pipe_is_writer && e->pipe) return e;
     return NULL;
@@ -166,6 +176,9 @@ long kfd_stdout_write(const char *buf, unsigned int len)
         for (unsigned int i = 0; i < len; i++) t_putchar(buf[i]);
         if (e->kind == FD_KIND_VGA_SERIAL && !g_serial_verbose)
             for (unsigned int i = 0; i < len; i++) Serial_WriteChar(buf[i]);
+        /* Scan out the text console after this write(2) so SVGA II shows it
+         * (no-op on a live LFB); coalesced per write, not per glyph. */
+        vesa_tty_flush();
         return (long)len;
     }
     if (e->kind == FD_KIND_SERIAL) {
@@ -259,6 +272,41 @@ static void readdir_collect_cb(const char *n, int is_dir, void *vctx)
 
 volatile uint32_t g_ring3_last_cp = 0;
 
+/* Verify every page of the user range [base, base+len) is present and
+ * user-accessible in the current task's address space.  The kernel reads a
+ * userspace framebuffer back buffer directly (SYS_FB_PRESENT); a stale,
+ * too-small buffer -- e.g. one handed across a racing runtime mode switch,
+ * before the WM has reallocated it for the new geometry -- would otherwise make
+ * the kernel read past the mapping and take a ring-0 page fault, which panics.
+ * A bad pointer from userspace must instead fail the syscall (WWLD: -EFAULT,
+ * never take the kernel down).  Walks the PD the same way the COW/#PF handler
+ * does (page tables live in the low identity map).  Returns 1 if the whole
+ * range is safe to read, 0 otherwise. */
+static int user_range_mapped(uint32_t base, uint32_t len)
+{
+    if (len == 0)
+        return 1;
+    task_t *t = task_current();
+    if (!t || !t->page_dir)
+        return 0;
+    uint32_t *pd  = t->page_dir;
+    uint32_t  end = base + len;
+    if (end < base)                       /* address-space wrap */
+        return 0;
+    for (uint32_t a = base & ~0xFFFu; a < end; a += 0x1000u) {
+        uint32_t pde = pd[a >> 22];
+        if (!(pde & 0x1u) || !(pde & 0x4u))   /* present + user */
+            return 0;
+        if (pde & 0x80u)                      /* 4 MiB page: PDE flags govern */
+            continue;
+        uint32_t *pt  = (uint32_t *)(pde & ~0xFFFu);
+        uint32_t  pte = pt[(a >> 12) & 0x3FFu];
+        if (!(pte & 0x1u) || !(pte & 0x4u))
+            return 0;
+    }
+    return 1;
+}
+
 /* -------------------------------------------------------------------------
  * syscall_dispatch
  * ------------------------------------------------------------------------- */
@@ -326,9 +374,18 @@ static void syscall_dispatch_inner(registers_t *regs)
                     /* Counterpart to SYS_EXECVE's "child takes focus" rule:
                      * when the reaper sees the foreground child go zombie,
                      * hand focus back to the wait4-ing parent so its REPL
-                     * (sh.elf, kernel shell, ...) becomes the next reader. */
-                    keyboard_set_focus(me);
-                    vtty_set_foreground(me->tty, me);
+                     * (sh.elf, kernel shell, ...) becomes the next reader.
+                     * Gate it the SAME way execve gates the grab: only if the
+                     * reaper's stdin is the keyboard.  A GUI terminal's shell
+                     * reads from a pipe (mxterm feeds it; the WM holds the real
+                     * keyboard focus), so reaping `ls`/`cat` here must NOT yank
+                     * focus away from the WM -- doing so left the GUI terminal
+                     * dead after the first external command. */
+                    fd_entry_t *me_stdin = fd_get(me->fd_table, 0);
+                    if (me_stdin && me_stdin->kind == FD_KIND_KEYBOARD) {
+                        keyboard_set_focus(me);
+                        vtty_set_foreground(me->tty, me);
+                    }
                     /* Userspace sh.elf runs fullscreen apps via fork+execve+
                      * wait4; unlike the kernel shell it has no snapshot/
                      * restore path.  Clear the screen on the child's way out
@@ -1097,11 +1154,16 @@ static void syscall_dispatch_inner(registers_t *regs)
             task_t *cur = task_current(); if (cur) cur->fb_touched = 1;
             regs->eax = 0; break;
         }
-        const uint8_t *src = (const uint8_t *)(uintptr_t)regs->ebx;
-        uint8_t *dst = (uint8_t *)fb->addr;
-        uint32_t row_bytes = fb->width * 4u;
-        for (uint32_t y = 0; y < fb->height; y++)
-            memcpy(dst + y * fb->pitch, src + y * row_bytes, row_bytes);
+        /* The WM hands a full-frame buffer (pitch = width*4).  Validate the
+         * whole extent is mapped before the kernel reads it: a runtime mode
+         * switch can enlarge fb->{width,height} a frame before the WM has
+         * reallocated its back buffer, and reading the old, smaller buffer at
+         * the new geometry would page-fault in ring 0 (-> panic).  Drop the
+         * frame instead; the WM repaints at the new size next iteration. */
+        uint32_t need = fb->width * fb->height * 4u;
+        if (!user_range_mapped(regs->ebx, need)) { regs->eax = (uint32_t)-1; break; }
+        const void *src = (const void *)(uintptr_t)regs->ebx;
+        video_present_rect(src, 0, 0, fb->width, fb->height);
         { task_t *cur = task_current(); if (cur) cur->fb_touched = 1; }
         regs->eax = 0;
         break;
@@ -1124,18 +1186,51 @@ static void syscall_dispatch_inner(registers_t *regs)
         uint32_t rx = (regs->ecx >> 16) & 0xFFFFu, ry = regs->ecx & 0xFFFFu;
         uint32_t rw = (regs->edx >> 16) & 0xFFFFu, rh = regs->edx & 0xFFFFu;
         if (rx >= fb->width || ry >= fb->height) { regs->eax = 0; break; }
+        /* Clamp to the framebuffer, then validate the touched row span of the
+         * full-frame buffer is mapped before the kernel reads it (same stale-
+         * geometry race guard as SYS_FB_PRESENT). */
         if (rx + rw > fb->width)  rw = fb->width  - rx;
         if (ry + rh > fb->height) rh = fb->height - ry;
-        const uint8_t *src = (const uint8_t *)(uintptr_t)regs->ebx;
-        uint8_t *dst = (uint8_t *)fb->addr;
-        uint32_t fb_row = fb->width * 4u;            /* back-buffer stride */
-        uint32_t copy_bytes = rw * 4u;
-        for (uint32_t y = 0; y < rh; y++) {
-            uint32_t line = ry + y;
-            memcpy(dst + line * fb->pitch + rx * 4u,
-                   src + line * fb_row    + rx * 4u, copy_bytes);
+        if (!rw || !rh) { regs->eax = 0; break; }
+        uint32_t pitch = fb->width * 4u;
+        if (!user_range_mapped(regs->ebx + ry * pitch, rh * pitch)) {
+            regs->eax = (uint32_t)-1; break;
         }
+        const void *src = (const void *)(uintptr_t)regs->ebx;
+        video_present_rect(src, rx, ry, rw, rh);
         { task_t *cur = task_current(); if (cur) cur->fb_touched = 1; }
+        regs->eax = 0;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * Display-driver hooks (kernel/video.h).  video_caps lets the WM learn
+     * whether a hardware cursor is available; the hwcursor calls drive the
+     * active driver's cursor sprite (the WM uses them instead of compositing
+     * a software cursor, so a pure mouse move costs no framebuffer traffic).
+     * ------------------------------------------------------------------ */
+    case SYS_VIDEO_CAPS:
+        regs->eax = video_caps();
+        break;
+    case SYS_HWCURSOR_DEFINE: {
+        const uint32_t *argb = (const uint32_t *)(uintptr_t)regs->ebx;
+        int w  = (int)((regs->ecx >> 16) & 0xFFFFu), h  = (int)(regs->ecx & 0xFFFFu);
+        int hx = (int)((regs->edx >> 16) & 0xFFFFu), hy = (int)(regs->edx & 0xFFFFu);
+        const vid_driver_t *d = video_active();
+        regs->eax = (d && d->cursor_define)
+                        ? (uint32_t)d->cursor_define(argb, w, h, hx, hy)
+                        : (uint32_t)-1;
+        break;
+    }
+    case SYS_HWCURSOR_MOVE: {
+        const vid_driver_t *d = video_active();
+        if (d && d->cursor_move) d->cursor_move((int)regs->ebx, (int)regs->ecx);
+        regs->eax = 0;
+        break;
+    }
+    case SYS_HWCURSOR_SHOW: {
+        const vid_driver_t *d = video_active();
+        if (d && d->cursor_show) d->cursor_show((int)regs->ebx);
         regs->eax = 0;
         break;
     }

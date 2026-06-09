@@ -24,5 +24,9 @@ int net_lwip_gateway(uint8_t out[4]);
 #define NET_CTL_DHCP_RELEASE 1
 #define NET_CTL_DHCP_RENEW   2
 #define NET_CTL_DNS_FLUSH    3
+/* Connectivity status (for the GUI net indicator):
+ *   0 = down / no interface, 1 = up but limited (no IP or no gateway),
+ *   2 = connected (link up, addressed, has a default gateway). */
+#define NET_CTL_STATUS       4
 
 #endif

@@ -432,12 +432,16 @@ void ide_init(void)
                 continue;
             }
 
-            /* Wait for DRQ or ERR. */
+            /* Wait for DRQ or ERR, with a timeout guard: a half-present or
+             * misbehaving device can clear BSY yet never assert either, which
+             * would otherwise hang the boot forever.  Skip the slot on timeout. */
+            timeout = 0;
             do {
                 status = ide_read(ch, ATA_REG_STATUS);
-            } while (!(status & (ATA_SR_DRQ | ATA_SR_ERR)));
+                timeout++;
+            } while (!(status & (ATA_SR_DRQ | ATA_SR_ERR)) && timeout < 100000);
 
-            if (status & ATA_SR_ERR)
+            if (timeout >= 100000 || (status & ATA_SR_ERR))
                 continue;
 
             /* Read the 512-byte IDENTIFY response (256 16-bit words). */

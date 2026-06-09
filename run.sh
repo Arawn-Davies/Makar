@@ -45,6 +45,15 @@
 #   HDD_TEST_IMG      CI test HDD      (default: makar-hdd-test.img)
 #   QEMU_DISPLAY      passed to -display for windowed runs (ktest graphical,
 #                     kbtest gui, gui <suite>); e.g. cocoa on macOS, gtk on X11
+#   MACHINE           QEMU CPU class for iso/hdd boot (default: QEMU's default):
+#                       PMMX  = Pentium MMX (i586; i686 build #UDs on CMOV)
+#                       P2    = Pentium II  (i686; oldest that runs Makar)
+#                       P3    = Pentium III (i686 + SSE)
+#                       MODERN= newest feature set QEMU offers
+#                     legacy classes force TCG; any other value is passed to -cpu
+#   RES               Boot resolution for iso/hdd boot (default: kernel 720p):
+#                       720p | 1080p | 900p | 480p, or an explicit WxH (1280x720)
+#                     Baked as vmode= on the booted entry; unsupported -> fallback
 
 set -e
 
@@ -65,7 +74,13 @@ HDD_TEST_IMG=${HDD_TEST_IMG:-makar-hdd-test.img}
 # accept the full apps tree (bootfs 16 + rootfs 48 = 64 MiB).
 MAKAR_HDD_SIZE_MB=${MAKAR_HDD_SIZE_MB:-96}
 MAKAR_HDD_TEST_SIZE_MB=${MAKAR_HDD_TEST_SIZE_MB:-96}
-export DOCKER_PLATFORM MAKAR_HDD_SIZE_MB MAKAR_HDD_TEST_SIZE_MB
+# RES=<720p|1080p|900p|480p|WxH> picks the boot resolution: iso.sh/generate-hdd.sh
+# bake `vmode=<RES>` onto the booted GRUB entries (incl. the default GUI desktop,
+# which otherwise carries no KERNEL_ARGS).  The kernel parses the named aliases
+# and an explicit "<w>x<h>"; an unsupported mode falls back cleanly.  Default
+# (unset) is the kernel's built-in 720p.  MAKAR_VMODE is the same knob, explicit.
+MAKAR_VMODE=${MAKAR_VMODE:-${RES:-}}
+export DOCKER_PLATFORM MAKAR_HDD_SIZE_MB MAKAR_HDD_TEST_SIZE_MB MAKAR_VMODE
 
 # Portable bounded-run wrapper for host commands.  GNU coreutils ships
 # `timeout(1)`; macOS doesn't, but Homebrew coreutils provides `gtimeout`.
@@ -107,6 +122,17 @@ _usage() {
     echo "  gui   <suite>                   -- boot an in-guest suite in a window"
     echo "        suites: libc | incore | ktest | smoke | all-tests"
     echo "  clean"
+    echo ""
+    echo "CPU class for iso/hdd boot:  MACHINE=<class> ./run.sh iso boot"
+    echo "        PMMX    Pentium MMX (i586) -- i686 build #UDs on CMOV"
+    echo "        P2      Pentium II  (i686) -- oldest CPU that runs Makar"
+    echo "        P3      Pentium III (i686 + SSE)"
+    echo "        MODERN  newest feature set QEMU offers"
+    echo "        (unset = QEMU default; any other value passed to -cpu; legacy = TCG)"
+    echo ""
+    echo "Boot resolution for iso/hdd boot:  RES=<mode> ./run.sh iso boot"
+    echo "        720p | 1080p | 900p | 480p   named modes (720p is the default)"
+    echo "        1280x720                     explicit WxH (unsupported -> fallback)"
     echo ""
     echo "Builds are incremental (make-driven).  Run \`clean\` to force"
     echo "a from-scratch rebuild."
@@ -253,8 +279,34 @@ _host_gdb() {
 #   * Everything else (ktest, gdb iso/hdd, nettest, …) defaults KVM OFF.
 # An explicit `MAKAR_USE_KVM=1` forces KVM on for any mode (still gated on
 # /dev/kvm usability); `MAKAR_USE_KVM=0` forces it off everywhere.
+# MACHINE=<class> picks a QEMU -cpu model so Makar can be exercised on different
+# x86 generations.  Unset = QEMU's default CPU.  Legacy classes force TCG (KVM
+# can't emulate a CPU older than the host) -- see _qemu_accel.
+#   PMMX   Pentium MMX (i586, no CMOV) -- the i686 build #UDs; needs an i586 build
+#   P2     Pentium II  (i686, oldest CPU that runs Makar's i686 build)
+#   P3     Pentium III (i686 + SSE)
+#   MODERN newest feature set QEMU offers
+# Anything else is passed through verbatim to `-cpu`.
+_qemu_cpu() {
+    case "${MACHINE:-}" in
+        ""|default)    return 0 ;;
+        PMMX|pmmx)     printf -- '-cpu pentium'  ;;
+        P2|p2)         printf -- '-cpu pentium2' ;;
+        P3|p3)         printf -- '-cpu pentium3' ;;
+        MODERN|modern) printf -- '-cpu max'      ;;
+        *)             printf -- '-cpu %s' "$MACHINE" ;;
+    esac
+}
+
+# True when MACHINE selects a CPU older than the host (so KVM is unusable).
+_machine_is_legacy() {
+    case "${MACHINE:-}" in PMMX|pmmx|P2|p2|P3|p3) return 0 ;; *) return 1 ;; esac
+}
+
 _qemu_accel() {
     local _want
+    # A legacy MACHINE emulates an older CPU than the host -- KVM can't; force TCG.
+    if _machine_is_legacy; then return 0; fi
     if [ -n "${MAKAR_USE_KVM:-}" ]; then
         # Explicit env override wins for any mode.
         _want="$MAKAR_USE_KVM"
@@ -367,11 +419,13 @@ _net_device_flag() {
 
 _run_qemu_interactive() {
     local _args="$1"
-    local _qemu _accel
+    local _qemu _accel _cpu
     _qemu=$(_host_qemu)
     # KVM (when usable & wanted) only applies to the host-QEMU path; the Docker
     # fallback has no /dev/kvm passthrough wired up.
     _accel=$(_qemu_accel)
+    _cpu=$(_qemu_cpu)   # MACHINE=<class> -> -cpu model (empty if unset)
+    [ -n "$_cpu" ] && echo "==> CPU: $_cpu (MACHINE=$MACHINE)" >&2
 
     # 64 MiB is plenty now that read-only files (incl. the ~29 MiB FreeDOOM IWAD)
     # stream lazily through the page cache instead of eager-loading, and heap/mmap
@@ -380,16 +434,16 @@ _run_qemu_interactive() {
     if [ -n "$_qemu" ]; then
         local _host_args="${_args//\/work\//$REPO_ROOT/}"
         # shellcheck disable=SC2086
-        "$_qemu" -m 64 $_accel $_host_args
+        "$_qemu" -m 64 $_cpu $_accel $_host_args
     elif [ "$(_build_ctx)" = "docker" ]; then
         echo "==> Host QEMU not found - running QEMU in Docker (serial stdio)..."
         "$DOCKER_BIN" run --rm -it \
             --platform "$DOCKER_PLATFORM" \
             -v "$REPO_ROOT:/work" -w /work \
             "$DOCKER_IMAGE" \
-            bash -lc "qemu-system-i386 -m 64 $_args"
+            bash -lc "qemu-system-i386 -m 64 $_cpu $_args"
     else
-        bash -lc "qemu-system-i386 -m 64 $_args"
+        bash -lc "qemu-system-i386 -m 64 $_cpu $_args"
     fi
 }
 
@@ -711,6 +765,8 @@ _build_iso() {
     # container; iso.sh appends it to the interactive menuentry.
     local _kenv=()
     [ -n "${KERNEL_ARGS:-}" ] && _kenv+=(--env "KERNEL_ARGS=$KERNEL_ARGS")
+    # MAKAR_VMODE (from RES=) bakes vmode= onto the booted entries (see iso.sh).
+    [ -n "${MAKAR_VMODE:-}" ] && _kenv+=(--env "MAKAR_VMODE=$MAKAR_VMODE")
     # GRUB_DEFAULT selects the auto-booted menuentry (default: the GUI desktop).
     # The kbtest/guitest harnesses pin it to 0 (the KERNEL_ARGS-bearing entry).
     [ -n "${GRUB_DEFAULT:-}" ] && _kenv+=(--env "GRUB_DEFAULT=$GRUB_DEFAULT")
@@ -780,8 +836,11 @@ _run_guitest() {
     local _fifo="$REPO_ROOT/.guimon.$$";         rm -f "$_fifo"; mkfifo "$_fifo"
     local _secs="${GUITEST_TIMEOUT:-150}"
     local _accel; _accel=$(_qemu_accel)
+    # VGA device is overridable so the GPU drivers can be exercised, e.g.
+    #   MAKAR_VGA="-device vmware-svga" ./run.sh guitest
+    local _vga="${MAKAR_VGA:--vga std}"
     # shellcheck disable=SC2086
-    "$_qemu" -cdrom "$REPO_ROOT/makar.iso" -m 64 $_accel -vga std -display none \
+    "$_qemu" -cdrom "$REPO_ROOT/makar.iso" -m 64 $_accel $_vga -display none \
         -serial "file:$_log" -monitor stdio -no-reboot <"$_fifo" >/dev/null 2>&1 &
     local _qp=$!
     exec 9>"$_fifo"        # hold the FIFO open so QEMU's monitor stdin stays up

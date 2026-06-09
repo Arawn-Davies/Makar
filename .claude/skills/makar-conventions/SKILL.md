@@ -8,7 +8,8 @@ description: Makar OS house rules and style. Use whenever writing, editing, revi
 Makar is a hobby i386 bare-metal OS (GRUB Multiboot2, 32-bit protected mode,
 QEMU, Docker build via `./run.sh`). Follow these rules exactly; they override
 generic defaults. `CLAUDE.md` is the index — read it and the `docs/` it points
-to before non-trivial work.
+to before non-trivial work. The fuller human-facing version of this checklist is
+**`docs/conventions.md`** — keep the two in sync.
 
 ## Golden rule — What Would Linux Do?
 When a design or hardware detail is ambiguous, default to the **Linux**

@@ -19,20 +19,21 @@ EDI = arg4
 EAX = return value
 ```
 
-The authoritative kernel definitions live in:
+The ABI is **shared verbatim** between kernel and userspace (Linux-uapi style).
+The authoritative definitions live in:
 
 ```text
-src/kernel/include/kernel/syscall.h
+src/kernel/include/makar_syscalls.h   # the SYS_* numbers
+src/kernel/include/makar_abi.h         # clockids, struct timeval/timespec/stat/dirent,
+                                       # tty_cell_t, open/fcntl flags, S_IF* + DT_* bits
+src/kernel/include/makar_signals.h     # signal numbers
+src/kernel/include/makar_keys.h        # keycodes / sentinels
 ```
 
-The userspace inline wrappers live in:
-
-```text
-src/userspace/syscall.h
-```
-
-Keep those files synchronized. Userspace objects now use generated dependency
-files so changes to `syscall.h` rebuild dependent apps.
+Both `kernel/syscall.h` (kernel-internal dispatch) and `src/userspace/syscall.h`
+(the ring-3 inline wrappers) **include** those headers — they never re-declare
+the numbers, so the two sides cannot drift. Userspace objects use generated
+dependency files, so editing the ABI headers rebuilds the dependent apps.
 
 ## Return Conventions
 
@@ -87,6 +88,10 @@ without a detailed errno. Check the wrapper before assuming Linux parity.
 | 252 | `SYS_EXIT_GROUP` | `status` | same as exit |
 | 258 | `SYS_SET_TID_ADDRESS` | `int *` | returns pid |
 | 265 | `SYS_CLOCK_GETTIME` | `clockid, timespec *` | realtime and monotonic |
+| 274 | `SYS_VIDEO_CAPS` | – | returns `VIDEO_CAP_*` of the active display driver |
+| 275 | `SYS_HWCURSOR_DEFINE` | `argb, (w<<16)|h, (hx<<16)|hy` | upload a HW cursor sprite |
+| 276 | `SYS_HWCURSOR_MOVE` | `x, y` | move the HW cursor overlay |
+| 277 | `SYS_HWCURSOR_SHOW` | `on` | show/hide the HW cursor |
 
 ## Makar Extension Ranges
 
@@ -94,7 +99,7 @@ Makar extensions provide functionality that would normally be handled by
 termios, ioctl, framebuffer drivers, devfs, procfs, or shell helpers on a
 larger Unix system.
 
-The exact list is in `src/kernel/include/kernel/syscall.h`; the groups below
+The exact list is in `src/kernel/include/makar_syscalls.h`; the groups below
 explain the design intent.
 
 ### Terminal and Framebuffer

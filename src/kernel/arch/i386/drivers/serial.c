@@ -34,7 +34,8 @@ int serialReceived() {
 }
  
 char Serial_ReadChar() {
-   while (serialReceived() == 0);
+   uint32_t spins = 0;
+   while (serialReceived() == 0 && ++spins < 10000000u);
    return inb(COM1);
 }
 
@@ -44,7 +45,13 @@ int isTransmitEmpty() {
 
 //Writes a character over a serial connection
 void Serial_WriteChar(char a) {
-   while (isTransmitEmpty() == 0);
+   /* Bounded wait for the transmit holding register to empty.  An absent or
+    * wedged UART (no COM1 on the host) would otherwise spin forever -- and this
+    * runs on the panic path (every panic line is written here), so an unbounded
+    * spin would turn a panic into a silent hang.  On timeout we drop the byte
+    * and move on; the on-screen panic and /log dmesg copy still get through. */
+   uint32_t spins = 0;
+   while (isTransmitEmpty() == 0 && ++spins < 10000000u);
    outb(COM1,a);
 }
 

@@ -6,6 +6,9 @@ _site/
 isodir
 sysroot
 
+# Local-only build/copy helper (never committed)
+copy.sh
+
 # ccache directory (mounted into the build container)
 .ccache/
 

@@ -32,6 +32,44 @@ holds kernel focus; it routes input to the active window. Clicking a window
 makes it active (keyboard target) and raises it; the window under the cursor
 receives mouse motion.
 
+## Display drivers (kernel)
+
+`kernel/video.h` + `display/video.c` -- a small driver vtable so the kernel binds
+an accelerated backend when its hardware is present and falls back to the dumb
+linear framebuffer otherwise (the same seam the block-device and filesystem
+layers use). `video_init()` runs after the PCI scan; `SYS_FB_PRESENT[_RECT]` and
+the WM cursor route through `video_active()`.
+
+- **`video_vbe`** (default) -- present is the per-line CPU memcpy into the LFB;
+  software cursor (no caps). Covers QEMU-std, Bochs/DISPI, VirtualBox VGA, bare
+  metal, and the adopted GOP/bootloader LFB (Hyper-V Gen2, etc.).
+- **`video_svga2`** -- VMware/VirtualBox SVGA II (PCI `15ad:0405`). Mode-sets via
+  `SVGA_REG_*`, adopts the device FB, and on present CPU-copies the dirty rect
+  then issues a FIFO `SVGA_CMD_UPDATE` so the host scans it out (a plain LFB
+  write may never reach the screen on these adapters). Advertises a **hardware
+  cursor** (`VID_CAP_HW_CURSOR`). Testable via `MAKAR_VGA="-device vmware-svga"
+  ./run.sh guitest`.
+
+### Display settings (`mxdisplay`)
+
+`mxdisplay.elf` changes the screen resolution at runtime. Apply calls
+`SYS_SETMODE`; the kernel repoints the framebuffer and the WM **reflows in
+place** (`wm_reinit_display`: realloc the back buffer, clamp/re-fit windows,
+recomposite) -- no process restart or re-login. After applying it shows a
+**"Keep this resolution?"** prompt that auto-reverts to the previous mode after
+15 s if not confirmed (the safe-monitor pattern), so an unsupported/garbled mode
+can't lock the user out. Runtime mode-set rides the Bochs/DISPI path
+(`admin_setmode`), available on QEMU-std / Bochs / VirtualBox; on a pure SVGA II
+adapter without DISPI the apply fails gracefully ("mode not supported") -- wiring
+runtime mode-set through the SVGA II driver is a follow-up.
+
+When the active driver advertises `VID_CAP_HW_CURSOR`, the WM uploads its arrow
+sprite once (`sys_hwcursor_define`) and just moves the overlay
+(`sys_hwcursor_move`), skipping the software save-under compositing entirely --
+a pure mouse move then costs **no** framebuffer traffic. Without it the WM keeps
+the software cursor (capture/restore + small `present_rect` boxes). Syscalls:
+`SYS_VIDEO_CAPS`, `SYS_HWCURSOR_{DEFINE,MOVE,SHOW}` (see `docs/syscalls.md`).
+
 ## Shared pixel surfaces (kernel)
 
 `kernel/surface.h` + `arch/i386/proc/surface.c`. A surface is a kernel-owned run
@@ -261,6 +299,12 @@ back to the CLI shell), **Shut down** (→ `sys_shutdown`), **Reboot**
 **Cancel** (Esc). Shut down / reboot and the two log-out paths all first
 SIGKILL + reap every client child and restore statusbar state. Desktop + menu
 bar + dock are unconditional: the GUI is never chromeless.
+
+The **bottom dock** carries the open-window tabs on the left and a **system
+tray** on the right — all status in one place: CPU/RAM load, a Vista-style
+network indicator (green/amber/grey+X = connected/limited/down), and an HH:MM
+clock + DD/MM/YY date (`draw_dock`/`tray_poll`/`draw_net_icon` in `wm.c`). The
+top bar keeps only the brand, focused title, and the power icon.
 
 **Change-password dialog** (`show_passwd_dialog`): a centred modal with masked
 Current / New / Confirm fields (`ui_password`, Tab cycles, Esc cancels). OK

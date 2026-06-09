@@ -146,9 +146,9 @@ Mapped to Medli co-operation:
 - [x] **FAT32 R/W** — mount, ls, cat, cd, mkdir, mkfs, file
       delete/rename, directory delete (PR #120).
 - [x] **ISO 9660** — read-only auto-mount at `/mnt/cdrom` from ATAPI.
-- [x] **Process model** — preemptive round-robin scheduler at 100 Hz
-      with `SCHED_QUANTUM = 4` ticks (40 ms slice), per-task page
-      directory, dead-task PD reaper (PRs #123, #128).
+- [x] **Process model** — preemptive round-robin scheduler at 250 Hz
+      with a tunable quantum (`g_sched_quantum`, default 1 tick ≈ 4 ms),
+      per-task page directory, dead-task PD reaper (PRs #123, #128).
 - [x] **ELF loader** — loads and executes ring-3 static binaries with
       argc/argv.
 - [x] **VIX text editor** — ported from Medli VICS; renamed during the

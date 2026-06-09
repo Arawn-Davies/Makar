@@ -10,6 +10,16 @@ day-to-day work — consult when planning new features or asked about direction.
 The large `feat/gpu-drivers-and-os-polish` effort is being **split into several
 PRs** (it grew too big for one):
 
+> **Status (2026-06-09):** PR #1 shipped; PR #2 (the SVGA II video framework),
+> PR #4 (the `mx*` GUI suite incl. the `mximg` image viewer + `mxdisplay`), and
+> PR #5 (on-demand file I/O + LRU page cache + the `SYSCALL_FILE_MAX`/`-m`
+> revert) have all landed. The current branch (`feat/gpu-video-framework`) adds
+> the **XP/Vista boot-experience overhaul**: GUI-first hidden-console boot with
+> the ~5 s splash, the `sysadmin` (+`go32`) / `hwspecs` text modes, the
+> Advanced-options bootloader reorg (GRUB + Limine), 720p default + `RES=`, and
+> the one-place dock tray. Still open: PR #3 (AHCI / USB-HID / UEFI), `mxweb`,
+> Hyper-V synthvid.
+
 - **PR #1 (current branch):** GUI/session + terminal + OS polish — 250 Hz
   scheduler + USER_HZ; fast install (multi-sector FS writes); FreeDOOM
   (auto-download); GUI power menu + graphical passwd (`SYS_PASSWD`) +

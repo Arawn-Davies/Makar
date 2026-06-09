@@ -48,7 +48,7 @@ All four phases run in parallel CI jobs (`.github/workflows/build-test.yml`).
 ### System Commands (`shell_cmd_system.c`)
 - **echo** - Print arguments to terminal
 - **meminfo** - Show heap used/free bytes
-- **uptime** - Humanised h/m/s + raw 100 Hz tick count
+- **uptime** - Humanised h/m/s + raw 250 Hz tick count
 - **tasks** - List kernel tasks (state: ready/running/dead). See also `cat /proc/tasks`.
 - **shutdown** - Power off via ACPI S5 (never returns)
 - **reboot** - Reboot via ACPI (never returns)
@@ -157,9 +157,11 @@ All apps in `/Users/arawn/Makar/src/userspace/` compile to `.elf` files and are 
 - **mxtasks** (mxtasks.c) — task manager: `/proc/tasks` list, Kill, refresh-interval slider.
 - **mxclock / mxcalc / mxnet / mxdisk** (mx*.c) — GUI peers of `clock` / `calc` / `maknetcfg` / `diskinfo`.
 - **mximg** (mximg.c) — image viewer (BMP + GIF; PNG/JPEG pending), Open dialog or path arg.
+- **mxdisplay** (mxdisplay.c) — display-settings panel: change resolution with a confirm/auto-revert countdown.
+- **mxabout** (mxabout.c) — graphical About panel (platform/CPU/GPU/NIC/memory); `about.elf` is its text-console counterpart, streaming `/proc/{uname,cpuinfo,meminfo}`.
 - **mxinstall** (mxinstall.c) — graphical OS installer; drives the shared install engine via `SYS_INSTALL_EXEC` (see Installer section + `docs/gui.md`).
 - **doom.elf** (doomgeneric_makar.c) — windowed makx client with `-makx`; unchanged fullscreen path without it.
-- Shared client libs: `gui_gfx` (drawing), `gui_ui` (immediate-mode widgets), `gui_browser` (FS model + file dialog), `makx` (protocol client).
+- Shared client libs: `gui_gfx` (drawing), `gui_ui` (immediate-mode widgets), `gui_browser` (FS model + file dialog), `makx` (protocol client), `img_bmp` (shared BMP loader for `mximg` + `wm` icons).
 
 ## Userspace Syscall API (`src/userspace/syscall.h`)
 
@@ -194,7 +196,7 @@ All apps in `/Users/arawn/Makar/src/userspace/` compile to `.elf` files and are 
 - `sys_write_serial(buf, len)` → `SYS_WRITE_SERIAL (211)` - COM1-only write; no framebuffer mirror. Used by `kbtester.elf`.
 - `sys_keyboard_raw(enable)` → `SYS_KEYBOARD_RAW (212)` - enable/disable raw keyboard mode (1 = raw bytes, no sentinel translation)
 - `sys_shell_clear()` → `SYS_SHELL_CLEAR (213)` - same as the shell's `clear` builtin
-- `sys_uptime()` → `SYS_UPTIME (214)` - returns the 100 Hz PIT tick counter
+- `sys_uptime()` → `SYS_UPTIME (214)` - returns the 250 Hz PIT tick counter
 
 ## VFS API (`src/kernel/include/kernel/vfs.h`)
 

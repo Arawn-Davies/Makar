@@ -14,6 +14,13 @@ A layered PS/2 keyboard driver. It handles IRQ 1, decodes scan-code set 1
 state, delivers cooked bytes to focused tasks, supports raw diagnostic mode,
 and provides deterministic in-kernel injection hooks for `kbtest`.
 
+The keyboard and mouse share the **8042 controller**: a shared i8042 module
+(`i8042.c`) owns the port handshake, and the IRQ 1 handler forwards any AUX
+(mouse) byte it drains to `mouse_feed_byte` (see [mouse](mouse.md)), so the
+[mouse](mouse.md) driver doesn't depend on this one. The modifier tracker also
+recognises the **`Ctrl+Alt+Shift+P`** chord, which raises a `KPANIC` on purpose
+for testing the fail-safe panic ([debug](debug.md)).
+
 This document describes the post-rewrite driver landed for slice #5 of the
 `feat/tty-multitasking` follow-up roadmap. It replaces the older single-
 state-flag implementation that suffered from "sticky e0", an unsynchronised

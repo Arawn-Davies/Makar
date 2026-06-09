@@ -56,11 +56,13 @@ This window covers:
 
 ## Kernel region mapping
 
-A static pool of 32 extra 4 KiB page tables (`extra_page_tables`) handles
-post-boot mapping requests for addresses **above 256 MiB**.  Each page
-table covers 4 MiB of virtual address space, so the pool can map up to
-**128 MiB** of additional regions.  This is enough for the 16 MiB kernel
-heap and the typical VESA framebuffer.
+A static pool of **128** extra 4 KiB page tables (`extra_page_tables`) handles
+post-boot mapping requests for addresses **above 256 MiB**.  Each page table
+covers 4 MiB of virtual address space, so the pool can map up to **512 MiB** of
+additional regions.  The pool was grown from 32 to 128 so a high-resolution
+framebuffer, the SVGA II command FIFO, and the ACPI tables can all be mapped
+without silent truncation — a partial framebuffer map previously caused a `#PF`
+on the first present at 1080p.
 
 Requests that fall within the 256 MiB large-page window are detected by
 checking the `PAGE_LARGE` flag in the relevant PDE and silently skipped.

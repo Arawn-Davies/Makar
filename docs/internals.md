@@ -18,6 +18,37 @@ implemented today, plus what remains for a broader hosted libc environment.
 i386 protected mode, 32-bit, single CPU. No SMP. No PAE. No long mode.
 The decisions below are pitched for that target.
 
+## Boot modes & the bootloader menu
+
+The bootloader menu (GRUB on the live ISO, Limine on an installed disk) is
+XP/Vista-shaped: the **GUI desktop** is the only top-level boot entry (plus
+"Next available device" on GRUB), and every other mode lives under **Advanced
+options**. `kernel_main` peeks the Multiboot2 cmdline early — before the display
+comes up — to choose a mode:
+
+- **GUI desktop** (`autoboot=gui`, the default): boot banners are suppressed on
+  the framebuffer (`g_boot_loading`, still mirrored to COM1); the emblem splash
+  is raised the instant the framebuffer settles and held a ~5s cosmetic minimum
+  while the background self-tests (`ktest_bg_task`, 21 non-FS checks) run behind
+  it; then the desktop. The classic text console is never shown.
+- **Console login** (no flag): the classic 80×50 white-on-blue loading bar, then a
+  text login. Tests run hidden behind the bar (no time floor).
+- **Verbose** (`verbose`): full boot log + visible self-test lines, no bar, all
+  drivers up, no GUI autoboot.
+- **Sysadmin** (`sysadmin`): a bare text console with the self-tests shown
+  verbosely; the post-text drivers (VBE/SVGA II, networking) and the GUI are
+  *deferred, not disabled*. Typing **`go32`** brings them up (`kernel_go_full`)
+  and starts the desktop. Pure VGA text under GRUB `gfxpayload=text`; a
+  bootloader-provided LFB (Limine) is adopted as a text console without binding
+  the accelerated driver.
+- **Hardware info** (`hwspecs`): one-shot — prints the machine's specs (the
+  `/proc/{uname,cpuinfo,meminfo}` the `about` command reads), waits for a key,
+  reboots.
+- **Rescue** (`shell=rescue`) and **Serial console** (`console=ttyS0`) as before.
+
+`RES=<720p|1080p|900p|480p|WxH>` on `./run.sh iso boot` bakes `vmode=` onto the
+booted entry; the kernel default is 720p.
+
 ---
 
 ## 1. CPU state at handoff
@@ -256,7 +287,7 @@ This is the section your manager will ask the most pointed questions about.
 - **`vmm_switch(pd)`** writes CR3, which on every x86 since the i486 flushes
   the entire non-global TLB. That's what we have on every context switch
   (`schedule()` calls it whenever the destination task has a different PD
-  than the source). On a 100 Hz scheduler with 8 tasks, that's at worst a
+  than the source). On a 250 Hz scheduler with 8 tasks, that's at worst a
   few hundred flushes/second — fine.
 - **`vmm_unmap_page`** invokes `invlpg` *only if the current CR3 matches the
   PD being mutated*. Otherwise the stale entry lives in whichever
@@ -575,7 +606,7 @@ appropriate PIC. The slave-PIC IRQs (8..15) require EOI to both. The kernel
 never enters this path with IF=1 — IDT gates clear IF on entry and `iret`
 restores the user's IF on return.
 
-We do not use the APIC. We do not use the HPET. The PIT at 100 Hz drives
+We do not use the APIC. We do not use the HPET. The PIT at 250 Hz drives
 both the scheduler and `sys_uptime()`. Adopting the APIC would buy us
 per-CPU timers (irrelevant pre-SMP) and per-IRQ programmable priorities
 (useful for IDE-vs-keyboard contention, but not enough to justify the port).

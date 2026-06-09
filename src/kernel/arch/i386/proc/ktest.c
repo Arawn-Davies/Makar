@@ -3706,6 +3706,8 @@ int ktest_run_net(void)
  * Skips test_vesa_resolution and test_vesa_colour - both switch display modes
  * and have multi-second sleeps that would corrupt the loading screen.
  * Sets ktest_bg_done = 1 when finished so shell_run can proceed. */
+extern int g_verbose_boot;   /* set by `verbose` cmdline; see kernel/shell.h */
+
 void ktest_bg_task(void)
 {
     int total_pass = 0;
@@ -3729,6 +3731,17 @@ void ktest_bg_task(void)
         Serial_WriteString("/"); \
         Serial_WriteDec((uint32_t)(ktest_pass_count + ktest_fail_count)); \
         Serial_WriteString("\n"); \
+        /* Verbose boot skips the ASCII loading bar but still runs every suite; \
+         * mirror each suite's PASS/FAIL summary to the framebuffer so the boot \
+         * log shows the same tests scrolling by (individual asserts stay muted \
+         * via ktest_muted -- we only surface the per-suite line). */ \
+        if (g_verbose_boot) { \
+            t_writestring("[ktest] " #suite ": "); \
+            t_writestring(ktest_fail_count == 0 ? "PASS " : "FAIL "); \
+            t_dec((uint32_t)ktest_pass_count); t_writestring("/"); \
+            t_dec((uint32_t)(ktest_pass_count + ktest_fail_count)); \
+            t_writestring("\n"); \
+        } \
         /* Brief pacing keeps the loading screen visible while not pushing \
          * iso-test's 120 s GDB budget into the failure regime under TCG. \
          * 5 ticks @ 100 Hz = 50 ms; visible on real HW, ~650 ms total over \

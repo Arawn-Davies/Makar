@@ -128,7 +128,7 @@ not yet a complete POSIX signal subsystem.
 | `localtime`, `localtime_r` | Present | Alias UTC; no timezone database. |
 | `mktime` | Present | UTC interpretation. |
 | `strftime` | Partial | Common numeric/date specifiers. |
-| `nanosleep` | Absent | `sleep`/`usleep` spin-yield on the 100 Hz tick. |
+| `nanosleep` | Absent | `sleep`/`usleep` spin-yield on the 250 Hz tick. |
 
 There is no locale or timezone database. Treat all broken-down time as UTC.
 

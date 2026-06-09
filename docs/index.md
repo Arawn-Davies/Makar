@@ -16,15 +16,17 @@ C# / Cosmos counterpart. The two share a command vocabulary,
 filesystem layout, and long-term binary-format goals while exploring
 how language choice shapes the implementation.
 
-**Current version:** 0.9.5 (kernel self-host milestone; see
+**Current version:** 0.10.0 (kernel self-host milestone; see
 [`include/kernel/version.h`](https://github.com/Arawn-Davies/makar/blob/main/src/kernel/include/kernel/version.h)
 and [kernel rebuild guide](rebuild-kernel.md)).
 
 ## Quick links
 
 - **[Building & running](building.md)** — toolchain, Docker, QEMU
-- **[Internals](internals.md)** — CPU state at boot, paging, TLBs, per-task PDs, scheduler, syscall ABI, fork+COW, execve, wait4
+- **[Conventions & style](conventions.md)** — coding style, house rules, the testing discipline
+- **[Internals](internals.md)** — CPU state at boot, boot modes & the bootloader menu, paging, TLBs, per-task PDs, scheduler, syscall ABI, fork+COW, execve, wait4
 - **[Testing](testing.md)** — ktest, GDB checkpoint suite, in-guest script drivers + key-injection tests
+- **[GUI / desktop](gui.md)** — the makx window server, the `mx*` clients, the dock + tray
 - **[BASIC](basic.md)** — the C64-style integer BASIC interpreter (`basic.elf`)
 - **[Userland libc](userland-libc.md)** — current userspace libc shim and static-musl bring-up state
 - **[TinyCC in Makar](tcc.md)** — shipped in-OS compiler, sysroot, supported workflows, and limits
@@ -37,8 +39,9 @@ and [kernel rebuild guide](rebuild-kernel.md)).
 
 | Subsystem | State |
 |---|---|
-| **Boot** | GRUB Multiboot 2, 5 s menu (Makar OS / chainload next device). Cmdline parsed for `test_mode` + `console=ttyS0`. |
-| **Display** | VESA framebuffer (Bochs VBE, 720p default); VGA 80×50 fallback. `vesa_pane_t` pane abstraction. |
+| **Boot** | GRUB Multiboot 2 (live ISO) + Limine (installed disk). XP/Vista-style menu: **GUI desktop** is the default top-level entry, everything else under **Advanced options** (console login, verbose, **sysadmin** text console, **hardware info**, rescue, serial, resolution picker, video-modes diagnostic). Boot mode chosen by cmdline (`autoboot=gui`, `verbose`, `sysadmin`, `hwspecs`, `shell=rescue`, `console=ttyS0`, `vmode=`, `test_mode`); see [boot modes](internals.md). |
+| **Display** | Video-driver vtable (`kernel/video.h`): VMware/VBox **SVGA II** accelerated backend (HW cursor) where present, else the dumb VESA LFB (Bochs VBE, **720p default**), else VGA 80×50 text. Runtime mode switch via `mxdisplay`. |
+| **Desktop (GUI)** | `wm.elf` is an X11-ish window server (the `makx` protocol over shared surfaces): draggable/resizable windows, a top bar (brand + focused title + power icon), and a **bottom dock** carrying window tabs + a **system tray** (CPU/RAM, Vista-style network indicator, HH:MM clock + DD/MM/YY date). Clients are separate ELFs — `mxterm`, `mxfiles`, `mxedit`, `mximg`, `mxclock`, `mxcalc`, `mxdisk`, `mxnet`, `mxdisplay`, `mxabout`, `mxtasks`, `mxinstall` — plus windowed DOOM. See [GUI](gui.md). |
 | **Multi-TTY** | 4 preemptive shell tasks `shell0`–`shell3`, **Alt+F1–F4** to switch. Per-TTY `vt_buf_t` backing grid; FB painted only when focused; **makmux** multiplexer's status bar at the bottom row (left label, centred `VT1 VT2 VT3 VT4`, `Alt+F1-F4` hint; **Alt+F5** toggles the label between `Makar` and a live `HH:MM:SS DD/MM/YY` clock). Framebuffer syscalls are focus-gated so a backgrounded fullscreen app stays isolated to its VT. |
 | **VIX editor** | vim-style line-number gutter, word wrap, flashing block caret (`SYS_CARET_STYLE`), status row, runtime-resolution agnostic. Now a **userland** ELF (`vix.elf`) run via PATH — appears in `maktop` as its own task. Renamed from VICS during the port — see [Makar × Medli](makar-medli.md). |
 | **Storage** | FAT32 + **ext2** (HDD/USB) + ISO 9660 (CD-ROM) over IDE PIO, routed via a real VFS mount table (`s_mounts[]` in `vfs.c`; longest-prefix-match dispatch). Rootfs election (`vfs_mount_root`) honours `root=/dev/hdaN` Multiboot2 cmdline first, else auto-detects (ext2 → FAT32 → CD-ROM emergency) by probing each candidate for `/usr/lib/crt0.o`. Single-partition disks auto-mount at `/mnt/root`; dual-partition installer layouts bind partition 0 at `/mnt/boot` (also mirrored at `/boot`) and partition 1 at `/mnt/root`; CD-ROM at `/mnt/cdrom`. Synthetic overlays (`/dev` `/proc` `/tmp` `/log`) are first-class mount-table entries. `mount /dev/hdaN /mnt/<name>` auto-detects the backend (ext2 superblock else FAT32). FAT32 and ext2 mount **simultaneously** at separate mountpoints (one of each — the drivers are single-volume). Read + write + delete + rename + mkdir on both; `mkfs.fat32` / `mkfs.ext2` to format; flush + unmount on shutdown/reboot. `/root` mkdir'd best-effort on writable rootfs boots. |
@@ -46,12 +49,12 @@ and [kernel rebuild guide](rebuild-kernel.md)).
 | **`/proc`** | Synthetic filesystem with `cpuinfo`, `meminfo`, `tasks`, `uname`, `rtc` — content generated on each read. `meminfo` MemUsed folds in heap; `tasks` has a per-task `MEMKB` column. |
 | **Memory** | PMM bitmap allocator, paging (low identity map + per-task 4 KiB user pages), kernel heap, COW user pages, anonymous mmap window at `0x90000000`, per-task `brk`. |
 | **FPU/TLS** | x87/SSE initialized at boot; every task has a 512-byte FXSAVE area saved/restored across context switches. i386 TLS uses GDT slot 6 (`%gs = 0x33`) via `set_thread_area`; ISR/IRQ stubs preserve `%gs`. |
-| **Tasking** | Preemptive round-robin scheduler. PIT 100 Hz, `SCHED_QUANTUM = 4` ticks (40 ms slice). Per-task `pid`, `parent_pid`, `cwd`, `tty`, `fd_table_t`, signal bitmasks, FPU state, TLS fields, `exit_status`. Lifecycle: `READY -> RUNNING -> ZOMBIE -> DEAD`. |
+| **Tasking** | Preemptive round-robin scheduler. PIT **250 Hz**, tunable quantum (`g_sched_quantum`, default 1 tick ≈ 4 ms). Syscalls run preemptibly (`sti` after frame save, behind `g_preempt_enabled`; `nopreempt` cmdline disables). Per-task `pid`, `parent_pid`, `cwd`, `tty`, `fd_table_t`, signal bitmasks, FPU state, TLS fields, `exit_status`. Lifecycle: `READY -> RUNNING -> ZOMBIE -> DEAD`. |
 | **Processes** | Full POSIX **fork + execve + wait4**: copy-on-write page-table clone (per-frame refcounts + `VMM_PTE_COW` software bit + COW `#PF` handler with `CR0.WP` enforced), execve replaces caller's address space with a new ELF, wait4 reaps zombies and round-trips the child's `exit_status`. |
-| **Userspace** | Ring-3 via `iret`. ELF loader (`elf_exec`) with argc/argv/envp terminator and auxv. Apps: `hello`, `calc`, `sh.elf`, `vix`, `diskinfo`, `fdisk`, `cfdisk`, `basic`, `kbtester`, `makbox`, `clock`, `lines`, `maktop`, `sigtest`, `forktest`, `execvetest`, `alloctest`, `filetest`, `tcc.elf`, and more. |
+| **Userspace** | Ring-3 via `iret`. ELF loader (`elf_exec`) with argc/argv/envp terminator and auxv. Read-only files stream lazily through a kernel page cache. ~60 apps: `sh.elf` + coreutils (`ls`/`cp`/`mv`/`rm`/`cat`/…), dev tools (`tcc.elf`, `vix`, `basic`, `ar`, `md5`/`sha256`), disk tools (`fdisk`/`cfdisk`/`diskinfo`), the `mx*` GUI suite + `wm`/`makx` desktop, networking (`wget`, `maknetcfg`), and DOOM. Full inventory: [SURVEY.md](https://github.com/Arawn-Davies/makar/blob/main/SURVEY.md). |
 | **Syscalls** | Linux i386 ABI subset over `int 0x80`: process, file, fd, pipe, signal, time, mmap, TLS, and hosted-libc startup stubs. Makar extensions cover terminal, framebuffer, keyboard, VFS shortcuts, admin, and virtual terminals. `/dev` nodes open as `FD_KIND_BLOCKDEV` so read/write/lseek do sector I/O. |
 | **Shell** | `/apps/sh.elf` is the default interactive shell: inline editing, history, PATH lookup, quote-aware tokenization, `sh -c`, pipes, redirection, `&&`/`||`, background `&`, and `wait`. Kernel script layer remains smaller for boot/test scripts. |
-| **Drivers** | 16550 UART, PIT, layered PS/2 keyboard (full set-1 + e0 with per-task SPSC rings), ATA/IDE PIO 28-bit LBA, MBR + GPT partition tables. |
+| **Drivers** | 16550 UART, PIT, RTC/CMOS, layered PS/2 keyboard (full set-1 + e0, per-task SPSC rings) + PS/2 mouse (shared i8042 controller module), ATA/IDE PIO 28-bit LBA, MBR + GPT partition tables, PCI bus scan, ACPI (reboot/poweroff), VMware/VBox **SVGA II**, and four NICs (virtio-net / RTL8139 / e1000 / PCnet) over an **lwIP** TCP/IP stack (DHCP + DNS). |
 | **Debug/Test** | INT 1 / INT 3 GDB-friendly handlers, kernel panic screen, ktest harness, in-guest script drivers, and `kbtest` key injection for keyboard/VT/makmux paths. |
 | **Serial** | Linux-style: dmesg + explicit diagnostics by default. `console=ttyS0` cmdline or `verbose [on\|off]` shell builtin opts into TTY-mirroring. |
 

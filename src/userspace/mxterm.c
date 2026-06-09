@@ -73,7 +73,16 @@ static int term_pump(void){
     if(term_pid>0){int st;if(sys_wait4(term_pid,&st,WNOHANG)==term_pid){term_pid=-1;feed("\r\n[shell exited]\r\n");dirty=1;}}
     return dirty;
 }
-static void term_key(int k){ if(term_in<0)return; unsigned char b=(unsigned char)k; if(b=='\r')b='\n'; sys_write(term_in,&b,1); }
+static void term_key(int k){
+    if(term_in<0)return;
+    unsigned char b=(unsigned char)k;
+    if(b=='\r')b='\n';
+    /* Ctrl-C: signal the shell so it interrupts its foreground command (the
+     * child isn't keyboard-focused here, so only a signal reaches it).  The
+     * byte is still written so the shell's line editor sees ^C at the prompt. */
+    if(b==0x03 && term_pid>0) sys_kill(term_pid,SIGINT);
+    sys_write(term_in,&b,1);
+}
 
 /* Grid geometry: 8x8 glyphs with a 4px margin. */
 static void term_fit(gfx_surface *s){
@@ -117,6 +126,8 @@ int main(int argc,char**argv){
         int k,keyed=0; while((k=mx_key(&c))>=0){ term_key(k); keyed=1; }
         int dirty=term_pump();
         if(dirty||keyed||first||c.resized){ term_draw(&c.surf,c.focused); mx_present(&c); first=0; }
+        /* Shell gone (`exit` or Ctrl-D on an empty line) -> close the window. */
+        if(term_pid<0) break;
         sys_yield();
     }
     term_kill();

@@ -110,15 +110,37 @@ static int str_eq(const char *a, const char *b)
     return *a == *b;
 }
 
+/* Read one line char-at-a-time with local echo + backspace.  Mirrors sh.elf's
+ * readline: sys_getkey() returns raw keys (no kernel echo, no line buffering)
+ * and works identically on the classic VT and inside the GUI terminal, where
+ * stdin is a pipe with no line discipline -- a plain sys_read(0) there returns
+ * one byte per keystroke, so a cooked line read evaluated after every key.
+ * Returns the length, or -1 on EOF (Ctrl-D / pipe closed). */
+static int read_line(char *buf, int cap)
+{
+    int len = 0;
+    for (;;) {
+        int c = sys_getkey();
+        if (c < 0) return (len > 0) ? len : -1;    /* EOF */
+        unsigned char ch = (unsigned char)c;
+        if (ch == '\r' || ch == '\n') { write_char('\n'); buf[len] = '\0'; return len; }
+        if (ch == 0x04) return (len > 0) ? len : -1;            /* Ctrl-D */
+        if (ch == 0x08 || ch == 0x7F) {                         /* backspace */
+            if (len > 0) { len--; write_str("\b \b"); }
+            continue;
+        }
+        if (ch < 0x20 || ch >= 0x80) continue;     /* skip ctrl/arrow sentinels */
+        if (len < cap - 1) { buf[len++] = (char)ch; write_char((char)ch); }
+    }
+}
+
 int main(void)
 {
     char line[256];
     for (;;) {
         write_str("> ");
-        long n = sys_read(0, line, sizeof(line) - 1);
-        if (n <= 0) break;
-        if (line[n-1] == '\n') n--;
-        line[n] = '\0';
+        int n = read_line(line, sizeof(line));
+        if (n < 0) break;
 
         const char *s = line;
         while (*s == ' ' || *s == '\t') s++;
