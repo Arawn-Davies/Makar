@@ -1161,6 +1161,18 @@ void shell_enter_root_tty(void)
     vtty_register_root();
 
     terminal_set_colorscheme(SHELL_COLOR_VGA);
+
+    /* GUI boot: the graphical splash (raised in kernel_main the instant the
+     * framebuffer settles, then animated to a ~5s floor in shell_login_loop)
+     * owns the screen -- skip the text/ASCII loading bar + ktest wait entirely
+     * so the desktop boot never flashes the white-on-blue console.  Banners
+     * stay suppressed (g_boot_loading was set in the early cmdline peek and is
+     * cleared by shell_login_loop after the splash). */
+    if (g_boot_gui && !g_verbose_boot) {
+        vesa_tty_set_status_visible(0);
+        return;
+    }
+
     /* Hold background ktest text off the framebuffer for the loading screen so it
      * can't bleed over the logo/bar (the bar uses vesa_tty_put_at, unaffected).
      * Verbose boot wants the boot log on screen, so it leaves painting enabled. */
@@ -1288,23 +1300,52 @@ void shell_login_loop(void)
         }
         first_boot = 0;
 
-        /* --- Session start: clear to the shell's own palette and print
-         *     the build-info banner, matching the pre-login-flow UX. --- */
-        terminal_set_colorscheme(SHELL_COLOR_VGA);
-        if (vesa_tty_is_ready()) {
-            vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
-            vesa_tty_clear();
+        /* --- Session start ---
+         * GUI mode: a graphical VGA splash (disc emblem + MAKAR wordmark + a
+         * loading bar that tracks the background ktest suite) instead of the
+         * text banner -- no console banner, no visible ktests; gui.elf paints
+         * over it.  g_boot_loading gates stray framebuffer text meanwhile.
+         * Otherwise: the classic build-info banner. */
+        if (g_gui_session && !g_verbose_boot && vesa_tty_is_ready()) {
+            g_boot_loading = 1;
+            vesa_draw_splash(0xEAF0E0u, 0x0E1512u);
+            /* Hold the splash a Windows-ish minimum (~5s) for a polished boot,
+             * even when the background self-tests finish in a fraction of that
+             * on a fast host.  Ease the bar by whichever is further along --
+             * real test progress or elapsed time toward the floor -- and only
+             * dismiss once BOTH the tests are done and the floor has elapsed. */
+            uint32_t splash_t0 = timer_get_ticks();
+            const uint32_t splash_min = 5u * TIMER_HZ;
+            for (;;) {
+                uint32_t el = timer_get_ticks() - splash_t0;
+                int      kt = ktest_bg_total > 0 ? ktest_bg_total : 1;
+                uint32_t f_test = (uint32_t)ktest_bg_completed * 1000u / (uint32_t)kt;
+                uint32_t f_time = el >= splash_min ? 1000u : el * 1000u / splash_min;
+                uint32_t f = f_test > f_time ? f_test : f_time;
+                if (ktest_bg_done && el >= splash_min) break;
+                if (f > 999u) f = 999u;          /* hold just under full until done */
+                vesa_splash_progress((int)f, 1000);
+                task_yield();
+            }
+            vesa_splash_progress(1, 1);
+            g_boot_loading = 0;
         } else {
-            t_fill(SHELL_COLOR_VGA);
-        }
-        t_writestring("Makar " MAKAR_VERSION "\n");
-        t_writestring("Type 'help' for commands, 'about' for credits.\n");
-        if (!g_live_boot && vfs_rootfs_is_disk() && vfs_file_exists("/etc/shadow")) {
-            t_writestring("Welcome back, ");
-            t_writestring(auth_current_user());
-            t_writestring("!\n\n");
-        } else {
-            t_writestring("Welcome, user@makar! (live session)\n\n");
+            terminal_set_colorscheme(SHELL_COLOR_VGA);
+            if (vesa_tty_is_ready()) {
+                vesa_tty_setcolor(SHELL_FG_RGB, SHELL_BG_RGB);
+                vesa_tty_clear();
+            } else {
+                t_fill(SHELL_COLOR_VGA);
+            }
+            t_writestring("Makar " MAKAR_VERSION "\n");
+            t_writestring("Type 'help' for commands, 'about' for credits.\n");
+            if (!g_live_boot && vfs_rootfs_is_disk() && vfs_file_exists("/etc/shadow")) {
+                t_writestring("Welcome back, ");
+                t_writestring(auth_current_user());
+                t_writestring("!\n\n");
+            } else {
+                t_writestring("Welcome, user@makar! (live session)\n\n");
+            }
         }
 
         /* --- Ensure the login user's home directory exists ---

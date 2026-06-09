@@ -197,6 +197,22 @@ static void cmd_reboot(int argc, char **argv)
     admin_reboot();
 }
 
+/* go32 -- after a sysadmin (deferred) boot, bring the display + networking
+ * online and start the full system (the GUI desktop).  See kernel_go_full(). */
+extern void kernel_go_full(void);
+extern int  g_sysadmin;
+static void cmd_go32(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    if (!g_sysadmin) {
+        t_writestring("go32: the full system is already up "
+                      "(only meaningful after a sysadmin boot).\n");
+        return;
+    }
+    t_writestring("go32: bringing up display + networking, starting the desktop...\n");
+    kernel_go_full();
+}
+
 static void cmd_panic(int argc, char **argv)
 {
     const char *msg = (argc >= 2) ? argv[1] : "Shell-requested panic";
@@ -393,6 +409,7 @@ const shell_cmd_entry_t system_cmds[] = {
     { "poweroff", cmd_shutdown },   /* alias (Linux) */
     { "halt",     cmd_shutdown },   /* alias (Linux; ACPI soft-off) */
     { "reboot",   cmd_reboot   },
+    { "go32",     cmd_go32     },   /* sysadmin: bring up display+net, start desktop */
     { "panic",    cmd_panic    },
     { "ktest",    cmd_ktest    },
     { "verbose",  cmd_verbose  },

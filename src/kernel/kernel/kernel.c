@@ -36,6 +36,7 @@ void usb_init(void);   /* arch/i386/drivers/usb/usb.h (not on the kernel inc pat
 #include <kernel/vtty.h>
 #include <kernel/sh_script.h>
 #include <kernel/elf.h>
+#include <kernel/asm.h>           /* inb/outb for the hwspecs reboot-on-key poll */
 
 /* Set to 1 when `live` appears on the kernel cmdline (live ISO boot).
  * Suppresses login regardless of rootfs type. */
@@ -58,6 +59,25 @@ int g_gui_session = 0;
 /* `verbose` on the cmdline: skip the boot loading screen/progress bar so the
  * boot log + background ktest output stay visible instead. */
 int g_verbose_boot = 0;
+
+/* `sysadmin` on the cmdline: boot to a bare 80x50 text console with the boot log
+ * + self-tests shown verbosely, but the post-text drivers (VBE/SVGA II, net) and
+ * the GUI *deferred* (not disabled).  The `go32` shell builtin brings them up on
+ * demand and resumes the normal full boot.  Implies g_verbose_boot. */
+int g_sysadmin = 0;
+
+/* `hwspecs` on the cmdline: a one-shot 80x50 text screen that prints the machine's
+ * hardware specs, waits for a keypress, then reboots.  Nothing else. */
+int g_hwspecs = 0;
+
+/* `shell=rescue` on the cmdline, peeked early: a recovery console.  Like
+ * sysadmin/hwspecs it is a text-only mode -- no VBE/SVGA II graphics (VESA is
+ * optional here) -- so the display bring-up forces a VGA text console. */
+int g_boot_rescue = 0;
+
+/* Saved Multiboot2 info pointer so the deferred display bring-up (`go32`) can
+ * re-run the framebuffer setup after a sysadmin boot. */
+multiboot2_info_t *g_mbi = 0;
 
 /* Explicit resolution request from the cmdline (vmode=), uncapped by what the
  * boot VBE happens to support.  A driver that can set arbitrary modes (SVGA II)
@@ -170,6 +190,110 @@ void statusbar_entry(void)
 		task_yield();
 }
 
+/* Stream a whole /proc file to the text console (the kernel-rendered specs the
+ * `about` command also reads). */
+static void hwspecs_cat(const char *path)
+{
+	static char buf[8192];
+	uint32_t sz = 0;
+	if (vfs_read_file(path, buf, sizeof buf - 1, &sz) == 0 && sz > 0) {
+		buf[sz] = '\0';
+		t_writestring(buf);
+	}
+}
+
+/*
+ * hwspecs_screen -- the `hwspecs` boot option.  Prints the machine's hardware
+ * specs on the 80x50 text console, then waits for a keypress and reboots.
+ * One-shot; never returns.  Runs pre-tasking and polls the 8042 directly (like
+ * panic_halt) so it needs no keyboard IRQ.
+ */
+static __attribute__((noreturn)) void hwspecs_screen(void)
+{
+	/* Clear whichever console we ended up on: a vesa_tty framebuffer text
+	 * console (the bootloader handed us an LFB, e.g. Limine) or genuine VGA
+	 * text (GRUB gfxpayload=text). */
+	if (vesa_tty_is_ready()) {
+		vesa_tty_clear();
+	} else {
+		terminal_initialize();
+		terminal_set_rows(50);
+	}
+	t_writestring("==== Makar -- hardware information ====\n\n");
+	hwspecs_cat("/proc/uname");
+	t_writestring("\n--- CPU & platform ---\n");
+	hwspecs_cat("/proc/cpuinfo");
+	t_writestring("\n--- Memory ---\n");
+	hwspecs_cat("/proc/meminfo");
+	t_writestring("\nPress a key to reboot.\n");
+
+	/* Drain anything already in the 8042, then wait for a fresh key *press*
+	 * (make code) and pulse the keyboard-controller CPU-reset line. */
+	for (int t = 0; t < 100000 && (inb(0x64) & 0x01); t++)
+		(void)inb(0x60);
+	for (;;) {
+		if (inb(0x64) & 0x01) {
+			uint8_t sc = inb(0x60);
+			if (sc == 0xE0 || sc == 0xE1 || (sc & 0x80))
+				continue;             /* ignore break codes + extended prefixes */
+			for (int t = 0; t < 100000 && (inb(0x64) & 0x02); t++)
+				;
+			outb(0x64, 0xFE);         /* CPU-reset pulse */
+			for (int t = 0; t < 2000000; t++)
+				asm volatile("pause");
+			{                         /* fallback: triple-fault via a null IDT */
+				struct { uint16_t limit; uint32_t base; } __attribute__((packed))
+					null_idt = { 0, 0 };
+				asm volatile("lidt %0; int3" :: "m"(null_idt));
+			}
+		}
+		asm volatile("pause");
+	}
+}
+
+/*
+ * kernel_go_full -- the `go32` shell builtin's worker.  After a sysadmin boot
+ * (display + net + GUI deferred), bring the framebuffer online, start
+ * networking, and launch the normal full session (GUI desktop).  Mirrors the
+ * bring-up kernel_main does on a normal boot.  No-op unless we actually
+ * deferred (i.e. only meaningful from the sysadmin in-kernel shell).
+ */
+void kernel_go_full(void)
+{
+	if (!g_sysadmin)
+		return;                       /* nothing was deferred */
+	g_sysadmin = 0;                   /* stop deferring; the bring-up paths run now */
+
+	/* Framebuffer + mode + accelerated backend.  PCI was already scanned at
+	 * boot, so video_init() can bind SVGA II here.  Default to 720p (sysadmin
+	 * carried no vmode=). */
+	if (g_mbi)
+		vesa_init(g_mbi);
+	if (bochs_vbe_available()) {
+		bochs_vbe_set_mode(1280, 720, 32);
+		vesa_update_geometry(1280, 720, 32);
+		vesa_tty_set_scale(2);
+		vesa_tty_init();
+	}
+	if (vesa_get_fb()) {              /* graphics came up: bind the accel backend */
+		const vesa_fb_t *fb0 = vesa_get_fb();
+		uint32_t pw = fb0->width, ph = fb0->height;
+		video_init();
+		const vesa_fb_t *fb1 = vesa_get_fb();
+		if (fb1 && (fb1->width != pw || fb1->height != ph)) {
+			vesa_tty_set_scale(fb1->width >= 1280 ? 2 : 1);
+			vesa_tty_init();
+		}
+	}
+
+	/* Start networking + the normal userspace session, now as a GUI session. */
+	task_create("net", net_lwip_task);
+	g_boot_gui = 1;
+	g_gui_session = 1;
+	task_create("mak.sh0", user_shell_slot_entry);
+	task_create("statusbar", statusbar_entry);
+}
+
 void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 {
 	terminal_initialize();
@@ -212,6 +336,39 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	t_writestring("Initializing heap");
 	kprint_ok();
 	heap_init();
+
+	/* Early boot-mode peek.  The full cmdline parse runs after the drivers come
+	 * up, but the display + driver bring-up below must already know the mode:
+	 * `sysadmin`/`hwspecs` stay in pure 80x50 VGA text (no VBE/SVGA II), and a
+	 * GUI boot hides the console banners under the graphical splash.  Walk the
+	 * Multiboot2 cmdline tag once here. */
+	g_mbi = mbi;
+	{
+		const char *cl = "";
+		if (magic == MULTIBOOT2_BOOTLOADER_MAGIC) {
+			uint8_t *tp = (uint8_t *)mbi + sizeof(multiboot2_info_t);
+			uint8_t *te = (uint8_t *)mbi + mbi->total_size;
+			while (tp < te) {
+				multiboot2_tag_t *tag = (multiboot2_tag_t *)tp;
+				if (tag->type == MULTIBOOT2_TAG_TYPE_END) break;
+				if (tag->type == MULTIBOOT2_TAG_TYPE_CMDLINE) {
+					cl = ((multiboot2_tag_cmdline_t *)tag)->string;
+					break;
+				}
+				tp += (tag->size + 7u) & ~7u;
+			}
+		}
+		if (strstr(cl, "sysadmin"))     g_sysadmin = 1;
+		if (strstr(cl, "hwspecs"))      g_hwspecs  = 1;
+		if (strstr(cl, "shell=rescue")) g_boot_rescue = 1;
+		if (strstr(cl, "verbose"))      g_verbose_boot = 1;
+		if (strstr(cl, "autoboot=gui")) g_boot_gui = 1;
+		if (g_sysadmin) g_verbose_boot = 1;   /* sysadmin shows the boot log + self-tests */
+		/* GUI boot: hide the post-display boot banners under the splash (still
+		 * mirrored to COM1).  Text modes never raise a framebuffer. */
+		if (g_boot_gui && !g_verbose_boot && !g_sysadmin && !g_hwspecs)
+			g_boot_loading = 1;
+	}
 
 	t_writestring("Initializing VESA framebuffer");
 	kprint_ok();
@@ -271,7 +428,9 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			if (pw && ph) { g_video_pref_w = pw; g_video_pref_h = ph; }
 		}
 
-		if (bochs_vbe_available()) {
+		if (!g_sysadmin && !g_hwspecs && !g_boot_rescue && bochs_vbe_available()) {
+			/* (sysadmin/hwspecs/rescue are text-only -- they skip the VBE/SVGA
+			 * path and fall through to the forced VGA-text branch below.) */
 			/* Highest mode the adapter can scan out: this is the framebuffer
 			 * span we pre-map below, before any task PD is snapshotted, so a
 			 * later setmode up to this size never reaches an unmapped FB region
@@ -317,7 +476,15 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 				if (rw && bochs_vbe_mode_supported(rw, rh, 32)) { bw = rw; bh = rh; }
 			}
 			if (bw == 0) {
-				if (bochs_vbe_mode_supported(1280, 720, 32)) { bw = 1280; bh = 720; }
+				/* Default to 720p where the adapter supports it (matches the
+				 * SVGA II default) -- a comfortable size on most hosts, and
+				 * 1080p is too large by default.  Step down to 1024x768 then
+				 * 640x480, else fall back to the largest mode the adapter
+				 * advertises.  A bigger mode is still reachable via vmode=
+				 * (cmdline / bootloader submenu) or the display-settings app. */
+				if      (bochs_vbe_mode_supported(1280, 720, 32)) { bw = 1280; bh = 720; }
+				else if (bochs_vbe_mode_supported(1024, 768, 32)) { bw = 1024; bh = 768; }
+				else if (bochs_vbe_mode_supported(640,  480, 32)) { bw = 640;  bh = 480; }
 				else { bw = max_w; bh = max_h; }
 			}
 
@@ -350,16 +517,15 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			bochs_vbe_set_mode(bw, bh, 32);
 			vesa_update_geometry(bw, bh, 32);
 			vesa_tty_init();
-		} else if (vesa_get_fb()) {
-			/* No Bochs/DISPI adapter, but the bootloader honoured our
-			 * Multiboot2 framebuffer request and handed us a linear
-			 * framebuffer (Hyper-V Gen1, VMware SVGA without DISPI, much
-			 * real hardware).  The hardware is therefore already in a
-			 * GRAPHICS mode -- the VGA text buffer at 0xB8000 is invisible,
-			 * which is the Hyper-V Gen1 "black screen" symptom.  We cannot
-			 * change the mode (no DISPI registers), so adopt the
-			 * bootloader's geometry: map the FB span (write-combining) and
-			 * bring vesa_tty up on it. */
+		} else if (!g_sysadmin && !g_hwspecs && !g_boot_rescue && vesa_get_fb()) {
+			/* No DISPI adapter, but the bootloader honoured our Multiboot2
+			 * framebuffer request and handed us a linear framebuffer (Hyper-V
+			 * Gen1, VMware SVGA without DISPI, much real hardware).  The hardware
+			 * is therefore already in a GRAPHICS mode -- the VGA text buffer at
+			 * 0xB8000 is invisible, the Hyper-V Gen1 "black screen" symptom.  We
+			 * can't change the mode (no DISPI registers), so adopt the
+			 * bootloader's geometry: map the FB span (write-combining) and bring
+			 * vesa_tty up on it. */
 			const vesa_fb_t *fbp = vesa_get_fb();
 			paging_map_region_wc((uint32_t)(uintptr_t)fbp->addr,
 			                     fbp->pitch * fbp->height);
@@ -370,10 +536,21 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			vesa_tty_set_scale(fbp->width >= 1280 ? 2 : 1);
 			vesa_tty_init();
 		} else {
-			/* No framebuffer at all: genuine VGA text mode. */
+			/* Text-only boot modes (sysadmin / hardware info / rescue), or a
+			 * genuine no-framebuffer boot: come up in a real VGA text console.
+			 * Actively turn the SVGA II engine + DISPI off so a graphics LFB the
+			 * bootloader left can't keep scanning out over the 0xB8000 text
+			 * buffer, unblank the attribute controller, load the 8x8 font, and
+			 * switch the CRTC to 80x50.  (debug.c's force_vga_text_mode() uses
+			 * the same sequence for the panic screen.)  All four calls are
+			 * no-ops / harmless when their hardware isn't present. */
+			video_svga2_to_vga();             /* SVGA II off (no-op if unbound) */
+			bochs_vbe_disable();              /* DISPI off -> VGA mode 3        */
+			inb(0x3DA); outb(0x3C0, 0x20);    /* unblank the attribute controller */
+			vga_load_text_font_8x8();         /* 8x8 glyphs for 80x50          */
 			vesa_disable();
 			vesa_tty_disable();
-			terminal_set_rows(50);
+			terminal_set_rows(50);            /* CRTC -> 8-scanline cells = 80x50 */
 		}
 	}
 
@@ -420,8 +597,9 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	/* Bind a display driver now that PCI is scanned and the framebuffer
 	 * geometry is settled: an accelerated backend (SVGA II / Hyper-V synthvid)
 	 * if its hardware is present, else the dumb LFB.  SYS_FB_PRESENT[_RECT]
-	 * route through it; nothing presents via the framework before the GUI runs. */
-	{
+	 * route through it; nothing presents via the framework before the GUI runs.
+	 * Deferred under sysadmin/hwspecs/rescue (text-only); `go32` binds it later. */
+	if (!g_sysadmin && !g_hwspecs && !g_boot_rescue) {
 		const vesa_fb_t *fb0 = vesa_get_fb();
 		uint32_t prev_w = fb0 ? fb0->width : 0, prev_h = fb0 ? fb0->height : 0;
 		video_init();
@@ -435,6 +613,16 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			vesa_tty_init();
 		}
 	}
+
+	/* GUI boot: raise the graphical splash the instant the framebuffer is settled
+	 * (compiled-in emblem -- no FS) so the desktop boot never flashes the text
+	 * console.  The login loop animates the bar once the background self-tests
+	 * run, holding a ~5s cosmetic minimum. */
+	if (g_boot_gui && !g_verbose_boot && !g_sysadmin && !g_hwspecs && vesa_tty_is_ready()) {
+		vesa_draw_splash(0xEAF0E0u, 0x0E1512u);
+		vesa_splash_progress(0, 1);
+	}
+
 	usb_init();        /* report USB host controllers (HID driver TBD) */
 
 	/* Parse Multiboot 2 tags: boot device and kernel command line. */
@@ -565,6 +753,12 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 	vfs_auto_mount();
 	vfs_ensure_root_home();
 
+	/* `hwspecs` boot option: one-shot hardware-spec screen on the 80x50 text
+	 * console, then wait for a key and reboot.  procfs is mounted (above) so the
+	 * same /proc files `about` reads are available.  Never returns. */
+	if (g_hwspecs)
+		hwspecs_screen();
+
 	t_writestring("\nAll subsystems ready.\n");
 	/* MAKAR_BUILD_ORIGIN is set by arch/i386/boot/build_origin.c at
 	 * compile time -- "gcc-host" / "tcc-host" / "tcc-in-os". */
@@ -613,6 +807,13 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			 * `init=/bin/sh`).  See auth_force_user / docs. */
 			auth_force_user("root");
 			task_create("rescu.sh", shell_run);
+		} else if (g_sysadmin) {
+			/* Sysadmin: defer the userspace session + net and drop into the
+			 * in-kernel shell (where `go32` lives) on the text console.  The
+			 * self-tests still run (ktest below) and show verbosely; `go32`
+			 * brings the full system up on demand. */
+			auth_force_user("root");
+			task_create("sysadm.sh", shell_run);
 		} else {
 			task_create("net", net_lwip_task);
 			task_create("mak.sh0", user_shell_slot_entry);
