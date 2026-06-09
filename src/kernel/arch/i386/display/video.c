@@ -64,3 +64,10 @@ void video_flush_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h)
     if (s_active && s_active->flush_rect)
         s_active->flush_rect(x, y, w, h);
 }
+
+int video_set_mode(uint32_t w, uint32_t h)
+{
+    if (s_active && s_active->set_mode)
+        return s_active->set_mode(w, h);
+    return -1;
+}

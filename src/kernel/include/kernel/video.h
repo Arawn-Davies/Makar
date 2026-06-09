@@ -34,6 +34,12 @@ typedef struct vid_driver {
      * success; non-zero makes video_init fall back to the next candidate. */
     int  (*init)(void);
 
+    /* Switch to (w,h)x32 at runtime via the device's own registers and repoint
+     * the framebuffer (vesa_set_framebuffer).  Return 0 on success, non-zero if
+     * unsupported.  NULL on backends that can't mode-set (plain VBE LFB), so the
+     * caller falls back to the Bochs DISPI path. */
+    int  (*set_mode)(uint32_t w, uint32_t h);
+
     /* Present the rectangle (x,y,w,h) of a full-frame packed-32bpp back buffer
      * `src` (pitch = fb->width*4) to the screen. */
     void (*present_rect)(const void *src, uint32_t x, uint32_t y,
@@ -74,5 +80,15 @@ void video_present_rect(const void *src, uint32_t x, uint32_t y,
 /* Scan out a rectangle already written directly into the framebuffer (text
  * console path).  No-op on backends with a live framebuffer. */
 void video_flush_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+
+/* Ask the active driver to switch to (w,h)x32 via its own registers (SVGA II).
+ * Returns 0 on success, non-zero if the driver can't do it (caller falls back
+ * to Bochs DISPI). */
+int video_set_mode(uint32_t w, uint32_t h);
+
+/* Panic path: disable the SVGA II engine so the device reverts to VGA-
+ * compatible scanout (the panic then programs VGA mode 3 + writes 0xB8000).
+ * No-op if the SVGA II driver never bound.  Defined in video_svga2.c. */
+void video_svga2_to_vga(void);
 
 #endif /* _KERNEL_VIDEO_H */

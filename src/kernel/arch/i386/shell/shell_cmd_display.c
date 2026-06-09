@@ -8,6 +8,7 @@
 
 #include <kernel/tty.h>
 #include <kernel/vesa.h>
+#include <kernel/video.h>
 #include <kernel/vesa_tty.h>
 #include <kernel/vtty.h>
 #include <kernel/bochs_vbe.h>
@@ -202,6 +203,8 @@ static const vesa_mode_t vesa_modes[] = {
     { "320x240",   320,  240  },
     { "640x480",   640,  480  },
     { "480p",      640,  480  },
+    { "800x600",   800,  600  },
+    { "1024x768",  1024, 768  },
     { "1280x720",  1280, 720  },
     { "720p",      1280, 720  },
     { "1920x1080", 1920, 1080 },
@@ -261,11 +264,6 @@ int admin_setmode(const char *mode)
     }
 
     /* --- VESA framebuffer modes ------------------------------------------ */
-    if (!bochs_vbe_available()) {
-        t_writestring("Error: Bochs VBE not available on this hardware.\n");
-        return -2;
-    }
-
     for (uint32_t i = 0; i < VESA_MODE_COUNT; i++) {
         if (strcmp(mode, vesa_modes[i].name) != 0)
             continue;
@@ -273,27 +271,37 @@ int admin_setmode(const char *mode)
         uint32_t w = vesa_modes[i].w;
         uint32_t h = vesa_modes[i].h;
 
-        /* Refuse modes the adapter can't scan out (insufficient VRAM or
-         * beyond the advertised maxima).  Bailing here -- before touching
-         * the hardware or geometry -- keeps us in the working mode instead
-         * of half-switching into a framebuffer that overruns VRAM and
-         * faults.  The boot path already mapped the largest *supported*
-         * mode, so any mode that passes this gate is guaranteed mapped in
-         * every task PD. */
-        if (!bochs_vbe_mode_supported(w, h, 32)) {
-            uint32_t mw = 0, mh = 0, mb = 0;
-            bochs_vbe_caps(&mw, &mh, &mb);
-            t_writestring("Error: ");
-            t_dec(w); t_writestring("x"); t_dec(h);
-            t_writestring(" exceeds this adapter (max ");
-            t_dec(mw); t_writestring("x"); t_dec(mh);
-            t_writestring(", VRAM "); t_dec(bochs_vbe_vram_bytes() / 1024u);
-            t_writestring(" KiB)\n");
-            return -2;
+        /* Prefer the bound accelerated driver's own mode-set (SVGA II uses its
+         * registers).  VMSVGA ignores the Bochs DISPI registers, so the DISPI
+         * path below would wrongly reject the mode as unsupported. */
+        if (video_set_mode(w, h) != 0) {
+            /* Fall back to Bochs DISPI.  Refuse modes the adapter can't scan out
+             * before touching the hardware, so we stay in the working mode
+             * rather than half-switching into a framebuffer that overruns VRAM
+             * and faults. */
+            if (!bochs_vbe_available()) {
+                t_writestring("Error: Bochs VBE not available on this hardware.\n");
+                return -2;
+            }
+            if (!bochs_vbe_mode_supported(w, h, 32)) {
+                uint32_t mw = 0, mh = 0, mb = 0;
+                bochs_vbe_caps(&mw, &mh, &mb);
+                t_writestring("Error: ");
+                t_dec(w); t_writestring("x"); t_dec(h);
+                t_writestring(" exceeds this adapter (max ");
+                t_dec(mw); t_writestring("x"); t_dec(mh);
+                t_writestring(", VRAM "); t_dec(bochs_vbe_vram_bytes() / 1024u);
+                t_writestring(" KiB)\n");
+                return -2;
+            }
+            bochs_vbe_set_mode(w, h, 32);
+            vesa_update_geometry(w, h, 32);
         }
+        /* On the SVGA II path video_set_mode() already repointed the FB (and may
+         * have clamped the geometry), so read the actual result back. */
+        { const vesa_fb_t *nfb = vesa_get_fb();
+          if (nfb) { w = nfb->width; h = nfb->height; } }
 
-        bochs_vbe_set_mode(w, h, 32);
-        vesa_update_geometry(w, h, 32);
         /* Under the GUI the window manager owns the framebuffer and reflows
          * itself (wm_reinit_display) on the geometry change; re-initialising the
          * text console or clearing the FB here would stomp the desktop -- the

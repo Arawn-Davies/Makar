@@ -65,4 +65,12 @@ void vesa_set_framebuffer(uint32_t *addr, uint32_t pitch, uint32_t width,
  * fg and bg are 24-bit RGB colours for foreground and background pixels. */
 void vesa_blit_logo(uint32_t fg, uint32_t bg);
 
+/* Graphical boot splash: bg fill + the colour disc emblem + the MAKAR wordmark
+ * (fg), centred, with an empty loading-bar frame, flushed through the active
+ * display driver. */
+void vesa_draw_splash(uint32_t fg, uint32_t bg);
+
+/* Fill the splash loading bar to done/total.  No-op before vesa_draw_splash. */
+void vesa_splash_progress(int done, int total);
+
 #endif
