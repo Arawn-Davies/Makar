@@ -133,4 +133,25 @@ typedef struct {
 } install_drive_t;
 #endif
 
+/* ------------------------------------------------------------------------
+ * BSD sockets ABI (subset) -- AF_INET / SOCK_STREAM only, shared by the kernel
+ * socket layer (SYS_SOCKET / SYS_CONNECT) and the userspace wrappers.  The
+ * sockaddr_in layout matches Linux i386 so the shape is familiar and a future
+ * socketcall(102) shim for musl-linked binaries (e.g. Dropbear) can reuse it.
+ * ------------------------------------------------------------------------ */
+#define AF_INET      2
+#define SOCK_STREAM  1
+#define IPPROTO_TCP  6
+
+#ifndef _MAKAR_STRUCT_SOCKADDR_IN_DEFINED
+#define _MAKAR_STRUCT_SOCKADDR_IN_DEFINED
+struct in_addr { unsigned int s_addr; };         /* IPv4, network byte order */
+struct sockaddr_in {
+    unsigned short sin_family;                     /* AF_INET                  */
+    unsigned short sin_port;                       /* port, network byte order */
+    struct in_addr sin_addr;                       /* address, network order   */
+    unsigned char  sin_zero[8];                    /* pad to 16 bytes          */
+};
+#endif
+
 #endif /* _MAKAR_ABI_H */

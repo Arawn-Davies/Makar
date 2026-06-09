@@ -36,6 +36,8 @@ typedef enum {
     FD_KIND_FILE       = 5,   /* opened VFS file (eagerly buffered)        */
     FD_KIND_BLOCKDEV   = 6,   /* /dev block device (no buffer; sector I/O) */
     FD_KIND_PIPE       = 7,   /* SYS_PIPE end -- shared ring (refcounted)  */
+    FD_KIND_SOCKET     = 8,   /* TCP socket (kernel/socket.h); read/write/  */
+                              /* close route to ksock_recv/_send/_close     */
 } fd_kind_t;
 
 /* Pipe ring shared by a reader fd + writer fd.  Allocated by SYS_PIPE;
@@ -69,6 +71,7 @@ typedef struct {
     uint32_t  pos;      /* current read/seek position                 */
     uint32_t  flags;    /* FD_FLAG_*; per-fd modes (e.g. O_NONBLOCK)  */
     int       dev_node; /* FD_KIND_BLOCKDEV: devfs node index         */
+    int       sock_id;  /* FD_KIND_SOCKET: ksock pool index           */
     uint8_t   dirty;    /* FILE: data differs from on-disk; flush on close */
     uint8_t   writable; /* FILE: opened with O_WRONLY or O_RDWR        */
     uint8_t   append;   /* FILE: O_APPEND -- force pos = size before write */
