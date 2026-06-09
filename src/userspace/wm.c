@@ -607,6 +607,49 @@ static void dock_stats(char *out)
     out[o]=0;
 }
 
+/* ---- system tray: net status + clock/date (lives in the dock, far right) - */
+static int      g_net_state = -1;        /* 0 down, 1 limited, 2 connected   */
+static char     g_clk[8]   = "--:--";    /* HH:MM                            */
+static char     g_date[10] = "--/--/--"; /* DD/MM/YY                         */
+static unsigned g_tray_sec = 0xffffffffu;/* last poll second (uptime/100)    */
+
+static void tray_poll(void)
+{
+    unsigned sec = sys_uptime() / 100u;          /* 100 Hz ticks -> seconds  */
+    if (sec == g_tray_sec) return;               /* poll at most once/second */
+    g_tray_sec = sec;
+    g_net_state = sys_net_ctl(NET_CTL_STATUS);
+    if (g_net_state < 0) g_net_state = 0;
+    /* /proc/rtc = "YYYY-MM-DD HH:MM:SS" -> HH:MM and DD/MM/YY. */
+    char b[40];
+    int fd = sys_open("/proc/rtc", O_RDONLY);
+    if (fd >= 0) {
+        long n = sys_read(fd, b, (long)sizeof b - 1);
+        sys_close(fd);
+        if (n >= 19) {
+            g_clk[0]=b[11]; g_clk[1]=b[12]; g_clk[2]=':'; g_clk[3]=b[14]; g_clk[4]=b[15]; g_clk[5]=0;
+            g_date[0]=b[8]; g_date[1]=b[9]; g_date[2]='/'; g_date[3]=b[5]; g_date[4]=b[6];
+            g_date[5]='/'; g_date[6]=b[2]; g_date[7]=b[3]; g_date[8]=0;
+        }
+    }
+}
+
+/* Vista-style network indicator: 4 ascending bars; green = connected,
+ * amber = up-but-limited, grey + red X = down / no interface. */
+static void draw_net_icon(int x, int y, int state)
+{
+    unsigned col = state >= 2 ? RGB(0x57,0xc2,0x4d)
+                 : state == 1 ? RGB(0xe0,0xb0,0x20)
+                              : RGB(0x55,0x60,0x70);
+    static const int bh[4] = { 3, 6, 9, 12 };
+    for (int i = 0; i < 4; i++)
+        gfx_fill(&scr, x + i*4, y + 12 - bh[i], 3, bh[i], col);
+    if (state <= 0) {                            /* red X = no connection */
+        unsigned r = RGB(0xe0,0x40,0x30);
+        for (int k = 0; k <= 8; k++) { gfx_px(&scr,x+3+k,y+2+k,r); gfx_px(&scr,x+11-k,y+2+k,r); }
+    }
+}
+
 /* dock: one tile per open window (kind/icon order for stable positions) */
 static int dock_order[MAXWIN], dock_n;
 static void dock_rebuild(void)
@@ -632,8 +675,15 @@ static void draw_dock(void)
         char lbl[8]; dock_short(i,lbl);
         gfx_str(&scr,bx+(54-gfx_text_w(lbl))/2, y0+(DOCK_H-8)/2, lbl, 0xFFFFFF);
     }
+    /* status tray (bottom-right -- one place): CPU/RAM, net, clock, date,
+     * reading left-to-right "CPU x% RAM y%  [net]  HH:MM  DD/MM/YY". */
+    tray_poll();
+    unsigned tcol = RGB(0xc8,0xd0,0xdc); int ty = y0+(DOCK_H-8)/2; int rx = (int)FBW-10;
+    rx -= gfx_text_w(g_date); gfx_str(&scr, rx, ty, g_date, tcol); rx -= 12;
+    rx -= gfx_text_w(g_clk);  gfx_str(&scr, rx, ty, g_clk,  tcol); rx -= 16;
+    rx -= 16; draw_net_icon(rx, y0+(DOCK_H-12)/2, g_net_state); rx -= 14;
     char st[32]; dock_stats(st);
-    gfx_str(&scr,(int)FBW-gfx_text_w(st)-10, y0+(DOCK_H-8)/2, st, RGB(0x90,0xa0,0xb5));
+    rx -= gfx_text_w(st); gfx_str(&scr, rx, ty, st, RGB(0x90,0xa0,0xb5));
 }
 static int dock_hit(int px,int py,int *out_win)
 {
@@ -662,12 +712,14 @@ static void draw_power_icon(int bx,int by,gfx_u32 col)
     for(int r=0;r<11;r++) for(int c=0;PWR_ICON[r][c];c++)
         if(PWR_ICON[r][c]=='X') gfx_px(&scr,bx+c,by+r,col);
 }
+
 static void draw_menubar(void)
 {
     gfx_fill(&scr,0,0,(int)FBW,MENU_H,COL_MENU);
     gfx_fill(&scr,0,MENU_H-1,(int)FBW,1,RGB(0x28,0x32,0x44));
     gfx_str(&scr,8,(MENU_H-8)/2,"Makar",RGB(0x8a,0xe2,0x34));
     gfx_str(&scr,64,(MENU_H-8)/2, (focus>=0&&W[focus].in_use)?W[focus].title:"Desktop", RGB(0x90,0xa0,0xb5));
+    /* power button stays top-right; the net/clock/date tray moved to the dock */
     int px0=(int)FBW-POWER_W-4;
     gfx_fill(&scr,px0,2,POWER_W,MENU_H-4,UI_COL_BTN);
     draw_power_icon(px0+(POWER_W-11)/2,(MENU_H-11)/2,0xFFFFFF);
@@ -1133,8 +1185,8 @@ int main(int argc, char **argv, char **envp)
         serve_requests();
         if (reap_clients()){ g_dirty=1; damage_full(); }
         { unsigned now=sys_uptime(); if (now-stat_up>=100u){ stat_up=now; g_dirty=1;
-            damage(0,0,(int)FBW,MENU_H);                       /* menu-bar clock */
-            damage(0,(int)FBH-DOCK_H,(int)FBW,DOCK_H); } }      /* dock stats     */
+            damage(0,0,(int)FBW,MENU_H);                       /* top bar title  */
+            damage(0,(int)FBH-DOCK_H,(int)FBW,DOCK_H); } }      /* dock stats+tray */
 
         if (!g_dirty && !cmoved){ sys_yield(); continue; }
 

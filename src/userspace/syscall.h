@@ -26,6 +26,7 @@
 #define NET_CTL_DHCP_RELEASE 1
 #define NET_CTL_DHCP_RENEW   2
 #define NET_CTL_DNS_FLUSH    3
+#define NET_CTL_STATUS       4   /* 0=down, 1=limited, 2=connected (GUI indicator) */
 
 /* O_NONBLOCK for F_SETFL on stdin (fd 0).  Matches Linux i386 0x800. */
 #define O_NONBLOCK       0x800
