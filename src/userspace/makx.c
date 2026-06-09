@@ -62,6 +62,11 @@ int mx_connect(mx_conn *c, int argc, char **argv, int w, int h, int flags)
 
     for (int i = 1; i + 1 < argc; i++)
         if (mx_streq(argv[i], "-makx")) { c->server = mx_atoi(argv[i + 1]); break; }
+    /* No `-makx` handle (e.g. launched from a GUI terminal, not by the server):
+     * discover the running display server the X11 $DISPLAY way.  Returns 0 when
+     * there's no GUI session, so a true text-console app still falls through to
+     * its fullscreen path. */
+    if (c->server <= 0) c->server = sys_makx_server();
     if (c->server <= 0) return -1;
 
     ipc_msg_t m;
@@ -105,7 +110,7 @@ static void mx_apply_resize(mx_conn *c, int w, int h)
 
 int mx_pump(mx_conn *c)
 {
-    int prev = c->last_mdown;
+    int cur = c->last_mdown;       /* running button state across this drain */
     c->mpressed = c->mreleased = 0;
     c->resized = 0;
     if (c->closed) return -1;
@@ -116,6 +121,16 @@ int mx_pump(mx_conn *c)
         m.type = MX_POLL; m.data[0] = (unsigned)c->win;
         if (sys_ipc_sendrec(c->server, &m) != 0) { c->closed = 1; return -1; }
         if (m.type == MXEV_NONE) break;
+        /* Latch press/release *per event* so a full click (down then up) that
+         * arrives within a single pump isn't collapsed away -- looking only at
+         * the final mdown vs the last pump dropped such clicks (the "needs a
+         * double-click" lag). */
+        if (m.type == MXEV_MOUSE) {
+            int nd = (int)(m.data[2] & 1u);
+            if (nd && !cur) c->mpressed = 1;
+            if (!nd && cur) c->mreleased = 1;
+            cur = nd;
+        }
         mx_apply(c, &m);
         if (m.data[MX_PENDING] == 0) break;
     }
@@ -127,9 +142,7 @@ int mx_pump(mx_conn *c)
         mx_apply_resize(c, w, h);
     }
 
-    c->mpressed  =  c->mdown && !prev;
-    c->mreleased = !c->mdown &&  prev;
-    c->last_mdown = c->mdown;
+    c->last_mdown = c->mdown;       /* = cur (the final applied state) */
     return 0;
 }
 
@@ -159,6 +172,28 @@ void mx_set_wallpaper(mx_conn *c, int sid, int w, int h)
     m.type = MX_WALLPAPER;
     m.data[0] = (unsigned)sid; m.data[1] = (unsigned)w; m.data[2] = (unsigned)h;
     sys_ipc_sendrec(c->server, &m);   /* server maps the surface + repaints */
+}
+
+int mx_open(mx_conn *c, const char *path)
+{
+    if (c->closed || c->server <= 0 || !path || !path[0]) return -1;
+    int len = 0; while (path[len] && len < 255) len++;
+    /* Carry the path bytes in a throwaway 1-row surface (4 bytes/px).  The server
+     * maps it, copies the path out and launches; we tear it down once it replies
+     * (a synchronous sendrec, so the read has happened by then). */
+    int px = (len + 4) / 4;            /* room for the path + a NUL, in pixels */
+    int sid = sys_surface_create(px, 1);
+    if (sid < 0) return -1;
+    unsigned char *base = (unsigned char *)sys_surface_map(sid);
+    if (!base) { sys_surface_destroy(sid); return -1; }
+    for (int i = 0; i < len; i++) base[i] = (unsigned char)path[i];
+    base[len] = 0;
+    ipc_msg_t m;
+    for (unsigned i = 0; i < IPC_MSG_DATA_WORDS; i++) m.data[i] = 0;
+    m.type = MX_OPEN; m.data[0] = (unsigned)sid; m.data[1] = (unsigned)len;
+    int rc = sys_ipc_sendrec(c->server, &m);
+    sys_surface_unmap(sid); sys_surface_destroy(sid);
+    return rc;
 }
 
 void mx_close(mx_conn *c)

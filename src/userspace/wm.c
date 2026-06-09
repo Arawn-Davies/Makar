@@ -479,6 +479,68 @@ static void launch_icon(int ii)
     z_raise(i); set_focus(i); g_dirty=1; damage_full();
 }
 
+/* Launch an arbitrary client command (used by MX_OPEN: open a file in its
+ * default app).  Same fork/pipe/exec dance as launch_icon, but with no
+ * desktop-icon association -- the opened window is reaped normally because the
+ * server is its parent.  `arg`, if set, is passed as the client's first
+ * positional argument (a file path, or the command for a terminal). */
+static void launch_cmd(const char *cmd, const char *arg, const char *title, int winw, int winh)
+{
+    int i=win_alloc(); if(i<0) return;
+    int op[2];
+    if (sys_pipe(op)<0){ W[i].in_use=0; return; }
+    int pid=sys_fork();
+    if (pid<0){ sys_close(op[0]); sys_close(op[1]); W[i].in_use=0; return; }
+    if (pid==0){
+        sys_close(op[0]);
+        sys_dup2(op[1],0); sys_dup2(op[1],1); sys_dup2(op[1],2);
+        sys_close(op[1]);
+        char pids[12]; u2s((unsigned)server_pid, pids);
+        char *av[5]={ (char*)cmd, "-makx", pids, 0, 0 };
+        if (arg && arg[0]) av[3]=(char*)arg;
+        sys_execve(cmd, av, (char *const*)0);
+        sys_exit(127);
+    }
+    sys_close(op[1]);
+    sys_fcntl(op[0], F_SETFL, O_NONBLOCK);
+    W[i].client=pid; W[i].out=op[0]; W[i].icon=-1; W[i].sid=-1;
+    scpy(W[i].title, title?title:"App", sizeof W[i].title);
+    W[i].w=winw; W[i].h=winh;
+    W[i].x=120+(i*30)%220; W[i].y=MENU_H+24+(i*26)%150;
+    z_raise(i); set_focus(i); g_dirty=1; damage_full();
+}
+
+/* case-insensitive suffix match (".png" etc.) */
+static int ext_is(const char *path, const char *ext){
+    int n=0; while(path[n]) n++; int e=0; while(ext[e]) e++;
+    if (n<e) return 0;
+    const char *p=path+n-e;
+    for (int i=0;i<e;i++){ char a=p[i]; if(a>='A'&&a<='Z') a=(char)(a+32); if(a!=ext[i]) return 0; }
+    return 1;
+}
+
+/* Default-app dispatch (file associations): pick the app for a file type and
+ * launch it.  Images -> mximg, html -> mxweb, *.elf GUI apps run directly,
+ * other executables in a terminal, everything else in the editor. */
+static void wm_open_path(const char *path){
+    if (!path || !path[0]) return;
+    if (ext_is(path,".png")||ext_is(path,".bmp")||ext_is(path,".jpg")||
+        ext_is(path,".jpeg")||ext_is(path,".gif"))
+        { launch_cmd("/apps/mximg.elf", path, "Image", 608,468); return; }
+    if (ext_is(path,".htm")||ext_is(path,".html"))
+        { launch_cmd("/apps/mxweb.elf", path, "Web", 700,500); return; }
+    if (ext_is(path,".elf")){
+        /* a makx GUI app (mx-prefixed, gui, doom) connects to the server itself
+         * -> run it directly; any other executable is a CLI tool -> terminal. */
+        const char *base=path; for(const char*q=path;*q;q++) if(*q=='/') base=q+1;
+        int gui = (base[0]=='m'&&base[1]=='x') || wstreq(base,"gui.elf") || wstreq(base,"doom.elf");
+        if (gui) launch_cmd(path, 0, base, 560,400);
+        else     launch_cmd("/apps/mxterm.elf", path, "Terminal", 648,424);
+        return;
+    }
+    launch_cmd("/apps/mxedit.elf", path, "Editor", 628,444);
+}
+
 /* Ask a resizable window's client to re-flow to the current client rect (it
  * reallocates its surface via MX_RESIZE).  No-op for fixed (scaled) clients or
  * when the surface already matches.  Sent on connect + every geometry change. */
@@ -512,11 +574,43 @@ static void serve_requests(void)
         if (m.type==MX_HELLO){
             int w=(int)m.data[0], h=(int)m.data[1], flags=(int)m.data[2];
             int i=-1;
-            for(int k=0;k<MAXWIN;k++) if(W[k].in_use && W[k].client==src && W[k].sid<0){ i=k; break; }
-            if (i<0){ /* a client we didn't reserve: give it a default window */
+            /* Match a window for this client: a reserved slot (sid<0) OR a
+             * re-HELLO from the same pid -- e.g. a launcher that execve'd into
+             * the real app (mxdoom -> doom) keeps the WM-launched pid, so the
+             * app is still reaped and its window closes on exit. */
+            for(int k=0;k<MAXWIN;k++) if(W[k].in_use && W[k].client==src){ i=k; break; }
+            if (i<0){ /* a client we didn't reserve: give it a default window
+                       * (e.g. doom auto-connecting from a GUI terminal).  Size a
+                       * game (MX_F_RAWKEYS) enlarged + with chrome, like the
+                       * re-HELLO refit below; everything else gets its requested
+                       * size. */
                 i=win_alloc();
-                if (i>=0){ W[i].client=src; W[i].w=w<160?160:w; W[i].h=h<120?120:h;
-                           W[i].x=140; W[i].y=MENU_H+40; scpy(W[i].title,"App",sizeof W[i].title); }
+                if (i>=0){ W[i].client=src;
+                    int ww=(w<160?160:w), wh=(h<120?120:h);
+                    if (flags & MX_F_RAWKEYS){
+                        int availw=(int)FBW-6, availh=(int)FBH-DOCK_H-MENU_H-6;
+                        int sc=1; while ((w*(sc+1))<=availw && (h*(sc+1))<=availh) sc++;
+                        ww=w*sc+2; wh=h*sc+TH+1;
+                    }
+                    W[i].w=ww; W[i].h=wh;
+                    W[i].x=140; W[i].y=MENU_H+40; scpy(W[i].title,"App",sizeof W[i].title); }
+            }
+            if (i>=0 && W[i].sid>=0){            /* re-HELLO: drop the old surface, refit window */
+                sys_surface_unmap(W[i].sid); sys_surface_destroy(W[i].sid);
+                W[i].sid=-1; W[i].surf.px=0;
+                /* A game (MX_F_RAWKEYS, e.g. doom re-HELLO'ing after mxdoom
+                 * execve'd into it) renders a fixed-size frame the compositor
+                 * scales: open it enlarged (the largest integer multiple of its
+                 * native frame that fits the desktop) so it doesn't sit tiny. */
+                int ww=w+2, wh=h+TH+1;
+                if (flags & MX_F_RAWKEYS){
+                    int availw=(int)FBW-6, availh=(int)FBH-DOCK_H-MENU_H-6;
+                    int sc=1; while ((w*(sc+1))<=availw && (h*(sc+1))<=availh) sc++;
+                    ww=w*sc+2; wh=h*sc+TH+1;
+                }
+                W[i].w=ww; W[i].h=wh;
+                if(W[i].x+W[i].w>(int)FBW) W[i].x=(int)FBW-W[i].w; if(W[i].x<0) W[i].x=0;
+                if(W[i].y+W[i].h>(int)FBH-DOCK_H) W[i].y=(int)FBH-DOCK_H-W[i].h; if(W[i].y<MENU_H) W[i].y=MENU_H;
             }
             int sid = (i>=0) ? sys_surface_create(w,h) : -1;
             void *base = (sid>=0) ? sys_surface_map(sid) : 0;
@@ -575,6 +669,23 @@ static void serve_requests(void)
                 g_dirty=1; damage_full();
             }
             r.type=MXEV_NONE;
+        } else if (m.type==MX_OPEN){
+            /* A client asked us to open a file in its default app.  The path
+             * arrives in a throwaway shared surface (it doesn't fit in the IPC
+             * payload); map it, copy the path out, then dispatch + launch.  The
+             * server is the launcher so the opened window is its child -> reaped
+             * normally (a client-forked grandchild would ghost). */
+            int sid=(int)m.data[0], len=(int)m.data[1];
+            if (len<0) len=0; if (len>255) len=255;
+            char path[256];
+            unsigned char *pb = (sid>=0) ? (unsigned char*)sys_surface_map(sid) : 0;
+            if (pb){
+                for (int k=0;k<len;k++) path[k]=(char)pb[k];
+                path[len]=0;
+                sys_surface_unmap(sid);
+                wm_open_path(path);
+            }
+            r.type=MXEV_NONE;
         }
         sys_ipc_send(src, &r);
     }
@@ -587,7 +698,12 @@ static int reap_clients(void)
     for(int i=0;i<MAXWIN;i++){
         if(!W[i].in_use || W[i].client<=0) continue;
         if(W[i].out>=0){ unsigned char b[128]; while(sys_read(W[i].out,b,sizeof b)>0){} }
-        int st; if(sys_wait4(W[i].client,&st,WNOHANG)==W[i].client){ W[i].client=-1; win_free(i); changed=1; }
+        int st; if(sys_wait4(W[i].client,&st,WNOHANG)==W[i].client){ W[i].client=-1; win_free(i); changed=1; continue; }
+        /* A client we didn't fork (e.g. doom launched from a GUI terminal, so
+         * it's the terminal shell's child, not ours) can't be reaped via wait4.
+         * Probe its liveness with kill(pid,0); when it's gone, close its window
+         * -- otherwise it would ghost forever (the server has no socket EOF). */
+        if(W[i].out<0 && sys_kill(W[i].client,0)!=0){ W[i].client=-1; win_free(i); changed=1; }
     }
     return changed;
 }
@@ -649,12 +765,23 @@ static void draw_window_frame(int i)
             int bw = cw < W[i].sw ? cw : W[i].sw;
             int bh = ch < W[i].sh ? ch : W[i].sh;
             gfx_blit(&scr, cx, cy, &W[i].surf, 0,0, bw, bh);
-        } else if (cw>=W[i].sw && ch>=W[i].sh){
-            /* fixed-size client (e.g. doom): 1:1 centred when it fits (no scaling
-             * cost) -- only scale when the window is smaller than the surface. */
-            gfx_blit(&scr, cx+(cw-W[i].sw)/2, cy+(ch-W[i].sh)/2, &W[i].surf, 0,0, W[i].sw, W[i].sh);
         } else {
-            gfx_blit_scaled(&scr, cx, cy, cw, ch, &W[i].surf);
+            /* fixed-size client (e.g. doom): scale the surface to fill the window
+             * preserving aspect ratio, centred, with black letterbox/pillarbox
+             * bars -- so the game tracks the window size (drag-resize, maximize)
+             * instead of sitting tiny in the corner.  1:1 only when it already
+             * matches exactly (no scaling cost). */
+            if (cw==W[i].sw && ch==W[i].sh){
+                gfx_blit(&scr, cx, cy, &W[i].surf, 0,0, W[i].sw, W[i].sh);
+            } else {
+                long sw=W[i].sw, sh=W[i].sh;
+                long dw=cw, dh=cw*sh/sw;
+                if (dh>ch){ dh=ch; dw=ch*sw/sh; }
+                if (dw<1) dw=1; if (dh<1) dh=1;
+                int ox=cx+(cw-(int)dw)/2, oy=cy+(ch-(int)dh)/2;
+                gfx_fill(&scr, cx, cy, cw, ch, RGB(0,0,0));    /* letterbox */
+                gfx_blit_scaled(&scr, ox, oy, (int)dw, (int)dh, &W[i].surf);
+            }
         }
     } else {
         gfx_fill(&scr, cx, cy, cw, ch, RGB(0x0e,0x12,0x18));
@@ -1521,20 +1648,20 @@ int main(int argc, char **argv, char **envp)
         if (focus>=0 && W[focus].in_use){
             swin *w=&W[focus];
             if (frame_key>=0) win_push(w, MXEV_KEY, frame_key,0,0);
-            /* Forward the pointer only on a button transition or while a button
-             * is held (a drag -- e.g. a slider).  PLAIN hover motion is NOT
-             * forwarded: the cursor is the WM's own overlay, so moving it over a
-             * window must not wake the client into repainting (which would push
-             * a whole window's worth of pixels to the framebuffer every move --
-             * the real source of the two-window lag, brutal on a slow VT-x FB).
-             * No current client needs raw motion; a future one that does can opt
-             * in via a HELLO flag. */
-            if (mpressed || mreleased || (mdown && cmoved)){
+            /* Deliver pointer motion to the focused client (X11-style): the
+             * client tracks the live cursor so its hit-test (`hot`) is correct
+             * the instant a button goes down.  Suppressing hover (forwarding
+             * only on a button edge/drag) left the client's pointer one event
+             * stale, so a click landed on the *previously* known position and
+             * needed a second click.  win_push coalesces a run of same-button
+             * moves, so this doesn't flood the queue; only the focused window
+             * (the one under the pointer) repaints. */
+            if (mpressed || mreleased || cmoved){
                 if (in_client(w,cx,cy)){
                     int rx=cx-client_x(w), ry=cy-client_y(w);
                     win_push(w, MXEV_MOUSE, rx, ry, mdown?1:0);
-                } else if (mreleased){
-                    win_push(w, MXEV_MOUSE, cx-client_x(w), cy-client_y(w), 0);
+                } else if (mreleased || mpressed){
+                    win_push(w, MXEV_MOUSE, cx-client_x(w), cy-client_y(w), mdown?1:0);
                 }
             }
         }

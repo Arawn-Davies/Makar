@@ -61,7 +61,7 @@ without a detailed errno. Check the wrapper before assuming Linux parity.
 | 12 | `SYS_CHDIR` | `path` | per-task cwd |
 | 19 | `SYS_LSEEK` | `fd, offset, whence` | `SEEK_SET/CUR/END` |
 | 20 | `SYS_GETPID` | none | current task pid |
-| 37 | `SYS_KILL` | `pid, signo` | signal delivery |
+| 37 | `SYS_KILL` | `pid, signo` | signal delivery (`signo==0` = POSIX existence test: 0 if alive, −1 if not) |
 | 38 | `SYS_RENAME` | `old, new` | VFS rename |
 | 39 | `SYS_MKDIR` | `path, mode` | mode ignored |
 | 40 | `SYS_RMDIR` | `path` | remove empty directory |
@@ -93,6 +93,7 @@ without a detailed errno. Check the wrapper before assuming Linux parity.
 | 276 | `SYS_HWCURSOR_MOVE` | `x, y` | move the HW cursor overlay |
 | 277 | `SYS_HWCURSOR_SHOW` | `on` | show/hide the HW cursor |
 | 278 | `SYS_VIDEO_NAME` | `buf, cap` | copy the active video backend's name into `buf` |
+| 279 | `SYS_MAKX_SERVER` | none | display-server (`gui.elf`) pid, 0 if no GUI session — the `$DISPLAY` discovery handle for makx clients |
 
 ## Makar Extension Ranges
 
@@ -269,6 +270,8 @@ character nodes under `/dev`:
 |---|---|---|
 | `/dev/tty0` | `VTTY_ROOT_SLOT` | the root console (mak.sh0), hidden from the tab strip |
 | `/dev/tty1` … `/dev/tty9` | 0 … 8 | the nine makmux VT slots (slot == ttyN − 1) |
+| `/dev/null` | — | the bit bucket: writes discarded, reads EOF |
+| `/dev/mouse` | — | read-only text snapshot of the pointer input chain |
 
 These nodes are **always present** (independent of makmux). They are character
 sinks, not block devices: reads return EOF, and a write streams into that

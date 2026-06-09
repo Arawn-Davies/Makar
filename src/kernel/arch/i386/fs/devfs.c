@@ -20,6 +20,7 @@ typedef enum {
     DEV_CDROM,      /* ATAPI optical drive     */
     DEV_TTY,        /* virtual terminal (/dev/ttyN -> vtty slot) */
     DEV_MOUSE,      /* /dev/mouse -- text snapshot of pointer input state */
+    DEV_NULL,       /* /dev/null -- discards writes, reads as EOF */
 } dev_kind_t;
 
 #define MOUSE_SNAP_CAP  256u   /* /dev/mouse snapshot upper bound */
@@ -124,6 +125,11 @@ void devfs_init(void)
      * (IRQ12 -> AUX bytes -> packets -> events -> position) for diagnosing a
      * dead pointer.  Not block-backed: reads render the current counters. */
     add_node("mouse", 0, DEV_MOUSE, 1, 0, 0);
+
+    /* /dev/null -- the bit bucket: writes are silently discarded, reads return
+     * EOF.  Lets apps redirect unwanted output (e.g. a fullscreen game silencing
+     * its init chatter so it can't repaint text over the framebuffer). */
+    add_node("null", 0, DEV_NULL, 0, 0, 0);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -169,6 +175,7 @@ int devfs_node_location(int idx, uint8_t *out_drive, uint32_t *out_base_lba)
     if (idx < 0 || idx >= s_count) return -1;
     if (s_nodes[idx].kind == DEV_TTY)   return -1;   /* not a block device */
     if (s_nodes[idx].kind == DEV_MOUSE) return -1;   /* not a block device */
+    if (s_nodes[idx].kind == DEV_NULL)  return -1;   /* not a block device */
     if (out_drive)    *out_drive    = s_nodes[idx].drive;
     if (out_base_lba) *out_base_lba = s_nodes[idx].base_lba;
     return 0;
@@ -194,6 +201,7 @@ long devfs_pread(int idx, void *buf, uint32_t len, uint32_t off)
     if (idx < 0 || idx >= s_count || !buf) return -1;
     dev_node_t *n = &s_nodes[idx];
     if (n->kind == DEV_TTY) return 0;       /* VT sink: nothing to read back */
+    if (n->kind == DEV_NULL) return 0;      /* EOF */
     if (n->kind == DEV_MOUSE) {             /* render the live input snapshot */
         char snap[MOUSE_SNAP_CAP];
         int  slen = mouse_render_stats(snap, (int)sizeof snap);
@@ -234,6 +242,7 @@ long devfs_pwrite(int idx, const void *buf, uint32_t len, uint32_t off)
     dev_node_t *n = &s_nodes[idx];
     if (n->kind == DEV_TTY)                 /* route bytes to the VT grid */
         return vtty_write((int)n->drive, (const char *)buf, len);
+    if (n->kind == DEV_NULL) return (long)len;   /* discard */
     if (n->readonly) return -1;
 
     uint32_t ssz   = node_sector_size(n);
