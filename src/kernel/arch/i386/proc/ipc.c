@@ -117,12 +117,24 @@ int ipc_send(int dst, const ipc_msg_t *msg)
         return 0;
     }
 
-    /* Slow path: enqueue on the destination's sender queue and block. */
+    /* Slow path: enqueue on the destination's sender queue and block.  FIFO --
+     * append at the tail, never the head.  A LIFO queue let a client that polls
+     * the server every frame (it blocks, gets served, and immediately re-sends)
+     * keep re-inserting at the head, so the receiver's bounded per-frame drain
+     * never reached an older waiter behind it: e.g. a busy mximg starved a newly
+     * launched mxfiles's one-shot HELLO until mximg exited.  FIFO guarantees a
+     * queued message is served ahead of anything enqueued after it. */
     cur->ipc_state   = IPC_STATE_SENDING;
     cur->ipc_partner = dst;
     cur->ipc_rc      = 0;
-    cur->ipc_sq_next = d->ipc_sender_q;
-    d->ipc_sender_q  = cur;
+    cur->ipc_sq_next = NULL;
+    if (!d->ipc_sender_q) {
+        d->ipc_sender_q = cur;
+    } else {
+        task_t *tail = d->ipc_sender_q;
+        while (tail->ipc_sq_next) tail = tail->ipc_sq_next;
+        tail->ipc_sq_next = cur;
+    }
 
     ipc_block(cur);                 /* sleep until a receiver collects us */
 
