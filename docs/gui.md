@@ -70,6 +70,11 @@ a pure mouse move then costs **no** framebuffer traffic. Without it the WM keeps
 the software cursor (capture/restore + small `present_rect` boxes). Syscalls:
 `SYS_VIDEO_CAPS`, `SYS_HWCURSOR_{DEFINE,MOVE,SHOW}` (see `docs/syscalls.md`).
 
+While a launched client has forked but not yet sent its surface
+(`wm_busy()` -- any window with `client>=0 && sid<0`), the WM shows a **busy
+hourglass** cursor instead of the arrow: it re-uploads the HW-cursor sprite on
+the accelerated path, or swaps the software bitmap otherwise.
+
 ## Shared pixel surfaces (kernel)
 
 `kernel/surface.h` + `arch/i386/proc/surface.c`. A surface is a kernel-owned run

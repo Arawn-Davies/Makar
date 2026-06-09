@@ -53,7 +53,7 @@ The XP/Vista boot overhaul, the desktop tray, and the documentation pass.
 - [x] **T39** — XFCE-style `.desktop` shortcuts: system-wide `/usr/share/shortcuts` + user overlay `~/.shortcuts` (overrides by filename); WM parses Name/Icon/Exec + `X-Makar-*` extensions (built-in default set as fallback)
 - [x] **T40** — Draggable + selectable desktop icons (click selects/highlights + hover lift; a no-move click launches; a drag drops and persists `X-Makar-IconX/Y` back into the source `.desktop`, best-effort)
 - [x] **T41** — Real DOOM desktop logo: `M_DOOM` lump extracted from `DOOM1.WAD` (DOOM patch format + `PLAYPAL`) rendered onto the icon tile
-- [ ] **T27** — Busy mouse cursor (hourglass/beachball) during heavy ops
+- [x] **T27** — Busy mouse cursor: an hourglass sprite replaces the arrow while a launched client has no surface yet (`wm_busy()`); swaps the HW-cursor sprite on the accelerated path, software bitmap otherwise
 - [ ] **T28** — GUI responsiveness: fix one-event click lag / double-click
 - [ ] **T29** — File-path boxes become text-entry boxes (mximg, editor, Files)
 - [ ] **T30** — Windowed framebuffer for console-launched graphical apps (Doom in a makx window)

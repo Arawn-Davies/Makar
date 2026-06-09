@@ -958,14 +958,31 @@ static void draw_menubar(void)
 static int power_hit(int px,int py){ int x0=(int)FBW-POWER_W-4; return in_rect(px,py,x0,2,POWER_W,MENU_H-4); }
 
 /* ---- mouse cursor ------------------------------------------------------- */
+/* Two 11-wide (+NUL) sprites: the arrow and a busy hourglass shown while a
+ * client is launching (forked but no surface yet).  'X' = outline, '.' = body,
+ * space = transparent.  Rows are 11 chars so the HW-cursor upload's fixed
+ * 12-column scan reads the trailing NUL (transparent) without overrunning. */
 static const char *CURSOR[16]={
  "X          ","XX         ","X.X        ","X..X       ","X...X      ","X....X     ",
  "X.....X    ","X......X   ","X.......X  ","X........X ","X....XXXXXX","X..X.X     ",
  "X.X X.X    ","XX  X.X    ","X    X.X   ","      XX   " };
+static const char *BUSY[16]={
+ "XXXXXXXX   ","X......X   "," X....X    ","  X..X     ","   XX      ","   XX      ",
+ "  X..X     "," X....X    ","X......X   ","XXXXXXXX   ","           ","           ",
+ "           ","           ","           ","           " };
+static int g_busy = 0;                  /* 1 while a client is launching */
 static void draw_cursor(int cx,int cy)
 {
-    for(int r=0;r<16;r++) for(int c=0;CURSOR[r][c];c++){ char p=CURSOR[r][c];
+    const char *const *bm = g_busy ? BUSY : CURSOR;
+    for(int r=0;r<16;r++) for(int c=0;bm[r][c];c++){ char p=bm[r][c];
         if(p=='X')gfx_px(&scr,cx+c,cy+r,0); else if(p=='.')gfx_px(&scr,cx+c,cy+r,0xFFFFFF); }
+}
+
+/* Any window forked but not yet showing a surface -> show the busy cursor. */
+static int wm_busy(void)
+{
+    for(int i=0;i<MAXWIN;i++) if(W[i].in_use && W[i].client>=0 && W[i].sid<0) return 1;
+    return 0;
 }
 
 /* Cursor save-under: so the cursor can be moved without recompositing the whole
@@ -983,14 +1000,25 @@ static int     cur_sx=-1, cur_sy=-1;   /* where cur_save was captured (-1 = none
  * software save-under compositing entirely -- a pure mouse move then costs no
  * framebuffer traffic at all.  0 = software cursor (the universal path). */
 static int g_hwcursor = 0;
+/* Upload one of the sprites (arrow / busy hourglass) to the HW cursor overlay. */
+static void hwcursor_upload(const char *const bm[]){
+    static gfx_u32 spr[CURW*CURH];
+    for (int r=0;r<CURH;r++) for (int c=0;c<CURW;c++){
+        char p = bm[r][c];                     /* row strings are 11+NUL; c=11 -> 0 */
+        spr[r*CURW+c] = (p=='X') ? 0xFF000000u      /* outline: opaque black */
+                       : (p=='.') ? 0xFFFFFFFFu      /* body: opaque white    */
+                       : 0x00000000u;                /* transparent           */
+    }
+    sys_hwcursor_define(spr, CURW, CURH, 0, 0);
+}
 static void hwcursor_setup(void){
     if (!(sys_video_caps() & VIDEO_CAP_HW_CURSOR)) return;
     static gfx_u32 spr[CURW*CURH];
     for (int r=0;r<CURH;r++) for (int c=0;c<CURW;c++){
         char p = CURSOR[r][c];                 /* row strings are 11+NUL; c=11 -> 0 */
-        spr[r*CURW+c] = (p=='X') ? 0xFF000000u      /* outline: opaque black */
-                       : (p=='.') ? 0xFFFFFFFFu      /* body: opaque white    */
-                       : 0x00000000u;                /* transparent           */
+        spr[r*CURW+c] = (p=='X') ? 0xFF000000u
+                       : (p=='.') ? 0xFFFFFFFFu
+                       : 0x00000000u;
     }
     if (sys_hwcursor_define(spr, CURW, CURH, 0, 0) == 0){
         g_hwcursor = 1;
@@ -1452,6 +1480,10 @@ int main(int argc, char **argv, char **envp)
         /* ---- service clients + reap exited ones ---- */
         serve_requests();
         if (reap_clients()){ g_dirty=1; damage_full(); }
+        /* busy cursor: hourglass while any launched client has no surface yet */
+        { int busy=wm_busy(); if (busy!=g_busy){ g_busy=busy; g_dirty=1;
+            if (g_hwcursor) hwcursor_upload(busy?BUSY:CURSOR);
+            else damage(cur_sx<0?cx:cur_sx, cur_sy<0?cy:cur_sy, CURW, CURH); } }
         { unsigned now=sys_uptime(); if (now-stat_up>=100u){ stat_up=now; g_dirty=1;
             damage(0,0,(int)FBW,MENU_H);                       /* top bar title  */
             damage(0,(int)FBH-DOCK_H,(int)FBW,DOCK_H);          /* dock stats+tray */
