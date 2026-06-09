@@ -336,7 +336,11 @@ int main(int argc, char **argv)
         gfx_str_clip(s,266,11,msg,COL_TEXT,s->w-8);
         if(open_c){ scpy(brz.cwd,"/apps",sizeof brz.cwd); brz.sel=brz.scroll=0; brz.loaded=0; br_load(&brz); dlg=1; g_gallery=0; }
         if(wp_c && img_w>0 && !g_gallery) set_wallpaper(&c);
-        if(gal_c){ g_gallery=!g_gallery; if(g_gallery){ dlg=0; gal_scan(); } }
+        if(gal_c){ g_gallery=!g_gallery;
+            if(g_gallery){ dlg=0; gal_scan(); }
+            else if(g_cur_path[0]) load_image(g_cur_path);   /* thumbs clobbered img_px; restore the viewed image */
+            else img_w=0;
+        }
 
         if(g_gallery){
             if(gk==0x81) gal_scroll++;                 /* arrow down */
