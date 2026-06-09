@@ -131,69 +131,85 @@ else
     done
 fi
 
-# ── Interactive ISO ──────────────────────────────────────────────────────────
-# Shipped menu: default = Makar OS, 5s timeout, with a fallback that exits to
-# the next bootable device.  KERNEL_ARGS appends to the main entry only.
-# `live` on the cmdline tells kernel_main this is a live ISO session so the
-# login screen is skipped even if an installed HDD is auto-detected.
-cat > isodir/boot/grub/grub.cfg << EOF
-set default=${GRUB_DEFAULT:-1}
+# RES=<mode> from run.sh arrives as MAKAR_VMODE; bake it as vmode= onto the
+# standard boot entries (incl. the default GUI desktop, which otherwise carries
+# no cmdline args) so a chosen resolution applies without hand-editing GRUB.
+# Empty (the default) leaves the kernel's built-in 720p.  Not applied to the
+# resolution submenu (those set their own vmode) nor to sysadmin mode (text-only).
+_vmode="${MAKAR_VMODE:+ vmode=$MAKAR_VMODE}"
+
+# Emit the shipped interactive grub.cfg.  Defined once and used for both the
+# initial write and the post-test-ISO restore so the two can never drift.
+# Layout (XP/Vista-style): only the GUI desktop + "Next available device" at the
+# top level; every other boot mode lives under "Advanced options".  Entry 0 (the
+# GUI desktop) is the KERNEL_ARGS carrier and defaults to the desktop, so the
+# kbtest/guitest harnesses' `GRUB_DEFAULT=0 KERNEL_ARGS=...` still select it and
+# override its cmdline.  `live` marks a live-ISO session (skip the login).
+_emit_interactive_grubcfg() {
+	cat > isodir/boot/grub/grub.cfg << EOF
+set default=${GRUB_DEFAULT:-0}
 set timeout=3
 
-# Ask GRUB for the best mode the firmware actually offers, highest first.  The
-# kernel adopts whatever LFB it's handed (no DISPI on Hyper-V/VMware), so this is
-# how those platforms get a decent resolution.  Hyper-V Gen1's VBE has no 16:9
-# modes, so 1024x768 is the realistic fallback there (beats the 800x600 default).
+# Ask GRUB for the best mode the firmware offers, highest first (the kernel
+# adopts whatever LFB it's handed where there's no DISPI, e.g. Hyper-V/VMware).
 insmod all_video
 set gfxpayload=1280x720x32,1024x768x32,800x600x32
 
-menuentry "Makar OS" {
-	multiboot2 /boot/makar.kernel live${KERNEL_ARGS:+ $KERNEL_ARGS}
-}
-
 menuentry "Makar OS (GUI desktop)" {
-	multiboot2 /boot/makar.kernel live autoboot=gui autologin=user
-}
-
-menuentry "Makar OS (rescue shell)" {
-	multiboot2 /boot/makar.kernel live shell=rescue
-}
-
-menuentry "Makar OS (verbose boot)" {
-	multiboot2 /boot/makar.kernel live verbose
-}
-
-menuentry "Makar OS (serial console)" {
-	multiboot2 /boot/makar.kernel live console=ttyS0
-}
-
-# Pick a specific resolution.  Each entry both asks GRUB for that LFB
-# (gfxpayload, honoured by VMware/VBox/QEMU/bare metal) and passes vmode= so the
-# kernel sets it via Bochs DISPI where available.  Unsupported modes fall back
-# cleanly (the kernel gates on bochs_vbe_mode_supported); on Hyper-V Gen1, whose
-# VBE has no 16:9 modes, prefer 1024x768.
-submenu "Makar OS (choose resolution...)" {
-	menuentry "1920x1080" { set gfxpayload=1920x1080x32; multiboot2 /boot/makar.kernel live vmode=1920x1080 }
-	menuentry "1600x900"  { set gfxpayload=1600x900x32;  multiboot2 /boot/makar.kernel live vmode=1600x900 }
-	menuentry "1280x1024" { set gfxpayload=1280x1024x32; multiboot2 /boot/makar.kernel live vmode=1280x1024 }
-	menuentry "1280x720"  { set gfxpayload=1280x720x32;  multiboot2 /boot/makar.kernel live vmode=1280x720 }
-	menuentry "1024x768"  { set gfxpayload=1024x768x32;  multiboot2 /boot/makar.kernel live vmode=1024x768 }
-	menuentry "800x600"   { set gfxpayload=800x600x32;   multiboot2 /boot/makar.kernel live vmode=800x600 }
-}
-
-menuentry "Show video modes (Hyper-V/VMware resolution diagnostic)" {
-	videoinfo
-	echo ""
-	echo "Photograph the 'Adapter ... modes' list above -- note which widths"
-	echo "(1024x768, 1280x720...) appear and at what bit depths.  That tells us"
-	echo "what gfxpayload can ask for.  Returning to the menu in 60s..."
-	sleep --verbose --interruptible 60
+	multiboot2 /boot/makar.kernel live ${KERNEL_ARGS:-autoboot=gui autologin=user}${_vmode}
 }
 
 menuentry "Next available device" {
 	exit
 }
+
+submenu "Advanced options" {
+	menuentry "Makar OS (console login)" {
+		multiboot2 /boot/makar.kernel live${_vmode}
+	}
+	menuentry "Makar OS (verbose boot)" {
+		multiboot2 /boot/makar.kernel live verbose${_vmode}
+	}
+	menuentry "Makar OS (sysadmin -- text console, type go32 to start the desktop)" {
+		set gfxpayload=text
+		multiboot2 /boot/makar.kernel live sysadmin
+	}
+	menuentry "Makar OS (hardware info)" {
+		set gfxpayload=text
+		multiboot2 /boot/makar.kernel live hwspecs
+	}
+	menuentry "Makar OS (rescue shell)" {
+		set gfxpayload=text
+		multiboot2 /boot/makar.kernel live shell=rescue
+	}
+	menuentry "Makar OS (serial console)" {
+		multiboot2 /boot/makar.kernel live console=ttyS0${_vmode}
+	}
+	# Pick a specific resolution: each asks GRUB for that LFB (gfxpayload) and
+	# passes vmode= so the kernel pins it via Bochs DISPI where available.
+	# Unsupported modes fall back cleanly (gated on bochs_vbe_mode_supported).
+	submenu "Choose resolution..." {
+		menuentry "1920x1080" { set gfxpayload=1920x1080x32; multiboot2 /boot/makar.kernel live vmode=1920x1080 }
+		menuentry "1600x900"  { set gfxpayload=1600x900x32;  multiboot2 /boot/makar.kernel live vmode=1600x900 }
+		menuentry "1280x1024" { set gfxpayload=1280x1024x32; multiboot2 /boot/makar.kernel live vmode=1280x1024 }
+		menuentry "1280x720"  { set gfxpayload=1280x720x32;  multiboot2 /boot/makar.kernel live vmode=1280x720 }
+		menuentry "1024x768"  { set gfxpayload=1024x768x32;  multiboot2 /boot/makar.kernel live vmode=1024x768 }
+		menuentry "800x600"   { set gfxpayload=800x600x32;   multiboot2 /boot/makar.kernel live vmode=800x600 }
+	}
+	menuentry "Show video modes (Hyper-V/VMware resolution diagnostic)" {
+		videoinfo
+		echo ""
+		echo "Photograph the 'Adapter ... modes' list above -- note which widths"
+		echo "(1024x768, 1280x720...) appear and at what bit depths.  That tells us"
+		echo "what gfxpayload can ask for.  Returning to the menu in 60s..."
+		sleep --verbose --interruptible 60
+	}
+}
 EOF
+}
+
+# ── Interactive ISO ──────────────────────────────────────────────────────────
+_emit_interactive_grubcfg
 
 grub-mkrescue -o makar.iso isodir
 
@@ -216,62 +232,5 @@ EOF
 
     # Restore the interactive grub.cfg in the staged isodir so anyone
     # inspecting the staging dir doesn't see the test variant.
-    cat > isodir/boot/grub/grub.cfg << EOF
-set default=${GRUB_DEFAULT:-1}
-set timeout=3
-
-# Ask GRUB for the best mode the firmware actually offers, highest first.  The
-# kernel adopts whatever LFB it's handed (no DISPI on Hyper-V/VMware), so this is
-# how those platforms get a decent resolution.  Hyper-V Gen1's VBE has no 16:9
-# modes, so 1024x768 is the realistic fallback there (beats the 800x600 default).
-insmod all_video
-set gfxpayload=1280x720x32,1024x768x32,800x600x32
-
-menuentry "Makar OS" {
-	multiboot2 /boot/makar.kernel live${KERNEL_ARGS:+ $KERNEL_ARGS}
-}
-
-menuentry "Makar OS (GUI desktop)" {
-	multiboot2 /boot/makar.kernel live autoboot=gui autologin=user
-}
-
-menuentry "Makar OS (rescue shell)" {
-	multiboot2 /boot/makar.kernel live shell=rescue
-}
-
-menuentry "Makar OS (verbose boot)" {
-	multiboot2 /boot/makar.kernel live verbose
-}
-
-menuentry "Makar OS (serial console)" {
-	multiboot2 /boot/makar.kernel live console=ttyS0
-}
-
-# Pick a specific resolution.  Each entry both asks GRUB for that LFB
-# (gfxpayload, honoured by VMware/VBox/QEMU/bare metal) and passes vmode= so the
-# kernel sets it via Bochs DISPI where available.  Unsupported modes fall back
-# cleanly (the kernel gates on bochs_vbe_mode_supported); on Hyper-V Gen1, whose
-# VBE has no 16:9 modes, prefer 1024x768.
-submenu "Makar OS (choose resolution...)" {
-	menuentry "1920x1080" { set gfxpayload=1920x1080x32; multiboot2 /boot/makar.kernel live vmode=1920x1080 }
-	menuentry "1600x900"  { set gfxpayload=1600x900x32;  multiboot2 /boot/makar.kernel live vmode=1600x900 }
-	menuentry "1280x1024" { set gfxpayload=1280x1024x32; multiboot2 /boot/makar.kernel live vmode=1280x1024 }
-	menuentry "1280x720"  { set gfxpayload=1280x720x32;  multiboot2 /boot/makar.kernel live vmode=1280x720 }
-	menuentry "1024x768"  { set gfxpayload=1024x768x32;  multiboot2 /boot/makar.kernel live vmode=1024x768 }
-	menuentry "800x600"   { set gfxpayload=800x600x32;   multiboot2 /boot/makar.kernel live vmode=800x600 }
-}
-
-menuentry "Show video modes (Hyper-V/VMware resolution diagnostic)" {
-	videoinfo
-	echo ""
-	echo "Photograph the 'Adapter ... modes' list above -- note which widths"
-	echo "(1024x768, 1280x720...) appear and at what bit depths.  That tells us"
-	echo "what gfxpayload can ask for.  Returning to the menu in 60s..."
-	sleep --verbose --interruptible 60
-}
-
-menuentry "Next available device" {
-	exit
-}
-EOF
+    _emit_interactive_grubcfg
 fi

@@ -98,6 +98,7 @@ echo "==> Creating $HDD_IMG (${HDD_SIZE_MB} MiB)..."
     -e HOST_UID="$(id -u)" \
     -e HOST_GID="$(id -g)" \
     -e KERNEL_ARGS="${KERNEL_ARGS:-}" \
+    -e MAKAR_VMODE="${MAKAR_VMODE:-}" \
     -v "$REPO_ROOT:/work" \
     -w /work \
     "$BUILD_IMAGE" \
@@ -180,6 +181,10 @@ if [ -d /work/isodir/usr ]; then
     cp -r /work/isodir/usr/. "$MNT/usr/"
 fi
 
+# RES=<mode> arrives as MAKAR_VMODE (forwarded via -e); bake vmode= onto the
+# standard entries (not the text-only modes).  Mirrors iso.sh's layout: only the
+# GUI desktop + "Next available device" at the top level; the rest under Advanced.
+_vmode="${MAKAR_VMODE:+ vmode=$MAKAR_VMODE}"
 cat > "$MNT/boot/grub/grub.cfg" << GCFG
 set default=0
 set timeout=3
@@ -188,13 +193,51 @@ set timeout=3
 insmod all_video
 set gfxpayload=1280x720x32,1024x768x32,800x600x32
 
-menuentry "Makar OS" {
-    multiboot2 /boot/makar.kernel${KERNEL_ARGS:+ $KERNEL_ARGS}
+menuentry "Makar OS (GUI desktop)" {
+    multiboot2 /boot/makar.kernel ${KERNEL_ARGS:-autoboot=gui autologin=user}${_vmode}
     boot
 }
 
 menuentry "Next available device" {
     exit
+}
+
+submenu "Advanced options" {
+    menuentry "Makar OS (console login)" {
+        multiboot2 /boot/makar.kernel${_vmode}
+        boot
+    }
+    menuentry "Makar OS (verbose boot)" {
+        multiboot2 /boot/makar.kernel verbose${_vmode}
+        boot
+    }
+    menuentry "Makar OS (sysadmin -- text console, type go32 to start the desktop)" {
+        set gfxpayload=text
+        multiboot2 /boot/makar.kernel sysadmin
+        boot
+    }
+    menuentry "Makar OS (hardware info)" {
+        set gfxpayload=text
+        multiboot2 /boot/makar.kernel hwspecs
+        boot
+    }
+    menuentry "Makar OS (rescue shell)" {
+        set gfxpayload=text
+        multiboot2 /boot/makar.kernel shell=rescue
+        boot
+    }
+    menuentry "Makar OS (serial console)" {
+        multiboot2 /boot/makar.kernel console=ttyS0${_vmode}
+        boot
+    }
+    submenu "Choose resolution..." {
+        menuentry "1920x1080" { set gfxpayload=1920x1080x32; multiboot2 /boot/makar.kernel vmode=1920x1080; boot }
+        menuentry "1600x900"  { set gfxpayload=1600x900x32;  multiboot2 /boot/makar.kernel vmode=1600x900; boot }
+        menuentry "1280x1024" { set gfxpayload=1280x1024x32; multiboot2 /boot/makar.kernel vmode=1280x1024; boot }
+        menuentry "1280x720"  { set gfxpayload=1280x720x32;  multiboot2 /boot/makar.kernel vmode=1280x720; boot }
+        menuentry "1024x768"  { set gfxpayload=1024x768x32;  multiboot2 /boot/makar.kernel vmode=1024x768; boot }
+        menuentry "800x600"   { set gfxpayload=800x600x32;   multiboot2 /boot/makar.kernel vmode=800x600; boot }
+    }
 }
 GCFG
 

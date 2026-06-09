@@ -774,10 +774,9 @@ static const char limine_head[] =
      * (e.g. 1024x768 on Hyper-V Gen1, which has no 16:9 VBE modes). */
     "resolution: 1280x720x32\n"
     "\n"
-    "/Makar OS\n"
-    "    protocol: multiboot2\n"
-    "    path: boot():/boot/makar.kernel\n"
-    "\n"
+    /* Top level (XP/Vista-style): only the GUI desktop -- the default, first
+     * entry -- with everything else under "Advanced options" (built below).  The
+     * GUI cmdline is completed at write time with "[autologin=<user> ]autoboot=gui". */
     "/Makar OS (GUI desktop)\n"
     "    protocol: multiboot2\n"
     "    path: boot():/boot/makar.kernel\n"
@@ -801,20 +800,62 @@ static uint32_t build_limine_conf(char *buf, uint32_t cap, const char *autologin
     const char *tail =
         "autoboot=gui\n"
         "\n"
-        "/Makar OS (rescue shell)\n"
+        /* Everything that isn't the GUI desktop lives under Advanced options.
+         * sysadmin/hwspecs are text-only -- the kernel adopts Limine's LFB as a
+         * text console (no SVGA bind, no mode change).  Limine has no "next
+         * available device" or videoinfo equivalent, so those stay GRUB-only. */
+        "/Advanced options\n"
+        "//Console login\n"
         "    protocol: multiboot2\n"
         "    path: boot():/boot/makar.kernel\n"
-        "    cmdline: shell=rescue\n"
-        "\n"
-        "/Makar OS (verbose boot)\n"
+        "//Verbose boot\n"
         "    protocol: multiboot2\n"
         "    path: boot():/boot/makar.kernel\n"
         "    cmdline: verbose\n"
-        "\n"
-        "/Makar OS (serial console)\n"
+        "//Sysadmin (text console)\n"
         "    protocol: multiboot2\n"
         "    path: boot():/boot/makar.kernel\n"
-        "    cmdline: console=ttyS0\n";
+        "    cmdline: sysadmin\n"
+        "//Hardware info\n"
+        "    protocol: multiboot2\n"
+        "    path: boot():/boot/makar.kernel\n"
+        "    cmdline: hwspecs\n"
+        "//Rescue shell\n"
+        "    protocol: multiboot2\n"
+        "    path: boot():/boot/makar.kernel\n"
+        "    cmdline: shell=rescue\n"
+        "//Serial console\n"
+        "    protocol: multiboot2\n"
+        "    path: boot():/boot/makar.kernel\n"
+        "    cmdline: console=ttyS0\n"
+        /* Resolution picker (nested under Advanced): each asks Limine for that
+         * framebuffer + passes vmode= so the kernel pins that geometry. */
+        "//Resolution\n"
+        "///1920x1080\n"
+        "    protocol: multiboot2\n"
+        "    path: boot():/boot/makar.kernel\n"
+        "    resolution: 1920x1080x32\n"
+        "    cmdline: vmode=1920x1080\n"
+        "///1600x900\n"
+        "    protocol: multiboot2\n"
+        "    path: boot():/boot/makar.kernel\n"
+        "    resolution: 1600x900x32\n"
+        "    cmdline: vmode=1600x900\n"
+        "///1280x720\n"
+        "    protocol: multiboot2\n"
+        "    path: boot():/boot/makar.kernel\n"
+        "    resolution: 1280x720x32\n"
+        "    cmdline: vmode=1280x720\n"
+        "///1024x768\n"
+        "    protocol: multiboot2\n"
+        "    path: boot():/boot/makar.kernel\n"
+        "    resolution: 1024x768x32\n"
+        "    cmdline: vmode=1024x768\n"
+        "///800x600\n"
+        "    protocol: multiboot2\n"
+        "    path: boot():/boot/makar.kernel\n"
+        "    resolution: 800x600x32\n"
+        "    cmdline: vmode=800x600\n";
     for (int i = 0; tail[i] && o < cap - 1; i++) buf[o++] = tail[i];
     buf[o] = '\0';
     return o;
@@ -1042,7 +1083,7 @@ int install_exec_begin(const install_params_t *p)
     fat32_mkdir("/boot"); fat32_mkdir("/limine");
     copy_one("/boot/makar.kernel", "/boot/makar.kernel");
     copy_one(LIMINE_SYS_ISO_PATH, "/limine/limine-bios.sys");
-    { static char lbuf[1024]; uint32_t ln = build_limine_conf(lbuf, sizeof lbuf, p->autologin);
+    { static char lbuf[4096]; uint32_t ln = build_limine_conf(lbuf, sizeof lbuf, p->autologin);
       rfs_write("/limine/limine.conf", lbuf, ln); }
     fat32_unmount();
 
