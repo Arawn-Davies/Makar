@@ -19,7 +19,7 @@ cross-compiler required.
 
 ---
 
-## 1. Golden rule — *What Would Linux Do?*
+## 1. Golden rule — default to the Linux convention
 
 When a design or hardware detail is ambiguous, default to the **Linux**
 convention: the syscall ABI (`int 0x80`, i386 numbers), driver shape, ACPI / HID
@@ -27,8 +27,7 @@ convention: the syscall ABI (`int 0x80`, i386 numbers), driver shape, ACPI / HID
 block layer, `/proc` + `/dev` + `/usr` paths, dotfile names. Prefer documented
 references — the Linux source, the OSDev wiki, public-domain libraries
 (stb_image, miniz/zlib, doomgeneric) — over hand-rolling. When you follow a
-Linux convention in a non-obvious spot, say so in a comment; **do not** write
-"WWLD" in code or docs.
+Linux convention in a non-obvious spot, just say so plainly in a comment.
 
 ---
 
