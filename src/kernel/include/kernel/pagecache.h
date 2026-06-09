@@ -8,7 +8,7 @@
  *
  * Sits under SYS_READ for lazily-opened read-only files: instead of eager-
  * loading a whole file into a kmalloc'd buffer at open(), the file is streamed
- * a page at a time through this cache (WWLD -- Linux's page cache).  Misses are
+ * a page at a time through this cache (like Linux's page cache).  Misses are
  * filled via vfs_read_at(); hits avoid the disk entirely.
  *
  * Backing store is a fixed static pool (bounded footprint, self-evicting LRU),

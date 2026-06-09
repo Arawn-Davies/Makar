@@ -1,6 +1,6 @@
 /* files.elf -- minimal fullscreen file browser (ring-3, freestanding).
  *
- * WWLD: a Midnight-Commander-lite list pane.  Arrow up/down to move, Enter to
+ * A Midnight-Commander-lite list pane.  Arrow up/down to move, Enter to
  * descend into a directory, Backspace for the parent, q/Esc to quit.  Launched
  * fullscreen from the shell or the gui "Files" icon (execve).  PoC: list +
  * navigate only (no copy/delete/open-file yet).

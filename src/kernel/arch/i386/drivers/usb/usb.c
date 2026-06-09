@@ -21,7 +21,7 @@
  * tied to PS/2.  A USB HCI + enumeration driver (the next slice) will SET_PROTO
  * (boot), poll the interrupt-IN endpoint, and hand each report here.  Until the
  * HCI lands these are exercised only by the boilerplate; PS/2 stays the live
- * source.  (WWLD: usbcore + hid-generic boot protocol routed into the shared
+ * source.  (Linux-style: usbcore + hid-generic boot protocol routed into the shared
  * input layer.) */
 
 /* HID boot mouse: byte0 buttons (b0 L, b1 R, b2 M), byte1 dx, byte2 dy (both

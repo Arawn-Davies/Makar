@@ -208,6 +208,18 @@ These are not near-term commitments:
 Each of these is large enough to require a clear user-facing reason before
 implementation.
 
+### Architectural direction — toward a hybrid / microkernel
+
+Longer term, Makar is heading toward a **hybrid / microkernel** architecture in
+the NT/XNU mould, rather than staying a pure monolith. The groundwork is already
+in place: the kernel IPC primitives and the **makx** server/client split (the
+window server, login, and apps as separate ring-3 clients talking over shared
+surfaces) are exactly the seams a hybrid kernel pushes out of the privileged
+core. The realistic order is: finish the OS-specific cross toolchain and the
+**x86-64** port first, then progressively lift services (display, FS, net) out of
+the kernel behind IPC — a hybrid that keeps the hot paths in-kernel while the
+rest run as user-space servers.
+
 ## Release Quality Bar
 
 For any major branch:

@@ -28,7 +28,7 @@
  *         consolidated into one source of truth; hypervisor detection +
  *         per-platform fixes (Hyper-V mouse, VMware/Hyper-V 720p, ACPI soft-off);
  *         windowed clients re-flow on resize. */
-#define MAKAR_VERSION "0.10.0"
+#define MAKAR_VERSION "0.10.5"
 /* 0.9 -- ring-3 shell driving the makx desktop session (GUI login hand-off,
  *        focus-gain prompt rebuild, autostart). */
 #define SHELL_VERSION "0.9.0"

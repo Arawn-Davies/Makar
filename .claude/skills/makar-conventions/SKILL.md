@@ -11,7 +11,7 @@ generic defaults. `CLAUDE.md` is the index — read it and the `docs/` it points
 to before non-trivial work. The fuller human-facing version of this checklist is
 **`docs/conventions.md`** — keep the two in sync.
 
-## Golden rule — What Would Linux Do?
+## Golden rule — default to the Linux convention
 When a design or hardware detail is ambiguous, default to the **Linux**
 convention (syscall ABI, driver shape, ACPI/HID/AHCI layout, single-user mode,
 ANSI/VT100, USER_HZ, block layer). Lean on documented references (Linux source,

@@ -819,7 +819,7 @@ It compiles C to a static `ET_EXEC` ELF on disk — no fork, no JIT, no
 `mmap(PROT_EXEC)`. The workflow is CP/M-style: boot → write source in VIX →
 `tcc hello.c -o hello.elf` → `exec hello.elf`.
 
-**Current state (May 2026, v0.9):** all original phases shipped, and
+**Current state (June 2026, v0.10.5):** all original phases shipped, and
 self-hosting now covers the kernel itself.  `tcc.elf` ships on every ISO,
 userspace apps (`hello`, `calc`, `sh`, `makbox`) self-rebuild in-OS, and
 the bootable Multiboot 2 kernel ELF rebuilds end-to-end with our shipped

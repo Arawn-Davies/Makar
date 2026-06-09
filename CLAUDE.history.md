@@ -4,7 +4,7 @@ Companion to `CLAUDE.md`. Snapshot of subsystem state, recently-merged PRs, and 
 attribution. Consult for "what's already shipped" / "what does subsystem X do today"
 context; not needed for routine edits.
 
-## Current state (as of May 2026, v0.9.0)
+## Current state (as of June 2026, v0.10.5)
 
 **Kernel self-host milestone (v0.9)**: `./build-kernel-tcc.sh` (host) rebuilds
 the bootable Multiboot 2 kernel ELF end-to-end against the vendored source

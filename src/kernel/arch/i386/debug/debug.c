@@ -966,7 +966,7 @@ static void gpf_handler(registers_t *regs)
 /* Demand-paging handler (lazy brk + anonymous mmap).
  *
  * SYS_BRK and SYS_MMAP2 only *reserve* address ranges; the actual frames are
- * mapped here on first touch -- the WWLD model (Linux brk/anon-mmap are lazy).
+ * mapped here on first touch -- the Linux model (brk/anon-mmap are lazy).
  * This keeps a multi-MiB allocation (doom's 6 MiB zone) from mapping every
  * page in one interrupts-off syscall and stalling the whole system.
  *

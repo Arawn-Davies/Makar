@@ -45,8 +45,9 @@ PRs** (it grew too big for one):
   with on-demand I/O, 64 MiB is plenty (FreeDOOM runs on DOS in <16 MiB).
 
 Longer-term, separately: a self-hosted OSDev toolchain toward **x86_64** (see
-"OS-specific cross toolchain" below), then possibly a **microkernel** evolution
-(the IPC + makx server/client split are the groundwork).
+"OS-specific cross toolchain" below), then a **hybrid / microkernel** evolution in
+the NT/XNU mould (the IPC + makx server/client split are the groundwork — lift
+display/FS/net out of the kernel behind IPC while keeping hot paths in-core).
 
 ### makx GUI follow-ups (after the server/client split)
 
