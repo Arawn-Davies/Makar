@@ -316,6 +316,62 @@ static void add_default_icons(void)
     }
 }
 
+/* Resolve ~/<suffix> for the logged-in user (root -> /root, else /home/<user>). */
+static void home_path(const char *suffix, char *out, int cap)
+{
+    char u[64]={0}; sys_whoami(u, sizeof u);
+    int n=0;
+    if (!u[0] || wstreq(u,"root")){ const char *r="/root"; while (*r && n<cap-1) out[n++]=*r++; }
+    else { const char *pre="/home/"; while (*pre && n<cap-1) out[n++]=*pre++;
+           for (int k=0; u[k] && n<cap-1; k++) out[n++]=u[k]; }
+    for (const char *p=suffix; *p && n<cap-1; p++) out[n++]=*p;
+    out[n]=0;
+}
+
+/* Read a "Key=value" line out of ~/.mxrc (the per-user GUI profile). */
+static int mxrc_get(const char *key, char *out, int cap)
+{
+    char path[96]; home_path("/.mxrc", path, sizeof path);
+    int fd=sys_open(path, O_RDONLY); if (fd<0) return -1;
+    static char buf[1024]; int n=0; long r;
+    while (n<(int)sizeof buf-1 && (r=sys_read(fd, buf+n, (unsigned)((int)sizeof buf-1-n)))>0) n+=(int)r;
+    sys_close(fd); buf[n]=0;
+    int kl=slen(key), i=0;
+    while (i<n){
+        int s=i; while (i<n && buf[i]!='\n' && buf[i]!='\r') i++; buf[i]=0;
+        char *line=buf+s; i++; while (i<n && (buf[i]=='\n'||buf[i]=='\r')) i++;
+        int m=1; for (int k=0;k<kl;k++) if (line[k]!=key[k]){ m=0; break; }
+        if (m && line[kl]=='='){ scpy(out, line+kl+1, cap); return 0; }
+    }
+    return -1;
+}
+
+/* Load an image by extension into `out` (wallpaper-sized bound). */
+static int load_image_any(const char *path, gfx_surface *out)
+{
+    if (wendswith(path,".png")) return png_load(path, out);
+    if (wendswith(path,".ico")) return ico_load(path, out);
+    if (wendswith(path,".bmp")) return bmp_load_max(path, out, (int)FBW, (int)FBH);
+    if (bmp_load_max(path, out, (int)FBW, (int)FBH)==0) return 0;
+    return png_load(path, out);
+}
+
+/* Desktop wallpaper: path comes from ~/.mxrc (Wallpaper=...).  Blitted stretched
+ * behind the icons; empty/missing -> the flat COL_DESK fill.  apply_wallpaper()
+ * is cheap when unchanged (re-reads the tiny .mxrc, only reloads on a new path)
+ * so the WM can poll it for live "set as wallpaper" updates. */
+static gfx_surface g_wallpaper; static int g_has_wp=0; static char g_wp_path[160]={0};
+static int apply_wallpaper(void)
+{
+    char wp[160]={0};
+    if (mxrc_get("Wallpaper", wp, sizeof wp)!=0) wp[0]=0;
+    if (wstreq(wp, g_wp_path)) return 0;                 /* unchanged */
+    scpy(g_wp_path, wp, sizeof g_wp_path);
+    if (g_has_wp){ sys_munmap(g_wallpaper.px, (unsigned long)g_wallpaper.w*g_wallpaper.h*4u); g_has_wp=0; }
+    if (wp[0] && load_image_any(wp, &g_wallpaper)==0) g_has_wp=1;
+    return 1;
+}
+
 /* Merge the *.desktop shortcuts in `dir` into tmp[]/names[] (count *cnt), with
  * basename override: a shortcut whose filename already collected is replaced
  * in place (so ~/.shortcuts entries override the system-wide ones by name). */
@@ -349,18 +405,9 @@ static void load_desktop_entries(void)
     static icon_t tmp[ICON_MAX]; static char names[ICON_MAX][64];
     int cnt=0;
     merge_shortcuts("/usr/share/shortcuts", tmp, names, &cnt);
-    /* ~/.shortcuts: resolve the home dir from the logged-in user. */
-    char home[96], u[64]={0};
-    sys_whoami(u, sizeof u);
-    if (u[0]){
-        int n=0;
-        if (wstreq(u,"root")){ const char *r="/root/.shortcuts"; while (*r) home[n++]=*r++; }
-        else { const char *pre="/home/"; while (*pre) home[n++]=*pre++;
-               for (int k=0; u[k] && n<(int)sizeof home-12; k++) home[n++]=u[k];
-               const char *suf="/.shortcuts"; while (*suf) home[n++]=*suf++; }
-        home[n]=0;
-        merge_shortcuts(home, tmp, names, &cnt);
-    }
+    /* ~/.shortcuts user overlay (overrides system-wide by filename). */
+    char home[96]; home_path("/.shortcuts", home, sizeof home);
+    merge_shortcuts(home, tmp, names, &cnt);
     if (cnt==0){ add_default_icons(); return; }
     /* insertion sort by filename for a deterministic layout */
     for (int a=1; a<cnt; a++){
@@ -1236,8 +1283,9 @@ int main(int argc, char **argv, char **envp)
 
     if (want_login) do_login(login_user);
 
-    load_desktop_entries();     /* /usr/share/applications/*.desktop (or defaults) */
+    load_desktop_entries();     /* /usr/share/shortcuts + ~/.shortcuts (or defaults) */
     load_icon_assets();         /* per-icon artwork (.ico/.png/.bmp; glyph fallback) */
+    apply_wallpaper();          /* ~/.mxrc Wallpaper= (flat desktop if unset) */
     hwcursor_setup();           /* use the display driver's HW cursor if it has one */
     znum=0; focus=-1;
     launch_icon(0);             /* open a terminal client on the desktop */
@@ -1406,13 +1454,15 @@ int main(int argc, char **argv, char **envp)
         if (reap_clients()){ g_dirty=1; damage_full(); }
         { unsigned now=sys_uptime(); if (now-stat_up>=100u){ stat_up=now; g_dirty=1;
             damage(0,0,(int)FBW,MENU_H);                       /* top bar title  */
-            damage(0,(int)FBH-DOCK_H,(int)FBW,DOCK_H); } }      /* dock stats+tray */
+            damage(0,(int)FBH-DOCK_H,(int)FBW,DOCK_H);          /* dock stats+tray */
+            if (apply_wallpaper()) damage_full(); } }           /* live "set as wallpaper" */
 
         if (!g_dirty && !cmoved){ sys_yield(); continue; }
 
         if (g_dirty){
             /* ---- recompose the WHOLE back buffer (cheap, cacheable RAM) ---- */
-            gfx_fill(&scr,0,0,(int)FBW,(int)FBH,COL_DESK);
+            if (g_has_wp) gfx_blit_scaled(&scr,0,0,(int)FBW,(int)FBH,&g_wallpaper);
+            else          gfx_fill(&scr,0,0,(int)FBW,(int)FBH,COL_DESK);
             gfx_str(&scr,8,MENU_H+6,"Makar desktop -- click an icon; drag a title bar; click a window to focus",RGB(0x90,0xa0,0xb5));
             draw_icons();
             for (int j=0;j<znum;j++){ int i=zorder[j]; if(!W[i].in_use || W[i].minimized) continue; draw_window_frame(i); }

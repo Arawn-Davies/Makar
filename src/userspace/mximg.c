@@ -29,6 +29,7 @@ static gfx_u32 *img_px;          /* decoded pixels (mmap, IMG_MAXW*IMG_MAXH) */
 static unsigned char *fbuf;            /* file read buffer (mmap, FILE_CAP)        */
 static int img_w, img_h;         /* current image size (0 = none)           */
 static char msg[96] = "Open an image (BMP/GIF/PNG).";
+static char g_cur_path[256];     /* full path of the loaded image (for wallpaper) */
 
 static void scpy(char *d,const char *s,int max){int i=0;while(s[i]&&i<max-1){d[i]=s[i];i++;}d[i]=0;}
 static unsigned rd32(const unsigned char *p){ return p[0]|(p[1]<<8)|(p[2]<<16)|((unsigned)p[3]<<24); }
@@ -153,10 +154,39 @@ static void load_image(const char *path)
     }
     sys_close(fd);
     if (decode_image(got) == 0) {
+        scpy(g_cur_path, path, sizeof g_cur_path);
         /* path basename into msg */
         const char *b = path; for (const char *p=path; *p; p++) if (*p=='/') b=p+1;
         scpy(msg, b, sizeof msg);
     }
+}
+
+/* Resolve ~/<suffix> for the logged-in user (root -> /root, else /home/<user>). */
+static void home_path(const char *suffix, char *out, int cap)
+{
+    char u[64]={0}; sys_whoami(u, sizeof u);
+    int n=0, isroot=(u[0]=='r'&&u[1]=='o'&&u[2]=='o'&&u[3]=='t'&&u[4]==0);
+    if (!u[0] || isroot){ const char *r="/root"; while (*r && n<cap-1) out[n++]=*r++; }
+    else { const char *pre="/home/"; while (*pre && n<cap-1) out[n++]=*pre++;
+           for (int k=0; u[k] && n<cap-1; k++) out[n++]=u[k]; }
+    for (const char *p=suffix; *p && n<cap-1; p++) out[n++]=*p;
+    out[n]=0;
+}
+
+/* Persist the loaded image as the desktop wallpaper via ~/.mxrc (Wallpaper=...);
+ * the window manager polls .mxrc and applies it live. */
+static void set_wallpaper(void)
+{
+    if (!g_cur_path[0]) { scpy(msg,"open an image first",sizeof msg); return; }
+    char rc[96]; home_path("/.mxrc", rc, sizeof rc);
+    char buf[320]; int n=0;
+    const char *k="Wallpaper="; for (const char *p=k; *p; p++) buf[n++]=*p;
+    for (const char *p=g_cur_path; *p && n<(int)sizeof buf-2; p++) buf[n++]=*p;
+    buf[n++]='\n';
+    int fd=sys_open(rc, O_WRONLY|O_CREAT|O_TRUNC);
+    if (fd<0){ scpy(msg,"cannot save wallpaper",sizeof msg); return; }
+    sys_write(fd, buf, (unsigned)n); sys_close(fd);
+    scpy(msg,"wallpaper set", sizeof msg);
 }
 
 static int slen(const char*s){int n=0;while(s[n])n++;return n;}
@@ -194,8 +224,10 @@ int main(int argc, char **argv)
         gfx_fill(s,0,0,s->w,30,COL_BAR);
         ui_begin(&u,c.mx,c.my,c.mdown,c.mpressed,c.mreleased,-1);
         int open_c=ui_button(&u,s,6,5,64,20,"Open");
-        gfx_str_clip(s,80,11,msg,COL_TEXT,s->w-8);
+        int wp_c=ui_button(&u,s,74,5,96,20,"Set Wallpaper");
+        gfx_str_clip(s,178,11,msg,COL_TEXT,s->w-8);
         if(open_c){ scpy(brz.cwd,"/apps",sizeof brz.cwd); brz.sel=brz.scroll=0; brz.loaded=0; br_load(&brz); dlg=1; }
+        if(wp_c && img_w>0) set_wallpaper();
 
         if(dlg){
             char full[256];

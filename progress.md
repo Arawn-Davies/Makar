@@ -58,7 +58,7 @@ The XP/Vista boot overhaul, the desktop tray, and the documentation pass.
 - [ ] **T29** — File-path boxes become text-entry boxes (mximg, editor, Files)
 - [ ] **T30** — Windowed framebuffer for console-launched graphical apps (Doom in a makx window)
 - [ ] **T31** — Doom IWAD/PWAD selection launcher
-- [ ] **T32** — Desktop wallpaper: "set as background" from the image app + WM stretch
+- [x] **T32** — Desktop wallpaper: `mximg` "Set Wallpaper" writes `~/.mxrc` (`Wallpaper=`), the WM polls `~/.mxrc` and blits the image stretched behind the icons (live update; flat `COL_DESK` when unset). `bmp_load_max` lifts the icon-sized 256px cap for wallpaper BMPs. (Introduces the `~/.mxrc` per-user profile — T34 groundwork.)
 - [ ] **T33** — GPU-usage stat on the dock tray
 - [ ] **T34** — `~/.mxrc` per-user GUI profile (tray toggles + wallpaper; `/home/user/.mxrc` on the livecd)
 - [ ] **T35** — Memory management continuation (PMM accounting + reclaim/GC tuning)

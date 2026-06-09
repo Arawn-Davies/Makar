@@ -127,7 +127,16 @@ a missing asset falls back to the procedural `icon_glyph()`. Icons are
 launches, while a drag drops the icon and persists `X-Makar-IconX/Y` back into
 the source `.desktop` (best-effort -- a silent no-op on a read-only live ISO).
 The `.ico` tiles are generated from the BMP tiles by `tools/bmp2ico.py`
-(committed). DOOM IWADs likewise live on a normal path,
+(committed).
+
+**Desktop wallpaper** is opt-in via the image viewer: `mximg`'s "Set Wallpaper"
+button writes `Wallpaper=<path>` into the per-user `~/.mxrc`. The WM polls
+`~/.mxrc` (~1 s, alongside the dock-stats refresh) and, on a path change, loads
+the image (`load_image_any`: `.png`/`.ico`/`.bmp`, wallpaper-sized bound via
+`bmp_load_max`) and blits it stretched (`gfx_blit_scaled`) behind the icons in
+the recompose; an unset/missing wallpaper falls back to the flat `COL_DESK`
+fill. Example backgrounds ship under `/usr/share/backgrounds`. DOOM IWADs
+likewise live on a normal path,
 `/usr/share/games/doom/` (searched first by `doomgeneric_makar.c`); the installer
 copies both with the rest of `/usr`.
 - **gui_ui** — an immediate-mode toolkit. Each frame the caller snapshots input
