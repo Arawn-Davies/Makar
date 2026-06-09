@@ -145,8 +145,15 @@ just-written `.mxrc` unreliable). At boot the WM loads the persisted path from
 `~/.mxrc` instead (`load_image_any`: `.png`/`.ico`/`.bmp`, wallpaper-sized bound
 via `bmp_load_max`); a ~1 s poll covers external edits, but a live shared-surface
 wallpaper takes precedence. Unset/missing falls back to the flat `COL_DESK`
-fill. Example backgrounds ship under `/usr/share/backgrounds`. DOOM IWADs
-likewise live on a normal path,
+fill. Example backgrounds ship under `/usr/share/backgrounds`.
+
+The wallpaper path and the **dock tray toggles** live in the per-user `~/.mxrc`
+config, accessed through the shared `mxrc.c` module (`mxrc_get`/`mxrc_set`,
+read-modify-write so multiple writers -- the WM's tray keys and mximg's
+`Wallpaper=` -- coexist). **Right-clicking the dock** opens a small menu to show
+or hide each tray element (Clock / Date / Network / CPU·RAM); the choice
+persists to `~/.mxrc` (`TrayClock`/`TrayDate`/`TrayNet`/`TrayStats`) and is read
+at WM startup. DOOM IWADs likewise live on a normal path,
 `/usr/share/games/doom/` (searched first by `doomgeneric_makar.c`); the installer
 copies both with the rest of `/usr`.
 - **gui_ui** — an immediate-mode toolkit. Each frame the caller snapshots input

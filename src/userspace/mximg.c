@@ -13,6 +13,7 @@
 #include "gui_browser.h"
 #include "img_bmp.h"
 #include "img_png.h"
+#include "mxrc.h"
 #include "makx.h"
 
 #define RGB GFX_RGB
@@ -161,18 +162,6 @@ static void load_image(const char *path)
     }
 }
 
-/* Resolve ~/<suffix> for the logged-in user (root -> /root, else /home/<user>). */
-static void home_path(const char *suffix, char *out, int cap)
-{
-    char u[64]={0}; sys_whoami(u, sizeof u);
-    int n=0, isroot=(u[0]=='r'&&u[1]=='o'&&u[2]=='o'&&u[3]=='t'&&u[4]==0);
-    if (!u[0] || isroot){ const char *r="/root"; while (*r && n<cap-1) out[n++]=*r++; }
-    else { const char *pre="/home/"; while (*pre && n<cap-1) out[n++]=*pre++;
-           for (int k=0; u[k] && n<cap-1; k++) out[n++]=u[k]; }
-    for (const char *p=suffix; *p && n<cap-1; p++) out[n++]=*p;
-    out[n]=0;
-}
-
 static int g_wp_sid = -1;        /* our shared wallpaper surface (destroy on replace) */
 
 /* Set the loaded image as the desktop wallpaper.  Two parts, mirroring a Linux
@@ -183,14 +172,8 @@ static void set_wallpaper(mx_conn *c)
 {
     if (!g_cur_path[0] || img_w < 1){ scpy(msg,"open an image first",sizeof msg); return; }
 
-    /* (1) persistence: ~/.mxrc Wallpaper=<path> */
-    char rc[96]; home_path("/.mxrc", rc, sizeof rc);
-    char buf[320]; int n=0;
-    const char *k="Wallpaper="; for (const char *p=k; *p; p++) buf[n++]=*p;
-    for (const char *p=g_cur_path; *p && n<(int)sizeof buf-2; p++) buf[n++]=*p;
-    buf[n++]='\n';
-    int fd=sys_open(rc, O_WRONLY|O_CREAT|O_TRUNC);
-    if (fd>=0){ sys_write(fd, buf, (unsigned)n); sys_close(fd); }
+    /* (1) persistence: ~/.mxrc Wallpaper=<path> (preserves other keys) */
+    mxrc_set("Wallpaper", g_cur_path);
 
     /* (2) live: copy the decoded pixels into a shared surface + hand off the id */
     int sid=sys_surface_create(img_w, img_h);
@@ -208,7 +191,7 @@ static void set_wallpaper(mx_conn *c)
         }
         sys_surface_destroy(sid);
     }
-    scpy(msg, fd>=0 ? "wallpaper saved (applies next boot)" : "cannot set wallpaper", sizeof msg);
+    scpy(msg, "wallpaper saved (applies next boot)", sizeof msg);  /* surface failed; .mxrc persisted */
 }
 
 static int slen(const char*s){int n=0;while(s[n])n++;return n;}

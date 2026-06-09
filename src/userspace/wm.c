@@ -34,6 +34,7 @@
 #include "img_bmp.h"
 #include "img_png.h"
 #include "img_ico.h"
+#include "mxrc.h"
 #include "makx.h"
 
 /* ---- framebuffer / back buffer ----------------------------------------- */
@@ -316,35 +317,7 @@ static void add_default_icons(void)
     }
 }
 
-/* Resolve ~/<suffix> for the logged-in user (root -> /root, else /home/<user>). */
-static void home_path(const char *suffix, char *out, int cap)
-{
-    char u[64]={0}; sys_whoami(u, sizeof u);
-    int n=0;
-    if (!u[0] || wstreq(u,"root")){ const char *r="/root"; while (*r && n<cap-1) out[n++]=*r++; }
-    else { const char *pre="/home/"; while (*pre && n<cap-1) out[n++]=*pre++;
-           for (int k=0; u[k] && n<cap-1; k++) out[n++]=u[k]; }
-    for (const char *p=suffix; *p && n<cap-1; p++) out[n++]=*p;
-    out[n]=0;
-}
-
-/* Read a "Key=value" line out of ~/.mxrc (the per-user GUI profile). */
-static int mxrc_get(const char *key, char *out, int cap)
-{
-    char path[96]; home_path("/.mxrc", path, sizeof path);
-    int fd=sys_open(path, O_RDONLY); if (fd<0) return -1;
-    static char buf[1024]; int n=0; long r;
-    while (n<(int)sizeof buf-1 && (r=sys_read(fd, buf+n, (unsigned)((int)sizeof buf-1-n)))>0) n+=(int)r;
-    sys_close(fd); buf[n]=0;
-    int kl=slen(key), i=0;
-    while (i<n){
-        int s=i; while (i<n && buf[i]!='\n' && buf[i]!='\r') i++; buf[i]=0;
-        char *line=buf+s; i++; while (i<n && (buf[i]=='\n'||buf[i]=='\r')) i++;
-        int m=1; for (int k=0;k<kl;k++) if (line[k]!=key[k]){ m=0; break; }
-        if (m && line[kl]=='='){ scpy(out, line+kl+1, cap); return 0; }
-    }
-    return -1;
-}
+/* ~/.mxrc + home resolution live in the shared mxrc module (mxrc.h). */
 
 /* Load an image by extension into `out` (wallpaper-sized bound). */
 static int load_image_any(const char *path, gfx_surface *out)
@@ -422,7 +395,7 @@ static void load_desktop_entries(void)
     int cnt=0;
     merge_shortcuts("/usr/share/shortcuts", tmp, names, &cnt);
     /* ~/.shortcuts user overlay (overrides system-wide by filename). */
-    char home[96]; home_path("/.shortcuts", home, sizeof home);
+    char home[96]; mxrc_home("/.shortcuts", home, sizeof home);
     merge_shortcuts(home, tmp, names, &cnt);
     if (cnt==0){ add_default_icons(); return; }
     /* insertion sort by filename for a deterministic layout */
@@ -870,6 +843,15 @@ static void dock_stats(char *out)
 
 /* ---- system tray: net status + clock/date (lives in the dock, far right) - */
 static int      g_net_state = -1;        /* 0 down, 1 limited, 2 connected   */
+/* Dock tray element visibility (toggled via the dock right-click menu, persisted
+ * in ~/.mxrc).  Default all on. */
+static int g_tray_clock=1, g_tray_date=1, g_tray_net=1, g_tray_stats=1;
+static void load_tray_prefs(void){
+    g_tray_clock = mxrc_get_int("TrayClock", 1);
+    g_tray_date  = mxrc_get_int("TrayDate",  1);
+    g_tray_net   = mxrc_get_int("TrayNet",   1);
+    g_tray_stats = mxrc_get_int("TrayStats", 1);
+}
 static char     g_clk[8]   = "--:--";    /* HH:MM                            */
 static char     g_date[10] = "--/--/--"; /* DD/MM/YY                         */
 static unsigned g_tray_sec = 0xffffffffu;/* last poll second (uptime/100)    */
@@ -940,17 +922,52 @@ static void draw_dock(void)
      * reading left-to-right "CPU x% RAM y%  [net]  HH:MM  DD/MM/YY". */
     tray_poll();
     unsigned tcol = RGB(0xc8,0xd0,0xdc); int ty = y0+(DOCK_H-8)/2; int rx = (int)FBW-10;
-    rx -= gfx_text_w(g_date); gfx_str(&scr, rx, ty, g_date, tcol); rx -= 12;
-    rx -= gfx_text_w(g_clk);  gfx_str(&scr, rx, ty, g_clk,  tcol); rx -= 16;
-    rx -= 16; draw_net_icon(rx, y0+(DOCK_H-12)/2, g_net_state); rx -= 14;
-    char st[32]; dock_stats(st);
-    rx -= gfx_text_w(st); gfx_str(&scr, rx, ty, st, RGB(0x90,0xa0,0xb5));
+    if (g_tray_date){ rx -= gfx_text_w(g_date); gfx_str(&scr, rx, ty, g_date, tcol); rx -= 12; }
+    if (g_tray_clock){ rx -= gfx_text_w(g_clk);  gfx_str(&scr, rx, ty, g_clk,  tcol); rx -= 16; }
+    if (g_tray_net){ rx -= 16; draw_net_icon(rx, y0+(DOCK_H-12)/2, g_net_state); rx -= 14; }
+    if (g_tray_stats){ char st[32]; dock_stats(st);
+        rx -= gfx_text_w(st); gfx_str(&scr, rx, ty, st, RGB(0x90,0xa0,0xb5)); }
 }
 static int dock_hit(int px,int py,int *out_win)
 {
     int y0=(int)FBH-DOCK_H; if(py<y0) return 0;
     for(int s=0;s<dock_n;s++){ int bx=dock_btn_x(s); if(in_rect(px,py,bx,y0+5,54,DOCK_H-10)){ *out_win=dock_order[s]; return 1; } }
     return 0;
+}
+
+/* ---- dock right-click menu: toggle which tray elements show (persist ~/.mxrc) */
+#define TRAYMENU_W 150
+#define TRAYMENU_N 4
+static const char *TRAY_LABELS[TRAYMENU_N] = {"Clock","Date","Network","CPU / RAM"};
+static const char *TRAY_KEYS[TRAYMENU_N]   = {"TrayClock","TrayDate","TrayNet","TrayStats"};
+static int g_tray_menu=0, g_tray_menu_x=0;     /* open flag + anchor x (pops up from dock) */
+static int *tray_flag(int i){ return i==0?&g_tray_clock : i==1?&g_tray_date : i==2?&g_tray_net : &g_tray_stats; }
+static void tray_menu_box(int *x,int *y,int *w,int *h){
+    int rh=22; *w=TRAYMENU_W; *h=6+TRAYMENU_N*rh+6;
+    *x=g_tray_menu_x; if(*x+*w>(int)FBW)*x=(int)FBW-*w; if(*x<0)*x=0;
+    *y=(int)FBH-DOCK_H-*h;                       /* sit just above the dock */
+}
+static void draw_tray_menu(void){
+    if(!g_tray_menu) return;
+    int x,y,w,h,rh=22; tray_menu_box(&x,&y,&w,&h);
+    gfx_round(&scr,x,y,w,h,COL_WIN,COL_BORDER);
+    for(int i=0;i<TRAYMENU_N;i++){ int ry=y+6+i*rh;
+        gfx_str(&scr,x+10,ry+(rh-8)/2, *tray_flag(i)?"x":" ", RGB(0x8a,0xe2,0x34));
+        gfx_str(&scr,x+26,ry+(rh-8)/2, TRAY_LABELS[i], 0xFFFFFF);
+    }
+}
+/* Handle a left-click while the menu is open: toggle a row, or close on an
+ * outside click.  Returns 1 if the click was consumed (menu was open). */
+static int tray_menu_click(int px,int py){
+    if(!g_tray_menu) return 0;
+    int x,y,w,h,rh=22; tray_menu_box(&x,&y,&w,&h);
+    if(in_rect(px,py,x,y,w,h)){
+        for(int i=0;i<TRAYMENU_N;i++){ int ry=y+6+i*rh;
+            if(in_rect(px,py,x,ry,w,rh)){ int *f=tray_flag(i); *f=!*f; mxrc_set_int(TRAY_KEYS[i],*f); break; }
+        }
+    }
+    g_tray_menu=0;                               /* any click closes the menu */
+    return 1;
 }
 
 /* top menu bar -------------------------------------------------------------- */
@@ -1344,6 +1361,7 @@ int main(int argc, char **argv, char **envp)
     load_desktop_entries();     /* /usr/share/shortcuts + ~/.shortcuts (or defaults) */
     load_icon_assets();         /* per-icon artwork (.ico/.png/.bmp; glyph fallback) */
     apply_wallpaper();          /* ~/.mxrc Wallpaper= (flat desktop if unset) */
+    load_tray_prefs();          /* ~/.mxrc dock tray visibility (default all on) */
     hwcursor_setup();           /* use the display driver's HW cursor if it has one */
     znum=0; focus=-1;
     launch_icon(0);             /* open a terminal client on the desktop */
@@ -1351,6 +1369,7 @@ int main(int argc, char **argv, char **envp)
     int cx=(int)FBW/2, cy=(int)FBH/2, prev_left=0;
     int dragging=0, resizing=0, drag_win=-1, drag_dx=0, drag_dy=0;
     int drag_icon=-1, icon_moved=0, icon_dx=0, icon_dy=0, icon_px=0, icon_py=0;
+    int prev_right=0;
     int announced=0, exit_to_shell=0, power_action=0;
     unsigned stat_up=0;
 
@@ -1363,17 +1382,18 @@ int main(int argc, char **argv, char **envp)
               if (cy>=(int)FBH) cy=(int)FBH-1;
           } }
         /* ---- gather hardware input ---- */
-        int mpressed=0, mreleased=0;
+        int mpressed=0, mreleased=0, rpressed=0;
         unsigned int ev;
         while((ev=sys_mouse_read())!=0){
             cx += (int)(signed char)((ev>>8)&0xFF);
             cy += (int)(signed char)((ev>>16)&0xFF);
             if(cx<0)cx=0; if(cx>=(int)FBW)cx=(int)FBW-1;
             if(cy<0)cy=0; if(cy>=(int)FBH)cy=(int)FBH-1;
-            int left=ev&1;
+            int left=ev&1, right=ev&2;
             if(left&&!prev_left) mpressed=1;
             if(!left&&prev_left) mreleased=1;
-            prev_left=left;
+            if(right&&!prev_right) rpressed=1;
+            prev_left=left; prev_right=right;
             /* NB: a pure cursor move does NOT dirty the scene -- it's handled by
              * the cheap cursor-only path below.  Scene changes (clicks, drags,
              * client repaints, focus) set g_dirty in their own handlers. */
@@ -1394,7 +1414,12 @@ int main(int argc, char **argv, char **envp)
          * (polled below) -- both set this so the action dispatch lives once. */
         int want_power_menu = 0;
 
-        if (mpressed){
+        /* right-click on the dock opens the tray-visibility menu */
+        if (rpressed && cy >= (int)FBH-DOCK_H){ g_tray_menu_x=cx; g_tray_menu=1; g_dirty=1; damage_full(); }
+
+        if (mpressed && g_tray_menu){          /* a click while the menu is open: toggle/close */
+            tray_menu_click(cx,cy); g_dirty=1; damage_full();
+        } else if (mpressed){
             int dk;
             g_sel_icon=-1;                    /* clear selection unless an icon is hit */
             if (power_hit(cx,cy)) want_power_menu=1;
@@ -1530,6 +1555,7 @@ int main(int argc, char **argv, char **envp)
             for (int j=0;j<znum;j++){ int i=zorder[j]; if(!W[i].in_use || W[i].minimized) continue; draw_window_frame(i); }
             draw_dock();
             draw_menubar();
+            draw_tray_menu();
             int ox=cur_sx, oy=cur_sy;
             if (!g_hwcursor){ cursor_capture(cx,cy); draw_cursor(cx,cy); }
             /* ---- but PUSH only the damaged region to the framebuffer ---- */

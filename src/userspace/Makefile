@@ -83,7 +83,7 @@ ktest_uspace.elf: crt0.o ktest_uspace.o
 vix.elf: crt0.o vix.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-gui.elf: crt0.o wm.o gui_gfx.o gui_ui.o gui_browser.o img_bmp.o img_png.o img_ico.o makx.o
+gui.elf: crt0.o wm.o gui_gfx.o gui_ui.o gui_browser.o img_bmp.o img_png.o img_ico.o mxrc.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 # makx clients: each links the gui_gfx/gui_ui/gui_browser helpers it uses plus
@@ -122,7 +122,7 @@ mxinstall.elf: crt0.o mxinstall.o gui_gfx.o gui_ui.o makx.o
 mxdisplay.elf: crt0.o mxdisplay.o gui_gfx.o gui_ui.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-mximg.elf: crt0.o mximg.o gui_gfx.o gui_ui.o gui_browser.o img_bmp.o img_png.o makx.o
+mximg.elf: crt0.o mximg.o gui_gfx.o gui_ui.o gui_browser.o img_bmp.o img_png.o mxrc.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 files.elf: crt0.o files.o
