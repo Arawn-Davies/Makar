@@ -41,6 +41,7 @@
 #define MX_POLL     3   /* data[0]=win             -> reply = one event (below)     */
 #define MX_BYE      4   /* data[0]=win             -> reply: ack                    */
 #define MX_RESIZE   5   /* data[0]=win data[1]=w data[2]=h -> reply data[0]=new sid (or -1) */
+#define MX_WALLPAPER 6  /* (no payload) -> ask the server to re-read ~/.mxrc and re-apply the desktop wallpaper now */
 
 /* HELLO flags (data[2]).  MX_F_RESIZABLE: the client re-flows to fill the window
  * (the server sends MXEV_RESIZE on window resize and blits the surface 1:1, not
@@ -113,5 +114,9 @@ void mx_present(mx_conn *c);
 
 /* Tell the server we're done and unmap.  Safe to call after the server died. */
 void mx_close(mx_conn *c);
+
+/* Ask the display server to re-read ~/.mxrc and re-apply the desktop wallpaper
+ * now (after a client has written a new Wallpaper= path).  Best-effort. */
+void mx_notify_wallpaper(mx_conn *c);
 
 #endif /* MAKX_H */

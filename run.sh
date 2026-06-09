@@ -773,6 +773,9 @@ _build_iso() {
     # VERBOSE/V stream the full tcc.c compile (build-tcc.sh) instead of the tail.
     [ -n "${VERBOSE:-}" ] && _kenv+=(--env "VERBOSE=$VERBOSE")
     [ -n "${V:-}" ]       && _kenv+=(--env "V=$V")
+    # GUITEST stages a test ~/.mxrc (a known wallpaper) so guitest can assert the
+    # WM renders it; off for normal/interactive builds (desktop stays flat).
+    [ -n "${GUITEST:-}" ] && _kenv+=(--env "GUITEST=$GUITEST")
     _drun "${_kenv[@]}" -- "${_flags:+$_flags }bash iso.sh"
 }
 
@@ -830,7 +833,7 @@ _run_guitest() {
     if [ -z "$_qemu" ]; then echo "==> guitest needs host qemu-system-i386"; return 1; fi
     # Auto-log-in so the boot lands on the desktop rather than the GUI login;
     # pin GRUB to entry 0 (the KERNEL_ARGS-bearing entry).
-    GRUB_DEFAULT=0 KERNEL_ARGS="autoboot=gui autologin=user" _build_iso "CFLAGS='-O0 -g3'"
+    GUITEST=1 GRUB_DEFAULT=0 KERNEL_ARGS="autoboot=gui autologin=user" _build_iso "CFLAGS='-O0 -g3'"
     local _log="$REPO_ROOT/guitest.log";        rm -f "$_log"
     local _shot="$REPO_ROOT/gui-screendump.ppm"; rm -f "$_shot" "$REPO_ROOT/gui-screendump.bmp"
     local _fifo="$REPO_ROOT/.guimon.$$";         rm -f "$_fifo"; mkfifo "$_fifo"
@@ -868,6 +871,13 @@ _run_guitest() {
         local _art="$_shot"; [ -f "$REPO_ROOT/gui-screendump.bmp" ] && _art="$REPO_ROOT/gui-screendump.bmp"
         [ -f "$_shot" ] && echo "==> guitest PASS (GUI: READY; screendump: $_art)" \
                         || echo "==> guitest PASS (GUI: READY; screendump unavailable)"
+        # Wallpaper assertion: the GUITEST build staged ~/.mxrc with a known
+        # wallpaper, so the desktop background must NOT be the flat COL_DESK.
+        if [ -f "$REPO_ROOT/gui-screendump.bmp" ] && command -v python3 >/dev/null 2>&1; then
+            python3 "$REPO_ROOT/tests/guitest_wallpaper_check.py" "$REPO_ROOT/gui-screendump.bmp" \
+                && echo "==> guitest wallpaper PASS (desktop background is the staged wallpaper)" \
+                || echo "==> guitest wallpaper WARN (background looks flat; wallpaper may not have rendered)"
+        fi
         return 0
     fi
     echo "==> guitest FAIL (no GUI: READY marker; see $_log)"; return 1

@@ -151,6 +151,15 @@ void mx_present(mx_conn *c)
     mx_apply(c, &m);     /* opportunistic event piggy-backed on the present ack */
 }
 
+void mx_notify_wallpaper(mx_conn *c)
+{
+    if (c->closed || c->server <= 0) return;
+    ipc_msg_t m;
+    for (unsigned i = 0; i < IPC_MSG_DATA_WORDS; i++) m.data[i] = 0;
+    m.type = MX_WALLPAPER;
+    sys_ipc_sendrec(c->server, &m);   /* server re-reads ~/.mxrc + repaints */
+}
+
 void mx_close(mx_conn *c)
 {
     if (c->server > 0 && c->win >= 0) {

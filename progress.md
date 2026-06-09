@@ -1,7 +1,7 @@
 # Makar — progress
 
-The current branch's uncommitted work, split into **two PRs**, plus the backlog.
-Tasks are incrementally numbered T1…TN. Generated 2026-06-09.
+Tasks are incrementally numbered T1…TN, split into **Done** and **To do**.
+Last reordered 2026-06-09.
 
 > Earlier work (250 Hz scheduler, ANSI/VT100 terminal, the graphical installer,
 > fork/exec/wait, the page cache, the `mx*` GUI suite) already shipped in prior
@@ -9,10 +9,9 @@ Tasks are incrementally numbered T1…TN. Generated 2026-06-09.
 
 ---
 
-## PR 1 — GPU / video framework + display robustness
+## Done
 
-The `feat/gpu-video-framework` namesake: the display-driver layer and the
-fail-safe panic / bounded-wait hardening.
+### PR 1 — GPU / video framework + display robustness (merged)
 
 - [x] **T1** — Video-driver vtable + VBE default backend + present routing (`kernel/video.h`)
 - [x] **T2** — VMware/VirtualBox SVGA II backend: 2D accel + hardware cursor, CI-tested
@@ -23,9 +22,7 @@ fail-safe panic / bounded-wait hardening.
 - [x] **T7** — Shared i8042/PS2 controller module (mouse independent of keyboard)
 - [x] **T8** — Fail-safe panic: VGA-text panic screen, bounded device-wait spins, page-table-pool + FB-validation hardening, `Ctrl+Alt+Shift+P` debug chord
 
-## PR 2 — Boot experience + GUI desktop polish + docs
-
-The XP/Vista boot overhaul, the desktop tray, and the documentation pass.
+### PR 2 — Boot experience + GUI desktop polish + docs (0.10.5, merged)
 
 - [x] **T9** — GUI-first boot: hide the console, raise the graphical splash at the earliest stable point, ~5 s cosmetic dwell
 - [x] **T10** — `sysadmin` (deferred drivers + `go32` resume) + `hwspecs` hardware-info text modes
@@ -39,28 +36,31 @@ The XP/Vista boot overhaul, the desktop tray, and the documentation pass.
 - [x] **T18** — Screenshots of the GUI + boot modes → `images/` + a README gallery, captured by `tools/capture-screens.sh`
 - [x] **T19** — Build, `copy.sh`, commit, push, update the PR body (shipped as the 0.10.5 release PR #202)
 
+### Image decoders + desktop overhaul (branch `feat/mximg-png`)
+
+- [x] **T25** — `mximg` PNG decode — shared `img_png.c` (from-scratch RFC1951 inflate + all 5 scanline filters, bit depths 1-16, colour types 0/2/3/4/6, non-interlaced); host-validated byte-for-byte + decodes the shipped `/usr/share/pixmaps` logos. JPEG split out to T38.
+- [x] **T26** — Real `.ico` desktop icons + shared loader (`img_ico.c`: BMP-DIB 32/24/8/4/1-bit + PNG-embedded entries, best-size pick; host-validated). WM loads `.ico`/`.png`/`.bmp`; `tools/bmp2ico.py` generates `data/icons/*.ico` shipped to `/usr/share/icons/makar`.
+- [x] **T39** — XFCE-style `.desktop` shortcuts: system-wide `/usr/share/shortcuts` + user overlay `~/.shortcuts` (overrides by filename); WM parses Name/Icon/Exec + `X-Makar-*` extensions (built-in default set as fallback)
+- [x] **T40** — Draggable + selectable desktop icons (click selects/highlights + hover lift; a no-move click launches; a drag drops and persists `X-Makar-IconX/Y` back into the source `.desktop`, best-effort)
+- [x] **T41** — Real DOOM desktop logo: `M_DOOM` lump extracted from `DOOM1.WAD` (DOOM patch format + `PLAYPAL`) rendered onto the icon tile
+- [x] **T32** — Desktop wallpaper: `mximg` "Set Wallpaper" writes `~/.mxrc` (`Wallpaper=`) + sends an `MX_WALLPAPER` IPC notify so the WM re-reads and applies it **instantly** (a ~1s poll is the fallback); the image is blitted stretched behind the icons (flat `COL_DESK` when unset). `bmp_load_max` lifts the icon-sized 256px cap for wallpaper BMPs. guitest gained a wallpaper assertion (`GUITEST=1` stages a test `~/.mxrc`; `tests/guitest_wallpaper_check.py` checks the screendump background isn't flat). (Introduces the `~/.mxrc` per-user profile — T34 groundwork.)
+- [x] **T27** — Busy mouse cursor: an hourglass sprite replaces the arrow while a launched client has no surface yet (`wm_busy()`); swaps the HW-cursor sprite on the accelerated path, software bitmap otherwise
+
 ---
 
-## Backlog (future PRs)
+## To do (backlog)
 
 - [ ] **T20** — AHCI (SATA) + a `blkdev` vtable
 - [ ] **T21** — USB HID keyboard + mouse (UHCI → xHCI)
 - [ ] **T22** — UEFI boot survivability (OVMF)
 - [ ] **T23** — Hyper-V synthvid (VMBus) display backend
 - [ ] **T24** — `mxweb` — HTTP over lwIP + a minimal HTML renderer
-- [x] **T25** — `mximg` PNG decode — shared `img_png.c` (from-scratch RFC1951 inflate + all 5 scanline filters, bit depths 1-16, colour types 0/2/3/4/6, non-interlaced); host-validated byte-for-byte + decodes the shipped `/usr/share/pixmaps` logos. JPEG split out to T38.
-- [x] **T26** — Real `.ico` desktop icons + shared loader (`img_ico.c`: BMP-DIB 32/24/8/4/1-bit + PNG-embedded entries, best-size pick; host-validated). WM loads `.ico`/`.png`/`.bmp`; `tools/bmp2ico.py` generates `data/icons/*.ico` shipped to `/usr/share/icons/makar`.
-- [x] **T39** — XFCE-style `.desktop` shortcuts: system-wide `/usr/share/shortcuts` + user overlay `~/.shortcuts` (overrides by filename); WM parses Name/Icon/Exec + `X-Makar-*` extensions (built-in default set as fallback)
-- [x] **T40** — Draggable + selectable desktop icons (click selects/highlights + hover lift; a no-move click launches; a drag drops and persists `X-Makar-IconX/Y` back into the source `.desktop`, best-effort)
-- [x] **T41** — Real DOOM desktop logo: `M_DOOM` lump extracted from `DOOM1.WAD` (DOOM patch format + `PLAYPAL`) rendered onto the icon tile
-- [x] **T27** — Busy mouse cursor: an hourglass sprite replaces the arrow while a launched client has no surface yet (`wm_busy()`); swaps the HW-cursor sprite on the accelerated path, software bitmap otherwise
 - [ ] **T28** — GUI responsiveness: fix one-event click lag / double-click
 - [ ] **T29** — File-path boxes become text-entry boxes (mximg, editor, Files)
 - [ ] **T30** — Windowed framebuffer for console-launched graphical apps (Doom in a makx window)
 - [ ] **T31** — Doom IWAD/PWAD selection launcher
-- [x] **T32** — Desktop wallpaper: `mximg` "Set Wallpaper" writes `~/.mxrc` (`Wallpaper=`), the WM polls `~/.mxrc` and blits the image stretched behind the icons (live update; flat `COL_DESK` when unset). `bmp_load_max` lifts the icon-sized 256px cap for wallpaper BMPs. (Introduces the `~/.mxrc` per-user profile — T34 groundwork.)
 - [ ] **T33** — GPU-usage stat on the dock tray
-- [ ] **T34** — `~/.mxrc` per-user GUI profile (tray toggles + wallpaper; `/home/user/.mxrc` on the livecd)
+- [ ] **T34** — `~/.mxrc` per-user GUI profile (tray toggles + wallpaper; `/home/user/.mxrc` on the livecd) — wallpaper done in T32; remaining: tray-visibility toggles
 - [ ] **T35** — Memory management continuation (PMM accounting + reclaim/GC tuning)
 - [ ] **T36** — Self-hosted i686-makar toolchain → GHCR (parked)
 - [ ] **T37** — Linux-ification: cut the ~101-syscall surface toward UNIX idioms (device files, ioctl, getdents)

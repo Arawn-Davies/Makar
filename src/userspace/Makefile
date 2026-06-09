@@ -273,6 +273,12 @@ install: all
 # (falls back to its built-in default list if both are empty).
 	mkdir -p $(ISODIR)/usr/share/shortcuts
 	-cp ../../data/shortcuts/*.desktop $(ISODIR)/usr/share/shortcuts/ 2>/dev/null || true
+# guitest only: stage a per-user ~/.mxrc so the WM loads a known wallpaper at
+# startup and the smoke test can assert it rendered.  Off for normal builds.
+ifeq ($(GUITEST),1)
+	mkdir -p $(ISODIR)/home/user
+	printf 'Wallpaper=/usr/share/pixmaps/makar-mark.png\n' > $(ISODIR)/home/user/.mxrc
+endif
 # Example wallpapers (/usr/share/backgrounds) + logos (/usr/share/pixmaps), the
 # XFCE-style asset paths -- usable by the image viewer and the desktop wallpaper.
 	mkdir -p $(ISODIR)/usr/share/backgrounds $(ISODIR)/usr/share/pixmaps

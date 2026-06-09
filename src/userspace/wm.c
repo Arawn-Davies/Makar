@@ -572,6 +572,11 @@ static void serve_requests(void)
         } else if (m.type==MX_BYE){
             /* The client acks then exits; the reap loop frees the slot. */
             r.type=MXEV_NONE;
+        } else if (m.type==MX_WALLPAPER){
+            /* A client (mximg) wrote a new Wallpaper= into ~/.mxrc: re-read and
+             * apply it immediately rather than waiting for the periodic poll. */
+            if (apply_wallpaper()){ g_dirty=1; damage_full(); }
+            r.type=MXEV_NONE;
         }
         sys_ipc_send(src, &r);
     }

@@ -224,10 +224,10 @@ int main(int argc, char **argv)
         gfx_fill(s,0,0,s->w,30,COL_BAR);
         ui_begin(&u,c.mx,c.my,c.mdown,c.mpressed,c.mreleased,-1);
         int open_c=ui_button(&u,s,6,5,64,20,"Open");
-        int wp_c=ui_button(&u,s,74,5,96,20,"Set Wallpaper");
-        gfx_str_clip(s,178,11,msg,COL_TEXT,s->w-8);
+        int wp_c=ui_button(&u,s,74,5,112,20,"Set Wallpaper");
+        gfx_str_clip(s,194,11,msg,COL_TEXT,s->w-8);
         if(open_c){ scpy(brz.cwd,"/apps",sizeof brz.cwd); brz.sel=brz.scroll=0; brz.loaded=0; br_load(&brz); dlg=1; }
-        if(wp_c && img_w>0) set_wallpaper();
+        if(wp_c && img_w>0){ set_wallpaper(); mx_notify_wallpaper(&c); }
 
         if(dlg){
             char full[256];
