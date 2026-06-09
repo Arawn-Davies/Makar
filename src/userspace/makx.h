@@ -42,6 +42,7 @@
 #define MX_BYE      4   /* data[0]=win             -> reply: ack                    */
 #define MX_RESIZE   5   /* data[0]=win data[1]=w data[2]=h -> reply data[0]=new sid (or -1) */
 #define MX_WALLPAPER 6  /* data[0]=surface id data[1]=w data[2]=h -> server maps it as the desktop wallpaper (decoded pixels handed over directly; no file read) */
+#define MX_OPEN      7  /* data[0]=surface id (holds the path bytes) data[1]=len -> server maps it, reads the path, picks the default app for that file type and fork+execve's it (the server must be the launcher so it parents -> reaps the window) */
 
 /* HELLO flags (data[2]).  MX_F_RESIZABLE: the client re-flows to fill the window
  * (the server sends MXEV_RESIZE on window resize and blits the surface 1:1, not
@@ -119,5 +120,12 @@ void mx_close(mx_conn *c);
  * root-pixmap style): the server maps `sid` and blits it stretched behind the
  * icons, no file read involved.  Best-effort. */
 void mx_set_wallpaper(mx_conn *c, int sid, int w, int h);
+
+/* Ask the display server to open `path` in its default app for that file type
+ * (images -> mximg, html -> mxweb, *.elf GUI apps run directly, other
+ * executables in a terminal).  The path is handed over in a throwaway shared
+ * surface (the server is the launcher, so the opened window is its child and is
+ * reaped normally).  Returns 0 if the request was sent.  Best-effort. */
+int mx_open(mx_conn *c, const char *path);
 
 #endif /* MAKX_H */

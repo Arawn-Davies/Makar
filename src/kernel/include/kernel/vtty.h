@@ -65,6 +65,10 @@ void vtty_switch_root_gui(void);
 int  vtty_root_text_active(void);
 /* 1 when the root GUI owns scanout (direct-to-framebuffer painters must defer). */
 int  vtty_root_gui_active(void);
+/* pid of the running display server (gui.elf, the makx server), 0 if no GUI.
+ * Lets a makx app launched from a GUI terminal discover the server (the X11
+ * $DISPLAY idiom) and open a window instead of running fullscreen. */
+int  vtty_root_gui_pid(void);
 
 /* Called from task_terminate: if the dying task is the root GUI task, restore
  * input + display to the root text session (so the keyboard isn't left dead). */

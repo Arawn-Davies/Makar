@@ -82,17 +82,40 @@ void DG_Init(void)
     unsigned int info = sys_fb_info();
     FB_W = (info >> 16) & 0xFFFF;
     FB_H = info & 0xFFFF;
+    if (!FB_W || !FB_H) {
+        /* No VESA framebuffer in this console (pure VGA text mode): Doom can't
+         * present graphics here, so bail loudly instead of running blind on a
+         * zero-sized buffer. */
+        static const char m[] =
+            "doom: no graphics framebuffer here -- run from a VESA console.\n";
+        sys_write(2, m, sizeof m - 1);
+        sys_exit(1);
+    }
 
     fullfb = (unsigned int *)sys_mmap(0, (unsigned long)FB_W * FB_H * 4,
                                       PROT_READ | PROT_WRITE,
                                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    /* mmap zero-fills -> black letterbox borders, drawn once. */
+    /* Commit the whole buffer up front (and draw the black letterbox border).
+     * The anonymous mmap is demand-paged, but we only ever redraw the centred
+     * DOOM region each frame -- the margin pages would stay unfaulted, and
+     * SYS_FB_PRESENT validates the *entire* framebuffer extent is mapped before
+     * the kernel reads it, so an unfaulted margin made every present fail (-1)
+     * and the game never appeared on a text console.  memset faults every page
+     * in (zero = black) so the present always sees a fully mapped buffer. */
+    if (fullfb && fullfb != (unsigned int *)-1)
+        memset(fullfb, 0, (unsigned long)FB_W * FB_H * 4);
     off_x = (FB_W > DOOMGENERIC_RESX) ? (FB_W - DOOMGENERIC_RESX) / 2 : 0;
     off_y = (FB_H > DOOMGENERIC_RESY) ? (FB_H - DOOMGENERIC_RESY) / 2 : 0;
 
     sys_keyboard_raw(2);                 /* scancode passthrough */
     sys_fcntl(0, F_SETFL, O_NONBLOCK);
     sys_statusbar_set(0);
+    /* No upfront present or stdout redirect: doomgeneric's WAD-load chatter
+     * prints to the console as usual, then the game loop's DG_DrawFrame presents
+     * the first frame and the framebuffer takes over the screen -- the classic
+     * "text scrolls, then it switches to graphics" boot.  (The display gate now
+     * lets a text-console app present without being the focused VT; see
+     * SYS_FB_PRESENT.) */
 }
 
 static void handle_input(void)

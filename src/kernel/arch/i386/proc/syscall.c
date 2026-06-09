@@ -1150,7 +1150,14 @@ static void syscall_dispatch_inner(registers_t *regs)
     case SYS_FB_PRESENT: {
         const vesa_fb_t *fb = vesa_get_fb();
         if (!fb || !vesa_tty_is_ready()) { regs->eax = (uint32_t)-1; break; }
-        if (!vtty_is_focused()) {
+        /* Focus gate: only enforce it while the GUI owns scanout, so a
+         * backgrounded client can't scribble over the desktop.  In a plain text
+         * console (no GUI, whether a text-mode boot or after exiting the GUI) the
+         * fullscreen app *is* the display owner -- let it present regardless of
+         * which VT slot it's on, so e.g. console `doom` switches to graphics.
+         * (Raw-keyboard passthrough means you can't VT-switch away from it
+         * mid-frame, so this can't bleed onto another VT.) */
+        if (vtty_root_gui_active() && !vtty_is_focused()) {
             task_t *cur = task_current(); if (cur) cur->fb_touched = 1;
             regs->eax = 0; break;
         }
@@ -1224,6 +1231,13 @@ static void syscall_dispatch_inner(registers_t *regs)
         regs->eax = i;
         break;
     }
+    case SYS_MAKX_SERVER:
+        /* pid of the running display server (gui.elf), or 0 if no GUI session.
+         * A makx app launched from a GUI terminal with no `-makx` argv handle
+         * uses this to find the server (the X11 $DISPLAY idiom) and open a
+         * window instead of running fullscreen. */
+        regs->eax = (uint32_t)vtty_root_gui_pid();
+        break;
     case SYS_HWCURSOR_DEFINE: {
         const uint32_t *argb = (const uint32_t *)(uintptr_t)regs->ebx;
         int w  = (int)((regs->ecx >> 16) & 0xFFFFu), h  = (int)(regs->ecx & 0xFFFFu);
@@ -2240,6 +2254,16 @@ static void syscall_dispatch_inner(registers_t *regs)
     case SYS_KILL: {
         int pid   = (int)regs->ebx;
         int signo = (int)regs->ecx;
+        if (signo == 0) {
+            /* POSIX: signal 0 sends nothing, just tests whether the target
+             * exists -- 0 if alive, -1 (ESRCH) if not.  The makx server uses
+             * this to reap windows of clients it didn't fork (a process can be
+             * a makx client without being the server's child). */
+            task_t *t = task_by_pid(pid);
+            regs->eax = (t && t->state != TASK_DEAD && t->state != TASK_ZOMBIE)
+                        ? 0u : (uint32_t)-1;
+            break;
+        }
         if (signo < 1 || signo > SIG_MAX) {
             regs->eax = (uint32_t)-1;
             break;

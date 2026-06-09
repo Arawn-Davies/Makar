@@ -337,6 +337,17 @@ int vtty_root_gui_active(void)
     return vtty_display_mode == VTTY_DISPLAY_ROOT_GUI;
 }
 
+/* pid of the running display server (the registered root-GUI task = gui.elf,
+ * the makx server), or 0 if no GUI session is up.  Lets a makx app launched
+ * from a GUI terminal discover the server without a `-makx` argv handle (the
+ * X11 $DISPLAY idiom) and open a window instead of running fullscreen. */
+int vtty_root_gui_pid(void)
+{
+    if (vtty_display_mode != VTTY_DISPLAY_ROOT_GUI) return 0;
+    task_t *gui = __atomic_load_n(&vtty_root_gui_task, __ATOMIC_ACQUIRE);
+    return task_live(gui) ? gui->pid : 0;
+}
+
 /* Called from task_terminate for every dying task.  If the root GUI task
  * exits (Exit GUI, crash, or kill), hand input + display back to the root
  * text session -- otherwise kb_focused is left dangling and mak.sh0 gets no

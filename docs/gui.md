@@ -197,17 +197,40 @@ untouched, so console/Alt-Fn VTs behave exactly as before.
 Control travels over the kernel's MINIX-style synchronous IPC (`kernel/ipc.h`,
 32-byte messages); pixels travel over a shared surface. Endpoints are task pids;
 the server passes each client `-makx <server-pid>` in argv, so a client finds
-the server with no name service.
+the server with no name service. A client launched **without** `-makx` (e.g. an
+app typed into a GUI terminal) falls back to `sys_makx_server()` — the `$DISPLAY`
+idiom — which returns the running `gui.elf` pid, so it connects and opens its own
+window while its stdout keeps flowing to the terminal. (`doom` uses this: a GUI
+terminal gives it a window; a true text console with no server returns 0 and it
+runs fullscreen instead.) The server can't `wait4` a client it didn't fork, so it
+reaps those windows by probing `kill(pid,0)` each frame and closing the window
+when the client is gone.
 
 Client → server requests (sent with `sys_ipc_sendrec`):
 
 - `MX_HELLO(w,h,flags)` → reply `(win, sid)`: create a window + a `w×h` surface.
   `flags` is a bitmask: `MX_F_RESIZABLE` (the client re-flows to fill the window;
   the server blits 1:1 and sends `MXEV_RESIZE` instead of scaling) and
-  `MX_F_RAWKEYS` (see *Keyboard delivery* below).
+  `MX_F_RAWKEYS` (see *Keyboard delivery* below). A **fixed-size** client (no
+  `MX_F_RESIZABLE`, e.g. `doom` rendering a fixed internal frame) is scaled by the
+  compositor to **fill the window preserving aspect ratio**, centred, with black
+  letterbox/pillarbox bars — so drag-resize and maximize enlarge it instead of
+  pinning it 1:1 in the corner. A game (`MX_F_RAWKEYS`) also opens enlarged (the
+  largest integer multiple of its native frame that fits the desktop).
 - `MX_PRESENT(win)` → reply = one input event: "I drew a frame, composite it."
 - `MX_POLL(win)` → reply = one input event (drain input without presenting).
 - `MX_BYE(win)` → ack; the client is exiting.
+- `MX_WALLPAPER(sid,w,h)` → the client (mximg) hands the WM a decoded wallpaper
+  as a shared surface; see *Desktop wallpaper* above.
+- `MX_OPEN(sid,len)` → **default-app dispatch**: the client hands over a file path
+  in a throwaway shared surface (it doesn't fit the IPC payload) and the WM opens
+  it in the right app — images (`.png`/`.bmp`/`.jpg`/`.jpeg`/`.gif`) → `mximg`,
+  `.htm`/`.html` → `mxweb`, `.elf` makx GUI apps (mx-prefixed, `gui`, `doom`) run
+  directly, other executables in a terminal (`mxterm`), everything else in the
+  editor (`mxedit`). The **WM is the launcher** so the opened window is its child
+  and is reaped normally (a client-forked grandchild would ghost — the same
+  parenting rule the Doom launcher relies on). Files double-clicked in `mxfiles`
+  go through this.
 
 ### Keyboard delivery (cooked vs raw)
 
@@ -235,7 +258,12 @@ keyboard/mouse in the same loop, instead of parking in a blocking `ipc_recv`.
 It drains a **bounded** number of requests per frame (a budget), then returns to
 composite and `sys_yield` — an unbounded drain would spin forever on a couple of
 busy-polling clients and starve everything else (including a not-yet-connected
-client waiting to send its first HELLO).
+client waiting to send its first HELLO). The bounded drain only stays fair
+because the **kernel IPC sender queue is FIFO** (`ipc_send` appends at the tail):
+a client polling every frame re-enqueues behind whatever is already waiting, so
+it can't keep jumping the queue ahead of a newly launched app's one-shot HELLO.
+(It was LIFO once — a busy `mximg` then starved a just-opened `mxfiles`, which
+sat on "starting…" until `mximg` exited.)
 
 The client library (`makx.c`) wraps this: `mx_connect` (parse `-makx`, HELLO,
 map the surface into `c.surf`), `mx_pump` (drain events into `c`, compute mouse

@@ -243,6 +243,11 @@ static inline int sys_video_name(char *buf, int cap)
 {
     return (int)syscall2(SYS_VIDEO_NAME, (long)buf, (long)cap);
 }
+/* pid of the running display server (gui.elf), 0 if no GUI session. */
+static inline int sys_makx_server(void)
+{
+    return (int)syscall0(SYS_MAKX_SERVER);
+}
 static inline int sys_hwcursor_define(const void *argb, int w, int h,
                                       int hot_x, int hot_y)
 {
