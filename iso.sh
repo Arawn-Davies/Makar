@@ -140,8 +140,9 @@ _vmode="${MAKAR_VMODE:+ vmode=$MAKAR_VMODE}"
 
 # Emit the shipped interactive grub.cfg.  Defined once and used for both the
 # initial write and the post-test-ISO restore so the two can never drift.
-# Layout (XP/Vista-style): only the GUI desktop + "Next available device" at the
-# top level; every other boot mode lives under "Advanced options".  Entry 0 (the
+# Layout (XP/Vista-style): GUI desktop, then "Advanced options", then "Next
+# available device" at the top level; every other boot mode lives under
+# "Advanced options".  Entry 0 (the
 # GUI desktop) is the KERNEL_ARGS carrier and defaults to the desktop, so the
 # kbtest/guitest harnesses' `GRUB_DEFAULT=0 KERNEL_ARGS=...` still select it and
 # override its cmdline.  `live` marks a live-ISO session (skip the login).
@@ -157,10 +158,6 @@ set gfxpayload=1280x720x32,1024x768x32,800x600x32
 
 menuentry "Makar OS (GUI desktop)" {
 	multiboot2 /boot/makar.kernel live ${KERNEL_ARGS:-autoboot=gui autologin=user}${_vmode}
-}
-
-menuentry "Next available device" {
-	exit
 }
 
 submenu "Advanced options" {
@@ -204,6 +201,10 @@ submenu "Advanced options" {
 		echo "what gfxpayload can ask for.  Returning to the menu in 60s..."
 		sleep --verbose --interruptible 60
 	}
+}
+
+menuentry "Next available device" {
+	exit
 }
 EOF
 }

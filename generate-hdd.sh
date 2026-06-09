@@ -183,7 +183,7 @@ fi
 
 # RES=<mode> arrives as MAKAR_VMODE (forwarded via -e); bake vmode= onto the
 # standard entries (not the text-only modes).  Mirrors iso.sh's layout: only the
-# GUI desktop + "Next available device" at the top level; the rest under Advanced.
+# GUI desktop, then "Advanced options", then "Next available device" at the top.
 _vmode="${MAKAR_VMODE:+ vmode=$MAKAR_VMODE}"
 cat > "$MNT/boot/grub/grub.cfg" << GCFG
 set default=0
@@ -196,10 +196,6 @@ set gfxpayload=1280x720x32,1024x768x32,800x600x32
 menuentry "Makar OS (GUI desktop)" {
     multiboot2 /boot/makar.kernel ${KERNEL_ARGS:-autoboot=gui autologin=user}${_vmode}
     boot
-}
-
-menuentry "Next available device" {
-    exit
 }
 
 submenu "Advanced options" {
@@ -238,6 +234,10 @@ submenu "Advanced options" {
         menuentry "1024x768"  { set gfxpayload=1024x768x32;  multiboot2 /boot/makar.kernel vmode=1024x768; boot }
         menuentry "800x600"   { set gfxpayload=800x600x32;   multiboot2 /boot/makar.kernel vmode=800x600; boot }
     }
+}
+
+menuentry "Next available device" {
+    exit
 }
 GCFG
 
