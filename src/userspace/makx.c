@@ -105,7 +105,7 @@ static void mx_apply_resize(mx_conn *c, int w, int h)
 
 int mx_pump(mx_conn *c)
 {
-    int prev = c->last_mdown;
+    int cur = c->last_mdown;       /* running button state across this drain */
     c->mpressed = c->mreleased = 0;
     c->resized = 0;
     if (c->closed) return -1;
@@ -116,6 +116,16 @@ int mx_pump(mx_conn *c)
         m.type = MX_POLL; m.data[0] = (unsigned)c->win;
         if (sys_ipc_sendrec(c->server, &m) != 0) { c->closed = 1; return -1; }
         if (m.type == MXEV_NONE) break;
+        /* Latch press/release *per event* so a full click (down then up) that
+         * arrives within a single pump isn't collapsed away -- looking only at
+         * the final mdown vs the last pump dropped such clicks (the "needs a
+         * double-click" lag). */
+        if (m.type == MXEV_MOUSE) {
+            int nd = (int)(m.data[2] & 1u);
+            if (nd && !cur) c->mpressed = 1;
+            if (!nd && cur) c->mreleased = 1;
+            cur = nd;
+        }
         mx_apply(c, &m);
         if (m.data[MX_PENDING] == 0) break;
     }
@@ -127,9 +137,7 @@ int mx_pump(mx_conn *c)
         mx_apply_resize(c, w, h);
     }
 
-    c->mpressed  =  c->mdown && !prev;
-    c->mreleased = !c->mdown &&  prev;
-    c->last_mdown = c->mdown;
+    c->last_mdown = c->mdown;       /* = cur (the final applied state) */
     return 0;
 }
 
