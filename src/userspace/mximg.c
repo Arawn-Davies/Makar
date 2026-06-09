@@ -4,7 +4,7 @@
  * preserving, nearest-neighbour).  Decodes BMP (24/32-bpp uncompressed), GIF
  * (87a/89a first frame, LZW, interlace) and PNG (the shared from-scratch
  * inflate + all scanline filters, bit depths 1-16, colour types 0/2/3/4/6,
- * non-interlaced); JPEG lands next.  Reuses the shared
+ * non-interlaced) and baseline JPEG.  Reuses the shared
  * gui_browser file dialog (like mxedit) so it's usable straight from its icon.
  */
 #include "syscall.h"
@@ -13,6 +13,7 @@
 #include "gui_browser.h"
 #include "img_bmp.h"
 #include "img_png.h"
+#include "img_jpg.h"
 #include "mxrc.h"
 #include "makx.h"
 
@@ -29,7 +30,7 @@
 static gfx_u32 *img_px;          /* decoded pixels (mmap, IMG_MAXW*IMG_MAXH) */
 static unsigned char *fbuf;            /* file read buffer (mmap, FILE_CAP)        */
 static int img_w, img_h;         /* current image size (0 = none)           */
-static char msg[96] = "Open an image (BMP/GIF/PNG).";
+static char msg[96] = "Open an image (BMP/GIF/PNG/JPEG).";
 static char g_cur_path[256];     /* full path of the loaded image (for wallpaper) */
 
 static void scpy(char *d,const char *s,int max){int i=0;while(s[i]&&i<max-1){d[i]=s[i];i++;}d[i]=0;}
@@ -44,6 +45,15 @@ static int decode_bmp(unsigned n)
         scpy(msg, "unsupported BMP (need 24/32-bpp uncompressed)", sizeof msg);
         return -1;
     }
+    return 0;
+}
+
+/* Decode a baseline JPEG from fbuf[0..n) into img_px (shared jpg_decode). */
+static int decode_jpg(unsigned n)
+{
+    if (jpg_decode(fbuf, n, img_px, IMG_MAXW, IMG_MAXH, &img_w, &img_h,
+                   msg, sizeof msg) != 0)
+        return -1;
     return 0;
 }
 
@@ -135,7 +145,8 @@ static int decode_image(unsigned n)
     if(n>=2 && fbuf[0]=='B'&&fbuf[1]=='M') return decode_bmp(n);
     if(n>=3 && fbuf[0]=='G'&&fbuf[1]=='I'&&fbuf[2]=='F') return decode_gif(n);
     if(n>=8 && fbuf[0]==0x89&&fbuf[1]=='P'&&fbuf[2]=='N'&&fbuf[3]=='G') return decode_png(n);
-    scpy(msg,"unsupported format (BMP/GIF/PNG)",sizeof msg);
+    if(n>=2 && fbuf[0]==0xFF&&fbuf[1]==0xD8) return decode_jpg(n);
+    scpy(msg,"unsupported format (BMP/GIF/PNG/JPEG)",sizeof msg);
     return -1;
 }
 
@@ -256,7 +267,7 @@ int main(int argc, char **argv)
             dim[o]=0;
             gfx_str(s, s->w-gfx_text_w(dim)-6, s->h-12, dim, COL_TEXT);
         } else {
-            const char *h="No image. Click Open to choose a BMP, GIF or PNG file.";
+            const char *h="No image. Click Open to choose a BMP, GIF, PNG or JPEG file.";
             gfx_str(s,(s->w-gfx_text_w(h))/2, s->h/2, h, (msg[0]&&msg[slen(msg)-1]!='.')?COL_ERR:COL_TEXT);
         }
         mx_present(&c);

@@ -49,6 +49,10 @@ Last reordered 2026-06-09.
 - [x] **T34** — `~/.mxrc` per-user GUI profile, as a shared read-modify-write module (`mxrc.c`: `mxrc_home`/`mxrc_get`/`mxrc_get_int`/`mxrc_set`) so multiple writers coexist (wallpaper + tray keys). Dock **right-click menu** toggles the tray elements (Clock / Date / Network / CPU·RAM / GPU), persisted to `~/.mxrc` (`TrayClock` etc.); read at WM startup. Consolidates the duplicated home/get helpers out of wm.c + mximg.c.
 - [x] **T33** — Video-backend indicator on the dock tray (the honest version of "GPU stat" — Makar has no GPU-utilisation metering): new `SYS_VIDEO_NAME` returns the active driver name (`video_active()->name`); the WM shows `GPU <backend>` (e.g. `vbe-1fb`, `svga-ii`), toggleable like the other tray items (`TrayGpu`).
 
+### Image viewer + Doom UX (branch `feat/jpeg-doom-clicklag`)
+
+- [x] **T38** — `mximg` baseline JPEG decode — shared `img_jpg.c` (integer-only: marker parse + Huffman + dequant + fixed-point 8x8 IDCT + chroma upsample + YCbCr→RGB; 4:4:4 / 4:2:2 / 4:2:0 + grayscale + restart markers; progressive rejected). Host-validated against the Go baseline test JPEGs (all subsamplings + grayscale render correctly). Wired into mximg (BMP/GIF/PNG/JPEG).
+
 ---
 
 ## To do (backlog)
@@ -64,4 +68,3 @@ Last reordered 2026-06-09.
 - [ ] **T35** — Memory management continuation (PMM accounting + reclaim/GC tuning)
 - [ ] **T36** — Self-hosted i686-makar toolchain → GHCR (parked)
 - [ ] **T37** — Linux-ification: cut the ~101-syscall surface toward UNIX idioms (device files, ioctl, getdents)
-- [ ] **T38** — `mximg` JPEG decode (baseline DCT + Huffman + upsampling; split from T25)

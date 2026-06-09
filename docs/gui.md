@@ -304,7 +304,10 @@ Clients (each an independent process, `src/userspace/mx*.c`):
   (24/32-bpp uncompressed), GIF (87a/89a first frame, LZW + interlace) and PNG
   (shared `img_png.c`: a from-scratch RFC1951 inflate + all five scanline
   filters, bit depths 1-16, colour types 0/2/3/4/6, non-interlaced — alpha
-  discarded); JPEG is the next slice. mmap-backed file + pixel buffers (no libc).
+  discarded) and baseline JPEG (shared `img_jpg.c`: integer marker parse +
+  Huffman + dequant + fixed-point IDCT + chroma upsample + YCbCr->RGB; 4:4:4 /
+  4:2:2 / 4:2:0 + grayscale + restart markers, progressive rejected).
+  mmap-backed file + pixel buffers (no libc).
 - **mxinstall** is the graphical OS installer (see "Installer" below).
 - **doom** is the windowed makx client (see below).
 

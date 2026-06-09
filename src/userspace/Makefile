@@ -122,7 +122,7 @@ mxinstall.elf: crt0.o mxinstall.o gui_gfx.o gui_ui.o makx.o
 mxdisplay.elf: crt0.o mxdisplay.o gui_gfx.o gui_ui.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-mximg.elf: crt0.o mximg.o gui_gfx.o gui_ui.o gui_browser.o img_bmp.o img_png.o mxrc.o makx.o
+mximg.elf: crt0.o mximg.o gui_gfx.o gui_ui.o gui_browser.o img_bmp.o img_png.o img_jpg.o mxrc.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 files.elf: crt0.o files.o
