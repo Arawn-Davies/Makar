@@ -512,11 +512,22 @@ static void serve_requests(void)
         if (m.type==MX_HELLO){
             int w=(int)m.data[0], h=(int)m.data[1], flags=(int)m.data[2];
             int i=-1;
-            for(int k=0;k<MAXWIN;k++) if(W[k].in_use && W[k].client==src && W[k].sid<0){ i=k; break; }
+            /* Match a window for this client: a reserved slot (sid<0) OR a
+             * re-HELLO from the same pid -- e.g. a launcher that execve'd into
+             * the real app (mxdoom -> doom) keeps the WM-launched pid, so the
+             * app is still reaped and its window closes on exit. */
+            for(int k=0;k<MAXWIN;k++) if(W[k].in_use && W[k].client==src){ i=k; break; }
             if (i<0){ /* a client we didn't reserve: give it a default window */
                 i=win_alloc();
                 if (i>=0){ W[i].client=src; W[i].w=w<160?160:w; W[i].h=h<120?120:h;
                            W[i].x=140; W[i].y=MENU_H+40; scpy(W[i].title,"App",sizeof W[i].title); }
+            }
+            if (i>=0 && W[i].sid>=0){            /* re-HELLO: drop the old surface, refit window */
+                sys_surface_unmap(W[i].sid); sys_surface_destroy(W[i].sid);
+                W[i].sid=-1; W[i].surf.px=0;
+                W[i].w=w+2; W[i].h=h+TH+1;
+                if(W[i].x+W[i].w>(int)FBW) W[i].x=(int)FBW-W[i].w; if(W[i].x<0) W[i].x=0;
+                if(W[i].y+W[i].h>(int)FBH-DOCK_H) W[i].y=(int)FBH-DOCK_H-W[i].h; if(W[i].y<MENU_H) W[i].y=MENU_H;
             }
             int sid = (i>=0) ? sys_surface_create(w,h) : -1;
             void *base = (sid>=0) ? sys_surface_map(sid) : 0;

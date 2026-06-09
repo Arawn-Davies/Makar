@@ -140,9 +140,12 @@ int main(int argc, char **argv)
             if(fast)    av[n++]="-fast";
             if(respawn) av[n++]="-respawn";
             av[n]=0;
-            int pid=sys_fork();
-            if(pid==0){ sys_execve("/apps/doom.elf", av, (char *const*)0); sys_exit(127); }
-            mx_close(&c); return 0;     /* launcher done; doom opens its own window */
+            /* Replace ourselves with doom (NOT fork): doom keeps the pid the WM
+             * launched, so the WM still reaps it on exit and the window closes
+             * cleanly (a forked, orphaned doom can never be reaped).  doom
+             * re-HELLOs on the same pid -> the server reuses this window. */
+            sys_execve("/apps/doom.elf", av, (char *const*)0);
+            /* execve only returns on failure -> stay in the launcher */
         }
 
         mx_present(&c);
