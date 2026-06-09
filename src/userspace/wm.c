@@ -361,14 +361,30 @@ static int load_image_any(const char *path, gfx_surface *out)
  * is cheap when unchanged (re-reads the tiny .mxrc, only reloads on a new path)
  * so the WM can poll it for live "set as wallpaper" updates. */
 static gfx_surface g_wallpaper; static int g_has_wp=0; static char g_wp_path[160]={0};
+static int g_wp_src=0;     /* 0 none, 1 file (mmap'd px), 2 shared surface       */
+static int g_wp_sid=-1;    /* surface id when g_wp_src==2                          */
+
+/* Release the current wallpaper backing (mmap or shared surface). */
+static void wp_clear(void)
+{
+    if (!g_has_wp) return;
+    if (g_wp_src==1) sys_munmap(g_wallpaper.px, (unsigned long)g_wallpaper.w*g_wallpaper.h*4u);
+    else if (g_wp_src==2 && g_wp_sid>=0) sys_surface_unmap(g_wp_sid);
+    g_has_wp=0; g_wp_src=0; g_wp_sid=-1; g_wallpaper.px=0;
+}
+
+/* Startup + ~1s-poll path: load the persisted wallpaper from ~/.mxrc (file).
+ * A live surface wallpaper (set this session via MX_WALLPAPER) takes precedence
+ * and is never clobbered by the poll. */
 static int apply_wallpaper(void)
 {
+    if (g_wp_src==2) return 0;                            /* live surface wins */
     char wp[160]={0};
     if (mxrc_get("Wallpaper", wp, sizeof wp)!=0) wp[0]=0;
-    if (wstreq(wp, g_wp_path)) return 0;                 /* unchanged */
+    if (wstreq(wp, g_wp_path)) return 0;                  /* unchanged */
     scpy(g_wp_path, wp, sizeof g_wp_path);
-    if (g_has_wp){ sys_munmap(g_wallpaper.px, (unsigned long)g_wallpaper.w*g_wallpaper.h*4u); g_has_wp=0; }
-    if (wp[0] && load_image_any(wp, &g_wallpaper)==0) g_has_wp=1;
+    wp_clear();
+    if (wp[0] && load_image_any(wp, &g_wallpaper)==0){ g_has_wp=1; g_wp_src=1; }
     return 1;
 }
 
@@ -573,9 +589,18 @@ static void serve_requests(void)
             /* The client acks then exits; the reap loop frees the slot. */
             r.type=MXEV_NONE;
         } else if (m.type==MX_WALLPAPER){
-            /* A client (mximg) wrote a new Wallpaper= into ~/.mxrc: re-read and
-             * apply it immediately rather than waiting for the periodic poll. */
-            if (apply_wallpaper()){ g_dirty=1; damage_full(); }
+            /* A client (mximg) handed us a decoded wallpaper as a shared surface
+             * (X11 root-pixmap style): map it and blit it behind the icons.  No
+             * file read -- immune to cross-process FS-cache coherence. */
+            int sid=(int)m.data[0], w=(int)m.data[1], h=(int)m.data[2];
+            void *base = (sid>=0 && w>0 && h>0) ? sys_surface_map(sid) : 0;
+            if (base){
+                wp_clear();
+                g_wallpaper.px=(gfx_u32*)base; g_wallpaper.w=w; g_wallpaper.h=h;
+                g_has_wp=1; g_wp_src=2; g_wp_sid=sid;
+                g_wp_path[0]=0;                       /* poll won't fight the surface */
+                g_dirty=1; damage_full();
+            }
             r.type=MXEV_NONE;
         }
         sys_ipc_send(src, &r);

@@ -151,13 +151,14 @@ void mx_present(mx_conn *c)
     mx_apply(c, &m);     /* opportunistic event piggy-backed on the present ack */
 }
 
-void mx_notify_wallpaper(mx_conn *c)
+void mx_set_wallpaper(mx_conn *c, int sid, int w, int h)
 {
     if (c->closed || c->server <= 0) return;
     ipc_msg_t m;
     for (unsigned i = 0; i < IPC_MSG_DATA_WORDS; i++) m.data[i] = 0;
     m.type = MX_WALLPAPER;
-    sys_ipc_sendrec(c->server, &m);   /* server re-reads ~/.mxrc + repaints */
+    m.data[0] = (unsigned)sid; m.data[1] = (unsigned)w; m.data[2] = (unsigned)h;
+    sys_ipc_sendrec(c->server, &m);   /* server maps the surface + repaints */
 }
 
 void mx_close(mx_conn *c)

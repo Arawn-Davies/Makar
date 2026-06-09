@@ -173,20 +173,42 @@ static void home_path(const char *suffix, char *out, int cap)
     out[n]=0;
 }
 
-/* Persist the loaded image as the desktop wallpaper via ~/.mxrc (Wallpaper=...);
- * the window manager polls .mxrc and applies it live. */
-static void set_wallpaper(void)
+static int g_wp_sid = -1;        /* our shared wallpaper surface (destroy on replace) */
+
+/* Set the loaded image as the desktop wallpaper.  Two parts, mirroring a Linux
+ * desktop: (1) persist the path to ~/.mxrc so the WM reloads it at next boot,
+ * and (2) hand the WM the decoded pixels *now* as a shared surface (X11
+ * root-pixmap style) so it applies instantly without a cross-process file read. */
+static void set_wallpaper(mx_conn *c)
 {
-    if (!g_cur_path[0]) { scpy(msg,"open an image first",sizeof msg); return; }
+    if (!g_cur_path[0] || img_w < 1){ scpy(msg,"open an image first",sizeof msg); return; }
+
+    /* (1) persistence: ~/.mxrc Wallpaper=<path> */
     char rc[96]; home_path("/.mxrc", rc, sizeof rc);
     char buf[320]; int n=0;
     const char *k="Wallpaper="; for (const char *p=k; *p; p++) buf[n++]=*p;
     for (const char *p=g_cur_path; *p && n<(int)sizeof buf-2; p++) buf[n++]=*p;
     buf[n++]='\n';
     int fd=sys_open(rc, O_WRONLY|O_CREAT|O_TRUNC);
-    if (fd<0){ scpy(msg,"cannot save wallpaper",sizeof msg); return; }
-    sys_write(fd, buf, (unsigned)n); sys_close(fd);
-    scpy(msg,"wallpaper set", sizeof msg);
+    if (fd>=0){ sys_write(fd, buf, (unsigned)n); sys_close(fd); }
+
+    /* (2) live: copy the decoded pixels into a shared surface + hand off the id */
+    int sid=sys_surface_create(img_w, img_h);
+    if (sid>=0){
+        gfx_u32 *base=(gfx_u32*)sys_surface_map(sid);
+        if (base && base!=(gfx_u32*)MAP_FAILED){
+            long npx=(long)img_w*img_h;
+            for (long i=0;i<npx;i++) base[i]=img_px[i];
+            sys_surface_unmap(sid);                  /* WM holds it via the sid */
+            if (g_wp_sid>=0) sys_surface_destroy(g_wp_sid);   /* release previous */
+            g_wp_sid=sid;
+            mx_set_wallpaper(c, sid, img_w, img_h);
+            scpy(msg,"wallpaper set", sizeof msg);
+            return;
+        }
+        sys_surface_destroy(sid);
+    }
+    scpy(msg, fd>=0 ? "wallpaper saved (applies next boot)" : "cannot set wallpaper", sizeof msg);
 }
 
 static int slen(const char*s){int n=0;while(s[n])n++;return n;}
@@ -227,7 +249,7 @@ int main(int argc, char **argv)
         int wp_c=ui_button(&u,s,74,5,112,20,"Set Wallpaper");
         gfx_str_clip(s,194,11,msg,COL_TEXT,s->w-8);
         if(open_c){ scpy(brz.cwd,"/apps",sizeof brz.cwd); brz.sel=brz.scroll=0; brz.loaded=0; br_load(&brz); dlg=1; }
-        if(wp_c && img_w>0){ set_wallpaper(); mx_notify_wallpaper(&c); }
+        if(wp_c && img_w>0) set_wallpaper(&c);
 
         if(dlg){
             char full[256];

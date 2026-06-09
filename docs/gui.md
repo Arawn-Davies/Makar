@@ -134,12 +134,17 @@ the source `.desktop` (best-effort -- a silent no-op on a read-only live ISO).
 The `.ico` tiles are generated from the BMP tiles by `tools/bmp2ico.py`
 (committed).
 
-**Desktop wallpaper** is opt-in via the image viewer: `mximg`'s "Set Wallpaper"
-button writes `Wallpaper=<path>` into the per-user `~/.mxrc`. The WM polls
-`~/.mxrc` (~1 s, alongside the dock-stats refresh) and, on a path change, loads
-the image (`load_image_any`: `.png`/`.ico`/`.bmp`, wallpaper-sized bound via
-`bmp_load_max`) and blits it stretched (`gfx_blit_scaled`) behind the icons in
-the recompose; an unset/missing wallpaper falls back to the flat `COL_DESK`
+**Desktop wallpaper** is opt-in via the image viewer, set the way an X11 desktop
+does it -- a config file for persistence plus a shared root pixmap for the live
+update. `mximg`'s "Set Wallpaper" button (1) writes `Wallpaper=<path>` into the
+per-user `~/.mxrc`, and (2) copies the decoded image into a **shared surface**
+and hands the WM its id over `MX_WALLPAPER` (`sid`/`w`/`h`). The WM maps that
+surface and blits it stretched (`gfx_blit_scaled`) behind the icons -- applied
+instantly, with no cross-process file read (the page cache made re-reading a
+just-written `.mxrc` unreliable). At boot the WM loads the persisted path from
+`~/.mxrc` instead (`load_image_any`: `.png`/`.ico`/`.bmp`, wallpaper-sized bound
+via `bmp_load_max`); a ~1 s poll covers external edits, but a live shared-surface
+wallpaper takes precedence. Unset/missing falls back to the flat `COL_DESK`
 fill. Example backgrounds ship under `/usr/share/backgrounds`. DOOM IWADs
 likewise live on a normal path,
 `/usr/share/games/doom/` (searched first by `doomgeneric_makar.c`); the installer
