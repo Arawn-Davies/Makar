@@ -215,6 +215,7 @@
 #define SYS_HWCURSOR_DEFINE 275 /* int hwcursor_define(argb,(w<<16)|h,(hx<<16)|hy) */
 #define SYS_HWCURSOR_MOVE   276 /* void hwcursor_move(x, y)                        */
 #define SYS_HWCURSOR_SHOW   277 /* void hwcursor_show(on)                          */
+#define SYS_VIDEO_NAME      278 /* int video_name(char *buf, int cap) - active backend name */
 
 /* video_caps() bits (mirror VID_CAP_* in kernel/video.h). */
 #define VIDEO_CAP_ACCEL_COPY 0x1u

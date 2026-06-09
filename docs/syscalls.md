@@ -92,6 +92,7 @@ without a detailed errno. Check the wrapper before assuming Linux parity.
 | 275 | `SYS_HWCURSOR_DEFINE` | `argb, (w<<16)|h, (hx<<16)|hy` | upload a HW cursor sprite |
 | 276 | `SYS_HWCURSOR_MOVE` | `x, y` | move the HW cursor overlay |
 | 277 | `SYS_HWCURSOR_SHOW` | `on` | show/hide the HW cursor |
+| 278 | `SYS_VIDEO_NAME` | `buf, cap` | copy the active video backend's name into `buf` |
 
 ## Makar Extension Ranges
 

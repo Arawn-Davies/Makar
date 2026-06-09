@@ -845,12 +845,15 @@ static void dock_stats(char *out)
 static int      g_net_state = -1;        /* 0 down, 1 limited, 2 connected   */
 /* Dock tray element visibility (toggled via the dock right-click menu, persisted
  * in ~/.mxrc).  Default all on. */
-static int g_tray_clock=1, g_tray_date=1, g_tray_net=1, g_tray_stats=1;
+static int g_tray_clock=1, g_tray_date=1, g_tray_net=1, g_tray_stats=1, g_tray_gpu=1;
+static char g_gpu_name[20] = "";          /* active video backend (queried once)  */
 static void load_tray_prefs(void){
     g_tray_clock = mxrc_get_int("TrayClock", 1);
     g_tray_date  = mxrc_get_int("TrayDate",  1);
     g_tray_net   = mxrc_get_int("TrayNet",   1);
     g_tray_stats = mxrc_get_int("TrayStats", 1);
+    g_tray_gpu   = mxrc_get_int("TrayGpu",   1);
+    if (sys_video_name(g_gpu_name, sizeof g_gpu_name) <= 0) scpy(g_gpu_name, "VGA", sizeof g_gpu_name);
 }
 static char     g_clk[8]   = "--:--";    /* HH:MM                            */
 static char     g_date[10] = "--/--/--"; /* DD/MM/YY                         */
@@ -926,7 +929,11 @@ static void draw_dock(void)
     if (g_tray_clock){ rx -= gfx_text_w(g_clk);  gfx_str(&scr, rx, ty, g_clk,  tcol); rx -= 16; }
     if (g_tray_net){ rx -= 16; draw_net_icon(rx, y0+(DOCK_H-12)/2, g_net_state); rx -= 14; }
     if (g_tray_stats){ char st[32]; dock_stats(st);
-        rx -= gfx_text_w(st); gfx_str(&scr, rx, ty, st, RGB(0x90,0xa0,0xb5)); }
+        rx -= gfx_text_w(st); gfx_str(&scr, rx, ty, st, RGB(0x90,0xa0,0xb5)); rx -= 12; }
+    if (g_tray_gpu && g_gpu_name[0]){
+        char gp[28]; int o=0; const char *p="GPU "; while(*p)gp[o++]=*p++;
+        for(const char *q=g_gpu_name; *q && o<(int)sizeof gp-1; q++) gp[o++]=*q; gp[o]=0;
+        rx -= gfx_text_w(gp); gfx_str(&scr, rx, ty, gp, RGB(0x7a,0xc0,0x90)); }
 }
 static int dock_hit(int px,int py,int *out_win)
 {
@@ -937,11 +944,11 @@ static int dock_hit(int px,int py,int *out_win)
 
 /* ---- dock right-click menu: toggle which tray elements show (persist ~/.mxrc) */
 #define TRAYMENU_W 150
-#define TRAYMENU_N 4
-static const char *TRAY_LABELS[TRAYMENU_N] = {"Clock","Date","Network","CPU / RAM"};
-static const char *TRAY_KEYS[TRAYMENU_N]   = {"TrayClock","TrayDate","TrayNet","TrayStats"};
+#define TRAYMENU_N 5
+static const char *TRAY_LABELS[TRAYMENU_N] = {"Clock","Date","Network","CPU / RAM","GPU"};
+static const char *TRAY_KEYS[TRAYMENU_N]   = {"TrayClock","TrayDate","TrayNet","TrayStats","TrayGpu"};
 static int g_tray_menu=0, g_tray_menu_x=0;     /* open flag + anchor x (pops up from dock) */
-static int *tray_flag(int i){ return i==0?&g_tray_clock : i==1?&g_tray_date : i==2?&g_tray_net : &g_tray_stats; }
+static int *tray_flag(int i){ return i==0?&g_tray_clock : i==1?&g_tray_date : i==2?&g_tray_net : i==3?&g_tray_stats : &g_tray_gpu; }
 static void tray_menu_box(int *x,int *y,int *w,int *h){
     int rh=22; *w=TRAYMENU_W; *h=6+TRAYMENU_N*rh+6;
     *x=g_tray_menu_x; if(*x+*w>(int)FBW)*x=(int)FBW-*w; if(*x<0)*x=0;
