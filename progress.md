@@ -55,6 +55,10 @@ Last reordered 2026-06-09.
 - [x] **T28** — Fix GUI click lag / double-click. Two causes: (1) `mx_pump` derived press/release from the *final* button state vs the previous pump, so a quick click whose down+up both drained in one pump was dropped — now latch the edges per event; (2) the real one — the WM **suppressed hover motion** (forwarded the pointer only on a button edge/drag), so the focused client's hit-test (`hot`/`mx`) was one event stale and a click landed on the *previously known* position, needing a second click. Now deliver pointer motion to the focused client X11-style (forward on any move over its area; `win_push` coalescing keeps the queue from flooding). Fixes every makx client.
 - [x] **T31** — Doom95-style launcher (`mxdoom.elf`): a makx dialog to pick the IWAD (scanned from `/usr/share/games/doom` + `/apps`), an optional PWAD (Browse via the shared file dialog), skill, episode/map, and monster options (No Monsters / Fast / Respawn); "New Game" `execve`s `doom.elf` with the matching `-iwad`/`-file`/`-skill`/`-warp`/`-nomonsters`/`-fast`/`-respawn` args (replaces the launcher in-place so doom keeps the WM-launched pid → still reaped on exit → window closes cleanly). The WM reuses the window on doom's re-HELLO (same pid) and refits it to doom's surface. The Doom desktop shortcut now opens the launcher.
 
+### Gallery + file-manager views (branch `feat/gallery-fileviews`)
+
+- [x] **T42** — `mxfiles` dual view: a **View** toggle switches between a **list view** (name + human size + `YYYY-MM-DD HH:MM` modified date, via `sys_stat` per entry, rendered through `ui_listbox`) and an **icon view** (a scrollable grid of folder/file glyphs with names) that visually differentiates files from folders.
+
 ---
 
 ## To do (backlog)
