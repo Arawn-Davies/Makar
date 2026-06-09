@@ -40,8 +40,11 @@
 #include <kernel/vesa.h>
 #include <kernel/vesa_tty.h>
 #include <kernel/vesa_font.h>
+#include <kernel/video.h>
+#include <kernel/bochs_vbe.h>
 #include <kernel/pmm.h>
 #include <kernel/vmm.h>
+#include <kernel/paging.h>
 #include <kernel/task.h>
 #include <kernel/signal.h>
 #include <stddef.h>
@@ -170,11 +173,27 @@ static void vga_fill_to_eol(int col, int row, char c, uint8_t a)
     for (; col < VGA_COLS; col++) vga_putc(col, row, c, a);
 }
 
-/* Re-enable VGA display after Bochs VBE may have disabled it. */
-static void restore_vga_display(void)
+/* Force the display all the way back to a legacy VGA text mode (mode 3, 80x25)
+ * so the 0xB8000 text buffer is scanned out and writable.  This is the
+ * older-Windows / Linux-vgacon approach for a panic: never trust the
+ * accelerated driver, the command FIFO, or the (possibly mid-reconfiguration
+ * or unmapped) high-res framebuffer -- a graphics panic renderer that faults
+ * there cascades the fault and hides the panic (the 1080p "CPU disabled" with
+ * no message).  Touches only I/O ports and 0xB8000, both always available on
+ * this BIOS/VGA-compatible target, so it cannot itself fault.
+ *
+ *   1. video_svga2_to_vga() -- SVGA II off (no-op if not bound)
+ *   2. bochs_vbe_disable()  -- Bochs DISPI off (harmless if absent) + program
+ *                              IBM VGA mode 3 registers + reload the 8x16 font
+ *   3. unblank the attribute controller
+ *   4. pin the text grid to 80x25 so the text renderer lays out correctly
+ *      (t_height may still hold the old VESA/80x50 row count). */
+static void force_vga_text_mode(void)
 {
-    outw(0x01CE, 0x04); outw(0x01CF, 0x0000);
+    video_svga2_to_vga();
+    bochs_vbe_disable();
     inb(0x3DA); outb(0x3C0, 0x20);
+    t_height = VGA_ROWS;
 }
 
 /* Last-ditch, fault-proof panic notice.  Used only when the normal panic
@@ -186,12 +205,12 @@ static void restore_vga_display(void)
  * was in a VESA graphics mode. */
 static void panic_textmode_notice(void)
 {
-    restore_vga_display();
+    force_vga_text_mode();   /* SVGA II off + VGA mode 3, not just DISPI off */
     for (int i = 0; i < VGA_COLS * VGA_ROWS; i++)
         VGA_BASE[i] = (uint16_t)(0x4F00u | (uint8_t)' ');   /* white on red */
     vga_center(VGA_ROWS / 2 - 1, "*** MAKAR KERNEL PANIC ***", 0x4Fu);
     vga_center(VGA_ROWS / 2 + 1,
-               "Please reboot: power-cycle or Ctrl+Alt+Del. Details on serial.",
+               "Press any key to reboot. Details on serial.",
                0x4Fu);
 }
 
@@ -250,6 +269,35 @@ static void render_panic_vga(const char *fault_type, const char *msg,
             vga_puts(col, row, lbuf, A_VAL);
         }
         row++;
+    }
+
+    /* ---- Faulting context: which program / driver, and how to resolve EIP --- */
+    {
+        task_t *cur = task_current();
+        int ring3 = (r && (r->cs & 3) == 3);
+        col = vga_puts(4, row, "Context: ", A_DIM);
+        if (ring3) {
+            col = vga_puts(col, row, "program '", A_DIM);
+            col = vga_puts(col, row, (cur && cur->name) ? cur->name : "?", A_VAL);
+            vga_puts(col, row, "' (ring 3 userspace)", A_DIM);
+        } else {
+            col = vga_puts(col, row, "kernel (ring 0)", A_VAL);
+            if (cur && cur->name) {
+                col = vga_puts(col, row, ", in task '", A_DIM);
+                col = vga_puts(col, row, cur->name, A_VAL);
+                vga_puts(col, row, "'", A_DIM);
+            }
+        }
+        row++;
+        /* Offline symbolisation: addr2line maps EIP -> exact function + .c:line.
+         * Userspace ELFs link at 0x40000000 and the kernel image carries its own
+         * symbols, so the raw EIP works against either with no adjustment. */
+        if (r) {
+            col = vga_puts(4, row, "Resolve: addr2line -e ", A_DIM);
+            col = vga_puts(col, row, ring3 ? "<program>.elf " : "makar.kernel ", A_SECT);
+            vga_hex(col, row, r->eip, A_VAL);
+            row++;
+        }
     }
 
     row++; /* blank */
@@ -317,7 +365,7 @@ static void render_panic_vga(const char *fault_type, const char *msg,
     if (fault_type) col = vga_puts(col, rows - 2, fault_type, A_BODY);
     if (msg)              vga_puts(col, rows - 2, msg,        A_BODY);
 
-    vga_puts(1, rows - 1, "System halted. Please restart manually.", A_DIM);
+    vga_puts(1, rows - 1, "Halted (CPU alive). Press a key to reboot, or reset the VM.", A_DIM);
 }
 
 /* ============================================================
@@ -418,6 +466,11 @@ static uint32_t pv_section(const vesa_fb_t *fb,
     return px;
 }
 
+/* Framebuffer (graphics) panic renderer.  No longer on the panic path -- panics
+ * now drop to legacy VGA text (force_vga_text_mode + render_panic_vga) because
+ * the framebuffer can be the very thing that failed.  Retained for a future
+ * UEFI/GOP target that has no VGA text mode to fall back to. */
+__attribute__((unused))
 static void render_panic_vesa(const vesa_fb_t *fb,
                                const char *fault_type, const char *msg,
                                const char *file, const char *func, int line,
@@ -607,13 +660,59 @@ static void render_panic_vesa(const vesa_fb_t *fb,
  * Main panic dispatcher
  * ============================================================ */
 
-/* Set once we begin painting a panic.  If the graphical renderer itself
- * faults -- e.g. it writes into a framebuffer region that a mid-switch
- * setmode left unmapped -- the page-fault handler re-enters kernel_panic;
- * without this guard that recurses forever (a CPU exception ignores the
- * `cli` below), which is exactly the panic loop seen switching to 1080p.
- * On re-entry we skip the renderer (serial already has the first, complete
- * report) and just stop the CPU. */
+/* Terminal state for a panic.  We deliberately do NOT `cli; hlt`: a CPU halted
+ * with interrupts masked is exactly what VMware / VirtualBox report as "the CPU
+ * has been disabled by the guest operating system" -- which pops a host dialog
+ * and captures the host mouse pointer, hiding the panic we just rendered.
+ * Instead keep the VCPU executing (so the panic stays on screen and the host
+ * pointer stays free) and poll the 8042 for a keystroke; any key reboots via
+ * the keyboard-controller CPU-reset pulse, so the user escapes cleanly without
+ * resetting the VM by hand.  Interrupts stay masked -- we poll, never take an
+ * IRQ -- so no handler can run and re-fault after the panic. */
+static __attribute__((noreturn)) void panic_halt(void)
+{
+    asm volatile("cli");
+
+    /* Drain bytes already sitting in the 8042 -- notably the *release* codes of
+     * the panic chord itself -- so we don't immediately "see a key" and reboot
+     * before the user can read the panic. */
+    for (int t = 0; t < 100000 && (inb(0x64) & 0x01); t++)
+        (void)inb(0x60);
+
+    /* Spin alive (never cli;hlt -- that makes the VM report the CPU "disabled"
+     * and grab the host mouse) until a fresh key *press*, then reboot. */
+    for (;;) {
+        if (inb(0x64) & 0x01) {              /* a fresh scancode arrived */
+            uint8_t sc = inb(0x60);
+            /* Only a make code (key DOWN) reboots.  Ignore break codes (bit 7)
+             * and the e0/e1 extended prefixes -- otherwise merely *releasing*
+             * the Ctrl+Alt+Shift+P panic chord would reboot before the user can
+             * read the panic. */
+            if (sc == 0xE0 || sc == 0xE1 || (sc & 0x80))
+                continue;
+            /* Reboot via the 8042: wait for its input buffer to drain, then
+             * pulse the CPU reset line. */
+            for (int t = 0; t < 100000 && (inb(0x64) & 0x02); t++)
+                ;
+            outb(0x64, 0xFE);
+            /* If the controller didn't take it, force a triple fault: load a
+             * zero-limit IDT and raise an interrupt the CPU can't deliver. */
+            for (int t = 0; t < 2000000; t++)
+                asm volatile("pause");
+            struct { uint16_t limit; uint32_t base; } __attribute__((packed))
+                null_idt = { 0, 0 };
+            asm volatile("lidt %0; int3" :: "m"(null_idt));
+        }
+        asm volatile("pause");
+    }
+}
+
+/* Set once we begin painting a panic.  If the renderer itself faults -- e.g. it
+ * writes into a framebuffer region that a mid-switch setmode left unmapped --
+ * the page-fault handler re-enters kernel_panic; without this guard that
+ * recurses forever (a CPU exception ignores the `cli` below), which is exactly
+ * the panic loop seen switching to 1080p.  On re-entry we skip the renderer
+ * (serial already has the first, complete report) and just stop the CPU. */
 static volatile int s_in_panic = 0;
 
 static void kernel_panic(const char *fault_type, const char *msg,
@@ -630,7 +729,7 @@ static void kernel_panic(const char *fault_type, const char *msg,
          * the halt -- never recurse, never loop. */
         if (s_in_panic == 2)
             panic_textmode_notice();
-        for (;;) asm volatile("cli; hlt");
+        panic_halt();
     }
     s_in_panic = 1;
 
@@ -682,27 +781,34 @@ static void kernel_panic(const char *fault_type, const char *msg,
         }
         Serial_WriteChar('\n');
     }
+    /* Offline symbolisation hint: addr2line maps EIP -> function + .c:line.
+     * Userspace ELFs link at 0x40000000 and the kernel image carries symbols,
+     * so the raw EIP resolves against either with no adjustment. */
+    if (r) {
+        int ring3 = (r->cs & 3) == 3;
+        Serial_WriteString("  Resolve: addr2line -e ");
+        Serial_WriteString(ring3 ? "<program>.elf " : "makar.kernel ");
+        ser_hex(r->eip);
+        Serial_WriteChar('\n');
+    }
 
     Serial_WriteString("--- registers ---\n");
     if (r) serial_dump(r);
 
-    /* 2. Render to whichever display is currently active */
-    const vesa_fb_t *fb = vesa_get_fb();
-    if (vesa_tty_is_ready() && fb) {
-        render_panic_vesa(fb, fault_type, msg, file, func, line,
-                          fault_addr, show_addr, r);
-    } else {
-        /* Only disable VBE when hardware is actually in a VBE graphics mode.
-         * Calling restore_vga_display() when VBE is already off triggers a
-         * QEMU CRTC reset that reverts 80x50 back to 80x25. */
-        if (fb)
-            restore_vga_display();
-        render_panic_vga(fault_type, msg, file, func, line,
-                         fault_addr, show_addr, r);
-    }
+    /* 2. Drop to legacy VGA text mode and render the panic there.  We do NOT
+     * paint the panic into the high-res framebuffer: at panic time the
+     * accelerated driver / FIFO / framebuffer may be exactly what failed (or be
+     * mid-reconfiguration / partially mapped), and a graphics renderer that
+     * faults there cascades into a triple fault that disables the CPU with
+     * nothing shown.  VGA mode 3 + the 0xB8000 text buffer always work on this
+     * target and the renderer cannot fault. */
+    force_vga_text_mode();
+    render_panic_vga(fault_type, msg, file, func, line,
+                     fault_addr, show_addr, r);
 
-    /* 3. Halt - once, no loop */
-    asm volatile("cli; hlt");
+    /* 3. Spin alive (NOT cli;hlt) so the VM doesn't flag the CPU "disabled";
+     * any key reboots.  See panic_halt(). */
+    panic_halt();
 }
 
 /* ============================================================

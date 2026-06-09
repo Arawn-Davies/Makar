@@ -29,9 +29,17 @@
 #define IDENTITY_LARGE_PAGES (IDENTITY_MAP_MB * 1024u * 1024u / LARGE_PAGE_SIZE) /* 64 */
 
 /* Pool of extra 4 KiB page tables for paging_map_region() (addresses above
-   the large-page identity window).  32 tables × 1024 entries × 4 KiB = 128 MiB
-   of additional mappable virtual address space.                              */
-#define EXTRA_PAGE_TABLES 32
+   the large-page identity window).  128 tables × 1024 entries × 4 KiB = 512 MiB
+   of additional mappable virtual address space.
+
+   Sized generously because every >256 MiB mapping draws from here -- the SVGA
+   framebuffer (re-mapped on each runtime mode switch), the command FIFO, ACPI
+   tables, NIC MMIO.  At 32 tables a 1080p framebuffer (~8 MiB = 2 tables) could
+   exhaust the pool after enough mode switches; map_region_flags would then
+   silently truncate the FB mapping, and the next blit into the unmapped tail
+   page-faulted (the 1080p "switch panics" bug).  512 MiB leaves ample headroom;
+   exhaustion now also logs (see map_region_flags) instead of failing silently. */
+#define EXTRA_PAGE_TABLES 128
 
 /* Higher-half kernel virtual base (must match KERNEL_VBASE in linker.ld and
  * boot.S).  The kernel image and all its static structures (page_directory[],
@@ -207,8 +215,15 @@ static void map_region_flags(uint32_t phys_start, uint32_t size, uint32_t extra_
 
         /* Allocate a fresh 4 KiB page table for this directory slot if needed. */
         if (!(page_directory[pdi] & PAGE_PRESENT)) {
-            if (next_extra_pt >= EXTRA_PAGE_TABLES)
-                return; /* pool exhausted – give up */
+            if (next_extra_pt >= EXTRA_PAGE_TABLES) {
+                /* Pool exhausted: the rest of this region is left UNMAPPED, so a
+                 * later access faults.  Shout on serial -- silent truncation of
+                 * a framebuffer map is how the 1080p blit fault hid itself. */
+                KLOG("paging_map_region: PAGE-TABLE POOL EXHAUSTED at ");
+                KLOG_HEX(addr);
+                KLOG(" -- region truncated, mapping incomplete\n");
+                return;
+            }
 
             uint32_t *pt = extra_page_tables[next_extra_pt++];
 

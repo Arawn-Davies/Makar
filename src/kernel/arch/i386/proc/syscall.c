@@ -272,6 +272,41 @@ static void readdir_collect_cb(const char *n, int is_dir, void *vctx)
 
 volatile uint32_t g_ring3_last_cp = 0;
 
+/* Verify every page of the user range [base, base+len) is present and
+ * user-accessible in the current task's address space.  The kernel reads a
+ * userspace framebuffer back buffer directly (SYS_FB_PRESENT); a stale,
+ * too-small buffer -- e.g. one handed across a racing runtime mode switch,
+ * before the WM has reallocated it for the new geometry -- would otherwise make
+ * the kernel read past the mapping and take a ring-0 page fault, which panics.
+ * A bad pointer from userspace must instead fail the syscall (WWLD: -EFAULT,
+ * never take the kernel down).  Walks the PD the same way the COW/#PF handler
+ * does (page tables live in the low identity map).  Returns 1 if the whole
+ * range is safe to read, 0 otherwise. */
+static int user_range_mapped(uint32_t base, uint32_t len)
+{
+    if (len == 0)
+        return 1;
+    task_t *t = task_current();
+    if (!t || !t->page_dir)
+        return 0;
+    uint32_t *pd  = t->page_dir;
+    uint32_t  end = base + len;
+    if (end < base)                       /* address-space wrap */
+        return 0;
+    for (uint32_t a = base & ~0xFFFu; a < end; a += 0x1000u) {
+        uint32_t pde = pd[a >> 22];
+        if (!(pde & 0x1u) || !(pde & 0x4u))   /* present + user */
+            return 0;
+        if (pde & 0x80u)                      /* 4 MiB page: PDE flags govern */
+            continue;
+        uint32_t *pt  = (uint32_t *)(pde & ~0xFFFu);
+        uint32_t  pte = pt[(a >> 12) & 0x3FFu];
+        if (!(pte & 0x1u) || !(pte & 0x4u))
+            return 0;
+    }
+    return 1;
+}
+
 /* -------------------------------------------------------------------------
  * syscall_dispatch
  * ------------------------------------------------------------------------- */
@@ -1119,6 +1154,14 @@ static void syscall_dispatch_inner(registers_t *regs)
             task_t *cur = task_current(); if (cur) cur->fb_touched = 1;
             regs->eax = 0; break;
         }
+        /* The WM hands a full-frame buffer (pitch = width*4).  Validate the
+         * whole extent is mapped before the kernel reads it: a runtime mode
+         * switch can enlarge fb->{width,height} a frame before the WM has
+         * reallocated its back buffer, and reading the old, smaller buffer at
+         * the new geometry would page-fault in ring 0 (-> panic).  Drop the
+         * frame instead; the WM repaints at the new size next iteration. */
+        uint32_t need = fb->width * fb->height * 4u;
+        if (!user_range_mapped(regs->ebx, need)) { regs->eax = (uint32_t)-1; break; }
         const void *src = (const void *)(uintptr_t)regs->ebx;
         video_present_rect(src, 0, 0, fb->width, fb->height);
         { task_t *cur = task_current(); if (cur) cur->fb_touched = 1; }
@@ -1143,6 +1186,16 @@ static void syscall_dispatch_inner(registers_t *regs)
         uint32_t rx = (regs->ecx >> 16) & 0xFFFFu, ry = regs->ecx & 0xFFFFu;
         uint32_t rw = (regs->edx >> 16) & 0xFFFFu, rh = regs->edx & 0xFFFFu;
         if (rx >= fb->width || ry >= fb->height) { regs->eax = 0; break; }
+        /* Clamp to the framebuffer, then validate the touched row span of the
+         * full-frame buffer is mapped before the kernel reads it (same stale-
+         * geometry race guard as SYS_FB_PRESENT). */
+        if (rx + rw > fb->width)  rw = fb->width  - rx;
+        if (ry + rh > fb->height) rh = fb->height - ry;
+        if (!rw || !rh) { regs->eax = 0; break; }
+        uint32_t pitch = fb->width * 4u;
+        if (!user_range_mapped(regs->ebx + ry * pitch, rh * pitch)) {
+            regs->eax = (uint32_t)-1; break;
+        }
         const void *src = (const void *)(uintptr_t)regs->ebx;
         video_present_rect(src, rx, ry, rw, rh);
         { task_t *cur = task_current(); if (cur) cur->fb_touched = 1; }
