@@ -33,6 +33,18 @@ static int img_w, img_h;         /* current image size (0 = none)           */
 static char msg[96] = "Open an image (BMP/GIF/PNG/JPEG).";
 static char g_cur_path[256];     /* full path of the loaded image (for wallpaper) */
 
+/* ---- gallery: thumbnails of ~/Pictures + the bundled /usr/share images ---- */
+#define GAL_MAX  96
+#define THUMB_W  112
+#define THUMB_H  84
+static char      gal_path[GAL_MAX][256];
+static char      gal_name[GAL_MAX][40];
+static int       gal_n = 0;
+static gfx_u32  *gal_thumb;       /* mmap: GAL_MAX thumbnails, THUMB_W*THUMB_H each */
+static unsigned char gal_ok[GAL_MAX];   /* 0 = undecoded, 1 = ok, 2 = failed */
+static int       g_gallery = 0;
+static int       gal_scroll = 0;
+
 static void scpy(char *d,const char *s,int max){int i=0;while(s[i]&&i<max-1){d[i]=s[i];i++;}d[i]=0;}
 static unsigned rd32(const unsigned char *p){ return p[0]|(p[1]<<8)|(p[2]<<16)|((unsigned)p[3]<<24); }
 static int      rd16(const unsigned char *p){ return p[0]|(p[1]<<8); }
@@ -207,13 +219,92 @@ static void set_wallpaper(mx_conn *c)
 
 static int slen(const char*s){int n=0;while(s[n])n++;return n;}
 
+/* ---- gallery ---- */
+static int is_image_name(const char *nm){
+    int n=slen(nm);
+    if(n>=4 && nm[n-4]=='.'){
+        char a=nm[n-3]|32, b=nm[n-2]|32, c=nm[n-1]|32;
+        if((a=='b'&&b=='m'&&c=='p')||(a=='g'&&b=='i'&&c=='f')||
+           (a=='p'&&b=='n'&&c=='g')||(a=='j'&&b=='p'&&c=='g')) return 1;
+    }
+    if(n>=5 && nm[n-5]=='.' && (nm[n-4]|32)=='j'&&(nm[n-3]|32)=='p'&&(nm[n-2]|32)=='e'&&(nm[n-1]|32)=='g') return 1;
+    return 0;
+}
+static void gal_scan_dir(const char *dir){
+    struct dirent de;
+    for(unsigned i=0; gal_n<GAL_MAX; i++){
+        if(sys_readdir(dir,i,&de)!=1) break;
+        if(de.d_type==DT_DIR) continue;
+        if(!is_image_name(de.d_name)) continue;
+        int p=0; for(const char*q=dir;*q&&p<254;q++) gal_path[gal_n][p++]=*q;
+        if(p&&gal_path[gal_n][p-1]!='/') gal_path[gal_n][p++]='/';
+        for(int k=0; de.d_name[k]&&p<255; k++) gal_path[gal_n][p++]=de.d_name[k];
+        gal_path[gal_n][p]=0;
+        scpy(gal_name[gal_n], de.d_name, sizeof gal_name[0]);
+        gal_n++;
+    }
+}
+static void gal_scan(void){
+    gal_n=0; gal_scroll=0;
+    char pics[96]; mxrc_home("/Pictures", pics, sizeof pics);
+    gal_scan_dir(pics);
+    gal_scan_dir("/usr/share/pixmaps");
+    gal_scan_dir("/usr/share/backgrounds");
+    for(int i=0;i<GAL_MAX;i++) gal_ok[i]=0;
+}
+/* decode gal_path[i] into its thumbnail slot (aspect-fit); uses img_px as scratch */
+static void gal_decode(int i){
+    if(gal_ok[i]) return;
+    gal_ok[i]=2;
+    int fd=sys_open(gal_path[i],O_RDONLY); if(fd<0) return;
+    long sz=sys_lseek(fd,0,SEEK_END); sys_lseek(fd,0,0);
+    if(sz<=0||(unsigned long)sz>FILE_CAP){ sys_close(fd); return; }
+    unsigned got=0; while(got<(unsigned)sz){ long r=sys_read(fd,fbuf+got,(unsigned)sz-got); if(r<=0)break; got+=(unsigned)r; }
+    sys_close(fd);
+    if(decode_image(got)!=0 || img_w<1) return;
+    gfx_surface ts={ gal_thumb+(long)i*THUMB_W*THUMB_H, THUMB_W, THUMB_H };
+    gfx_fill(&ts,0,0,THUMB_W,THUMB_H,COL_BG);
+    int fw,fh;
+    if((long)img_w*THUMB_H > (long)img_h*THUMB_W){ fw=THUMB_W; fh=(int)((long)img_h*THUMB_W/img_w); }
+    else { fh=THUMB_H; fw=(int)((long)img_w*THUMB_H/img_h); }
+    if(fw<1)fw=1; if(fh<1)fh=1;
+    gfx_surface src={ img_px, img_w, img_h };
+    gfx_blit_scaled(&ts,(THUMB_W-fw)/2,(THUMB_H-fh)/2,fw,fh,&src);
+    gal_ok[i]=1;
+}
+/* draw the thumbnail grid; returns the clicked index or -1 */
+static int gallery_render(gfx_surface *s, ui_ctx *u, int x,int y,int w,int h){
+    if(gal_n==0){ gfx_str(s,x+8,y+8,"No images in ~/Pictures or /usr/share.",COL_TEXT); return -1; }
+    int cw=THUMB_W+12, ch=THUMB_H+22, cols=w/cw; if(cols<1)cols=1;
+    int rows=(gal_n+cols-1)/cols, visrows=h/ch; if(visrows<1)visrows=1;
+    if(gal_scroll>rows-visrows) gal_scroll = rows-visrows>0?rows-visrows:0;
+    if(gal_scroll<0) gal_scroll=0;
+    int clicked=-1;
+    for(int i=0;i<gal_n;i++){
+        int r=i/cols-gal_scroll, col=i%cols;
+        if(r<0||r>=visrows) continue;
+        int cx=x+col*cw, cy=y+r*ch;
+        int hot = u->mx>=cx&&u->mx<cx+cw&&u->my>=cy&&u->my<cy+ch;
+        if(hot) gfx_outline(s,cx,cy,cw-2,ch-2,COL_TEXT);
+        gal_decode(i);
+        if(gal_ok[i]==1){ gfx_surface t={ gal_thumb+(long)i*THUMB_W*THUMB_H, THUMB_W, THUMB_H };
+            gfx_blit(s,cx+6,cy+4,&t,0,0,THUMB_W,THUMB_H); }
+        else { gfx_fill(s,cx+6,cy+4,THUMB_W,THUMB_H,COL_BAR); gfx_str(s,cx+6+8,cy+4+THUMB_H/2,"(bad)",COL_ERR); }
+        char nm[20]; scpy(nm,gal_name[i],sizeof nm);
+        gfx_str_clip(s,cx+6,cy+THUMB_H+8,nm,COL_TEXT,cx+cw-4);
+        if(hot && u->mpressed) clicked=i;
+    }
+    return clicked;
+}
+
 int main(int argc, char **argv)
 {
     mx_conn c;
     if (mx_connect(&c, argc, argv, 600, 460, MX_F_RESIZABLE) != 0) return 1;
     img_px = (gfx_u32*)sys_mmap(0,(unsigned long)IMG_MAXW*IMG_MAXH*4,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
     fbuf   = (unsigned char*)sys_mmap(0,FILE_CAP,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
-    if (img_px==(void*)MAP_FAILED || fbuf==(void*)MAP_FAILED) return 1;
+    gal_thumb = (gfx_u32*)sys_mmap(0,(unsigned long)GAL_MAX*THUMB_W*THUMB_H*4,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    if (img_px==(void*)MAP_FAILED || fbuf==(void*)MAP_FAILED || gal_thumb==(void*)MAP_FAILED) return 1;
 
     ui_ctx u; for(unsigned i=0;i<sizeof u/sizeof(int);i++)((int*)&u)[i]=0;
     browser brz; for(unsigned i=0;i<sizeof brz/sizeof(int);i++)((int*)&brz)[i]=0;
@@ -228,9 +319,9 @@ int main(int argc, char **argv)
     int first=1, lmx=-1, lmy=-1;
     while(!c.closed){
         mx_pump(&c);
-        while(mx_key(&c)>=0){ /* keys go to the dialog via ui */ }
+        int gk=-1, kk; while((kk=mx_key(&c))>=0) gk=kk;   /* last key (gallery scroll) */
         int moved=(c.mx!=lmx||c.my!=lmy); lmx=c.mx; lmy=c.my;
-        if(!(first||c.mpressed||c.mreleased||moved||c.resized)){ sys_yield(); continue; }
+        if(!(first||c.mpressed||c.mreleased||moved||c.resized||gk>=0)){ sys_yield(); continue; }
         first=0;
 
         gfx_surface *s=&c.surf;
@@ -241,11 +332,18 @@ int main(int argc, char **argv)
         ui_begin(&u,c.mx,c.my,c.mdown,c.mpressed,c.mreleased,-1);
         int open_c=ui_button(&u,s,6,5,64,20,"Open");
         int wp_c=ui_button(&u,s,74,5,112,20,"Set Wallpaper");
-        gfx_str_clip(s,194,11,msg,COL_TEXT,s->w-8);
-        if(open_c){ scpy(brz.cwd,"/apps",sizeof brz.cwd); brz.sel=brz.scroll=0; brz.loaded=0; br_load(&brz); dlg=1; }
-        if(wp_c && img_w>0) set_wallpaper(&c);
+        int gal_c=ui_button(&u,s,190,5,70,20, g_gallery?"Viewer":"Gallery");
+        gfx_str_clip(s,266,11,msg,COL_TEXT,s->w-8);
+        if(open_c){ scpy(brz.cwd,"/apps",sizeof brz.cwd); brz.sel=brz.scroll=0; brz.loaded=0; br_load(&brz); dlg=1; g_gallery=0; }
+        if(wp_c && img_w>0 && !g_gallery) set_wallpaper(&c);
+        if(gal_c){ g_gallery=!g_gallery; if(g_gallery){ dlg=0; gal_scan(); } }
 
-        if(dlg){
+        if(g_gallery){
+            if(gk==0x81) gal_scroll++;                 /* arrow down */
+            else if(gk==0x80 && gal_scroll>0) gal_scroll--;  /* arrow up */
+            int ci=gallery_render(s,&u,4,34,s->w-8,s->h-34-4);
+            if(ci>=0){ load_image(gal_path[ci]); g_gallery=0; }
+        } else if(dlg){
             char full[256];
             int r=br_dialog(&brz,&u,s,6,34,s->w-12,s->h-34-6,1,(char*)0,0,full,sizeof full);
             if(r==1){ load_image(full); dlg=0; }

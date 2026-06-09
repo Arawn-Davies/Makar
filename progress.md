@@ -57,7 +57,8 @@ Last reordered 2026-06-09.
 
 ### Gallery + file-manager views (branch `feat/gallery-fileviews`)
 
-- [x] **T42** — `mxfiles` dual view: a **View** toggle switches between a **list view** (name + human size + `YYYY-MM-DD HH:MM` modified date, via `sys_stat` per entry, rendered through `ui_listbox`) and an **icon view** (a scrollable grid of folder/file glyphs with names) that visually differentiates files from folders.
+- [x] **T42** — `mxfiles` dual view: a **View** toggle switches between a **list view** (name + human size + `YYYY-MM-DD HH:MM` modified date, via `sys_stat` per entry, rendered through `ui_listbox`) and an **icon view** (folder/file glyphs in a grid, arrow-key scrolled) that visually differentiates files from folders.
+- [x] **T43** — `mximg` **Gallery**: a Gallery/Viewer toggle shows a scrollable thumbnail grid of images found in `~/Pictures` + the bundled `/usr/share/pixmaps` and `/usr/share/backgrounds`; thumbnails decode lazily (aspect-fit, reusing the shared BMP/GIF/PNG/JPEG decoders) and a click opens the full image in the viewer.
 
 ---
 

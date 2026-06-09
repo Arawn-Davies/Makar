@@ -152,11 +152,11 @@ All apps in `/Users/arawn/Makar/src/userspace/` compile to `.elf` files and are 
 
 ### makx clients (`mxterm.elf`, `mxfiles.elf`, `mxedit.elf`, `mxtasks.elf`, `doom.elf`)
 - **mxterm** (mxterm.c) — terminal: forks `sh.elf` over pipes, renders the byte grid into its surface.
-- **mxfiles** (mxfiles.c) — file browser on the shared `gui_browser` model (Up/Open/Refresh/Go).
+- **mxfiles** (mxfiles.c) — file browser with **list** (name/size/date) and **icon** views over the shared gui_browser model.
 - **mxedit** (mxedit.c) — multi-line text editor with the shared open/save dialog (`br_dialog`).
 - **mxtasks** (mxtasks.c) — task manager: `/proc/tasks` list, Kill, refresh-interval slider.
 - **mxclock / mxcalc / mxnet / mxdisk** (mx*.c) — GUI peers of `clock` / `calc` / `maknetcfg` / `diskinfo`.
-- **mximg** (mximg.c) — image viewer (BMP + GIF + PNG + baseline JPEG), Open dialog or path arg.
+- **mximg** (mximg.c) — image viewer (BMP + GIF + PNG + baseline JPEG); Open dialog / path arg / **Gallery** thumbnail grid of ~/Pictures + bundled images; "Set Wallpaper".
 - **mxdisplay** (mxdisplay.c) — display-settings panel: change resolution with a confirm/auto-revert countdown.
 - **mxabout** (mxabout.c) — graphical About panel (platform/CPU/GPU/NIC/memory); `about.elf` is its text-console counterpart, streaming `/proc/{uname,cpuinfo,meminfo}`.
 - **mxinstall** (mxinstall.c) — graphical OS installer; drives the shared install engine via `SYS_INSTALL_EXEC` (see Installer section + `docs/gui.md`).

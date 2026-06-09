@@ -307,7 +307,13 @@ Clients (each an independent process, `src/userspace/mx*.c`):
   discarded) and baseline JPEG (shared `img_jpg.c`: integer marker parse +
   Huffman + dequant + fixed-point IDCT + chroma upsample + YCbCr->RGB; 4:4:4 /
   4:2:2 / 4:2:0 + grayscale + restart markers, progressive rejected).
-  mmap-backed file + pixel buffers (no libc).
+  mmap-backed file + pixel buffers (no libc). A **Gallery** toggle shows a
+  scrollable thumbnail grid of images in `~/Pictures` + the bundled
+  `/usr/share/pixmaps` and `/usr/share/backgrounds` (lazy aspect-fit thumbs);
+  clicking one opens it in the viewer.
+- **mxfiles** offers a **list view** (name + size + modified date via
+  `sys_stat`) and an **icon view** (folder/file glyph grid) over the shared
+  `gui_browser` model, toggled with the **View** button.
 - **mxinstall** is the graphical OS installer (see "Installer" below).
 - **doom** is the windowed makx client (see below).
 

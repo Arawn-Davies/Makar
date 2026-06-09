@@ -157,6 +157,8 @@ int main(int argc,char**argv){
 
         int lx=6, ly=50, lw=s->w-12, lh=s->h-56, prev=g_files.sel;
         if(g_view){
+            if(key==0x81) g_files.scroll++;               /* arrow down */
+            else if(key==0x80 && g_files.scroll>0) g_files.scroll--;  /* arrow up */
             if(icon_view(&u,s,lx,ly,lw,lh)) open_sel();
         } else {
             build_rows();
