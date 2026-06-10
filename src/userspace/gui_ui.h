@@ -34,6 +34,7 @@ typedef struct {
     int focus;          /* id of the widget with keyboard focus (0 = none)    */
     int got_input;      /* set when a widget consumed the click/key this frame */
     int tb_selall;      /* focused textbox has its whole contents selected     */
+    int tb_caret;       /* caret char index within the focused textbox         */
 } ui_ctx;
 
 /* Theme colours (XRGB8888). */

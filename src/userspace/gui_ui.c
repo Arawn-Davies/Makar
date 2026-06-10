@@ -107,64 +107,88 @@ static int ui_textbox_impl(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h
     int hot = pt_in(c, x, y, w, h);
     int changed = 0;
 
-    if (hot && c->mpressed) { c->focus = id; c->got_input = 1; c->tb_selall = 0; }
+    int len = ui_strlen(buf);
+    int tx = x + 4, ty = y + (h - 8) / 2;
+    int maxchars = (w - 8) / 8; if (maxchars < 1) maxchars = 1;
 
-    if (c->focus == id && c->key >= 0) {
-        int k = c->key, len = ui_strlen(buf);
-        /* Clipboard shortcuts on every textbox: Ctrl-A/C/X/V.  Selection is
-         * all-or-nothing (Ctrl-A), which covers the common cases -- select-all
-         * then copy/replace/clear -- without a full caret+range model. */
-        if (k == 1) {                             /* Ctrl-A: select all */
-            c->tb_selall = (len > 0);
-        } else if (k == 3) {                      /* Ctrl-C: copy selection */
-            if (!masked && c->tb_selall && len > 0) sys_clip_set(buf, (unsigned)len);
-        } else if (k == 24) {                     /* Ctrl-X: cut selection */
-            if (!masked && c->tb_selall && len > 0) { sys_clip_set(buf, (unsigned)len); buf[0] = 0; changed = 1; }
-            c->tb_selall = 0;
-        } else if (k == 22) {                     /* Ctrl-V: paste at end / over selection */
-            char cb[256];
-            int n = sys_clip_get(cb, sizeof cb);
-            if (n > (int)sizeof cb) n = (int)sizeof cb;
-            int wpos = c->tb_selall ? 0 : len;
-            for (int i = 0; i < n && wpos < cap - 1; i++) {
-                char ch = cb[i];
-                if (ch == '\n' || ch == '\r' || ch == '\t') ch = ' ';  /* single-line */
-                buf[wpos++] = ch;
+    /* Horizontal scroll offset that keeps the caret visible, recomputed each
+     * frame from the caret (stateless) -- also used to map a click to a char. */
+    int car0 = (c->focus == id) ? c->tb_caret : len;
+    if (car0 > len) car0 = len;
+    if (car0 < 0)   car0 = 0;
+    int off = (car0 > maxchars) ? car0 - maxchars : 0;
+    if (len > maxchars && off > len - maxchars) off = len - maxchars;
+    if (off < 0) off = 0;
+
+    if (hot && c->mpressed) {
+        c->focus = id; c->got_input = 1; c->tb_selall = 0;
+        int col = (c->mx - tx + 4) / 8; if (col < 0) col = 0;
+        int car = off + col; if (car > len) car = len;
+        c->tb_caret = car;
+    }
+
+    if (c->focus == id) {
+        int car = c->tb_caret; if (car > len) car = len; if (car < 0) car = 0;
+        if (c->key >= 0) {
+            int k = c->key;
+            if (k == 1) {                              /* Ctrl-A: select all */
+                c->tb_selall = (len > 0);
+            } else if (k == 3) {                       /* Ctrl-C */
+                if (!masked && c->tb_selall && len > 0) sys_clip_set(buf, (unsigned)len);
+            } else if (k == 24) {                      /* Ctrl-X */
+                if (!masked && c->tb_selall && len > 0) { sys_clip_set(buf, (unsigned)len); buf[0]=0; len=0; car=0; changed=1; }
+                c->tb_selall = 0;
+            } else if (k == 22) {                      /* Ctrl-V: paste at caret */
+                char cb[256]; int n = sys_clip_get(cb, sizeof cb);
+                if (n > (int)sizeof cb) n = (int)sizeof cb;
+                if (c->tb_selall) { buf[0]=0; len=0; car=0; c->tb_selall=0; }
+                for (int i = 0; i < n && len < cap - 1; i++) {
+                    char ch = cb[i]; if (ch=='\n'||ch=='\r'||ch=='\t') ch=' ';
+                    for (int j=len; j>car; j--) buf[j]=buf[j-1];
+                    buf[car++]=ch; len++;
+                }
+                buf[len]=0; changed=1;
+            } else if (k == KEY_ARROW_LEFT)  { c->tb_selall=0; if (car>0)   car--; }
+            else if (k == KEY_ARROW_RIGHT)   { c->tb_selall=0; if (car<len) car++; }
+            else if (k == KEY_HOME)          { c->tb_selall=0; car=0; }
+            else if (k == KEY_END)           { c->tb_selall=0; car=len; }
+            else if (k == 8 || k == 127) {             /* backspace: delete before caret */
+                if (c->tb_selall) { buf[0]=0; len=0; car=0; c->tb_selall=0; changed=1; }
+                else if (car > 0) { for (int i=car-1; i<len; i++) buf[i]=buf[i+1]; len--; car--; changed=1; }
+            } else if (k == KEY_DELETE) {              /* forward-delete at caret */
+                if (c->tb_selall) { buf[0]=0; len=0; car=0; c->tb_selall=0; changed=1; }
+                else if (car < len) { for (int i=car; i<len; i++) buf[i]=buf[i+1]; len--; changed=1; }
+            } else if (k >= 32 && k < 127) {           /* printable: insert at caret */
+                if (c->tb_selall) { buf[0]=0; len=0; car=0; c->tb_selall=0; }
+                if (len < cap - 1) { for (int j=len; j>car; j--) buf[j]=buf[j-1]; buf[car++]=(char)k; len++; buf[len]=0; changed=1; }
             }
-            buf[wpos] = 0; changed = 1; c->tb_selall = 0;
-        } else if (k == 8 || k == 127) {          /* backspace */
-            if (c->tb_selall) { buf[0] = 0; c->tb_selall = 0; changed = 1; }
-            else if (len > 0) { buf[len - 1] = 0; changed = 1; }
-        } else if (k >= 32 && k < 127) {          /* printable (replaces a selection) */
-            if (c->tb_selall) { buf[0] = 0; len = 0; c->tb_selall = 0; }
-            if (len < cap - 1) { buf[len] = (char)k; buf[len + 1] = 0; changed = 1; }
+            c->tb_caret = car;
+            c->got_input = 1;
         }
-        c->got_input = 1;
     }
 
     int focused = (c->focus == id);
+    int caret = focused ? c->tb_caret : len;
+    if (caret > len) caret = len;
+    off = (caret > maxchars) ? caret - maxchars : 0;     /* re-scroll after edits */
+    if (len > maxchars && off > len - maxchars) off = len - maxchars;
+    if (off < 0) off = 0;
+    int vis = len - off; if (vis > maxchars) vis = maxchars;
+
     gfx_fill(s, x, y, w, h, focused ? UI_COL_FIELD_FC : UI_COL_FIELD);
     gfx_outline(s, x, y, w, h, focused ? UI_COL_BTN_ACT : UI_COL_BORDER);
 
-    int tx = x + 4, ty = y + (h - 8) / 2;
-    int len = ui_strlen(buf);
-    int maxchars = (w - 8) / 8;
-    int shown = len > maxchars ? maxchars : len;   /* tail that fits */
-    if (focused && c->tb_selall && shown > 0)      /* selection highlight */
-        gfx_fill(s, tx, ty - 1, shown * 8, 10, UI_COL_SEL);
+    if (focused && c->tb_selall && vis > 0)
+        gfx_fill(s, tx, ty - 1, vis * 8, 10, UI_COL_SEL);
     if (masked) {
-        /* One round dot per character (the bitmap font has no bullet glyph, so
-         * draw a small filled rounded square that reads as a dot). */
         gfx_u32 dot_bg = focused ? UI_COL_FIELD_FC : UI_COL_FIELD;
-        for (int i = 0; i < shown; i++)
+        for (int i = 0; i < vis; i++)
             gfx_round(s, tx + i * 8 + 2, ty + 2, 5, 5, UI_COL_TEXT, dot_bg);
     } else {
-        const char *show = buf;
-        if (len > maxchars) show = buf + (len - maxchars);
-        gfx_str_clip(s, tx, ty, show, UI_COL_TEXT, x + w - 2);
+        gfx_str_clip(s, tx, ty, buf + off, UI_COL_TEXT, x + w - 2);
     }
     if (focused)
-        gfx_fill(s, tx + shown * 8, ty, 2, 8, UI_COL_TEXT);    /* caret */
+        gfx_fill(s, tx + (caret - off) * 8, ty, 2, 8, UI_COL_TEXT);   /* caret */
     return changed;
 }
 
