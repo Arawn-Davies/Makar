@@ -1507,7 +1507,8 @@ int main(int argc, char **argv, char **envp)
     load_tray_prefs();          /* ~/.mxrc dock tray visibility (default all on) */
     hwcursor_setup();           /* use the display driver's HW cursor if it has one */
     znum=0; focus=-1;
-    launch_icon(0);             /* open a terminal client on the desktop */
+    /* Boot to a clean desktop -- no window is auto-opened; the user launches
+     * apps from the desktop icons / dock. */
 
     int cx=(int)FBW/2, cy=(int)FBH/2, prev_left=0;
     int dragging=0, resizing=0, drag_win=-1, drag_dx=0, drag_dy=0;
