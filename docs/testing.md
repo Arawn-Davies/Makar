@@ -240,6 +240,12 @@ Current scenarios:
 10. Type `exit` across the VT shells.
 11. Assert `vtty_count() == 0`, proving makmux exited and focus restored.
 
+`kbtest` runs in CI as its own job (`kbtest` in `.github/workflows/build-test.yml`),
+headless under TCG. It is deterministic — no host typing, asserts on the
+`KBTEST: ALL PASS` serial marker — with a single automatic re-run reserved for the
+documented `exec: missing params (kernel bug)` arg race (the only sanctioned
+transient); any other failure fails the job.
+
 Headless:
 
 ```sh
