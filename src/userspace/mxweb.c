@@ -271,7 +271,7 @@ static gfx_surface *img_find(const char *src){
 static int img_decode(const char *resolved, gfx_surface *out){
     const char *fpath;
     if (has_scheme(resolved)) {
-        if (sys_wget(resolved, "/tmp/mxweb.img") < 0) return -1;
+        if (web_fetch(resolved, "/tmp/mxweb.img") < 0) return -1;   /* http+https in ring 3 */
         fpath = "/tmp/mxweb.img";
     } else {
         fpath = resolved;
