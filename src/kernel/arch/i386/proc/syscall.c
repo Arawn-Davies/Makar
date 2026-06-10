@@ -1699,7 +1699,7 @@ static void syscall_dispatch_inner(registers_t *regs)
         if (t && len) {
             uint32_t pages = (len + 0xFFFu) >> 12;
             for (uint32_t i = 0; i < pages; i++)
-                vmm_unmap_page(t->page_dir, addr + (i << 12));
+                vmm_unmap_and_free(t->page_dir, addr + (i << 12));  /* release frames, not just PTEs */
         }
         regs->eax = 0;
         break;
