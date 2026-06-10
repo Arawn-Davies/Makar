@@ -85,8 +85,22 @@ Last reordered 2026-06-09 (after PR #204 merged).
 ### Self-hosted toolchain (after HTTPS; unblocks hosted ports)
 - [ ] **T53** — A proper **`i686-makar`** OS-specific cross toolchain (per the OSDev *OS-Specific-Toolchain* / *Hosted-GCC* / *Creating-a-C-Library* pages): patch binutils + GCC (`config.sub` / `config.gcc` / `makar.h`) for an `i686-makar` target and **port newlib** as the libc with Makar syscall stubs + a sysroot. **Decided** over the existing `i686-linux-musl` shortcut (which already builds Makar-runnable ELFs via the Linux-i386 ABI — see `toolchain/`) and over an own-libc. Big multi-session slice; the foundation for hosted ports (lynx, dash, Dropbear).
 
-### Desktop UX (the slice AFTER HTTPS+SSH)
-- [ ] **T52** — Windows-like editing/clipboard/window UX across the GUI: **Ctrl-A** select-all (context-dependent — text in textboxes, all icons in the file browser/desktop); a **shared clipboard** with **Ctrl-C / Ctrl-X / Ctrl-V** in graphical apps; **Ctrl-Z** undo / **Ctrl-Y** redo; a **File menu** in the top GUI menu bar; **right-click context menus**; and **double-click the window title bar to maximise / restore**. Touches the WM (`wm.c`), the UI toolkit (`gui_ui.c`), `mxfiles`/`mxedit`, and a clipboard primitive (kernel- or WM-mediated).
+### Desktop UX (T52) — framework landed, wiring in progress
+- [x] **T52.1 — menu/window framework (PR #205).** `gui_ui` gained **`ui_menubar`** (File/Edit/View/Help bar + dropdowns), **`ui_context_menu`** (right-click popup), **`ui_about`** (modal credits card) — Windows-style: greyed disabled items, separators, right-aligned accelerators, dropdown width sized to the longest label. **`ui_btn_w()`** centralises button-label padding (mxweb toolbar = first adopter). **Double-click a title bar → maximise/restore** (`wm.c`). `LICENCES/` collects every external licence (BearSSL/lwIP/doomgeneric/FreeDoom/TinyCC/Limine/musl) with per-file coverage notes, feeding the About dialogs.
+- [ ] **T52.2 — wire the menus into apps.** Kernel **clipboard syscalls** (`SYS_CLIP_SET/GET` + buffer) for cross-app Cut/Copy/Paste; per-app File/Edit/View/Help bars + right-click context menu (Cut/Copy/Paste/Undo/Redo, enable/disable by context) + **Ctrl-A/C/X/V/Z/Y**; Help→About with per-app credits. **Undo/redo** = two bounded LIFO stacks (start in mxedit). Reference app first (mxedit), then mxweb/mxfiles/mximg/…
+
+### Userspace tooling / terminals
+- [ ] **T54 — `tar`** (userspace ELF): USTAR **c / x / t / v / f**, plus **gzip `z`** (decompress via the shared `inflate.h`; create via stored-DEFLATE + CRC32 — real DEFLATE compression is a follow-up). **`xz` not planned** (LZMA too heavy for the hobby target). Started: `inflate.h` extracted (header-only, shared with `img_png`).
+- [ ] **T55 — terminal-app mxterm-compliance audit.** Every TUI app must work both in a text VT (kernel line discipline) AND under mxterm (raw pipe: char-by-char, no echo, Enter already mapped to `\n`). `basic` fixed via the `bgetline` pattern (accumulate to newline; self-echo + Backspace only when the input is raw). Audit + fix the rest (cfdisk/fdisk/maktop/…) the same way.
+- [ ] **T56 — mxterm ASCII→UTF-8, full ANSI/VT100.** It's already a working ANSI/VT100 emulator (hosts the TUIs); add UTF-8 decode. Longer goal: enough fidelity to host a serial-terminal app (minicom-style) — Makar as a dumb terminal over COM/USB-serial.
+
+#### Polish landed this session (PR #205, branch `feat/mxweb`)
+- [x] `mxweb`: HTTPS verified (Wikipedia renders) + `~/.mxwebrc` homepage + auto-padded toolbar; HTTP+TLS fully in ring 3.
+- [x] `vix` opens a blank buffer with no filename (GUI launch); `.bas` files open in BASIC (loaded, "type RUN to run") from the file browser.
+- [x] `basic` line input works under mxterm (was syntax-erroring every keystroke).
+- [x] Terminal-app desktop shortcuts (vix/maktop/basic/cfdisk) hosted in mxterm, terminal icon.
+- [x] ISO `/src` stripped of build artefacts (1594→657 files) — also fixes the slow HDD install (per-file write cost of ~900 tiny objects).
+- [x] Docs: `krnlsepr.md` (kernel/userspace separation audit), `terminals.md` (tty/pty explainer).
 
 ### Hardware / platform
 - [ ] **T20** — AHCI (SATA) + a `blkdev` vtable
