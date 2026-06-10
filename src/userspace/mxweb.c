@@ -1087,13 +1087,15 @@ int main(int argc,char **argv){
             else if (key>=32 && key<127) { char *v=g_fields[g_ff].value; int n=sl(v); if(n<255){ v[n]=(char)key; v[n+1]=0; } }
         }
         ui_begin(&u,c.mx,c.my,c.mdown,c.mpressed,c.mreleased,(uikey=='\t')?-1:uikey);
-        int back_c = ui_button(&u,s,6,6,46,20,"Back");
-        int fwd_c  = ui_button(&u,s,54,6,46,20,"Fwd");
-        int home_c = ui_button(&u,s,102,6,52,20,"Home");
-        int seth_c = ui_button(&u,s,156,6,26,20,"+H");   /* save current page as the homepage */
-        int bx=186, bw=s->w-12-bx-44; if(bw<60)bw=60;
+        /* auto-sized toolbar buttons (ui_btn_w pads label to its glyph width) */
+        int tbx=6, gw=ui_btn_w("Go");
+        int wB=ui_btn_w("Back"); int back_c=ui_button(&u,s,tbx,6,wB,20,"Back"); tbx+=wB+4;
+        int wF=ui_btn_w("Fwd");  int fwd_c =ui_button(&u,s,tbx,6,wF,20,"Fwd");  tbx+=wF+4;
+        int wH=ui_btn_w("Home"); int home_c=ui_button(&u,s,tbx,6,wH,20,"Home"); tbx+=wH+4;
+        int wS=ui_btn_w("+H");   int seth_c=ui_button(&u,s,tbx,6,wS,20,"+H");   tbx+=wS+4; /* pin homepage */
+        int bx=tbx, bw=s->w-12-bx-(gw+4); if(bw<60)bw=60;
         ui_textbox(&u,s,bx,6,bw,20,g_urlbar,(int)sizeof g_urlbar);
-        int go_c   = ui_button(&u,s,bx+bw+4,6,40,20,"Go");
+        int go_c   = ui_button(&u,s,bx+bw+4,6,gw,20,"Go");
 
         /* status strip: page title (or url) left, status right */
         ui_label(&u,s,8,32,g_title[0]?g_title:g_cur_url,COL_MUTE);
