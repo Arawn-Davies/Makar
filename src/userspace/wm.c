@@ -1526,7 +1526,7 @@ int main(int argc, char **argv, char **envp)
               if (cy>=(int)FBH) cy=(int)FBH-1;
           } }
         /* ---- gather hardware input ---- */
-        int mpressed=0, mreleased=0, rpressed=0;
+        int mpressed=0, mreleased=0, rpressed=0, rreleased=0;
         unsigned int ev;
         while((ev=sys_mouse_read())!=0){
             cx += (int)(signed char)((ev>>8)&0xFF);
@@ -1537,6 +1537,7 @@ int main(int argc, char **argv, char **envp)
             if(left&&!prev_left) mpressed=1;
             if(!left&&prev_left) mreleased=1;
             if(right&&!prev_right) rpressed=1;
+            if(!right&&prev_right) rreleased=1;
             prev_left=left; prev_right=right;
             /* NB: a pure cursor move does NOT dirty the scene -- it's handled by
              * the cheap cursor-only path below.  Scene changes (clicks, drags,
@@ -1673,12 +1674,13 @@ int main(int argc, char **argv, char **envp)
              * needed a second click.  win_push coalesces a run of same-button
              * moves, so this doesn't flood the queue; only the focused window
              * (the one under the pointer) repaints. */
-            if (mpressed || mreleased || cmoved){
+            int btn = (mdown?1:0) | (prev_right?2:0);   /* bit0 L, bit1 R */
+            if (mpressed || mreleased || rpressed || rreleased || cmoved){
                 if (in_client(w,cx,cy)){
                     int rx=cx-client_x(w), ry=cy-client_y(w);
-                    win_push(w, MXEV_MOUSE, rx, ry, mdown?1:0);
-                } else if (mreleased || mpressed){
-                    win_push(w, MXEV_MOUSE, cx-client_x(w), cy-client_y(w), mdown?1:0);
+                    win_push(w, MXEV_MOUSE, rx, ry, btn);
+                } else if (mreleased || mpressed || rreleased || rpressed){
+                    win_push(w, MXEV_MOUSE, cx-client_x(w), cy-client_y(w), btn);
                 }
             }
         }

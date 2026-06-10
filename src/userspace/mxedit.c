@@ -33,6 +33,8 @@ static char    ed_savename[BR_NAMW];
 static int  ed_sel = -1;        /* selection anchor index, -1 = no selection */
 static int  ed_menu = -1;       /* open top menu (-1 none) */
 static int  ed_about = 0;       /* About modal shown */
+static int  ed_ctx = 0;         /* right-click context menu shown */
+static int  ed_ctx_x, ed_ctx_y; /* where it was opened */
 
 #define UNDO_MAX 32
 typedef struct { char *buf; int len, caret; } ed_snap;
@@ -132,7 +134,7 @@ static void ed_do(int a){
     }
 }
 
-static void ed_frame(gfx_surface *s,ui_ctx *u,int focused){
+static void ed_frame(gfx_surface *s,ui_ctx *u,int focused,int rpressed){
     int cw=s->w, ch=s->h;
     gfx_fill(s,0,0,cw,ch,RGB(0x16,0x1b,0x24));
     int tax=6,tay=UI_MENUBAR_H+4,taw=cw-12,tah=ch-tay-18;
@@ -147,22 +149,31 @@ static void ed_frame(gfx_surface *s,ui_ctx *u,int focused){
         return;
     }
 
-    /* while a menu/About is open, the editor ignores input (menus draw last) */
-    int busy = (ed_menu>=0) || ed_about;
+    /* while a menu/About/context menu is open, the editor ignores input (overlays
+     * draw last) */
+    int busy = (ed_menu>=0) || ed_about || ed_ctx;
     int kk = (busy||!focused) ? -1 : u->key;
     int mp = busy ? 0 : u->mpressed;
     int md = busy ? 0 : u->mdown;
+    int rp = busy ? 0 : rpressed;
 
     gfx_fill(s,tax,tay,taw,tah,UI_COL_FIELD);
     gfx_outline(s,tax,tay,taw,tah,focused?UI_COL_BTN_ACT:RGB(0x07,0x09,0x0d));
     int vis_rows=(tah-4)/10, caret_row,caret_col; ed_rowcol(ed_caret,&caret_row,&caret_col);
+    int sbw=12, txw=taw-sbw;     /* reserve the right strip for a scrollbar */
+    int total_rows; { int rr,cc; ed_rowcol(ed_len,&rr,&cc); total_rows=rr+1; }
+    int caretmoved=0;            /* only auto-scroll to the caret when it moved */
 
-    if(mp && u->mx>=tax&&u->mx<tax+taw&&u->my>=tay&&u->my<tay+tah){
+    if(mp && u->mx>=tax&&u->mx<tax+txw&&u->my>=tay&&u->my<tay+tah){
         int row=ed_top+(u->my-tay-2)/10, col=(u->mx-tax-4)/8; if(col<0)col=0;
-        ed_caret=ed_index_of(row,col); ed_sel=ed_caret; u->got_input=1;
-    } else if(md && ed_sel>=0 && u->mx>=tax&&u->mx<tax+taw&&u->my>=tay&&u->my<tay+tah){
+        ed_caret=ed_index_of(row,col); ed_sel=ed_caret; u->got_input=1; caretmoved=1;
+    } else if(md && ed_sel>=0 && u->mx>=tax&&u->mx<tax+txw&&u->my>=tay&&u->my<tay+tah){
         int row=ed_top+(u->my-tay-2)/10, col=(u->mx-tax-4)/8; if(col<0)col=0;
-        ed_caret=ed_index_of(row,col);
+        ed_caret=ed_index_of(row,col); caretmoved=1;
+    }
+    /* right-click in the text area opens the edit context menu (at the click) */
+    if(rp && u->mx>=tax&&u->mx<tax+txw&&u->my>=tay&&u->my<tay+tah){
+        ed_ctx=1; ed_ctx_x=u->mx; ed_ctx_y=u->my;
     }
 
     if(kk>=0){
@@ -183,11 +194,14 @@ static void ed_frame(gfx_surface *s,ui_ctx *u,int focused){
         else if(k==KEY_ARROW_UP){ ed_sel=-1; ed_coalesce=-2; if(caret_row>0)ed_caret=ed_index_of(caret_row-1,caret_col); }
         else if(k==KEY_ARROW_DOWN){ ed_sel=-1; ed_coalesce=-2; ed_caret=ed_index_of(caret_row+1,caret_col); }
         else if(k>=32&&k<127) ed_insert((char)k);
-        ed_rowcol(ed_caret,&caret_row,&caret_col); u->got_input=1;
+        ed_rowcol(ed_caret,&caret_row,&caret_col); u->got_input=1; caretmoved=1;
     }
-    if(caret_row<ed_top)ed_top=caret_row;
-    if(caret_row>=ed_top+vis_rows)ed_top=caret_row-vis_rows+1;
+    if(caretmoved){
+        if(caret_row<ed_top)ed_top=caret_row;
+        if(caret_row>=ed_top+vis_rows)ed_top=caret_row-vis_rows+1;
+    }
     if(ed_top<0)ed_top=0;
+    if(total_rows>0 && ed_top>total_rows-1)ed_top=total_rows-1;
 
     int slo=ed_has_sel()?ed_sel_lo():-1, shi=ed_has_sel()?ed_sel_hi():-1;
     int row=0,col=0;
@@ -196,12 +210,16 @@ static void ed_frame(gfx_surface *s,ui_ctx *u,int focused){
         char ch2=ed_buf[i];
         if(row>=ed_top){
             int sx=tax+4+col*8, sy=tay+2+(row-ed_top)*10;
-            if(i>=slo&&i<shi&&col*8<taw-8) gfx_fill(s,sx,sy,8,10,UI_COL_SEL);
-            if(ch2&&ch2!='\n'&&col*8<taw-8) gfx_char(s,sx,sy,(unsigned char)ch2,COL_TEXT);
-            if(i==ed_caret&&focused) gfx_fill(s,sx,sy,2,8,RGB(0xff,0xe0,0x60));
+            if(i>=slo&&i<shi&&col*8<txw-8) gfx_fill(s,sx,sy,8,10,UI_COL_SEL);
+            if(ch2&&ch2!='\n'&&col*8<txw-8) gfx_char(s,sx,sy,(unsigned char)ch2,COL_TEXT);
+            if(i==ed_caret&&focused&&col*8<txw-8) gfx_fill(s,sx,sy,2,8,RGB(0xff,0xe0,0x60));
         }
         if(ch2=='\n'){ row++; col=0; } else col++;
     }
+    /* vertical scrollbar down the reserved right strip (inert while a menu is up) */
+    if(!busy) ui_vscroll(u,s,tax+txw,tay,sbw,tah,total_rows,vis_rows,&ed_top);
+    else { ui_ctx z; for(unsigned i=0;i<sizeof z/sizeof(int);i++)((int*)&z)[i]=0; z.mx=z.my=-1;
+           ui_vscroll(&z,s,tax+txw,tay,sbw,tah,total_rows,vis_rows,&ed_top); }
     gfx_str_clip(s,tax+4,ch-12,ed_status,UI_COL_MUTED,tax+taw);
 
     /* menu bar + About, drawn last so they overlay the editor */
@@ -214,6 +232,11 @@ static void ed_frame(gfx_surface *s,ui_ctx *u,int focused){
 
     static const char *al[]={"Makar text editor (mxedit)","(c) 2026 Arawn Davies  --  MIT","","Cut / Copy / Paste, Undo / Redo, selection.","Part of Makar OS."};
     ui_about(u,s,"About mxedit",al,5,&ed_about);
+
+    /* right-click context menu (Cut/Copy/Paste/Undo/Redo), drawn last of all */
+    ui_menu_item citems[]={{"Cut",A_CUT,ed_has_sel(),"^X"},{"Copy",A_COPY,ed_has_sel(),"^C"},{"Paste",A_PASTE,1,"^V"},{0,0,0,0},{"Undo",A_UNDO,ud_n>0,"^Z"},{"Redo",A_REDO,rd_n>0,"^Y"}};
+    int cact=ui_context_menu(u,s,ed_ctx_x,ed_ctx_y,citems,6,&ed_ctx);
+    if(cact) ed_do(cact);
 }
 
 int main(int argc,char**argv){
@@ -228,11 +251,11 @@ int main(int argc,char**argv){
     while(!c.closed && !ed_exit_req){
         mx_pump(&c);
         int key=mx_key(&c);
-        int changed=first||key>=0||c.mpressed||c.mreleased||c.mx!=lmx||c.my!=lmy||c.focused!=lfocus||c.resized;
+        int changed=first||key>=0||c.mpressed||c.mreleased||c.rpressed||c.mx!=lmx||c.my!=lmy||c.focused!=lfocus||c.resized;
         lmx=c.mx; lmy=c.my; lfocus=c.focused; first=0;
         if(!changed){ sys_yield(); continue; }
         ui_begin(&u,c.mx,c.my,c.mdown,c.mpressed,c.mreleased,key);
-        ed_frame(&c.surf,&u,c.focused);
+        ed_frame(&c.surf,&u,c.focused,c.rpressed);
         mx_present(&c);
         sys_yield();
     }

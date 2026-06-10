@@ -81,6 +81,9 @@ typedef struct {
     int          mdown;         /* left button currently held                */
     int          mpressed;      /* left button edge: went down this pump     */
     int          mreleased;     /* left button edge: went up this pump       */
+    int          rdown;         /* right button currently held               */
+    int          rpressed;      /* right button edge: went down this pump    */
+    int          rreleased;     /* right button edge: went up this pump      */
     int          focused;       /* server reports we have the keyboard       */
     int          closed;        /* server asked us to close (or it died)     */
 
@@ -90,6 +93,7 @@ typedef struct {
     int          resized;       /* set the pump that re-applied a resize     */
 
     int          last_mdown;    /* edge tracking across pumps                */
+    int          last_rdown;    /* right-button edge tracking across pumps   */
     int          keys[MX_KEYBUF];
     int          kh, kt;        /* key ring head/tail                        */
 } mx_conn;

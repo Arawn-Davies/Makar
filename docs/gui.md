@@ -162,11 +162,20 @@ copies both with the rest of `/usr`.
 - **gui_ui** — an immediate-mode toolkit. Each frame the caller snapshots input
   with `ui_begin` then calls widgets in a fixed order; widget identity is the
   call order. Widgets: `ui_button`, `ui_slider`, `ui_textbox`, `ui_label`,
-  `ui_listbox`. Transient interaction (pressed/dragged widget, keyboard focus)
-  lives in `ui_ctx`; all content is caller-owned. The window manager hit-tests
-  windows first and only feeds the focused window a "live" ctx (others get a ctx
-  with no buttons/keys so they still draw but don't react) — this is how the
-  per-window focus model reaches individual widgets.
+  `ui_listbox`, `ui_vscroll` (track + proportional thumb, click/drag), and the
+  Windows-style menu set `ui_menubar` / `ui_context_menu` / `ui_about` (greyed
+  disabled items, separators, accelerators, popup width sized to the longest
+  label; they draw **last** so callers gate their own content while a menu is
+  open). `ui_textbox` honours the clipboard shortcuts on every field —
+  **Ctrl-A** select-all (highlighted), **Ctrl-C/X** copy/cut (suppressed on
+  password fields), **Ctrl-V** paste — over the kernel clipboard (`SYS_CLIP_*`).
+  Transient interaction (pressed/dragged widget, keyboard focus, textbox
+  selection) lives in `ui_ctx`; all content is caller-owned. The window manager
+  hit-tests windows first and only feeds the focused window a "live" ctx (others
+  get a ctx with no buttons/keys so they still draw but don't react) — this is
+  how the per-window focus model reaches individual widgets. The pointer ctx
+  carries both buttons: `ui_ctx`/`mx_conn` expose left **and** right
+  (`rpressed`/`rdown`/`rreleased`) so apps can raise context menus.
 - **vt100** (`vt100.{c,h}`) — a standalone ANSI/VT100+ terminal emulator core:
   `vt_init`/`vt_resize`/`vt_putc` drive a colour `vt_cell` grid (cursor, scroll
   region, SGR colours, ED/EL, IL/DL/ICH/DCH/ECH, alt-screen, UTF-8 → one cell).

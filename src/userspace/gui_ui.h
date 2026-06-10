@@ -33,6 +33,7 @@ typedef struct {
     int active;         /* id of the widget being pressed/dragged (0 = none)  */
     int focus;          /* id of the widget with keyboard focus (0 = none)    */
     int got_input;      /* set when a widget consumed the click/key this frame */
+    int tb_selall;      /* focused textbox has its whole contents selected     */
 } ui_ctx;
 
 /* Theme colours (XRGB8888). */
@@ -87,6 +88,14 @@ void ui_label(ui_ctx *c, gfx_surface *s, int x, int y, const char *str,
  * when focused, Up/Down move the selection.  Returns 1 if *sel changed. */
 int  ui_listbox(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
                 const char *const *items, int n, int *sel, int *scroll);
+
+/* Vertical scrollbar filling the rect (x,y,w,h).  `total` rows exist of which
+ * `vis` are visible; *top is the first visible row (caller-owned, read/written
+ * and clamped to [0, total-vis]).  Click/drag in the track moves *top; returns 1
+ * if it changed this frame.  Always draws the track + a proportional thumb (the
+ * thumb fills the track and goes inert when everything already fits). */
+int  ui_vscroll(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
+                int total, int vis, int *top);
 
 /* ------------------------------------------------------------------------
  * Menus (Windows-style): a top menu bar with dropdowns, a right-click context

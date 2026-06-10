@@ -86,13 +86,36 @@ static int ui_textbox_impl(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h
     int hot = pt_in(c, x, y, w, h);
     int changed = 0;
 
-    if (hot && c->mpressed) { c->focus = id; c->got_input = 1; }
+    if (hot && c->mpressed) { c->focus = id; c->got_input = 1; c->tb_selall = 0; }
 
     if (c->focus == id && c->key >= 0) {
         int k = c->key, len = ui_strlen(buf);
-        if (k == 8 || k == 127) {                 /* backspace */
-            if (len > 0) { buf[len - 1] = 0; changed = 1; }
-        } else if (k >= 32 && k < 127) {          /* printable */
+        /* Clipboard shortcuts on every textbox: Ctrl-A/C/X/V.  Selection is
+         * all-or-nothing (Ctrl-A), which covers the common cases -- select-all
+         * then copy/replace/clear -- without a full caret+range model. */
+        if (k == 1) {                             /* Ctrl-A: select all */
+            c->tb_selall = (len > 0);
+        } else if (k == 3) {                      /* Ctrl-C: copy selection */
+            if (!masked && c->tb_selall && len > 0) sys_clip_set(buf, (unsigned)len);
+        } else if (k == 24) {                     /* Ctrl-X: cut selection */
+            if (!masked && c->tb_selall && len > 0) { sys_clip_set(buf, (unsigned)len); buf[0] = 0; changed = 1; }
+            c->tb_selall = 0;
+        } else if (k == 22) {                     /* Ctrl-V: paste at end / over selection */
+            char cb[256];
+            int n = sys_clip_get(cb, sizeof cb);
+            if (n > (int)sizeof cb) n = (int)sizeof cb;
+            int wpos = c->tb_selall ? 0 : len;
+            for (int i = 0; i < n && wpos < cap - 1; i++) {
+                char ch = cb[i];
+                if (ch == '\n' || ch == '\r' || ch == '\t') ch = ' ';  /* single-line */
+                buf[wpos++] = ch;
+            }
+            buf[wpos] = 0; changed = 1; c->tb_selall = 0;
+        } else if (k == 8 || k == 127) {          /* backspace */
+            if (c->tb_selall) { buf[0] = 0; c->tb_selall = 0; changed = 1; }
+            else if (len > 0) { buf[len - 1] = 0; changed = 1; }
+        } else if (k >= 32 && k < 127) {          /* printable (replaces a selection) */
+            if (c->tb_selall) { buf[0] = 0; len = 0; c->tb_selall = 0; }
             if (len < cap - 1) { buf[len] = (char)k; buf[len + 1] = 0; changed = 1; }
         }
         c->got_input = 1;
@@ -106,6 +129,8 @@ static int ui_textbox_impl(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h
     int len = ui_strlen(buf);
     int maxchars = (w - 8) / 8;
     int shown = len > maxchars ? maxchars : len;   /* tail that fits */
+    if (focused && c->tb_selall && shown > 0)      /* selection highlight */
+        gfx_fill(s, tx, ty - 1, shown * 8, 10, UI_COL_SEL);
     if (masked) {
         /* One round dot per character (the bitmap font has no bullet glyph, so
          * draw a small filled rounded square that reads as a dot). */
@@ -168,6 +193,46 @@ int ui_listbox(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
         gfx_str_clip(s, x + 4, ry + 2, items[idx],
                      idx == *sel ? UI_COL_TEXT : UI_COL_MUTED, x + w - 2);
     }
+    return changed;
+}
+
+int ui_vscroll(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
+               int total, int vis, int *top)
+{
+    int id = ++c->cur_id;
+    int changed = 0;
+    if (total < 1) total = 1;
+    if (vis   < 1) vis   = 1;
+    int maxtop = total - vis; if (maxtop < 0) maxtop = 0;
+    if (*top < 0)      *top = 0;
+    if (*top > maxtop) *top = maxtop;
+
+    gfx_fill(s, x, y, w, h, UI_COL_TRACK);
+    gfx_outline(s, x, y, w, h, UI_COL_BORDER);
+
+    /* thumb height tracks the visible fraction (min 16px so it stays grabbable) */
+    int th = (vis >= total) ? h : (h * vis) / total;
+    if (th < 16) th = 16;
+    if (th > h)  th = h;
+    int span = h - th;
+    int ty = (maxtop > 0) ? y + (span * (*top)) / maxtop : y;
+
+    /* press anywhere in the track grabs; drag while held repositions the thumb */
+    if (maxtop > 0 && c->mpressed && pt_in(c, x, y, w, h)) { c->active = id; c->got_input = 1; }
+    if (c->active == id) {
+        if (c->mdown && span > 0) {
+            int ny = c->my - th / 2 - y;
+            if (ny < 0)    ny = 0;
+            if (ny > span) ny = span;
+            int nt = (ny * maxtop) / span;
+            if (nt != *top) { *top = nt; changed = 1; }
+            ty = y + (span * (*top)) / maxtop;
+        }
+        if (c->mreleased) c->active = 0;
+    }
+
+    gfx_round(s, x + 1, ty + 1, w - 2, th - 2,
+              (maxtop > 0) ? UI_COL_BTN_ACT : UI_COL_BTN, UI_COL_BORDER);
     return changed;
 }
 

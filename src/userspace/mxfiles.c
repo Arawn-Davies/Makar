@@ -24,6 +24,10 @@ static const char *g_rowptr[BR_MAX];
 static int         g_rows_for = -1;   /* g_loadid the rows were built for */
 static int         g_loadid = 0;      /* bumped on every (re)load */
 
+/* menus (T52): top bar + About modal + right-click context menu */
+static int g_menu=-1, g_about=0, g_ctx=0, g_ctx_x, g_ctx_y, g_exit_req=0;
+enum { A_OPEN=1, A_REFRESH, A_UP, A_EXIT, A_VLIST, A_VICON, A_ABOUT };
+
 /* append helpers (freestanding) */
 static char *pcat(char *p, const char *s){ while(*s) *p++=*s++; return p; }
 static char *pnum(char *p, unsigned v){ char t[12]; int i=0; if(!v)t[i++]='0'; while(v){t[i++]=(char)('0'+v%10);v/=10;} while(i)*p++=t[--i]; return p; }
@@ -92,6 +96,18 @@ static void open_sel(void){
     if(g_conn) mx_open(g_conn, path);
 }
 
+static void files_do(int a){
+    switch(a){
+    case A_OPEN:    open_sel(); break;
+    case A_REFRESH: br_load(&g_files); g_loadid++; break;
+    case A_UP:      br_up(&g_files);   g_loadid++; break;
+    case A_EXIT:    g_exit_req=1; break;
+    case A_VLIST:   g_view=0; g_files.scroll=0; break;
+    case A_VICON:   g_view=1; g_files.scroll=0; break;
+    case A_ABOUT:   g_about=1; break;
+    }
+}
+
 /* ---- icon-grid view ---- */
 static void draw_folder(gfx_surface*s,int x,int y){
     gfx_fill(s,x+2,y+2,12,5,RGB(0xc8,0x8a,0x20));
@@ -139,47 +155,83 @@ int main(int argc,char**argv){
     ui_ctx u; for(unsigned i=0;i<sizeof u/sizeof(int);i++)((int*)&u)[i]=0;
     int first=1, lmx=-1, lmy=-1, lfocus=-1;
 
-    while(!c.closed){
+    while(!c.closed && !g_exit_req){
         mx_pump(&c);
         int key=mx_key(&c);
-        int changed = first || key>=0 || c.mpressed || c.mreleased ||
+        int changed = first || key>=0 || c.mpressed || c.mreleased || c.rpressed ||
                       c.mx!=lmx || c.my!=lmy || c.focused!=lfocus||c.resized;
         lmx=c.mx; lmy=c.my; lfocus=c.focused; first=0;
         if(!changed){ sys_yield(); continue; }
 
         gfx_surface *s=&c.surf;
         gfx_fill(s,0,0,s->w,s->h,UI_COL_FIELD);
-        ui_begin(&u,c.mx,c.my,c.mdown,c.mpressed,c.mreleased,
-                 (key=='\t')?-1:key);
 
-        int up_c=ui_button(&u,s,6,6,46,20,"Up");
-        int op_c=ui_button(&u,s,56,6,52,20,"Open");
-        int rf_c=ui_button(&u,s,112,6,62,20,"Refresh");
-        int vw_c=ui_button(&u,s,178,6,86,20, g_view? "View: Icons":"View: List");
+        int busy = (g_menu>=0) || g_about || g_ctx;
+        int kin  = (key=='\t') ? -1 : key;
+        int rp   = busy ? 0 : c.rpressed;
+        ui_begin(&u,c.mx,c.my,c.mdown,c.mpressed,c.mreleased,kin);
+        /* while an overlay (menu/About/context) is up, gate the content widgets;
+         * the overlay itself gets the real input restored below. */
+        int rk=u.key, rpr=u.mpressed, rdn=u.mdown, rrl=u.mreleased;
+        if(busy){ u.key=-1; u.mpressed=u.mdown=u.mreleased=0; }
+
+        int top=UI_MENUBAR_H;
+        int up_c=ui_button(&u,s,6,top+6,46,20,"Up");
+        int op_c=ui_button(&u,s,56,top+6,52,20,"Open");
+        int rf_c=ui_button(&u,s,112,top+6,62,20,"Refresh");
+        int vw_c=ui_button(&u,s,178,top+6,86,20, g_view? "View: Icons":"View: List");
         int pbx=270, pbw=s->w-12-pbx-44; if(pbw<50)pbw=50;
-        ui_textbox(&u,s,pbx,6,pbw,20,pathbox,(int)sizeof pathbox);
-        int go_c=ui_button(&u,s,pbx+pbw+4,6,40,20,"Go");
+        ui_textbox(&u,s,pbx,top+6,pbw,20,pathbox,(int)sizeof pathbox);
+        int go_c=ui_button(&u,s,pbx+pbw+4,top+6,40,20,"Go");
 
         if(up_c){ br_up(&g_files); g_loadid++; }
         if(rf_c){ br_load(&g_files); g_loadid++; }
         if(vw_c){ g_view=!g_view; g_files.scroll=0; }
         if(go_c&&pathbox[0]){ scpy(g_files.cwd,pathbox,sizeof g_files.cwd); g_files.sel=g_files.scroll=0; br_load(&g_files); g_loadid++; }
 
-        ui_label(&u,s,6,30,g_files.cwd,UI_COL_MUTED);
+        ui_label(&u,s,6,top+30,g_files.cwd,UI_COL_MUTED);
 
-        int lx=6, ly=50, lw=s->w-12, lh=s->h-56, prev=g_files.sel;
+        int sbw=12;
+        int lx=6, ly=top+50, lw=s->w-12-sbw, lh=s->h-(top+56), prev=g_files.sel;
+        int rclick = rp && c.mx>=lx && c.mx<lx+lw && c.my>=ly && c.my<ly+lh;
         if(g_view){
-            if(key==0x81) g_files.scroll++;               /* arrow down */
-            else if(key==0x80 && g_files.scroll>0) g_files.scroll--;  /* arrow up */
+            if(!busy && kin==0x81) g_files.scroll++;                  /* arrow down */
+            else if(!busy && kin==0x80 && g_files.scroll>0) g_files.scroll--;  /* up */
             if(icon_view(&u,s,lx,ly,lw,lh)) open_sel();
+            int cw=104, cols=lw/cw; if(cols<1)cols=1;
+            int rows=(g_files.n+cols-1)/cols, visr=lh/78; if(visr<1)visr=1;
+            ui_vscroll(&u,s,lx+lw,ly,sbw,lh,rows,visr,&g_files.scroll);
         } else {
             build_rows();
             ui_listbox(&u,s,lx,ly,lw,lh,g_rowptr,g_files.n,&g_files.sel,&g_files.scroll);
-            if(c.focused && c.mpressed && prev==g_files.sel &&
+            int visr=lh/12; if(visr<1)visr=1;
+            ui_vscroll(&u,s,lx+lw,ly,sbw,lh,g_files.n,visr,&g_files.scroll);
+            if(rclick){ int row=g_files.scroll+(c.my-ly)/12; if(row>=0&&row<g_files.n)g_files.sel=row; }
+            if(c.focused && !busy && c.mpressed && prev==g_files.sel &&
                c.mx>=lx&&c.mx<lx+lw&&c.my>=ly&&c.my<ly+lh) open_sel();
         }
         if(op_c) open_sel();
-        else if(c.focused && key=='\n') open_sel();
+        else if(c.focused && !busy && kin=='\n') open_sel();
+        if(rclick){ g_ctx=1; g_ctx_x=c.mx; g_ctx_y=c.my; }
+
+        /* restore the real input snapshot for the overlay menus */
+        u.key=rk; u.mpressed=rpr; u.mdown=rdn; u.mreleased=rrl;
+
+        /* menu bar + About + context menu (overlays -- draw last) */
+        static const ui_menu_item fitems[]={{"Open",A_OPEN,1,0},{"Refresh",A_REFRESH,1,0},{"Up one level",A_UP,1,0},{0,0,0,0},{"Exit",A_EXIT,1,0}};
+        static const ui_menu_item vitems[]={{"List view",A_VLIST,1,0},{"Icon view",A_VICON,1,0}};
+        static const ui_menu_item hitems[]={{"About mxfiles",A_ABOUT,1,0}};
+        ui_menu menus[]={{"File",fitems,5},{"View",vitems,2},{"Help",hitems,1}};
+        int act=ui_menubar(&u,s,menus,3,&g_menu);
+        if(act) files_do(act);
+
+        static const char *al[]={"Makar file browser (mxfiles)","(c) 2026 Arawn Davies  --  MIT","","List / icon views; opens files in the default app.","Part of Makar OS."};
+        ui_about(&u,s,"About mxfiles",al,5,&g_about);
+
+        int sel_ok = g_files.sel>=0 && g_files.sel<g_files.n;
+        ui_menu_item citems[]={{"Open",A_OPEN,sel_ok,0},{"Refresh",A_REFRESH,1,0}};
+        int cact=ui_context_menu(&u,s,g_ctx_x,g_ctx_y,citems,2,&g_ctx);
+        if(cact) files_do(cact);
 
         mx_present(&c);
         sys_yield();

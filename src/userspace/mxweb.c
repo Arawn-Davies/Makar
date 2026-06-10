@@ -37,7 +37,8 @@
 #define GLYPH_W   8
 #define LINE_BASE 14
 #define SPACE_W   8
-#define TOOLBAR_H 50
+#define MENU_H    18          /* top menu-bar strip (= UI_MENUBAR_H)          */
+#define TOOLBAR_H 68          /* menu bar (18) + URL/nav row + status strip   */
 #define SBW       12          /* scrollbar width                              */
 #define MARGIN    10
 
@@ -1040,6 +1041,23 @@ static void draw_scrollbar(gfx_surface *s,int cy,int vh){
     gfx_fill(s, sbx+2, ty, SBW-4, th, RGB(0x55,0x60,0x72));
 }
 
+/* ---- menu bar + About (T52) --------------------------------------------- */
+static int g_menu=-1, g_about=0, g_exit_req=0;
+enum { W_BACK=1, W_FWD, W_RELOAD, W_HOME, W_SETHOME, W_EXIT, W_ABOUT };
+static void web_do(int a){
+    switch(a){
+    case W_BACK:    if(g_hist_i>0){ g_hist_i--; navigate(g_hist[g_hist_i],0); } break;
+    case W_FWD:     if(g_hist_i<g_hist_n-1){ g_hist_i++; navigate(g_hist[g_hist_i],0); } break;
+    case W_RELOAD:  navigate(g_cur_url[0]?g_cur_url:g_home,0); break;
+    case W_HOME:    navigate(g_home,1); break;
+    case W_SETHOME: { const char*uu=g_cur_url[0]?g_cur_url:g_urlbar;
+                      if(uu[0]){ scpy(g_home,uu,sizeof g_home); mxrc_set_file("/.mxwebrc","Homepage",g_home);
+                                 char *o=pcat(g_status,"Homepage saved to ~/.mxwebrc: "); o=pcat(o,g_home); *o=0; } } break;
+    case W_EXIT:    g_exit_req=1; break;
+    case W_ABOUT:   g_about=1; break;
+    }
+}
+
 int main(int argc,char **argv){
     mx_conn c;
     if (mx_connect(&c,argc,argv,720,520,MX_F_RESIZABLE)!=0) return 1;
@@ -1064,9 +1082,10 @@ int main(int argc,char **argv){
     ui_ctx u; for (unsigned i=0;i<sizeof u/sizeof(int);i++) ((int*)&u)[i]=0;
     int first=1, lmx=-1, lmy=-1, lfocus=-1, lkey=-2;
 
-    while (!c.closed) {
+    while (!c.closed && !g_exit_req) {
         mx_pump(&c);
         int key = mx_key(&c);
+        int busy = (g_menu>=0) || g_about;     /* an overlay owns input this frame */
         int changed = first || key>=0 || c.mpressed || c.mreleased || c.mdown ||
                       c.mx!=lmx || c.my!=lmy || c.focused!=lfocus || c.resized || key!=lkey;
         lmx=c.mx; lmy=c.my; lfocus=c.focused; lkey=key; first=0;
@@ -1080,37 +1099,41 @@ int main(int argc,char **argv){
 
         /* route typed keys to a focused in-page form field (URL bar goes inert) */
         int uikey = key;
-        if (g_ff>=0 && g_ff<g_nfields) {
+        if (!busy && g_ff>=0 && g_ff<g_nfields) {
             uikey = -1;
             if (key=='\n') form_submit();
             else if (key==8 || key==127) { char *v=g_fields[g_ff].value; int n=sl(v); if(n>0) v[n-1]=0; }
             else if (key>=32 && key<127) { char *v=g_fields[g_ff].value; int n=sl(v); if(n<255){ v[n]=(char)key; v[n+1]=0; } }
         }
         ui_begin(&u,c.mx,c.my,c.mdown,c.mpressed,c.mreleased,(uikey=='\t')?-1:uikey);
+        /* while a menu/About is open, gate the toolbar + content; the overlay
+         * gets the real input snapshot restored before it draws (below). */
+        int rk=u.key, rpr=u.mpressed, rdn=u.mdown, rrl=u.mreleased;
+        if(busy){ u.key=-1; u.mpressed=u.mdown=u.mreleased=0; }
         /* auto-sized toolbar buttons (ui_btn_w pads label to its glyph width) */
         int tbx=6, gw=ui_btn_w("Go");
-        int wB=ui_btn_w("Back"); int back_c=ui_button(&u,s,tbx,6,wB,20,"Back"); tbx+=wB+4;
-        int wF=ui_btn_w("Fwd");  int fwd_c =ui_button(&u,s,tbx,6,wF,20,"Fwd");  tbx+=wF+4;
-        int wH=ui_btn_w("Home"); int home_c=ui_button(&u,s,tbx,6,wH,20,"Home"); tbx+=wH+4;
-        int wS=ui_btn_w("+H");   int seth_c=ui_button(&u,s,tbx,6,wS,20,"+H");   tbx+=wS+4; /* pin homepage */
+        int wB=ui_btn_w("Back"); int back_c=ui_button(&u,s,tbx,MENU_H+6,wB,20,"Back"); tbx+=wB+4;
+        int wF=ui_btn_w("Fwd");  int fwd_c =ui_button(&u,s,tbx,MENU_H+6,wF,20,"Fwd");  tbx+=wF+4;
+        int wH=ui_btn_w("Home"); int home_c=ui_button(&u,s,tbx,MENU_H+6,wH,20,"Home"); tbx+=wH+4;
+        int wS=ui_btn_w("+H");   int seth_c=ui_button(&u,s,tbx,MENU_H+6,wS,20,"+H");   tbx+=wS+4; /* pin homepage */
         int bx=tbx, bw=s->w-12-bx-(gw+4); if(bw<60)bw=60;
-        ui_textbox(&u,s,bx,6,bw,20,g_urlbar,(int)sizeof g_urlbar);
-        int go_c   = ui_button(&u,s,bx+bw+4,6,gw,20,"Go");
+        ui_textbox(&u,s,bx,MENU_H+6,bw,20,g_urlbar,(int)sizeof g_urlbar);
+        int go_c   = ui_button(&u,s,bx+bw+4,MENU_H+6,gw,20,"Go");
 
         /* status strip: page title (or url) left, status right */
-        ui_label(&u,s,8,32,g_title[0]?g_title:g_cur_url,COL_MUTE);
-        int stw=gfx_text_w(g_status); ui_label(&u,s,s->w-SBW-stw-6,32,g_status,COL_MUTE);
+        ui_label(&u,s,8,MENU_H+32,g_title[0]?g_title:g_cur_url,COL_MUTE);
+        int stw=gfx_text_w(g_status); ui_label(&u,s,s->w-SBW-stw-6,MENU_H+32,g_status,COL_MUTE);
 
         /* keyboard scroll (only when no in-page field owns the key) */
-        if (g_ff<0 && key==0x80) g_scroll -= 48;            /* up   */
-        else if (g_ff<0 && key==0x81) g_scroll += 48;       /* down */
+        if (!busy && g_ff<0 && key==0x80) g_scroll -= 48;            /* up   */
+        else if (!busy && g_ff<0 && key==0x81) g_scroll += 48;       /* down */
 
         /* scrollbar interaction (uses last frame's content height) */
         int sbx=s->w-SBW, maxsc=g_content_h-vh; if(maxsc<0)maxsc=0;
         if (g_content_h>vh) {
             int th=vh*vh/g_content_h; if(th<24)th=24; if(th>vh)th=vh;
             int ty=cy0+(maxsc?(vh-th)*g_scroll/maxsc:0);
-            if (c.mpressed && c.mx>=sbx && c.my>=cy0 && c.my<cy0+vh) {
+            if (!busy && c.mpressed && c.mx>=sbx && c.my>=cy0 && c.my<cy0+vh) {
                 if (c.my>=ty && c.my<ty+th) { g_drag=1; g_drag_off=c.my-ty; }
                 else g_scroll += (c.my<ty? -vh : vh);     /* page toward click */
             }
@@ -1127,7 +1150,7 @@ int main(int argc,char **argv){
         draw_scrollbar(s,cy0,vh);
 
         /* content clicks: submit buttons, then form fields, then links (not scrollbar) */
-        if (c.mpressed && !g_drag && c.mx<sbx && c.my>=cy0) {
+        if (!busy && c.mpressed && !g_drag && c.mx<sbx && c.my>=cy0) {
             int handled=0;
             for (int i=0;i<g_nsub && !handled;i++) {
                 int ry=cy0+g_subs[i].dy-g_scroll;
@@ -1150,7 +1173,7 @@ int main(int argc,char **argv){
                 }
             }
         }
-        if (c.mpressed && c.my<cy0) g_ff=-1;   /* clicked the toolbar -> defocus fields */
+        if (!busy && c.mpressed && c.my<cy0) g_ff=-1;   /* clicked the toolbar -> defocus fields */
 
         /* navigation buttons (Reload = press Enter in the URL bar) */
         if      (back_c && g_hist_i>0)              { g_hist_i--; navigate(g_hist[g_hist_i],0); }
@@ -1165,7 +1188,20 @@ int main(int argc,char **argv){
             }
         }
         else if (go_c && g_urlbar[0])               navigate(g_urlbar,1);
-        else if (key=='\n' && g_urlbar[0])          navigate(g_urlbar,1);
+        else if (!busy && key=='\n' && g_urlbar[0]) navigate(g_urlbar,1);
+
+        /* restore real input, then draw the menu bar + About overlay last */
+        u.key=rk; u.mpressed=rpr; u.mdown=rdn; u.mreleased=rrl;
+        static const ui_menu_item fitems[]={{"Home",W_HOME,1,0},{"Set as homepage",W_SETHOME,1,0},{0,0,0,0},{"Exit",W_EXIT,1,0}};
+        ui_menu_item vitems[]={{"Back",W_BACK,g_hist_i>0,0},{"Forward",W_FWD,g_hist_i<g_hist_n-1,0},{"Reload",W_RELOAD,1,0}};
+        static const ui_menu_item hitems[]={{"About mxweb",W_ABOUT,1,0}};
+        ui_menu menus[]={{"File",fitems,4},{"View",vitems,3},{"Help",hitems,1}};
+        int mact=ui_menubar(&u,s,menus,3,&g_menu);
+        if(mact) web_do(mact);
+        static const char *al[]={"Makar web browser (mxweb)","(c) 2026 Arawn Davies  --  MIT","",
+                                 "TLS by BearSSL (MIT).  TCP/IP by lwIP (BSD-3).",
+                                 "HTML render + image decoders: part of Makar OS."};
+        ui_about(&u,s,"About mxweb",al,5,&g_about);
 
         mx_present(&c);
         sys_yield();
