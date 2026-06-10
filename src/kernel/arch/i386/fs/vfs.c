@@ -71,7 +71,7 @@ typedef enum {
 typedef struct {
     char           mountpoint[VFS_PATH_MAX];
     vfs_backend_t  backend;
-    uint8_t        drive;                       /* ext2/fat32/iso9660 */
+    uint8_t        drive;                       /* ext2/fat32/iso9660; tmpfs: namespace id */
     uint32_t       lba;                         /* ext2/fat32         */
     /* Bookkeeping for /mnt/<name> entries.  Non-empty for any
      * entry whose mountpoint starts with "/mnt/" -- carries the bare
@@ -80,7 +80,7 @@ typedef struct {
     char           slot_name[VFS_MOUNT_NAME_MAX];
 } vfs_mount_t;
 
-#define MAX_MOUNTS 16
+#define MAX_MOUNTS 20
 static vfs_mount_t s_mounts[MAX_MOUNTS];
 static int         s_nmounts;
 
@@ -335,7 +335,7 @@ static int backend_ls(vfs_mount_t *m, const char *p)
     case VFS_BACKEND_ISO9660: r = iso9660_ls(m->drive, p); break;
     case VFS_BACKEND_DEVFS:   r = devfs_ls(p); break;
     case VFS_BACKEND_PROCFS:  r = procfs_ls(p); break;
-    case VFS_BACKEND_TMPFS:   r = tmpfs_ls(p); break;
+    case VFS_BACKEND_TMPFS:   r = tmpfs_ls(m->drive, p); break;
     case VFS_BACKEND_LOGFS:   r = logfs_ls(p); break;
     default:                  r = -1; break;
     }
@@ -421,7 +421,7 @@ static int backend_read_file(vfs_mount_t *m, const char *p,
     case VFS_BACKEND_ISO9660: r = iso9660_read_file(m->drive, p, buf, bufsz, out_sz); break;
     case VFS_BACKEND_PROCFS:  r = procfs_read_file(p, buf, bufsz, out_sz); break;
     case VFS_BACKEND_LOGFS:   r = (logfs_read(p, buf, bufsz, out_sz) < 0) ? -1 : 0; break;
-    case VFS_BACKEND_TMPFS:   r = (tmpfs_read(p, buf, bufsz, out_sz) < 0) ? -1 : 0; break;
+    case VFS_BACKEND_TMPFS:   r = (tmpfs_read(m->drive, p, buf, bufsz, out_sz) < 0) ? -1 : 0; break;
     case VFS_BACKEND_DEVFS: {
         int idx = devfs_lookup(p);
         if (idx < 0) { r = -1; break; }
@@ -473,7 +473,7 @@ static int backend_write_file(vfs_mount_t *m, const char *p,
         (void)p; (void)buf; (void)size;
         t_writestring("write: read-only filesystem (/log)\n");
         r = -1; break;
-    case VFS_BACKEND_TMPFS: r = (tmpfs_write(p, buf, size) < 0) ? -1 : 0; break;
+    case VFS_BACKEND_TMPFS: r = (tmpfs_write(m->drive, p, buf, size) < 0) ? -1 : 0; break;
     default: r = -1; break;   /* read-only or non-writable backend */
     }
     if (_dk) vfs_fs_unlock();
@@ -487,7 +487,7 @@ static int backend_mkdir(vfs_mount_t *m, const char *p)
     switch (m->backend) {
     case VFS_BACKEND_EXT2:  r = ext2_mkdir(p); break;
     case VFS_BACKEND_FAT32: r = fat32_mkdir(p); break;
-    case VFS_BACKEND_TMPFS: r = tmpfs_mkdir(p); break;
+    case VFS_BACKEND_TMPFS: r = tmpfs_mkdir(m->drive, p); break;
     default: r = -1; break;
     }
     if (_dk) vfs_fs_unlock();
@@ -501,7 +501,7 @@ static int backend_delete_file(vfs_mount_t *m, const char *p)
     switch (m->backend) {
     case VFS_BACKEND_EXT2:  r = ext2_delete_file(p); break;
     case VFS_BACKEND_FAT32: r = fat32_delete_file(p); break;
-    case VFS_BACKEND_TMPFS: r = tmpfs_delete(p); break;
+    case VFS_BACKEND_TMPFS: r = tmpfs_delete(m->drive, p); break;
     default: r = -1; break;
     }
     if (_dk) vfs_fs_unlock();
@@ -532,7 +532,7 @@ static int backend_file_exists(vfs_mount_t *m, const char *p)
     case VFS_BACKEND_PROCFS:  r = procfs_file_exists(p); break;
     case VFS_BACKEND_DEVFS:   r = devfs_file_exists(p); break;
     case VFS_BACKEND_LOGFS:   r = logfs_file_exists(p); break;
-    case VFS_BACKEND_TMPFS:   r = tmpfs_file_exists(p); break;
+    case VFS_BACKEND_TMPFS:   r = tmpfs_file_exists(m->drive, p); break;
     default: r = 0; break;
     }
     if (_dk) vfs_fs_unlock();
@@ -551,7 +551,7 @@ static int backend_complete(vfs_mount_t *m, const char *p, const char *pre,
     case VFS_BACKEND_PROCFS:  r = procfs_complete(p, pre, cb, ctx); break;
     case VFS_BACKEND_DEVFS:   r = devfs_complete(p, pre, cb, ctx); break;
     case VFS_BACKEND_LOGFS:   r = logfs_complete(p, pre, cb, ctx); break;
-    case VFS_BACKEND_TMPFS:   r = tmpfs_complete(p, pre, cb, ctx); break;
+    case VFS_BACKEND_TMPFS:   r = tmpfs_complete(m->drive, p, pre, cb, ctx); break;
     default: r = -1; break;
     }
     if (_dk) vfs_fs_unlock();
@@ -905,6 +905,19 @@ void vfs_auto_mount(void)
         hd_mounted = try_mount_drive((uint8_t)i);
     if (s_cdrom_drive >= 0)
         t_writestring("CD-ROM detected, accessible at /mnt/cdrom\n");
+
+    /* Live-CD writable homes: when "/" is read-only (ISO9660 live boot, or no
+     * rootfs at all), overlay tmpfs at the home directories so ~/.mxrc and other
+     * home writes land in RAM and take effect for the session -- the Ubuntu-live
+     * model.  Each is its own tmpfs namespace (the mount `drive` field is the ns)
+     * so they never alias /tmp (ns 0) or each other.  On an installed ext2/FAT32
+     * root this is skipped and the real, persistent home is used. */
+    if (!vfs_rootfs_is_disk()) {
+        mount_add("/root",      VFS_BACKEND_TMPFS, 1, 0, "");
+        mount_add("/home",      VFS_BACKEND_TMPFS, 3, 0, "");
+        mount_add("/home/user", VFS_BACKEND_TMPFS, 2, 0, "");
+        t_writestring("Live root: tmpfs writable homes at /root + /home/user\n");
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -1484,7 +1497,7 @@ int vfs_stat(const char *path, vfs_stat_info_t *out)
         out->size = got; out->kind = VFS_STAT_FILE; return 0;
     }
     case VFS_BACKEND_TMPFS: {
-        long sz = tmpfs_size(drv);
+        long sz = tmpfs_size(m->drive, drv);
         if (sz < 0) return -1;
         out->size = (uint32_t)sz; out->kind = VFS_STAT_FILE; return 0;
     }

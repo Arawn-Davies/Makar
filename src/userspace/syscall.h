@@ -306,6 +306,14 @@ static inline int sys_clock_gettime(int clk, struct timespec *ts)
 {
     return (int)syscall2(SYS_CLOCK_GETTIME, (long)clk, (long)ts);
 }
+/* Set the system clock (writes the CMOS RTC).  Full field values: year e.g.
+ * 2026, mon 1..12, day 1..31, hour 0..23, min/sec 0..59.  Returns 0 on success. */
+static inline int sys_settime(int year, int mon, int day, int hour, int min, int sec)
+{
+    return (int)syscall2(SYS_SETTIME,
+        ((long)(year & 0xFFFF) << 16) | (long)((mon & 0xFF) << 8) | (long)(day & 0xFF),
+        ((long)(hour & 0xFF) << 16) | (long)((min & 0xFF) << 8) | (long)(sec & 0xFF));
+}
 
 /* chdir(2): change the calling task's cwd to `path`.  Delegates to the
  * kernel's vfs_cd which normalises and validates against the live VFS.
@@ -566,6 +574,12 @@ static inline int sys_net_info(char *buf, unsigned int bufsz)
 static inline int sys_net_ctl(int cmd)
 {
     return (int)syscall1(SYS_NET_CTL, (long)cmd);
+}
+
+/* Apply a network config (DHCP or static IPv4 + DNS).  Returns 0 on success. */
+static inline int sys_net_config(const net_cfg_t *cfg)
+{
+    return (int)syscall1(SYS_NET_CONFIG, (long)cfg);
 }
 
 /* Fetch an http:// URL and write the body to outpath.  Returns the number of

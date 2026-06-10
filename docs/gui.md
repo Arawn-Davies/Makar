@@ -75,6 +75,49 @@ While a launched client has forked but not yet sent its surface
 hourglass** cursor instead of the arrow: it re-uploads the HW-cursor sprite on
 the accelerated path, or swaps the software bitmap otherwise.
 
+### Settings (`mxsettings`)
+
+`mxsettings.elf` is the **centralised Settings app**, laid out like macOS System
+Settings: a left **sidebar** of categories (`ui_listbox`) + a right **content
+pane** of grouped rows. It **reimplements each panel inline** rather than
+shelling out to the single-purpose apps, driving the underlying mechanisms
+directly (the `~/.mxrc` prefs, `SYS_SETMODE`, the net syscalls, the new
+clock/network syscalls). The standalone `mxdisplay`/`mxnet` and the dock's
+right-click tray toggle still exist; Settings is the one place that gathers them.
+Panels:
+
+- **Appearance** — wallpaper path field → writes `~/.mxrc` `Wallpaper=`; the WM
+  already polls that key each frame (`apply_wallpaper()`), so the change is live
+  with no image decoder in `mxsettings`. (Colour schemes are a stub for now.)
+- **Display** — ports `mxdisplay`'s logic inline: the `MODES[]` list,
+  `sys_fb_info()` for the current mode, `sys_setmode()` to apply, and the same
+  15 s **confirm / auto-revert** countdown.
+- **Status Bar** — `ui_toggle` switches for the five `Tray*` prefs
+  (`TrayClock/TrayDate/TrayNet/TrayStats/TrayGpu`). On change it writes the
+  `~/.mxrc` int **and** sends `MX_RELOAD_PREFS` so the dock re-reads them and
+  redraws **immediately** (without it, tray changes would only apply next login).
+- **Network** — live `sys_net_info` status; DHCP **Renew/Release/Flush** via
+  `sys_net_ctl`; a "Use a static address" toggle revealing IP/Netmask/Gateway/DNS
+  fields → `SYS_NET_CONFIG` (static), or "Switch to DHCP".
+- **Date & Time** — a live UTC clock (`sys_gettimeofday` + `gmtime_r`) + editable
+  Y/M/D H:M:S fields → `SYS_SETTIME` (writes the CMOS RTC; the tray clock follows
+  on the next read).
+- **Autostart** — a toggle per GUI app; on present its path is in the `~/.mxrc`
+  `Autostart=` comma-separated list.
+
+**`MX_RELOAD_PREFS` (makx msg 8):** a no-argument client→server message asking
+the WM to re-run `load_tray_prefs()` and repaint. `mx_reload_prefs(c)` sends it;
+the `wm.c` poll loop handles it (re-read prefs → `damage_full()`).
+
+**Autostart at login:** `wm.c`'s `load_autostart()` runs once at desktop startup
+— it reads the `~/.mxrc` `Autostart=` list and `launch_cmd`s each entry. This is
+Makar's prefs-model take on XDG `~/.config/autostart/*.desktop` (a noted future
+refinement). The Settings → Autostart panel is just the editor for that list.
+
+A first-class desktop launcher ships too: `data/icons/settings.bmp` (a gear, the
+same 32×26 tile format as the other icons) + `data/shortcuts/18-settings.desktop`
++ a fallback entry in `wm.c`'s built-in `icon_defs[]`.
+
 ## Shared pixel surfaces (kernel)
 
 `kernel/surface.h` + `arch/i386/proc/surface.c`. A surface is a kernel-owned run
@@ -120,19 +163,29 @@ and reusable by future surface-rendering apps.
   the window manager for desktop icons.
 
 **Desktop icons** are XFCE-style **`.desktop` shortcuts** (`Name`/`Icon`/`Exec`
-plus Makar `X-Makar-*` extensions for the launch window size, an extra argv, the
-tint and the grid position). The WM scans the system-wide
-`/usr/share/shortcuts/*.desktop` plus the user overlay `~/.shortcuts` (which
-overrides by filename), building the icon set in `load_desktop_entries`; if both
-are empty it falls back to a built-in default list so the desktop is never empty.
-Artwork named by `Icon=` is resolved under `/usr/share/icons/makar/` with
-`.ico` -> `.png` -> `.bmp` probing (`load_one_icon`), blitted in `draw_icons`;
-a missing asset falls back to the procedural `icon_glyph()`. Icons are
-**draggable** and **selectable**: a click selects (highlight) + a no-move click
-launches, while a drag drops the icon and persists `X-Makar-IconX/Y` back into
-the source `.desktop` (best-effort -- a silent no-op on a read-only live ISO).
-The `.ico` tiles are generated from the BMP tiles by `tools/bmp2ico.py`
-(committed).
+plus Makar `X-Makar-*` extensions for the launch window size, an extra argv and
+the tint). The WM scans the system-wide `/usr/share/shortcuts/*.desktop` plus the
+user overlay `~/.shortcuts` (which overrides by filename), building the icon set
+in `load_desktop_entries`; if both are empty it falls back to a built-in default
+list so the desktop is never empty. Artwork named by `Icon=` is resolved under
+`/usr/share/icons/makar/` with `.ico` -> `.png` -> `.bmp` probing
+(`load_one_icon`), blitted in `draw_icons`; a missing asset falls back to the
+procedural `icon_glyph()`. The `.ico` tiles are generated from the BMP tiles by
+`tools/bmp2ico.py` (committed).
+
+**Layout & ordering follow Windows conventions.** Icons sort **case-folded by
+`Name`** (the shortcut *filename* no longer dictates order — the files carry no
+numeric prefix), laid out in a **column-major, height-derived grid**
+(`icon_grid_pos`): they fill top-to-bottom down a column and wrap to the next,
+with the row count computed from the live desktop height so the bottom row is
+never clipped below the dock (more icons just add a column). `icon_clamp` keeps
+every icon fully on-screen. Icons are **draggable** and **selectable** (a click
+selects + a no-move click launches); a drag drop, and **View ▸ Auto Arrange**
+(which re-grids A→Z), both **persist positions per user in `~/.mxrc`** as
+`IconPos.<Name>=x,y` (`icon_save_pos`/`icon_load_pos`) — not in the `.desktop`,
+matching how Windows stores desktop positions per icon. This works on installed
+systems (the real `/root/.mxrc`) and for the session on the live ISO (the tmpfs
+home overlay).
 
 **Desktop wallpaper** is opt-in via the image viewer, set the way an X11 desktop
 does it -- a config file for persistence plus a shared root pixmap for the live
@@ -162,13 +215,18 @@ copies both with the rest of `/usr`.
 - **gui_ui** — an immediate-mode toolkit. Each frame the caller snapshots input
   with `ui_begin` then calls widgets in a fixed order; widget identity is the
   call order. Widgets: `ui_button`, `ui_slider`, `ui_textbox`, `ui_label`,
-  `ui_listbox`, `ui_vscroll` (track + proportional thumb, click/drag), and the
+  `ui_listbox`, `ui_vscroll` (track + proportional thumb, click/drag), the
+  standard form controls `ui_toggle` (switch), **`ui_spinner`** (numeric field +
+  up/down steppers, clamped), **`ui_radio`**, **`ui_checkbox`**, **`ui_progress`**
+  and **`ui_separator`**, and the
   Windows-style menu set `ui_menubar` / `ui_context_menu` / `ui_about` (greyed
   disabled items, separators, accelerators, popup width sized to the longest
   label; they draw **last** so callers gate their own content while a menu is
-  open). `ui_textbox` honours the clipboard shortcuts on every field —
-  **Ctrl-A** select-all (highlighted), **Ctrl-C/X** copy/cut (suppressed on
-  password fields), **Ctrl-V** paste — over the kernel clipboard (`SYS_CLIP_*`).
+  open). `ui_textbox` has a **caret model** — Left/Right move it, Home/End jump,
+  Delete forward-deletes, a click places it, and the view scrolls to keep it
+  visible — plus the clipboard shortcuts on every field: **Ctrl-A** select-all
+  (highlighted), **Ctrl-C/X** copy/cut (suppressed on password fields), **Ctrl-V**
+  paste — over the kernel clipboard (`SYS_CLIP_*`).
   Transient interaction (pressed/dragged widget, keyboard focus, textbox
   selection) lives in `ui_ctx`; all content is caller-owned. The window manager
   hit-tests windows first and only feeds the focused window a "live" ctx (others
@@ -233,7 +291,8 @@ Client → server requests (sent with `sys_ipc_sendrec`):
 - `MX_HELLO(w,h,flags)` → reply `(win, sid)`: create a window + a `w×h` surface.
   `flags` is a bitmask: `MX_F_RESIZABLE` (the client re-flows to fill the window;
   the server blits 1:1 and sends `MXEV_RESIZE` instead of scaling) and
-  `MX_F_RAWKEYS` (see *Keyboard delivery* below). A **fixed-size** client (no
+  `MX_F_RAWKEYS` (see *Keyboard delivery* below) and **`MX_F_DIALOG`** (see
+  *Multi-window: dialogs* below). A **fixed-size** client (no
   `MX_F_RESIZABLE`, e.g. `doom` rendering a fixed internal frame) is scaled by the
   compositor to **fill the window preserving aspect ratio**, centred, with black
   letterbox/pillarbox bars — so drag-resize and maximize enlarge it instead of
@@ -241,7 +300,9 @@ Client → server requests (sent with `sys_ipc_sendrec`):
   largest integer multiple of its native frame that fits the desktop).
 - `MX_PRESENT(win)` → reply = one input event: "I drew a frame, composite it."
 - `MX_POLL(win)` → reply = one input event (drain input without presenting).
-- `MX_BYE(win)` → ack; the client is exiting.
+- `MX_BYE(win)` → ack + close that window slot.  Normally a client sends it as it
+  exits (the reap loop also frees the slot); for a **dialog** window it closes
+  just that window while the client keeps running (per-window teardown).
 - `MX_WALLPAPER(sid,w,h)` → the client (mximg) hands the WM a decoded wallpaper
   as a shared surface; see *Desktop wallpaper* above.
 - `MX_OPEN(sid,len)` → **default-app dispatch**: the client hands over a file path
@@ -253,6 +314,28 @@ Client → server requests (sent with `sys_ipc_sendrec`):
   and is reaped normally (a client-forked grandchild would ghost — the same
   parenting rule the Doom launcher relies on). Files double-clicked in `mxfiles`
   go through this.
+- `MX_RELOAD_PREFS()` → ack: re-read `~/.mxrc` prefs (the dock's `Tray*` widgets)
+  and repaint the desktop. Sent by `mxsettings` after a Status-Bar toggle so the
+  change is live without a re-login; see *Settings (`mxsettings`)* above.
+
+### Multi-window: dialogs
+
+A client is normally one window, but it can open a **second, transient window**
+— an open/save dialog — without becoming a new process.  `mx_open_window(dlg,
+parent, w, h)` sends a fresh `MX_HELLO` with **`MX_F_DIALOG`** to the same
+server; the WM **allocates a new, centred, focused window slot** for that client
+(instead of the usual reuse of the client's existing window) and marks it a
+dialog.  The app runs a small nested loop over the dialog's own `mx_conn`
+(`mx_pump` → draw → `mx_present`) until the user accepts/cancels, then `mx_close`
+sends a per-window `MX_BYE` that frees **just** that slot — the parent window is
+untouched and keeps running (soft-modal: the parent isn't pumped meanwhile).
+This is X11's transient-child idea on the makx protocol.
+
+The shared file dialog rides on this: **`br_dialog_window(parent, b, mode, …)`**
+(`gui_browser`) opens a dialog window and drives `br_dialog` in it, with a
+**List / Icons** view toggle (the icon view is a folder/file glyph grid + a
+scrollbar).  `mxedit` (Open / Save As), `mximg` (Open), `mxdoom` (Browse PWAD)
+and `mxsettings` (Appearance → Browse…) all use it.
 
 ### Keyboard delivery (cooked vs raw)
 
@@ -392,8 +475,24 @@ The text installer renders as a real ANSI/VT100 byte stream to its stdout, so it
 also works from a shell VT and inside an `mxterm` window with one code path.
 
 An always-on **top menu bar** (drawn after the windows, never occluded) carries
-the Makar brand, the focused window's title, and a **power icon** at the
-right. Clicking it (or pressing **Ctrl-Alt-Del**, see below) opens a centred
+the Makar brand, macOS-style **Edit** / **View** dropdowns, the focused window's
+title, and a **power icon** at the right.
+
+**Desktop menus (Edit / View) + right-click context menu.** The menu-bar **Edit**
+dropdown offers **Cut / Copy / Paste** and **View** offers **Auto Arrange**; a
+**right-click on the empty desktop** opens the same actions as a context menu
+(RCCM). Cut/Copy/Paste inject the `^X`/`^C`/`^V` byte into the focused client via
+`win_push`, so the application's own clipboard handling runs exactly as if the
+keystroke had been typed — there is no separate desktop clipboard and **no
+undo/redo**. Auto Arrange sorts the icons A→Z and re-grids them
+(`icon_grid_pos`), persisting the new spots to `~/.mxrc` (see Desktop icons
+above). The edit verbs grey out when no window is focused. One
+shared popup module (`menu_items`/`menu_box`/`draw_desk_menu`/`desk_menu_click`,
+`wm.c`) backs both the menu-bar dropdowns and the RCCM, mirroring the dock
+tray-menu pattern; `menubar_hit` opens a dropdown, an empty-desktop right-click
+(gated off windows, icons and the dock) opens the RCCM.
+
+Clicking the power icon (or pressing **Ctrl-Alt-Del**, see below) opens a centred
 modal **power menu** (`show_power_menu`) with: **Log out (graphical)**
 (→ `sys_logout`, re-shows login), **Log out to shell** (→ `sys_gui_close`,
 back to the CLI shell), **Shut down** (→ `sys_shutdown`), **Reboot**

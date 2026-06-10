@@ -10,6 +10,12 @@ int net_lwip_ready(void);
 int net_lwip_info(char *buf, uint32_t cap);
 int net_lwip_control(int cmd);
 
+/* Apply a network config: DHCP (dhcp != 0) or a static IPv4 address (the four
+ * dotted-quad octet arrays).  Returns 0 on success, -1 if the stack isn't ready.
+ * Backs SYS_NET_CONFIG / Settings > Network. */
+int net_lwip_config(int dhcp, const uint8_t ip[4], const uint8_t mask[4],
+                    const uint8_t gw[4], const uint8_t dns[4]);
+
 /* Resolve a hostname (or dotted-quad string) to an IPv4 address via lwIP DNS.
  * Blocks (yielding) up to timeout_ticks for the lookup.  Writes the 4 address
  * octets into ip_out and returns 0 on success, -1 on failure/timeout. */

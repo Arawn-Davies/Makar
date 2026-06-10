@@ -11,6 +11,7 @@
 #define GUI_BROWSER_H
 
 #include "gui_ui.h"     /* ui_ctx + gfx_surface, for the shared file dialog */
+#include "makx.h"       /* mx_conn, for the windowed dialog (br_dialog_window) */
 
 #define BR_MAX  256
 #define BR_NAMW 64
@@ -20,6 +21,7 @@ typedef struct {
     unsigned char type[BR_MAX];
     const char   *ptr[BR_MAX];             /* listbox item pointers            */
     int           n, sel, scroll, loaded;
+    int           view;                     /* 0 = list, 1 = icon grid           */
     char          pathedit[256];            /* editable path box (file dialog)   */
 } browser;
 
@@ -49,5 +51,13 @@ void path_base(const char *path, char *out, int max);  /* file part             
 int br_dialog(browser *b, ui_ctx *u, gfx_surface *s,
               int x, int y, int w, int h, int mode,
               char *savename, int savecap, char *out, int outcap);
+
+/* Run the open/save dialog as its own centred window (makx multi-window): opens
+ * a transient dialog window off `parent`, drives br_dialog in its own event
+ * loop until the user accepts or cancels, then closes the window (the parent app
+ * keeps running).  `mode` 1=open / 2=save.  Returns 1 (accepted, out set),
+ * 2 (cancelled / window closed), or -1 if the window couldn't be opened. */
+int br_dialog_window(const mx_conn *parent, browser *b, int mode,
+                     char *savename, int savecap, char *out, int outcap);
 
 #endif /* GUI_BROWSER_H */

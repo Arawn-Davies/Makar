@@ -1045,6 +1045,28 @@ static void syscall_dispatch_inner(registers_t *regs)
     }
 
     /* ------------------------------------------------------------------
+     * SYS_SETTIME(285): write the CMOS RTC (settings clock).  EBX packs
+     * (year<<16)|(mon<<8)|day, ECX packs (hour<<16)|(min<<8)|sec.  Since
+     * gettimeofday reads the RTC live, this is the whole wall clock.
+     * ------------------------------------------------------------------ */
+    case SYS_SETTIME: {
+        rtc_time_t t;
+        t.year = (uint16_t)((regs->ebx >> 16) & 0xFFFFu);
+        t.mon  = (uint8_t)((regs->ebx >> 8) & 0xFFu);
+        t.day  = (uint8_t)(regs->ebx & 0xFFu);
+        t.hour = (uint8_t)((regs->ecx >> 16) & 0xFFu);
+        t.min  = (uint8_t)((regs->ecx >> 8) & 0xFFu);
+        t.sec  = (uint8_t)(regs->ecx & 0xFFu);
+        /* Sanity-clamp so a bad UI value can't write garbage to the RTC. */
+        if (t.year < 1970u || t.year > 2099u || t.mon < 1u || t.mon > 12u ||
+            t.day < 1u || t.day > 31u || t.hour > 23u || t.min > 59u || t.sec > 59u) {
+            regs->eax = (uint32_t)-1; break;
+        }
+        regs->eax = (uint32_t)rtc_write(&t);
+        break;
+    }
+
+    /* ------------------------------------------------------------------
      * SYS_CLOCK_GETTIME(265): write current time into struct timespec.
      * EBX = clockid_t (CLOCK_REALTIME or CLOCK_MONOTONIC), ECX = ts*.
      * REALTIME mirrors SYS_GETTIMEOFDAY; MONOTONIC is timer ticks since
@@ -2267,6 +2289,14 @@ static void syscall_dispatch_inner(registers_t *regs)
      * ------------------------------------------------------------------ */
     case SYS_NET_CTL: {
         regs->eax = (uint32_t)net_lwip_control((int)regs->ebx);
+        break;
+    }
+
+    /* SYS_NET_CONFIG(286): EBX = net_cfg_t * -- DHCP or a static IPv4 config. */
+    case SYS_NET_CONFIG: {
+        const net_cfg_t *cfg = (const net_cfg_t *)(uintptr_t)regs->ebx;
+        if (!cfg) { regs->eax = (uint32_t)-1; break; }
+        regs->eax = (uint32_t)net_lwip_config(cfg->dhcp, cfg->ip, cfg->mask, cfg->gw, cfg->dns);
         break;
     }
 

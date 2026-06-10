@@ -83,7 +83,12 @@ advancing.
 
 The VFS supports ISO9660, FAT32, ext2, tmpfs, devfs, procfs, and logfs. Not
 every filesystem supports every mutation. `/tmp` is the reliable scratch
-location during live boots.
+location during live boots. On a **live-CD** boot the elected rootfs is the
+read-only ISO9660, so the kernel overlays **tmpfs at the home directories**
+(`/root`, `/home`, `/home/user`) too — home writes (`~/.mxrc` etc.) succeed in
+RAM for the session, Ubuntu-live style; on an installed ext2/FAT32 root the real,
+persistent home is used. tmpfs is multi-instance (one namespace per mount), so
+these overlays never alias `/tmp`.
 
 ## Memory APIs
 

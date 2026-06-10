@@ -313,7 +313,6 @@ int main(int argc, char **argv)
 
     ui_ctx u; for(unsigned i=0;i<sizeof u/sizeof(int);i++)((int*)&u)[i]=0;
     browser brz; for(unsigned i=0;i<sizeof brz/sizeof(int);i++)((int*)&brz)[i]=0;
-    int dlg=0;
 
     /* Optional path argument (skip -makx <pid>). */
     for(int i=1;i<argc;i++){
@@ -342,10 +341,10 @@ int main(int argc, char **argv)
         int wp_c=ui_button(&u,s,74,MENU_H+5,112,20,"Set Wallpaper");
         int gal_c=ui_button(&u,s,190,MENU_H+5,70,20, g_gallery?"Viewer":"Gallery");
         gfx_str_clip(s,266,MENU_H+11,msg,COL_TEXT,s->w-8);
-        if(open_c){ scpy(brz.cwd,"/apps",sizeof brz.cwd); brz.sel=brz.scroll=0; brz.loaded=0; br_load(&brz); dlg=1; g_gallery=0; }
+        if(open_c){ g_gallery=0; char full[256]; full[0]=0; scpy(brz.cwd,"/apps",sizeof brz.cwd); brz.sel=brz.scroll=0; brz.loaded=0; if(br_dialog_window(&c,&brz,1,(char*)0,0,full,sizeof full)==1) load_image(full); }
         if(wp_c && img_w>0 && !g_gallery) set_wallpaper(&c);
         if(gal_c){ g_gallery=!g_gallery;
-            if(g_gallery){ dlg=0; gal_scan(); }
+            if(g_gallery){ gal_scan(); }
             else if(g_cur_path[0]) load_image(g_cur_path);   /* thumbs clobbered img_px; restore the viewed image */
             else img_w=0;
         }
@@ -355,11 +354,6 @@ int main(int argc, char **argv)
             else if(!busy && gk==0x80 && gal_scroll>0) gal_scroll--;  /* arrow up */
             int ci=gallery_render(s,&u,4,MENU_H+34,s->w-8,s->h-(MENU_H+34)-4);
             if(ci>=0){ load_image(gal_path[ci]); g_gallery=0; }
-        } else if(dlg){
-            char full[256];
-            int r=br_dialog(&brz,&u,s,6,MENU_H+34,s->w-12,s->h-(MENU_H+34)-6,1,(char*)0,0,full,sizeof full);
-            if(r==1){ load_image(full); dlg=0; }
-            else if(r==2){ dlg=0; }
         } else if(img_w>0){
             /* aspect-fit the image into the area below the toolbar */
             int ax=4, ay=MENU_H+34, aw=s->w-8, ah=s->h-(MENU_H+34)-4;
@@ -389,10 +383,10 @@ int main(int argc, char **argv)
         static const ui_menu_item hitems[]={{"About mximg",I_ABOUT,1,0}};
         ui_menu menus[]={{"File",fitems,4},{"View",vitems,1},{"Help",hitems,1}};
         int mact=ui_menubar(&u,s,menus,3,&g_menu);
-        if(mact==I_OPEN){ scpy(brz.cwd,"/apps",sizeof brz.cwd); brz.sel=brz.scroll=0; brz.loaded=0; br_load(&brz); dlg=1; g_gallery=0; }
+        if(mact==I_OPEN){ g_gallery=0; char full[256]; full[0]=0; scpy(brz.cwd,"/apps",sizeof brz.cwd); brz.sel=brz.scroll=0; brz.loaded=0; if(br_dialog_window(&c,&brz,1,(char*)0,0,full,sizeof full)==1) load_image(full); }
         else if(mact==I_WALLPAPER){ if(img_w>0 && !g_gallery) set_wallpaper(&c); }
         else if(mact==I_GALLERY){ g_gallery=!g_gallery;
-            if(g_gallery){ dlg=0; gal_scan(); }
+            if(g_gallery){ gal_scan(); }
             else if(g_cur_path[0]) load_image(g_cur_path); else img_w=0; }
         else if(mact==I_EXIT) g_exit_req=1;
         else if(mact==I_ABOUT) g_about=1;

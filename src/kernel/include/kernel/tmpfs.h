@@ -30,36 +30,42 @@
 #define TMPFS_MOUNT      "/tmp"
 #define TMPFS_MOUNT_LEN  4
 
+/* Every op takes a namespace id `ns` so several independent tmpfs instances
+ * can be mounted at once -- the canonical /tmp is ns 0, and a read-only live
+ * root adds writable home overlays (/root, /home/user) as separate namespaces.
+ * Entries in different namespaces never alias even when their relative paths
+ * match. */
+
 /* Read a tmpfs file into a caller buffer.  Returns 0 on success and
  * stores the byte count in *out_sz; returns -1 if the file does not
  * exist. */
-long tmpfs_read(const char *path, void *buf, uint32_t bufsz, uint32_t *out_sz);
+long tmpfs_read(int ns, const char *path, void *buf, uint32_t bufsz, uint32_t *out_sz);
 
 /* Replace the contents of a tmpfs file (creating it on first write).
  * Returns the byte count written, or -1 on bad path / oversize write /
  * OOM.  Unlike logfs_write this overwrites - there is no ring. */
-long tmpfs_write(const char *path, const void *buf, uint32_t len);
+long tmpfs_write(int ns, const char *path, const void *buf, uint32_t len);
 
 /* 1 if "/<name>" is an existing tmpfs file, else 0. */
-int  tmpfs_file_exists(const char *path);
+int  tmpfs_file_exists(int ns, const char *path);
 
-/* List the /tmp directory (path "/") to the terminal. */
-int  tmpfs_ls(const char *path);
+/* List the tmpfs directory (path "/") to the terminal. */
+int  tmpfs_ls(int ns, const char *path);
 
-/* Tab-completion enumeration of /tmp entries. */
-int  tmpfs_complete(const char *dir, const char *prefix,
+/* Tab-completion enumeration of tmpfs entries. */
+int  tmpfs_complete(int ns, const char *dir, const char *prefix,
                     fat32_complete_cb_t cb, void *ctx);
 
 /* Return the current size of "/<name>", or -1 if absent. */
-long tmpfs_size(const char *path);
+long tmpfs_size(int ns, const char *path);
 
 /* Remove "/<name>".  Returns 0 on success, -1 if absent. */
-int  tmpfs_delete(const char *path);
+int  tmpfs_delete(int ns, const char *path);
 
 /* No-op success: tmpfs has a flat namespace, so "creating" a directory
  * is implicit -- the namespace it spans appears the moment a file
  * underneath it is written.  Returns 0 for any non-empty path so
  * scripts that mkdir before writing don't see a spurious error. */
-int  tmpfs_mkdir(const char *path);
+int  tmpfs_mkdir(int ns, const char *path);
 
 #endif /* _KERNEL_TMPFS_H */

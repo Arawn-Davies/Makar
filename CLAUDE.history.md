@@ -85,7 +85,7 @@ BSD-licensed kernel.
 
 | Project | Licence | Source | Used for |
 |---------|---------|--------|----------|
-| **doomgeneric** (ozkl) | GPLv2 | https://github.com/ozkl/doomgeneric | Portable DOOM port; `doom.elf` (Makar backend: `src/userspace/doomgeneric_makar.c`) |
+| **doomgeneric** (ozkl) | GPLv2 | https://github.com/ozkl/doomgeneric | Portable DOOM port; `doom.elf` (Makar backend: `src/userspace/doomgeneric-makar/doomgeneric_makar.c`) |
 | **DOOM** (id Software) | GPLv2 | https://github.com/id-Software/DOOM | The DOOM engine wrapped by doomgeneric |
 | **TinyCC** | LGPLv2.1 | https://repo.or.cz/tinycc.git | In-OS C compiler `tcc.elf` (`vendor/tinycc/`) |
 | **lwIP** | BSD-3-Clause | https://github.com/lwip-tcpip/lwip | TCP/IP stack (`vendor/lwip/`) |

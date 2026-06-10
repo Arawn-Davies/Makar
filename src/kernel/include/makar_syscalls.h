@@ -234,6 +234,8 @@
  * treat it as UTF-8/ASCII); the ABI is just bytes. */
 #define SYS_CLIP_SET        283 /* int clip_set(const void *buf, unsigned len) -> len stored */
 #define SYS_CLIP_GET        284 /* int clip_get(void *buf, unsigned cap) -> total len (may exceed cap) */
+#define SYS_SETTIME         285 /* int settime((year<<16)|(mon<<8)|day, (hour<<16)|(min<<8)|sec) -> write CMOS RTC, 0 ok */
+#define SYS_NET_CONFIG      286 /* int net_config(const net_cfg_t *) -> static IP/mask/gw/DNS or DHCP; 0 ok */
 
 /* video_caps() bits (mirror VID_CAP_* in kernel/video.h). */
 #define VIDEO_CAP_ACCEL_COPY 0x1u

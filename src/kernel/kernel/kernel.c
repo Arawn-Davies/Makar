@@ -903,6 +903,15 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 			Serial_WriteString("SHELL-SMOKE: finished\n");
 		}
 
+		/* Headless GUI/desktop self-tests, kept in their own section so they
+		 * can run as a standalone CI job (`./run.sh guismoke`, test=gui-smoke)
+		 * away from the kernel ktests.  Marker GUI-SMOKE: ALL PASS / FAIL. */
+		if (TEST_WANT("gui-smoke")) {
+			Serial_WriteString("GUI-SMOKE: starting\n");
+			sh_run_file("/src/userspace/gui-smoke.sh");
+			Serial_WriteString("GUI-SMOKE: finished\n");
+		}
+
 		/* In-OS kernel rebuild (opt-in only).  Runs /apps/rebuild-kernel.sh
 		 * which calls /apps/tcc.elf once per source file then links the
 		 * result.  Slow: ~10 min under TCG.  Invoke with:

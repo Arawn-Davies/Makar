@@ -28,11 +28,13 @@ tests/groups/__pycache__/
 # Compiled binary artifacts (no extension) that appear in arch dirs
 src/kernel/arch/*/dt_asm
 
-# Userspace build artefacts
+# Userspace build artefacts (top level + per-app subfolders e.g. doomgeneric-makar/)
 src/userspace/*.o
 src/userspace/*.d
 src/userspace/*.a
 src/userspace/*.elf
+src/userspace/**/*.o
+src/userspace/**/*.d
 src/userspace/.tcc.stamp
 
 # Vendored TCC build artefacts (NOT build-stubs -- those are

@@ -18,7 +18,10 @@ LDFLAGS=-T link.ld -nostdlib
 
 # ---- doomgeneric (vendored) ----------------------------------------------
 # Core Doom + the generic glue; exclude every foreign platform backend and
-# use our own doomgeneric_makar.c.  Compiled against the hosted libc + headers.
+# use our own Makar platform backend, which lives in its own folder
+# (doomgeneric-makar/, a candidate for extraction to its own repo alongside a
+# future quakegeneric-makar).  Compiled against the hosted libc + headers.
+DGM_DIR=doomgeneric-makar
 DOOM_DIR=../../vendor/doomgeneric/doomgeneric
 DOOM_PLATFORMS=allegro emscripten linuxvt sdl soso sosox win xlib
 DOOM_EXCL=$(addprefix $(DOOM_DIR)/doomgeneric_,$(addsuffix .c,$(DOOM_PLATFORMS)))
@@ -32,7 +35,7 @@ DOOM_CFLAGS=$(CFLAGS) -I$(DOOM_DIR) -include stddef.h -Wno-unused \
 DESTDIR?=
 ISODIR?=$(CURDIR)/../../isodir
 
-PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf lspci.elf maknetcfg.elf kbtester.elf mouseprobe.elf about.elf makbox.elf makmux.elf statusbar.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf fdisk.elf cfdisk.elf basic.elf filetest.elf alloctest.elf sh.elf ar.elf microhash.elf sha256.elf md5.elf wget.elf tar.elf ktest_uspace.elf gui.elf doom.elf files.elf mxterm.elf mxedit.elf mxfiles.elf mxtasks.elf mxabout.elf mxclock.elf mxcalc.elf mxnet.elf mxdisk.elf mximg.elf mxinstall.elf mxdisplay.elf mxdoom.elf mxweb.elf
+PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf lspci.elf maknetcfg.elf kbtester.elf mouseprobe.elf about.elf makbox.elf makmux.elf statusbar.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf fdisk.elf cfdisk.elf basic.elf filetest.elf alloctest.elf sh.elf ar.elf microhash.elf sha256.elf md5.elf wget.elf linx.elf tar.elf ktest_uspace.elf gui.elf doom.elf files.elf mxterm.elf mxedit.elf mxfiles.elf mxtasks.elf mxabout.elf mxclock.elf mxcalc.elf mxnet.elf mxdisk.elf mximg.elf mxinstall.elf mxdisplay.elf mxsettings.elf mxdoom.elf mxweb.elf
 
 # libc.a -- single archive of the userspace shim (malloc + FILE* stdio +
 # setjmp/longjmp + string/memory helpers).  Shipped under /usr/lib on the
@@ -105,6 +108,9 @@ md5.elf: crt0.o md5.o
 wget.elf: crt0.o wget.o web.o tls.o libbearssl.a libc.a
 	$(LD) $(LDFLAGS) -o $@ $^
 
+linx.elf: crt0.o linx.o web.o tls.o html.o libbearssl.a libc.a
+	$(LD) $(LDFLAGS) -o $@ $^
+
 tar.elf: crt0.o tar.o libc.a
 	$(LD) $(LDFLAGS) -o $@ $^
 
@@ -153,13 +159,16 @@ mxinstall.elf: crt0.o mxinstall.o gui_gfx.o gui_ui.o makx.o
 mxdisplay.elf: crt0.o mxdisplay.o gui_gfx.o gui_ui.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
+mxsettings.elf: crt0.o mxsettings.o gui_gfx.o gui_ui.o gui_browser.o mxrc.o makx.o libc.a
+	$(LD) $(LDFLAGS) -o $@ $^
+
 mximg.elf: crt0.o mximg.o gui_gfx.o gui_ui.o gui_browser.o img_bmp.o img_png.o img_jpg.o mxrc.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 mxdoom.elf: crt0.o mxdoom.o gui_gfx.o gui_ui.o gui_browser.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-mxweb.elf: crt0.o mxweb.o web.o tls.o mxrc.o gui_gfx.o gui_ui.o img_bmp.o img_png.o img_jpg.o makx.o libbearssl.a libc.a
+mxweb.elf: crt0.o mxweb.o web.o tls.o html.o mxrc.o gui_gfx.o gui_ui.o img_bmp.o img_png.o img_jpg.o makx.o libbearssl.a libc.a
 	$(LD) $(LDFLAGS) -o $@ $^
 
 files.elf: crt0.o files.o
@@ -169,15 +178,16 @@ files.elf: crt0.o files.o
 $(DOOM_DIR)/%.o: $(DOOM_DIR)/%.c
 	$(CC) $(DOOM_CFLAGS) -c -o $@ $<
 
-doomgeneric_makar.o: doomgeneric_makar.c
+# Makar platform backend (its own folder; see doomgeneric-makar/README.md).
+$(DGM_DIR)/doomgeneric_makar.o: $(DGM_DIR)/doomgeneric_makar.c
 	$(CC) $(DOOM_CFLAGS) -c -o $@ $<
 
 # Link via the gcc driver so -lgcc (64-bit math helpers) resolves.  makx.o adds
 # the (dormant unless `-makx` is passed) windowed makx-client backend; Doom's
 # fullscreen text-mode path is unchanged.  No gui_gfx: the backend uses only the
 # gfx_surface *type* from makx.h, not any drawing code.
-doom.elf: crt0.o doomgeneric_makar.o $(DOOM_OBJ) makx.o libc.a
-	$(CC) $(LDFLAGS) -o $@ crt0.o doomgeneric_makar.o $(DOOM_OBJ) makx.o libc.a -lgcc
+doom.elf: crt0.o $(DGM_DIR)/doomgeneric_makar.o $(DOOM_OBJ) makx.o libc.a
+	$(CC) $(LDFLAGS) -o $@ crt0.o $(DGM_DIR)/doomgeneric_makar.o $(DOOM_OBJ) makx.o libc.a -lgcc
 
 ls.elf: crt0.o ls.o
 	$(LD) $(LDFLAGS) -o $@ $^

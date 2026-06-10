@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Settings
+Icon=settings
+Exec=/apps/mxsettings.elf
+X-Makar-WinW=720
+X-Makar-WinH=520
+X-Makar-Tint=6a7180

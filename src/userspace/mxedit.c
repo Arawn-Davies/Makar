@@ -25,9 +25,8 @@ static char ed_path[128];
 static int  ed_len, ed_caret, ed_top, ed_dirty_flag;
 static char ed_status[80];
 
-static int     ed_dlg;          /* 0 none, 1 open, 2 save-as */
-static browser ed_brz;
-static char    ed_savename[BR_NAMW];
+static browser  ed_brz;
+static mx_conn *ed_c;           /* connection, for the windowed open/save dialog */
 
 /* ---- selection, clipboard, undo/redo (T52) ------------------------------ */
 static int  ed_sel = -1;        /* selection anchor index, -1 = no selection */
@@ -109,10 +108,15 @@ static void ed_rowcol(int idx,int *row,int *col){ int r=0,cc=0; for(int i=0;i<id
 static int ed_index_of(int row,int col){ int r=0,cc=0,i=0; for(;i<ed_len;i++){ if(r==row&&cc==col)return i; if(ed_buf[i]=='\n'){ if(r==row)return i; r++; cc=0; }else cc++; } return ed_len; }
 
 static void ed_open_dialog(int mode){
-    ed_dlg=mode;
     path_dir(ed_path[0]?ed_path:"/",ed_brz.cwd,sizeof ed_brz.cwd);
     ed_brz.sel=ed_brz.scroll=0; ed_brz.loaded=0; br_load(&ed_brz);
-    if(mode==2){ if(ed_path[0])path_base(ed_path,ed_savename,sizeof ed_savename); else scpy(ed_savename,"untitled.txt",sizeof ed_savename); }
+    char savename[BR_NAMW]; savename[0]=0;
+    if(mode==2){ if(ed_path[0])path_base(ed_path,savename,sizeof savename); else scpy(savename,"untitled.txt",sizeof savename); }
+    char full[256]; full[0]=0;
+    if(br_dialog_window(ed_c,&ed_brz,mode,savename,sizeof savename,full,sizeof full)==1){
+        if(mode==1) ed_load(full);
+        else { scpy(ed_path,full,sizeof ed_path); ed_save(); }
+    }
 }
 
 enum { A_NEW=1,A_OPEN,A_SAVE,A_SAVEAS,A_EXIT, A_CUT,A_COPY,A_PASTE,A_UNDO,A_REDO,A_SELALL, A_ABOUT };
@@ -138,16 +142,6 @@ static void ed_frame(gfx_surface *s,ui_ctx *u,int focused,int rpressed){
     int cw=s->w, ch=s->h;
     gfx_fill(s,0,0,cw,ch,RGB(0x16,0x1b,0x24));
     int tax=6,tay=UI_MENUBAR_H+4,taw=cw-12,tah=ch-tay-18;
-
-    /* open/save dialog: modal, replaces the editor view */
-    if(ed_dlg){
-        char full[256];
-        int r=br_dialog(&ed_brz,u,s,tax,tay,taw,tah,ed_dlg,ed_savename,BR_NAMW,full,sizeof full);
-        if(r==1){ if(ed_dlg==1) ed_load(full); else { scpy(ed_path,full,sizeof ed_path); ed_save(); } ed_dlg=0; }
-        else if(r==2){ ed_dlg=0; }
-        gfx_str_clip(s,tax+4,ch-12,ed_status,UI_COL_MUTED,tax+taw);
-        return;
-    }
 
     /* while a menu/About/context menu is open, the editor ignores input (overlays
      * draw last) */
@@ -193,6 +187,13 @@ static void ed_frame(gfx_surface *s,ui_ctx *u,int focused,int rpressed){
         else if(k==KEY_ARROW_RIGHT){ ed_sel=-1; ed_coalesce=-2; if(ed_caret<ed_len)ed_caret++; }
         else if(k==KEY_ARROW_UP){ ed_sel=-1; ed_coalesce=-2; if(caret_row>0)ed_caret=ed_index_of(caret_row-1,caret_col); }
         else if(k==KEY_ARROW_DOWN){ ed_sel=-1; ed_coalesce=-2; ed_caret=ed_index_of(caret_row+1,caret_col); }
+        else if(k==KEY_HOME){ ed_sel=-1; ed_coalesce=-2; ed_caret=ed_index_of(caret_row,0); }
+        else if(k==KEY_END){ ed_sel=-1; ed_coalesce=-2; int eol=ed_index_of(caret_row+1,0); if(eol>0&&eol<=ed_len&&ed_buf[eol-1]=='\n')eol--; ed_caret=eol; }
+        else if(k==KEY_DELETE){ ed_coalesce=-2;
+            if(ed_has_sel()){ ed_checkpoint(); ed_del_range(ed_sel_lo(),ed_sel_hi()); ed_sel=-1; }
+            else if(ed_caret<ed_len){ ed_checkpoint(); for(int i=ed_caret;i<ed_len;i++)ed_buf[i]=ed_buf[i+1]; ed_len--; ed_buf[ed_len]=0; ed_dirty_flag=1; } }
+        else if(k==KEY_PAGE_UP){ ed_sel=-1; ed_coalesce=-2; int r=caret_row-vis_rows; if(r<0)r=0; ed_caret=ed_index_of(r,caret_col); }
+        else if(k==KEY_PAGE_DOWN){ ed_sel=-1; ed_coalesce=-2; ed_caret=ed_index_of(caret_row+vis_rows,caret_col); }
         else if(k>=32&&k<127) ed_insert((char)k);
         ed_rowcol(ed_caret,&caret_row,&caret_col); u->got_input=1; caretmoved=1;
     }
@@ -247,6 +248,7 @@ int main(int argc,char**argv){
 
     ui_ctx u; for(unsigned i=0;i<sizeof u/sizeof(int);i++)((int*)&u)[i]=0;
     int first=1,lmx=-1,lmy=-1,lfocus=-1;
+    ed_c=&c;
 
     while(!c.closed && !ed_exit_req){
         mx_pump(&c);

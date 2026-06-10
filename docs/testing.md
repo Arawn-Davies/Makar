@@ -34,13 +34,14 @@ There are now two kinds of coverage:
 | Command | Display | Guest mode | Pass marker |
 |---|---|---|---|
 | `./run.sh ktest` | headless | `test_mode test=ktest` | `KTEST_RESULT: PASS` |
+| `./run.sh guismoke` | headless | `test_mode test=gui-smoke` | `GUI-SMOKE: ALL PASS` |
 | `./run.sh kbtest` | headless | normal boot plus `kbtest` cmdline | `KBTEST: ALL PASS` |
 | `./run.sh kbtest gui` | visible | same as `kbtest` | `KBTEST: ALL PASS` |
 | `./run.sh gui ktest` | visible | `test_mode test=ktest` | `KTEST_RESULT: PASS` |
 | `./run.sh gui incore` | visible | `test_mode test=incore` | `INCORE: ALL PASS` |
 | `./run.sh gui libc` | visible | `test_mode test=libc-tcc` | `LIBC-TCC: ALL PASS` |
 | `./run.sh gui smoke` | visible | `test_mode test=shell-smoke` | `SHELL-SMOKE: ALL PASS` |
-| `./run.sh gui all-tests` | visible | `test_mode test=all` | all four markers |
+| `./run.sh gui all-tests` | visible | `test_mode test=all` | all markers |
 | `./run.sh iso test` | headless | build + ktest + GDB checkpoint | command exit 0 |
 
 ## ktest
@@ -169,6 +170,33 @@ Pass marker:
 SHELL-SMOKE: ALL PASS
 ```
 
+### `gui-smoke.sh`
+
+The headless GUI/desktop self-tests, kept as their own logical section (separate
+from `shell-smoke.sh` and the kernel ktests) so they can run as a standalone,
+fast, deterministic CI job. Each is a framebuffer-free `gui.elf` sub-command that
+asserts in-process and exits non-zero on failure:
+
+- `gui.elf uitest` — the `gui_ui` immediate-mode widgets (button/slider/textbox)
+  against a synthetic off-screen surface.
+- `gui.elf fstest` — the `gui_browser` file model against the real VFS
+  (chdir/readdir/getcwd) — the Files window + the editor open/save dialog.
+- `gui.elf desktest` — the desktop logic: the Windows-style column-major
+  height-derived icon grid (never clipped off the bottom), on-screen clamping,
+  the case-folded alphabetical sort, and the `~/.mxrc` icon-position key + value
+  parse + a save→load round-trip.
+
+Run only this suite with `./run.sh guismoke` (boots `test_mode test=gui-smoke`);
+it is also part of a bare `test_mode` (so `./run.sh iso test` runs it too). Pass
+marker:
+
+```text
+GUI-SMOKE: ALL PASS
+```
+
+It is deliberately isolated from the exec-heavy `libc-tcc.sh` / `shell-smoke.sh`
+drivers so the CI `gui-headless` job stays non-flaky.
+
 ## kbtest
 
 `kbtest` is the dedicated keyboard-under-test suite. It boots the normal shell
@@ -211,6 +239,12 @@ Current scenarios:
 9. Quit `maktop`.
 10. Type `exit` across the VT shells.
 11. Assert `vtty_count() == 0`, proving makmux exited and focus restored.
+
+`kbtest` runs in CI as its own job (`kbtest` in `.github/workflows/build-test.yml`),
+headless under TCG. It is deterministic — no host typing, asserts on the
+`KBTEST: ALL PASS` serial marker — with a single automatic re-run reserved for the
+documented `exec: missing params (kernel bug)` arg race (the only sanctioned
+transient); any other failure fails the job.
 
 Headless:
 

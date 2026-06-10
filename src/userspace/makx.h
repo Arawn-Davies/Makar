@@ -43,6 +43,7 @@
 #define MX_RESIZE   5   /* data[0]=win data[1]=w data[2]=h -> reply data[0]=new sid (or -1) */
 #define MX_WALLPAPER 6  /* data[0]=surface id data[1]=w data[2]=h -> server maps it as the desktop wallpaper (decoded pixels handed over directly; no file read) */
 #define MX_OPEN      7  /* data[0]=surface id (holds the path bytes) data[1]=len -> server maps it, reads the path, picks the default app for that file type and fork+execve's it (the server must be the launcher so it parents -> reaps the window) */
+#define MX_RELOAD_PREFS 8 /* no args -> server re-reads ~/.mxrc (tray widget visibility etc.) and repaints; lets the Settings app apply dock changes live */
 
 /* HELLO flags (data[2]).  MX_F_RESIZABLE: the client re-flows to fill the window
  * (the server sends MXEV_RESIZE on window resize and blits the surface 1:1, not
@@ -55,6 +56,12 @@
  * each scancode (low7 | 0x80=break) as the MXEV_KEY value; on focus loss it
  * restores cooked mode.  Mirrors a display server flipping evdev/tty modes. */
 #define MX_F_RAWKEYS    2
+/* MX_F_DIALOG: this HELLO opens a SECOND, separate window for an already-
+ * connected client (an open/save dialog), instead of reusing the client's main
+ * window.  The server allocates a fresh, centred, focused window slot.  The app
+ * pumps it with its own mx_conn (see mx_open_window) and closes it with
+ * mx_close() (per-window MX_BYE) without exiting.  X11-style transient child. */
+#define MX_F_DIALOG     4
 
 /* server -> client reply event kinds (carried in the reply ipc_msg_t.type).
  * data[5] always carries the count of further events still queued, so the
@@ -103,6 +110,13 @@ typedef struct {
  * 0 on success, -1 on failure (no -makx arg, server gone, surface map failed). */
 int  mx_connect(mx_conn *c, int argc, char **argv, int w, int h, int flags);
 
+/* Open a SECOND window for an already-connected client -- a separate dialog
+ * window (open/save, etc.).  Reuses `parent`'s server handle, sends a HELLO with
+ * MX_F_DIALOG so the server makes a fresh centred window, and fills `dlg` as its
+ * own mx_conn (own win/sid/surface) for the caller to pump/draw/present.  Close
+ * it with mx_close(dlg) -- the parent keeps running.  Returns 0, or -1. */
+int  mx_open_window(mx_conn *dlg, const mx_conn *parent, int w, int h, int flags);
+
 /* Drain all queued input events from the server into c (mouse/focus/close are
  * folded into the struct; keys are buffered -- read them with mx_key()).
  * Computes mpressed/mreleased edges for this pump.  Returns 0, or -1 if the
@@ -124,6 +138,10 @@ void mx_close(mx_conn *c);
  * root-pixmap style): the server maps `sid` and blits it stretched behind the
  * icons, no file read involved.  Best-effort. */
 void mx_set_wallpaper(mx_conn *c, int sid, int w, int h);
+
+/* Ask the server to re-read ~/.mxrc (tray widget visibility etc.) and repaint --
+ * so a settings change applies to the live desktop without a re-login. */
+void mx_reload_prefs(mx_conn *c);
 
 /* Ask the display server to open `path` in its default app for that file type
  * (images -> mximg, html -> mxweb, *.elf GUI apps run directly, other

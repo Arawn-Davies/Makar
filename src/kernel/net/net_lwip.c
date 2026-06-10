@@ -309,6 +309,35 @@ int net_lwip_control(int cmd)
     return r;
 }
 
+/* Apply a network configuration (Settings > Network / SYS_NET_CONFIG): DHCP
+ * (dhcp != 0) or a static IPv4 address with the four dotted-quad fields.  Same
+ * primitives the DHCP fallback uses (netif_set_addr + dns_setserver). */
+int net_lwip_config(int dhcp, const uint8_t ip[4], const uint8_t mask[4],
+                    const uint8_t gw[4], const uint8_t dns[4])
+{
+    net_lock();
+    if (!s_ready) { net_unlock(); return -1; }
+    if (dhcp) {
+        dhcp_release_and_stop(&s_netif);
+        int r = net_lwip_try_dhcp(250u, 1);
+        net_unlock();
+        return r;
+    }
+    if (s_dhcp_enabled) dhcp_release_and_stop(&s_netif);
+    net_lwip_note_dhcp_off();
+    ip4_addr_t a, m, g, d;
+    IP4_ADDR(&a, ip[0],   ip[1],   ip[2],   ip[3]);
+    IP4_ADDR(&m, mask[0], mask[1], mask[2], mask[3]);
+    IP4_ADDR(&g, gw[0],   gw[1],   gw[2],   gw[3]);
+    IP4_ADDR(&d, dns[0],  dns[1],  dns[2],  dns[3]);
+    netif_set_addr(&s_netif, &a, &m, &g);
+    dns_setserver(0, (const ip_addr_t *)&d);
+    s_released = 0;
+    Serial_WriteString("lwip: static config applied\n");
+    net_unlock();
+    return 0;
+}
+
 static void info_append(char *buf, uint32_t cap, uint32_t *off, const char *s)
 {
     while (*s && *off < cap - 1)

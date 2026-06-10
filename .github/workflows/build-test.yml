@@ -186,6 +186,94 @@ jobs:
             gui-screendump.ppm
           if-no-files-found: warn
 
+  # ── GUI headless self-tests (own section, away from the kernel ktests) ─────
+  # Boots makar-test.iso with test=gui-smoke so the kernel runs ONLY the
+  # framebuffer-free GUI/desktop self-tests (gui.elf uitest/fstest/desktest via
+  # /src/userspace/gui-smoke.sh) and skips every other suite.  Deterministic and
+  # fast: no host input, no screen scraping -- it asserts on the GUI-SMOKE serial
+  # marker.  Distinct from `guitest` (which checks the GUI *boots* + screendumps).
+  gui-headless:
+    name: GUI headless self-tests
+    needs: build
+    runs-on: ubuntu-latest
+    container:
+      image: arawn780/gcc-cross-i686-elf:fast
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: makar-build
+
+      - name: Run GUI headless self-tests
+        run: |
+          mkdir -p ci-logs
+          set -o pipefail
+          ./run.sh guismoke 2>&1 | tee ci-logs/gui-headless-run.log
+
+      - name: Upload GUI headless log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-headless-log
+          path: |
+            ci-logs/
+            ktest.log
+          if-no-files-found: warn
+
+  # ── kbtest: in-guest keyboard-injection test ───────────────────────────────
+  # Boots makar.iso with `kbtest` on the cmdline into the normal shell; the
+  # kernel's keyboard_test_driver injects keycodes straight into the live
+  # decode -> focus-router -> task-ring -> shell path (no host typing) and emits
+  # KBTEST serial markers.  Deterministic; the only sanctioned transient is the
+  # documented `exec: missing params (kernel bug)` arg race, which we re-run once
+  # (exactly the local workaround) -- any other failure is real.
+  kbtest:
+    name: kbtest (keyboard injection)
+    needs: build
+    runs-on: ubuntu-latest
+    container:
+      image: arawn780/gcc-cross-i686-elf:fast
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Boot-to-shell + injection under TCG (no KVM on GHA runners) is slower
+      # than the local KVM path; give the poll loop generous headroom.
+      KBTEST_TIMEOUT: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run kbtest
+        run: |
+          mkdir -p ci-logs
+          set -o pipefail
+          attempt() { ./run.sh kbtest 2>&1 | tee ci-logs/kbtest-run.log; }
+          if attempt; then exit 0; fi
+          # Re-run once ONLY for the known exec arg race; otherwise fail.
+          if grep -q "exec: missing params" kbtest.log ci-logs/kbtest-run.log 2>/dev/null; then
+            echo "::warning::kbtest hit the known exec-race (missing params); retrying once"
+            attempt
+          else
+            echo "kbtest failed for a non-transient reason"; exit 1
+          fi
+
+      - name: Upload kbtest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kbtest-log
+          path: |
+            ci-logs/
+            kbtest.log
+          if-no-files-found: warn
+
   # ── GDB ISO boot-checkpoint test ───────────────────────────────────────────
   # Boots makar.iso (interactive grub.cfg; the GUI desktop is the default
   # entry) under the QEMU
@@ -267,9 +355,13 @@ jobs:
             hdd-test-serial.log
           if-no-files-found: warn
 
-  # NOTE: user-facing coverage is in-guest and headless -- the script
-  # drivers (shell-smoke / incore / libc-tcc, run by `./run.sh iso test`
-  # via the ktest job above) and the key-injection harness (`./run.sh
-  # kbtest`).  There is no host-driven keyboard path.  `kbtest` is not in
-  # this workflow only because boot-to-shell under TCG (no KVM on GHA
-  # runners) is slow; it's a local pre-merge check.
+  # NOTE: user-facing coverage is in-guest and headless.  In CI:
+  #   - the GUI/desktop self-tests run in the `gui-headless` job (test=gui-smoke);
+  #   - the keyboard pipeline runs in the `kbtest` job (in-guest key injection);
+  #   - the shell/VFS/apps + libc/TCC script drivers (shell-smoke / incore /
+  #     libc-tcc) run locally via `./run.sh iso test` -- they are NOT in this
+  #     workflow because the in-OS TCC self-rebuild is slow under TCG (no KVM on
+  #     GHA runners) and the exec-heavy drivers are flake-prone; they stay a
+  #     local pre-merge gate.
+  # There is no host-driven keyboard path -- kbtest injects keycodes inside the
+  # guest, asserting on serial markers.

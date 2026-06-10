@@ -154,4 +154,15 @@ struct sockaddr_in {
 };
 #endif
 
+/* Network configuration for SYS_NET_CONFIG (Settings > Network).  dhcp != 0
+ * requests DHCP and ignores the address fields; otherwise the four dotted-quad
+ * octet arrays set a static IPv4 address + DNS server. */
+#ifndef _MAKAR_STRUCT_NET_CFG_DEFINED
+#define _MAKAR_STRUCT_NET_CFG_DEFINED
+typedef struct {
+    int           dhcp;
+    unsigned char ip[4], mask[4], gw[4], dns[4];
+} net_cfg_t;
+#endif
+
 #endif /* _MAKAR_ABI_H */

@@ -494,6 +494,17 @@ static int readline(const char *prompt, char *buf)
         }
         if (ch == KEY_ARROW_LEFT)  { if (cur > 0)   { put_c('\b'); cur--; } continue; }
         if (ch == KEY_ARROW_RIGHT) { if (cur < len) { put_c(buf[cur]); cur++; } continue; }
+        if (ch == KEY_HOME) { while (cur > 0)   { put_c('\b'); cur--; }        continue; }
+        if (ch == KEY_END)  { while (cur < len) { put_c(buf[cur]); cur++; }     continue; }
+        if (ch == KEY_DELETE) {                 /* forward-delete at the caret */
+            if (cur >= len) continue;
+            for (unsigned int i = cur; i + 1 < len; i++) buf[i] = buf[i + 1];
+            len--;
+            if (len > cur) sys_write(1, &buf[cur], len - cur);
+            put_c(' ');
+            for (unsigned int i = 0; i <= len - cur; i++) put_c('\b');
+            continue;
+        }
         if (ch == KEY_ARROW_UP || ch == KEY_ARROW_DOWN) {
             int new_idx;
             if (ch == KEY_ARROW_UP) {

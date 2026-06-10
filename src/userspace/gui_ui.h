@@ -34,6 +34,7 @@ typedef struct {
     int focus;          /* id of the widget with keyboard focus (0 = none)    */
     int got_input;      /* set when a widget consumed the click/key this frame */
     int tb_selall;      /* focused textbox has its whole contents selected     */
+    int tb_caret;       /* caret char index within the focused textbox         */
 } ui_ctx;
 
 /* Theme colours (XRGB8888). */
@@ -82,6 +83,43 @@ int  ui_password(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
 /* Static text. */
 void ui_label(ui_ctx *c, gfx_surface *s, int x, int y, const char *str,
               gfx_u32 fg);
+
+/* On/off switch (iOS/macOS-style), a fixed UI_TOGGLE_W x UI_TOGGLE_H footprint
+ * at (x,y).  *on is read/written; a click toggles it.  Returns 1 if it changed
+ * this frame.  The settings-app workhorse. */
+#define UI_TOGGLE_W 40
+#define UI_TOGGLE_H 20
+int  ui_toggle(ui_ctx *c, gfx_surface *s, int x, int y, int *on);
+
+/* ------------------------------------------------------------------------
+ * Standard form controls (X11/GTK/Win32 idioms), immediate-mode like the rest.
+ * ------------------------------------------------------------------------ */
+
+/* Numeric spin box: a fixed w x h field showing *val with stacked up/down
+ * steppers on the right (the stepper column is UI_SPIN_BTN px wide; the value
+ * field is the rest).  Clicking a stepper steps *val by 1, clamped to [lo,hi].
+ * Returns 1 if *val changed this frame.  Fixed footprint, so rows of spinners
+ * line up under their labels. */
+#define UI_SPIN_BTN 16
+int  ui_spinner(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
+                int *val, int lo, int hi);
+
+/* Radio button + label at (x,y): part of a group sharing one *sel.  Selected
+ * when *sel == value; a click sets *sel = value.  Returns 1 if it changed. */
+#define UI_RADIO_SZ 14
+int  ui_radio(ui_ctx *c, gfx_surface *s, int x, int y, const char *label,
+              int *sel, int value);
+
+/* Checkbox + label at (x,y).  A click toggles *on.  Returns 1 if it changed. */
+#define UI_CHECK_SZ 14
+int  ui_checkbox(ui_ctx *c, gfx_surface *s, int x, int y, const char *label,
+                 int *on);
+
+/* Determinate progress bar over [0,100] filling the rect (x,y,w,h).  No input. */
+void ui_progress(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h, int pct);
+
+/* A horizontal separator rule across `w` px at (x,y).  No input. */
+void ui_separator(ui_ctx *c, gfx_surface *s, int x, int y, int w);
 
 /* Scrollable single-select list.  *sel is the selected row (read/written),
  * *scroll is the top row (caller-owned, may be 0).  Click selects a row;
