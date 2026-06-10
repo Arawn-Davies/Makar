@@ -126,7 +126,7 @@ mxterm.elf: crt0.o mxterm.o vt100.o gui_gfx.o makx.o
 mxfiles.elf: crt0.o mxfiles.o gui_gfx.o gui_ui.o gui_browser.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-mxedit.elf: crt0.o mxedit.o gui_gfx.o gui_ui.o gui_browser.o makx.o
+mxedit.elf: crt0.o mxedit.o gui_gfx.o gui_ui.o gui_browser.o makx.o libc.a
 	$(LD) $(LDFLAGS) -o $@ $^
 
 mxtasks.elf: crt0.o mxtasks.o gui_gfx.o gui_ui.o makx.o
