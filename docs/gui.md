@@ -205,7 +205,10 @@ copies both with the rest of `/usr`.
 - **gui_ui** — an immediate-mode toolkit. Each frame the caller snapshots input
   with `ui_begin` then calls widgets in a fixed order; widget identity is the
   call order. Widgets: `ui_button`, `ui_slider`, `ui_textbox`, `ui_label`,
-  `ui_listbox`, `ui_vscroll` (track + proportional thumb, click/drag), and the
+  `ui_listbox`, `ui_vscroll` (track + proportional thumb, click/drag), the
+  standard form controls `ui_toggle` (switch), **`ui_spinner`** (numeric field +
+  up/down steppers, clamped), **`ui_radio`**, **`ui_checkbox`**, **`ui_progress`**
+  and **`ui_separator`**, and the
   Windows-style menu set `ui_menubar` / `ui_context_menu` / `ui_about` (greyed
   disabled items, separators, accelerators, popup width sized to the longest
   label; they draw **last** so callers gate their own content while a menu is
@@ -276,7 +279,8 @@ Client → server requests (sent with `sys_ipc_sendrec`):
 - `MX_HELLO(w,h,flags)` → reply `(win, sid)`: create a window + a `w×h` surface.
   `flags` is a bitmask: `MX_F_RESIZABLE` (the client re-flows to fill the window;
   the server blits 1:1 and sends `MXEV_RESIZE` instead of scaling) and
-  `MX_F_RAWKEYS` (see *Keyboard delivery* below). A **fixed-size** client (no
+  `MX_F_RAWKEYS` (see *Keyboard delivery* below) and **`MX_F_DIALOG`** (see
+  *Multi-window: dialogs* below). A **fixed-size** client (no
   `MX_F_RESIZABLE`, e.g. `doom` rendering a fixed internal frame) is scaled by the
   compositor to **fill the window preserving aspect ratio**, centred, with black
   letterbox/pillarbox bars — so drag-resize and maximize enlarge it instead of
@@ -284,7 +288,9 @@ Client → server requests (sent with `sys_ipc_sendrec`):
   largest integer multiple of its native frame that fits the desktop).
 - `MX_PRESENT(win)` → reply = one input event: "I drew a frame, composite it."
 - `MX_POLL(win)` → reply = one input event (drain input without presenting).
-- `MX_BYE(win)` → ack; the client is exiting.
+- `MX_BYE(win)` → ack + close that window slot.  Normally a client sends it as it
+  exits (the reap loop also frees the slot); for a **dialog** window it closes
+  just that window while the client keeps running (per-window teardown).
 - `MX_WALLPAPER(sid,w,h)` → the client (mximg) hands the WM a decoded wallpaper
   as a shared surface; see *Desktop wallpaper* above.
 - `MX_OPEN(sid,len)` → **default-app dispatch**: the client hands over a file path
@@ -299,6 +305,25 @@ Client → server requests (sent with `sys_ipc_sendrec`):
 - `MX_RELOAD_PREFS()` → ack: re-read `~/.mxrc` prefs (the dock's `Tray*` widgets)
   and repaint the desktop. Sent by `mxsettings` after a Status-Bar toggle so the
   change is live without a re-login; see *Settings (`mxsettings`)* above.
+
+### Multi-window: dialogs
+
+A client is normally one window, but it can open a **second, transient window**
+— an open/save dialog — without becoming a new process.  `mx_open_window(dlg,
+parent, w, h)` sends a fresh `MX_HELLO` with **`MX_F_DIALOG`** to the same
+server; the WM **allocates a new, centred, focused window slot** for that client
+(instead of the usual reuse of the client's existing window) and marks it a
+dialog.  The app runs a small nested loop over the dialog's own `mx_conn`
+(`mx_pump` → draw → `mx_present`) until the user accepts/cancels, then `mx_close`
+sends a per-window `MX_BYE` that frees **just** that slot — the parent window is
+untouched and keeps running (soft-modal: the parent isn't pumped meanwhile).
+This is X11's transient-child idea on the makx protocol.
+
+The shared file dialog rides on this: **`br_dialog_window(parent, b, mode, …)`**
+(`gui_browser`) opens a dialog window and drives `br_dialog` in it, with a
+**List / Icons** view toggle (the icon view is a folder/file glyph grid + a
+scrollbar).  `mxedit` (Open / Save As), `mximg` (Open), `mxdoom` (Browse PWAD)
+and `mxsettings` (Appearance → Browse…) all use it.
 
 ### Keyboard delivery (cooked vs raw)
 
