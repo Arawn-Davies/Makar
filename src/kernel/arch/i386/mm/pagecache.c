@@ -1,30 +1,42 @@
 /*
- * pagecache.c -- read-only file page cache (see pagecache.h).
+ * pagecache.c -- file page cache, shared between read() and mmap() (see
+ * pagecache.h).
  *
- * Fixed pool of PC_NPAGES 4 KiB pages in a doubly-linked LRU list (MRU at head,
- * LRU at tail).  Lookup is a linear scan keyed by {path-hash, page index} with a
+ * Fixed pool of PC_NPAGES slots in a doubly-linked LRU list (MRU at head, LRU
+ * at tail).  Lookup is a linear scan keyed by {path-hash, page index} with a
  * full-path tie-break; a miss reuses the LRU tail and fills it via vfs_read_at.
- * An irq lock keeps the list consistent once syscalls run preemptively.
  *
- * Lock order: pagecache lock is taken alone or *before* the VFS disk big-lock
+ * Unlike the original inline-buffer cache, each valid slot now owns a
+ * page-aligned, refcounted PMM frame (`frame`) rather than an inline `data[]`
+ * array.  That is what lets the same physical page back both `read()` (memcpy
+ * out of the frame) and a file `mmap()` (map the frame straight into user space
+ * read-only): pagecache_acquire() bumps the frame's refcount and hands the
+ * phys address to the mmap path, so N processes mapping libc.so share one copy.
+ * The cache keeps its own ref on every valid frame; eviction/invalidation drops
+ * it, and the PMM frees the frame only once the cache and every mapper let go.
+ * This is the Linux page-cache model on a small scale.
+ *
+ * An irq lock keeps the list consistent once syscalls run preemptively.  Lock
+ * order: pagecache lock is taken alone or *before* the VFS disk big-lock
  * (pagecache_read -> vfs_read_at).  Invalidation is invoked from the VFS mutate
  * paths *outside* that lock, so there is no reverse ordering.
  */
 #include <kernel/pagecache.h>
+#include <kernel/pmm.h>
 #include <kernel/vfs.h>
 #include <string.h>
 
 #define PC_PGSZ   PAGECACHE_PGSZ
-#define PC_NPAGES 256u                 /* 256 * 4 KiB = 1 MiB cache */
+#define PC_NPAGES 256u                 /* up to 256 * 4 KiB = 1 MiB of frames */
 
 typedef struct pcpage {
     int            valid;
     uint32_t       hash;               /* hash of path (fast reject)        */
     char           path[VFS_PATH_MAX];
     uint32_t       pidx;               /* page index within the file        */
-    uint32_t       len;                /* valid bytes in data (< PC_PGSZ at EOF) */
+    uint32_t       len;                /* valid bytes in the frame (< PGSZ at EOF) */
+    uint32_t       frame;              /* phys addr of the backing frame (0 = none) */
     struct pcpage *lp, *ln;            /* LRU links (prev=toward MRU)       */
-    uint8_t        data[PC_PGSZ];
 } pcpage_t;
 
 static pcpage_t  s_pages[PC_NPAGES];
@@ -53,6 +65,7 @@ static void pc_init(void)
 {
     for (uint32_t i = 0; i < PC_NPAGES; i++) {
         s_pages[i].valid = 0;
+        s_pages[i].frame = 0;
         s_pages[i].lp = (i == 0) ? 0 : &s_pages[i - 1];
         s_pages[i].ln = (i == PC_NPAGES - 1) ? 0 : &s_pages[i + 1];
     }
@@ -95,7 +108,8 @@ static void pc_touch(pcpage_t *p)
 }
 
 /* Caller holds the pc lock.  Return the page for (path,pidx), filling a miss
- * from disk via vfs_read_at into the recycled LRU tail.  NULL on fill error. */
+ * from disk via vfs_read_at into a refcounted frame on the recycled LRU tail.
+ * NULL on fill / allocation error. */
 static pcpage_t *pc_get(const char *path, uint32_t hash, uint32_t pidx)
 {
     for (pcpage_t *p = s_mru; p; p = p->ln) {
@@ -109,9 +123,29 @@ static pcpage_t *pc_get(const char *path, uint32_t hash, uint32_t pidx)
     /* Miss: recycle the LRU tail. */
     pcpage_t *p = s_lru;
     if (!p) return 0;
-    long got = vfs_read_at(path, pidx * PC_PGSZ, p->data, PC_PGSZ);
-    if (got < 0) { p->valid = 0; return 0; }
 
+    /* Pick a frame to fill.  Reuse the slot's own frame iff nothing else
+     * references it (refcount 1 == just the cache); otherwise a mapper still
+     * holds the previous page's content, so drop the cache's ref (the mapper
+     * keeps it alive) and take a fresh frame. */
+    uint32_t frame = p->frame;
+    if (frame && pmm_ref_count(frame) != 1) {
+        pmm_free_frame(frame);
+        frame = 0;
+    }
+    if (!frame) {
+        frame = pmm_alloc_frame();     /* refcount 1: the cache's own ref */
+        if (!frame) return 0;          /* OOM: leave the slot untouched */
+    }
+
+    long got = vfs_read_at(path, pidx * PC_PGSZ, (void *)frame, PC_PGSZ);
+    if (got < 0) { p->frame = frame; p->valid = 0; return 0; }
+
+    /* Zero the tail past EOF so a whole-frame mmap sees defined bytes. */
+    if ((uint32_t)got < PC_PGSZ)
+        memset((uint8_t *)frame + got, 0, PC_PGSZ - (uint32_t)got);
+
+    p->frame = frame;
     p->valid = 1;
     p->hash  = hash;
     p->pidx  = pidx;
@@ -146,12 +180,32 @@ long pagecache_read(const char *path, uint32_t size,
         if (poff >= p->len) break;                  /* short page = EOF */
         uint32_t chunk = p->len - poff;
         if (chunk > to_read - done) chunk = to_read - done;
-        memcpy(out + done, p->data + poff, chunk);
+        memcpy(out + done, (uint8_t *)p->frame + poff, chunk);
         done += chunk;
         if (p->len < PC_PGSZ) break;                /* last (partial) page */
     }
     pc_irq_restore(fl);
     return (long)done;
+}
+
+uint32_t pagecache_acquire(const char *path, uint32_t size,
+                           uint32_t pidx, uint32_t *out_len)
+{
+    if ((uint64_t)pidx * PC_PGSZ >= size) return 0;     /* page past EOF */
+    uint32_t hash = pc_hash(path);
+
+    uint32_t fl = pc_irq_save();
+    if (!s_inited) pc_init();
+    pcpage_t *p = pc_get(path, hash, pidx);
+    if (!p || !p->frame) { pc_irq_restore(fl); return 0; }
+
+    /* Hand the caller a ref on the frame; it owns it until the mapping is torn
+     * down (pmm_free_frame in vmm_unmap_and_free / vmm_free_pd). */
+    pmm_inc_ref(p->frame);
+    uint32_t frame = p->frame;
+    if (out_len) *out_len = p->len;
+    pc_irq_restore(fl);
+    return frame;
 }
 
 void pagecache_invalidate(const char *path)
@@ -163,6 +217,7 @@ void pagecache_invalidate(const char *path)
             pcpage_t *p = &s_pages[i];
             if (p->valid && p->hash == hash && pc_streq(p->path, path)) {
                 p->valid = 0;
+                if (p->frame) { pmm_free_frame(p->frame); p->frame = 0; }
                 pc_unlink(p);
                 pc_push_back(p);    /* invalidated slot -> recycle it first */
             }
@@ -174,7 +229,10 @@ void pagecache_invalidate(const char *path)
 void pagecache_drop_all(void)
 {
     uint32_t fl = pc_irq_save();
-    for (uint32_t i = 0; i < PC_NPAGES; i++) s_pages[i].valid = 0;
+    for (uint32_t i = 0; i < PC_NPAGES; i++) {
+        if (s_pages[i].frame) { pmm_free_frame(s_pages[i].frame); s_pages[i].frame = 0; }
+        s_pages[i].valid = 0;
+    }
     s_inited = 0;                  /* re-init the LRU list on next use */
     pc_irq_restore(fl);
 }
