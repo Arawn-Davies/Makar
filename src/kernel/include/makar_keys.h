@@ -57,6 +57,9 @@
 #define KEY_MENU_DOWN   ((unsigned char)0x96)
 #define KEY_PAGE_UP     ((unsigned char)0x97)
 #define KEY_PAGE_DOWN   ((unsigned char)0x98)
+#define KEY_HOME        ((unsigned char)0x99)
+#define KEY_END         ((unsigned char)0x9A)
+#define KEY_DELETE      ((unsigned char)0x9B)   /* forward-delete (Del key) */
 
 /* Ctrl+C sentinel returned by keyboard_getchar() when a sigint fires. */
 #define KEY_CTRL_C      ((unsigned char)0x03)

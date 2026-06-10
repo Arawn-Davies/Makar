@@ -884,6 +884,9 @@ static unsigned char translate_make(kc_t kc)
         case KC_ARROW_RIGHT: return (unsigned char)KEY_ARROW_RIGHT;
         case KC_PGUP:        return (unsigned char)KEY_PAGE_UP;
         case KC_PGDN:        return (unsigned char)KEY_PAGE_DOWN;
+        case KC_HOME:        return (unsigned char)KEY_HOME;
+        case KC_END:         return (unsigned char)KEY_END;
+        case KC_DELETE:      return (unsigned char)KEY_DELETE;
         case KC_KP_ENTER:    return '\n';
         case KC_KP_SLASH:    return '/';
         default: break;
