@@ -50,6 +50,34 @@ TCC_ELF=$(wildcard tcc.elf)
 # tcc-compiled programs) can resolve `#include <name.h>` directly.
 SYSROOT_HEADERS=malloc.h stdio.h stdlib.h ctype.h setjmp.h string.h syscall.h dirent.h errno.h stdarg.h unistd.h time.h
 
+# ---- BearSSL (vendored) -> userspace TLS ---------------------------------
+# Compile the vendored BearSSL into a userspace archive.  Objects go under
+# bssl-obj/ (mirroring the src tree) so they never collide with the kernel's
+# in-place vendor/bearssl/*.o build.  Linked into mxweb.elf / wget.elf, which
+# do TLS in ring 3 (the kernel owns only TCP/IP + sockets now).
+BSSL_DIR=../../vendor/bearssl
+BSSL_SRC=$(wildcard $(BSSL_DIR)/src/*/*.c) $(BSSL_DIR)/src/settings.c
+BSSL_OBJ=$(patsubst $(BSSL_DIR)/src/%.c,bssl-obj/%.o,$(BSSL_SRC))
+# BearSSL's *_x86ni.c / *_pclmul.c force BR_ENABLE_INTRINSICS and #include
+# <x86intrin.h>, which -nostdinc hides.  i686-elf-gcc is a bare cross-compiler
+# (no host libc to leak), so -- like the kernel build, which is -ffreestanding
+# but NOT -nostdinc -- drop -nostdinc here: gcc's own x86intrin.h/cpuid.h/stddef.h
+# resolve, our string.h/stdint.h still win via -I., and the intrinsic AES-NI/
+# PCLMUL paths compile (behind #pragma GCC target) but runtime-CPUID-gate off on
+# qemu32, falling back to the aes_ct/ghash_ctmul/i31 software paths.
+BSSL_CFLAGS=$(filter-out -nostdinc,$(CFLAGS)) -I$(BSSL_DIR)/inc -I$(BSSL_DIR)/src -Wno-unused-parameter
+
+bssl-obj/%.o: $(BSSL_DIR)/src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(BSSL_CFLAGS) -c -o $@ $<
+
+libbearssl.a: $(BSSL_OBJ)
+	$(AR) rcs $@ $(BSSL_OBJ)
+
+# tls.c needs the BearSSL public headers; web.c only sees tls.h (opaque).
+tls.o: tls.c
+	$(CC) $(CFLAGS) -I$(BSSL_DIR)/inc -MMD -c -o $@ $<
+
 
 all: $(PROGS) libc.a
 
@@ -74,7 +102,7 @@ sha256.elf: crt0.o sha256.o
 md5.elf: crt0.o md5.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-wget.elf: crt0.o wget.o
+wget.elf: crt0.o wget.o web.o tls.o libbearssl.a libc.a
 	$(LD) $(LDFLAGS) -o $@ $^
 
 ktest_uspace.elf: crt0.o ktest_uspace.o
@@ -128,7 +156,7 @@ mximg.elf: crt0.o mximg.o gui_gfx.o gui_ui.o gui_browser.o img_bmp.o img_png.o i
 mxdoom.elf: crt0.o mxdoom.o gui_gfx.o gui_ui.o gui_browser.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-mxweb.elf: crt0.o mxweb.o gui_gfx.o gui_ui.o img_bmp.o img_png.o img_jpg.o makx.o
+mxweb.elf: crt0.o mxweb.o web.o tls.o gui_gfx.o gui_ui.o img_bmp.o img_png.o img_jpg.o makx.o libbearssl.a libc.a
 	$(LD) $(LDFLAGS) -o $@ $^
 
 files.elf: crt0.o files.o
@@ -300,7 +328,8 @@ endif
 install-headers:
 
 clean:
-	rm -f *.o *.d $(PROGS) *.elf libc.a
+	rm -f *.o *.d $(PROGS) *.elf libc.a libbearssl.a
+	rm -rf bssl-obj
 
 .PHONY: all install install-headers clean
 

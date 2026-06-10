@@ -14,6 +14,7 @@
  * relative <img>/<a> in a local page resolve against the file's directory.
  */
 #include "syscall.h"
+#include "web.h"
 #include "gui_gfx.h"
 #include "gui_ui.h"
 #include "makx.h"
@@ -902,19 +903,16 @@ static void error_page(const char *url,const char *why){
 /* Fetch `tgt` into g_html.  Returns 0 ok (sets a status), -1 on failure (sets
  * g_status to the reason). */
 static int get_page(const char *tgt){
-    if (starts_ci(tgt,"https://")) {
-        scpy(g_status,"HTTPS is moving to userspace — almost there",sizeof g_status); return -1;
-    }
     const char *fpath;
     if (has_scheme(tgt)) {
-        int rc = sys_wget(tgt, "/tmp/mxweb.page");
+        /* http:// and https:// both fetch in userspace (web.c over kernel TCP
+         * sockets; TLS via BearSSL).  3xx redirects are followed automatically. */
+        int rc = web_fetch(tgt, "/tmp/mxweb.page");
         if (rc < 0) {
             char *o;
-            if (rc < -1) {
-                int st = -rc;
-                if (st>=300 && st<400) { o=pcat(g_status,"Redirected (HTTP "); o=pnum(o,(unsigned)st); o=pcat(o,") — usually to HTTPS, which isn't supported yet"); }
-                else { o=pcat(g_status,"HTTP "); o=pnum(o,(unsigned)st); o=pcat(o," from the server"); }
-            } else o=pcat(g_status,"Could not connect (DNS / no route / refused)");
+            if (rc <= -100)      { int st = -rc; o=pcat(g_status,"HTTP "); o=pnum(o,(unsigned)st); o=pcat(o," from the server"); }
+            else if (rc == -2)   o=pcat(g_status,"Could not save the page (read-only /tmp?)");
+            else                 o=pcat(g_status,"Could not connect (DNS / route / TLS / refused)");
             *o=0; return -1;
         }
         fpath = "/tmp/mxweb.page";
