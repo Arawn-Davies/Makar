@@ -293,6 +293,20 @@ else
     fail=1
 fi
 
+# linx --dump reflows the built-in about:linx start page through the shared HTML
+# engine + line-buffer renderer (no network, no tty) -- a crash/regression guard
+# for the text browser; the full-screen UI is verified manually.
+echo SHELL-SMOKE: linx-dump
+exec /apps/linx.elf --dump about:linx
+rc=$?
+if [ $rc -eq 0 ]
+then
+    echo SHELL-SMOKE: [PASS] linx-dump
+else
+    echo SHELL-SMOKE: [FAIL] linx-dump
+    fail=1
+fi
+
 # Pipes (slice A1): `|` is supported in userspace /apps/sh.elf only.
 # Kernel sh (this interpreter) doesn't tokenize `|`; verify pipes by
 # typing `echo X | cat` directly into sh.elf during a UI scenario.
