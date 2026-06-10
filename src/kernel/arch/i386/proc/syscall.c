@@ -871,9 +871,9 @@ static void syscall_dispatch_inner(registers_t *regs)
      * SYS_KEYBOARD_RAW(212): enable/disable raw key event delivery
      * for the duration of the current app.  EBX = 0/1.
      *
-     * Raw mode suppresses cooked shortcuts (Alt+Fn TTY switch, Ctrl+A
-     * pane prefix) and delivers modifier presses + every F-key as
-     * sentinel bytes - kbtester is the canonical consumer.  shell_exec_elf
+     * Raw mode suppresses cooked shortcuts (Alt+Fn TTY switch) and
+     * delivers modifier presses + every F-key as sentinel bytes -
+     * kbtester is the canonical consumer.  shell_exec_elf
      * defensively forces raw=0 after the child exits in case the app
      * was killed before its own cleanup ran.
      * ------------------------------------------------------------------ */

@@ -622,8 +622,8 @@ int main(int argc, char **argv)
 {
     (void)argc; (void)argv;
 
-    /* Raw mode: the shell's Alt+Fn TTY switch and Ctrl+A pane prefix are
-     * suspended for the duration of this run, modifier and F-key presses
+    /* Raw mode: the shell's Alt+Fn TTY switch is suspended for the duration
+     * of this run, modifier and F-key presses
      * arrive as sentinel bytes.  Paired with sys_keyboard_raw(0) on
      * every exit path; shell_exec_elf also resets it after we return as
      * a safety net.  Ctrl+C still fires so the operator can quit. */

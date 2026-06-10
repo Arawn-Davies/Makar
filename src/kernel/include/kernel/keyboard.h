@@ -7,10 +7,6 @@
 /* KEY_* input sentinels: the canonical list is shared with userspace. */
 #include <makar_keys.h>
 
-/* Pane IDs for keyboard_bind_pane() / keyboard_focus_pane(). */
-#define KB_PANE_TOP     0
-#define KB_PANE_BOTTOM  1
-
 void keyboard_init(void);
 
 /* Push one raw set-1 scancode byte into the keyboard decoder.  Called by the
@@ -24,9 +20,7 @@ unsigned char keyboard_poll(void);
  * Backs SYS_CAD_PENDING so the GUI server can open its power menu instantly. */
 int kb_take_cad_pending(void);
 
-/* Per-task input routing (Phase 2 / split-panes). */
-void keyboard_bind_pane(int pane_id, task_t *t);
-void keyboard_focus_pane(int pane_id);
+/* Per-task input routing: the focused task receives cooked key bytes. */
 void keyboard_set_focus(task_t *t);
 
 /* Release a task's keyboard slot so it can be reused. */
