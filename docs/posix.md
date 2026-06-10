@@ -29,6 +29,8 @@ Makar currently supports:
 - UTC time APIs
 - x87/SSE FPU state saved/restored per task
 - one-slot i386 TLS through `set_thread_area`
+- dynamically-linked PIEs against a shared musl `libc.so`, loaded by musl's own
+  interpreter `ld-musl-i386.so.1` (`ET_DYN` + `PT_INTERP` + full auxv)
 - a userspace shell with pipes, redirection, list operators, background jobs,
   `wait`, quoting, and `sh -c`
 
@@ -38,8 +40,8 @@ It does not currently support:
 - process groups, sessions, or job-control terminal ownership
 - pthreads or clone-style user threads
 - networking or sockets
-- dynamic linking
-- file-backed mmap, `mprotect`, or a supported JIT execution model
+- a supported in-place JIT (`tcc -run`-style) execution model — TCC compiles to
+  files and `exec`s them instead
 - complete Linux signal-mask semantics
 - `select`, `poll`, or another fd readiness API
 - a termios-compatible terminal interface
@@ -88,11 +90,10 @@ location during live boots.
 | Feature | Status | Notes |
 |---|---|---|
 | `brk` | Present | Main heap-growth mechanism for the userspace malloc shim. |
-| `mmap2` | Anonymous only | `MAP_ANONYMOUS` mappings in a per-task bump window starting at `0x90000000`. |
+| `mmap2` | Anonymous + file-backed | Anon non-fixed = demand-paged bump window at `0x90000000`; a real `fd` or `MAP_FIXED` eager-maps (file region read into private frames, bss tail zeroed). Backs musl `ld.so`'s library maps. |
 | `munmap` | Present | Unmaps the range; address reuse is not implemented. |
-| file-backed mmap | Absent | Use `read` into a buffer. |
-| `MAP_FIXED` | Rejected | Returns `MAP_FAILED`. |
-| `mprotect` | Absent | No page-protection changing API yet. |
+| `MAP_FIXED` | Present | Maps at the caller's exact address, replacing any existing mapping in that window. |
+| `mprotect` | Present | `SYS_MPROTECT` (125) rewrites PTE R/W/USER over the range (`ld.so` RELRO). i386 non-PAE has no NX, so X is implicit. |
 | executable mmap/JIT | Unsupported | TCC compiles to files and `exec`s them; `tcc -run` is not the supported model. |
 
 Anonymous `mmap` exists because hosted libc allocators, including musl paths,
@@ -144,21 +145,28 @@ library.
 
 ## TLS and Hosted libc Startup
 
-Static i386 musl startup needs a small Linux-compatible substrate. Makar now
-provides:
+Both static and dynamically-linked i386 musl startup need a small
+Linux-compatible substrate. Makar now provides:
 
-- ELF auxv entries: `AT_PAGESZ`, `AT_RANDOM`, `AT_NULL`
+- a full System-V i386 ELF auxv: `AT_PHDR`, `AT_PHENT`, `AT_PHNUM`, `AT_BASE`,
+  `AT_ENTRY`, `AT_EXECFN`, `AT_RANDOM`, `AT_PAGESZ`, `AT_NULL`
 - `set_thread_area(243)` using one GDT TLS slot at selector `0x33`
 - `%gs` preservation across interrupts
 - scheduler TLS restore for TLS-active tasks
+- `writev` (musl's buffered stdio writes through it)
 - `exit_group`
 - `set_tid_address`
 - `rt_sigprocmask` stub
 - `ioctl` returning `-ENOTTY`
 - `futex` stub for the current single-threaded bring-up assumption
 
+For **dynamic** linking the loader additionally honours `PT_INTERP`
+(`/lib/ld-musl-i386.so.1`, == `libc.so`), enters at the interpreter, and the
+kernel services musl's `ld.so` runtime: file-backed/`MAP_FIXED` `mmap2`,
+`mprotect` (RELRO), and `open` returning `-ENOENT` so the library search walks.
+
 These are compatibility pieces, not full Linux implementations. They exist to
-get static hosted binaries through early libc initialization.
+get hosted binaries through early libc initialization and dynamic relocation.
 
 ## Userspace libc Headers
 

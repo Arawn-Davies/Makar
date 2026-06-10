@@ -82,7 +82,7 @@ Last reordered 2026-06-09 (after PR #204 merged).
   - [ ] **T51.3 — strip the in-kernel HTTP/TLS** now that ring 3 owns it: remove `SYS_WGET` + `cmd_wget` + `wget_fetch`/`wget_tls` from `shell_cmd_net.c`, and `libbearssl.a` from the kernel image (make.config / `Makefile`). End state: kernel = TCP/IP + sockets only (empties the http + TLS boxes in `krnlsepr.md`).
 - [ ] **T49** — SSH over the NIC, on the T51 crypto layer. **Target: a Dropbear port** (lightweight, self-contained crypto/SSH); needs the userspace TCP sockets + a pty path.
 
-### Self-hosted musl libc + dynamic linking (EPIC, ACTIVE — branch `feat/dynamic-libc`)
+### Self-hosted musl libc + dynamic linking (EPIC, LANDED — branch `feat/dynamic-libc`)
 Ship **musl as a shared `libc.so`** and run **dynamically-linked** programs, using
 musl's own dynamic linker (`ld-musl-i386.so.1`).  Reuses the existing host musl
 cross-toolchain in `toolchain/` (already produces `libc.so` + the interpreter +
@@ -98,14 +98,27 @@ Chosen over newlib / an own-libc / an own dynamic linker.  Plan:
   writes through `writev`, so all libc output was silently dropped.  Implemented
   it sharing one `syscall_fd_write` dispatch with `SYS_WRITE`.  Smoke-gated
   (`shell-smoke.sh: musl-static`); full gate stays 885/0.
-- [ ] **Phase 1** — dynamic build path (PIE, `PT_INTERP`) + stage `libc.so` +
-  `ld-musl-i386.so.1` into the ISO (`/lib`).
-- [ ] **Phase 2** — kernel: file-backed `mmap` (`MAP_PRIVATE`/`MAP_FIXED`) +
-  `mprotect` (`SYS_MPROTECT 125`).
-- [ ] **Phase 3** — kernel ELF loader: `ET_DYN`/PIE + `PT_INTERP` + full auxv
-  (`AT_PHDR`/`AT_BASE`/`AT_ENTRY`…), enter at the interpreter.
-- [ ] **Phase 4/5** — run `muslhellodyn.elf` dynamically; errno-negative pass for
-  the ldso-facing syscalls; docs.
+- [x] **Phase 1 — dynamic build path + musl staged.** `build-musl-demos.sh`
+  links `muslhellodyn.elf` as a PIE (`-pie -fPIE` → `ET_DYN`,
+  `PT_INTERP=/lib/ld-musl-i386.so.1`) and stages `libc.so` + `ld-musl-i386.so.1`
+  into `/lib`.  Wired into `run.sh`'s `_build_iso` (dev-only; skipped in CI / when
+  the host cross-toolchain is absent, so the suite's musl tests then SKIP).
+- [x] **Phase 2 — file-backed `mmap` + `MAP_FIXED` + `mprotect`.** `SYS_MMAP2`
+  (192) now honours a real `fd`: it eager-reads the file region into private
+  frames (zero-filling the bss tail) and maps `MAP_FIXED` at the caller's exact
+  address; anon non-fixed maps keep the demand-paged reserve.  New `SYS_MPROTECT`
+  (125) rewrites PTE R/W/USER bits over a range via `vmm_protect_page` (RELRO).
+- [x] **Phase 3 — dynamic ELF loader.** `elf_exec` runs `ET_DYN` PIEs: load base
+  `0x50000000`, interp (`ld-musl`) at `0x70000000`, a full System-V i386 auxv
+  (`AT_PHDR`/`PHENT`/`PHNUM`/`BASE`/`ENTRY`/`EXECFN`/`RANDOM`/`PAGESZ`), enter at
+  the interpreter.  `AT_PHDR` resolves via the `PT_LOAD` that maps `e_phoff`.  The
+  `ET_EXEC` path is byte-for-byte unchanged (a vestigial `PT_INTERP`, e.g. TCC's
+  `/lib/ld-linux.so.2`, is ignored — only `ET_DYN` consults it).
+- [x] **Phase 4/5 — verified + errno + docs.** `muslhellodyn.elf` runs
+  end-to-end: kernel → `ld-musl` → `mmap`s `libc.so` into the `0x90000000`
+  window → relocates → RELRO `mprotect` → `main` prints via `writev`, exit 0
+  (`shell-smoke.sh: musl-dynamic`).  `SYS_OPEN` now returns `-ENOENT` (not `-1`)
+  on a missing file so `ld.so` can walk its search path.  Full gate 885/0.
 
 ### Desktop UX (T52) — framework landed, wiring in progress
 - [x] **T52.1 — menu/window framework (PR #205).** `gui_ui` gained **`ui_menubar`** (File/Edit/View/Help bar + dropdowns), **`ui_context_menu`** (right-click popup), **`ui_about`** (modal credits card) — Windows-style: greyed disabled items, separators, right-aligned accelerators, dropdown width sized to the longest label. **`ui_btn_w()`** centralises button-label padding (mxweb toolbar = first adopter). **Double-click a title bar → maximise/restore** (`wm.c`). `LICENCES/` collects every external licence (BearSSL/lwIP/doomgeneric/FreeDoom/TinyCC/Limine/musl) with per-file coverage notes, feeding the About dialogs.

@@ -54,7 +54,7 @@ without a detailed errno. Check the wrapper before assuming Linux parity.
 | 2 | `SYS_FORK` | none | COW fork; parent gets child pid, child gets 0 |
 | 3 | `SYS_READ` | `fd, buf, len` | fd-backed read |
 | 4 | `SYS_WRITE` | `fd, buf, len` | fd-backed write |
-| 5 | `SYS_OPEN` | `path, flags, mode` | mode ignored; read-only disk files are lazy (page-cached) |
+| 5 | `SYS_OPEN` | `path, flags, mode` | mode ignored; read-only disk files are lazy (page-cached); missing file w/o `O_CREAT` → `-ENOENT` (musl `ld.so` walks its search path on this) |
 | 6 | `SYS_CLOSE` | `fd` | closes and flushes |
 | 10 | `SYS_UNLINK` | `path` | delete file |
 | 11 | `SYS_EXECVE` | `path, argv, envp` | envp ignored |
@@ -82,8 +82,9 @@ without a detailed errno. Check the wrapper before assuming Linux parity.
 | 141 | `SYS_READDIR` | `path, index, dirent *` | indexed Makar syscall, libc wraps it |
 | 146 | `SYS_WRITEV` | `fd, iovec *, iovcnt` | gather-write; shares the `SYS_WRITE` dispatch. musl's buffered stdio writes through this |
 | 158 | `SYS_YIELD` | none | scheduler yield |
+| 125 | `SYS_MPROTECT` | `addr, len, prot` | rewrites PTE R/W/USER over the range (`ld.so` RELRO); no NX on i386 |
 | 175 | `SYS_RT_SIGPROCMASK` | Linux args | startup compatibility stub |
-| 192 | `SYS_MMAP2` | `addr, len, prot, flags, fd, pgoff` | anonymous only, demand-paged |
+| 192 | `SYS_MMAP2` | `addr, len, prot, flags, fd, pgoff` | anon non-fixed = demand-paged reserve; a real `fd` or `MAP_FIXED` eager-maps (file region read into private frames, bss tail zeroed) — backs musl `ld.so`'s library maps |
 | 240 | `SYS_FUTEX` | Linux args | single-threaded compatibility stub |
 | 243 | `SYS_SET_THREAD_AREA` | `user_desc *` | one-slot i386 TLS |
 | 252 | `SYS_EXIT_GROUP` | `status` | same as exit |

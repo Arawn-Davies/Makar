@@ -2039,12 +2039,13 @@ static void test_syscall(void)
     syscall_dispatch(&regs);
     KTEST_ASSERT(1);
 
-    /* SYS_OPEN on a non-existent path must return -1. */
+    /* SYS_OPEN on a non-existent path must return -ENOENT (Linux convention):
+     * musl's ld.so reads -errno to walk its library search path. */
     regs.eax = SYS_OPEN;
     regs.ebx = (uint32_t)(uintptr_t)"/no/such/file";
     regs.ecx = O_RDONLY;
     syscall_dispatch(&regs);
-    KTEST_ASSERT(regs.eax == (uint32_t)-1);
+    KTEST_ASSERT(regs.eax == (uint32_t)-2);   /* -ENOENT */
 
     /* SYS_BRK(0): query current break on a kernel task (user_brk == 0). */
     regs.eax = SYS_BRK;

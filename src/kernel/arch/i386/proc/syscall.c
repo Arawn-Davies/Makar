@@ -1352,7 +1352,9 @@ static void syscall_dispatch_inner(registers_t *regs)
         memset(e, 0, sizeof(*e));
 
         if (!exists) {
-            if (!o_creat) { regs->eax = (uint32_t)-1; break; }
+            if (!o_creat) { regs->eax = (uint32_t)-2; break; }   /* -ENOENT: musl's
+                ld.so reads -errno to know a library path is absent and try the
+                next; existing apps only test <0 so the value change is safe. */
             /* Create: allocate an empty growable buffer and mark dirty
              * so close flushes (even if no writes follow) -- this is
              * what makes `touch`-style "create empty file" work. */
