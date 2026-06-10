@@ -182,6 +182,15 @@ void mx_set_wallpaper(mx_conn *c, int sid, int w, int h)
     sys_ipc_sendrec(c->server, &m);   /* server maps the surface + repaints */
 }
 
+void mx_reload_prefs(mx_conn *c)
+{
+    if (c->closed || c->server <= 0) return;
+    ipc_msg_t m;
+    for (unsigned i = 0; i < IPC_MSG_DATA_WORDS; i++) m.data[i] = 0;
+    m.type = MX_RELOAD_PREFS;
+    sys_ipc_sendrec(c->server, &m);
+}
+
 int mx_open(mx_conn *c, const char *path)
 {
     if (c->closed || c->server <= 0 || !path || !path[0]) return -1;

@@ -105,6 +105,7 @@ static void damage(int x,int y,int w,int h){
 /* Damage a window including its 3px decoration border. */
 static void damage_win(int i){ damage(W[i].x-4, W[i].y-4, W[i].w+8, W[i].h+8); }
 static void damage_full(void){ damage(0,0,(int)FBW,(int)FBH); }
+static void load_tray_prefs(void);   /* defined below; used by the MX_RELOAD_PREFS handler */
 
 static int  client_x(swin *w){ return w->x + 1; }
 static int  client_y(swin *w){ return w->y + TH; }
@@ -695,6 +696,12 @@ static void serve_requests(void)
                 wm_open_path(path);
             }
             r.type=MXEV_NONE;
+        } else if (m.type==MX_RELOAD_PREFS){
+            /* The Settings app changed ~/.mxrc (tray widget visibility etc.) --
+             * re-read it and repaint so the dock updates without a re-login. */
+            load_tray_prefs();
+            g_dirty=1; damage_full();
+            r.type=MXEV_NONE;
         }
         sys_ipc_send(src, &r);
     }
@@ -990,6 +997,23 @@ static void load_tray_prefs(void){
     g_tray_stats = mxrc_get_int("TrayStats", 1);
     g_tray_gpu   = mxrc_get_int("TrayGpu",   1);
     if (sys_video_name(g_gpu_name, sizeof g_gpu_name) <= 0) scpy(g_gpu_name, "VGA", sizeof g_gpu_name);
+}
+
+/* Launch the apps listed in ~/.mxrc "Autostart" (comma-separated /apps paths) at
+ * desktop startup -- the Settings > Autostart panel writes this list. */
+static void load_autostart(void){
+    char list[512];
+    if (mxrc_get("Autostart", list, sizeof list) != 0 || !list[0]) return;
+    for (char *p=list; *p; ){
+        while (*p==',' || *p==' ') p++;
+        char path[128]; int k=0;
+        while (*p && *p!=',' && k<(int)sizeof path-1) path[k++]=*p++;
+        path[k]=0;
+        if (k){
+            const char *base=path; for(const char*q=path;*q;q++) if(*q=='/') base=q+1;
+            launch_cmd(path, 0, base, 560, 400);
+        }
+    }
 }
 static char     g_clk[8]   = "--:--";    /* HH:MM                            */
 static char     g_date[10] = "--/--/--"; /* DD/MM/YY                         */
@@ -1507,8 +1531,10 @@ int main(int argc, char **argv, char **envp)
     load_tray_prefs();          /* ~/.mxrc dock tray visibility (default all on) */
     hwcursor_setup();           /* use the display driver's HW cursor if it has one */
     znum=0; focus=-1;
-    /* Boot to a clean desktop -- no window is auto-opened; the user launches
+    /* Boot to a clean desktop, then launch the user's autostart apps (if any --
+     * Settings > Autostart manages the ~/.mxrc list); otherwise the user launches
      * apps from the desktop icons / dock. */
+    load_autostart();
 
     int cx=(int)FBW/2, cy=(int)FBH/2, prev_left=0;
     int dragging=0, resizing=0, drag_win=-1, drag_dx=0, drag_dy=0;
