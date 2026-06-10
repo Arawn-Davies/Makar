@@ -217,6 +217,7 @@ static const icon_def_t icon_defs[] = {
     {"Install", RGB(0xff,0x70,0x70),"/apps/mxinstall.elf",588,492, "install","install"},
     {"Image",   RGB(0x70,0xb0,0x70),"/apps/mximg.elf",    608,468, 0,        "image"},
     {"Display", RGB(0x60,0x90,0xc0),"/apps/mxdisplay.elf",380,300, 0,        "display"},
+    {"Settings",RGB(0x6a,0x71,0x80),"/apps/mxsettings.elf",720,520, 0,       "settings"},
 };
 #define ICON_DEF_N (int)(sizeof icon_defs / sizeof icon_defs[0])
 
