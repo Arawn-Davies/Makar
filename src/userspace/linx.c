@@ -8,8 +8,10 @@
  * line.  Raw keys via the shared tkey.h, so it runs in a text VT AND inside an
  * mxterm window (the kernel cell-API -> ANSI bridge carries the output there).
  *
- *   arrows / PgUp / PgDn / Space   scroll        Tab / n / p   move link cursor
- *   Enter   follow the current link              g   go to URL    b   back
+ *   Up/Down / Tab / n / p   move the focus ring (links AND form fields)
+ *   Enter   follow a link, or submit the focused field's form
+ *   type into a focused text field (caret edit); Esc / Tab leaves it
+ *   PgUp / PgDn / Space / j / k   scroll          g   go to URL    b   back
  *   r   reload      F9 / m   File menu            q / Ctrl-C   quit
  *
  * `linx --dump <url>` prints the reflowed page to stdout (pipe-friendly).
@@ -62,6 +64,21 @@ typedef struct { int off, line, col, len; } linkent;  /* off into g_linkpool */
 static linkent       g_link[MAXLINKS];  static int g_nlink;
 static char          g_linkpool[LINKPOOL]; static int g_linkpooln;
 static const char   *pool_at(int off){ return &g_linkpool[off]; }
+
+/* ---- form fields: editable <input> boxes + the enclosing <form> action ----- */
+#define MAXFIELDS 32
+#define FIELDW    20                    /* on-screen width of an input box        */
+typedef struct { char name[64]; char value[160]; int line, col, w; } fieldent;
+static fieldent g_field[MAXFIELDS]; static int g_nfield;
+static char     g_form_action[URLCAP];          /* first <form action="..."> */
+
+/* Unified focus ring: links and fields are both Tab targets, walked in document
+ * order.  Tab/arrows move the ring; Enter follows a link or submits a form;
+ * printable keys edit the focused field. */
+enum { F_LINK=0, F_FIELD=1 };
+typedef struct { int kind, idx; } focusref;
+static focusref g_focus[MAXLINKS+MAXFIELDS]; static int g_nfocus, g_fi;
+static int      g_field_caret;                  /* caret inside the focused field */
 
 /* ---- history ------------------------------------------------------------- */
 #define HISTCAP 64
@@ -155,6 +172,7 @@ static void render(const char *html,int len,const char *base){
     for(int i=0;i<g_nlines && i<MAXLINES;i++){ for(int c=0;c<MAXCOLS;c++) g_lines[i][c]=0; g_head[i]=0; }
     g_nlines=1; r_col=0; r_blank=0; r_any=0; r_pend=0; r_head=0; r_inpre=0;
     g_nlink=0; g_linkpooln=0; l_active=0;
+    g_nfield=0; g_form_action[0]=0;
     for(int c=0;c<MAXCOLS;c++){ g_lines[0][c]=0; } g_head[0]=0;
 
     char wbuf[256]; int wn=0;
@@ -176,7 +194,8 @@ static void render(const char *html,int len,const char *base){
             if(ieq(name,"br")) rbreak(0);
             else if(ieq(name,"hr")){ rbreak(0); int dn=g_wrap-1; for(int i=0;i<dn;i++) rput('-'); rbreak(0); }
             else if(ieq(name,"p")||ieq(name,"blockquote")) rbreak(1);
-            else if(ieq(name,"div")||ieq(name,"section")||ieq(name,"article")||ieq(name,"header")||ieq(name,"footer")||ieq(name,"table")||ieq(name,"form")||ieq(name,"ul")||ieq(name,"ol")||ieq(name,"nav")||ieq(name,"main")||ieq(name,"aside")||ieq(name,"dl")) rbreak(0);
+            else if(ieq(name,"form")){ if(!closing&&!g_form_action[0]) html_attr_get(attrs,ae,"action",g_form_action,sizeof g_form_action); rbreak(0); }
+            else if(ieq(name,"div")||ieq(name,"section")||ieq(name,"article")||ieq(name,"header")||ieq(name,"footer")||ieq(name,"table")||ieq(name,"ul")||ieq(name,"ol")||ieq(name,"nav")||ieq(name,"main")||ieq(name,"aside")||ieq(name,"dl")) rbreak(0);
             else if(ieq(name,"tr")) rbreak(0);
             else if((ieq(name,"td")||ieq(name,"th"))&&!closing) r_pend=1;
             else if(ieq(name,"li")&&!closing){ rbreak(0); rput(' '); rput(' '); rput('*'); rput(' '); r_pend=0; }
@@ -194,6 +213,26 @@ static void render(const char *html,int len,const char *base){
                                 l_idx=g_nlink; g_nlink++; l_active=1; l_pending=1; } }
                     }
                 } else if(l_active){ if(l_pending){ g_nlink--; g_linkpooln=l_mark; } l_active=0; }
+            }
+            else if(ieq(name,"input")&&!closing){
+                char type[16]={0}; html_attr_get(attrs,ae,"type",type,sizeof type);
+                /* text-like inputs become an editable box; hidden inputs still
+                 * carry their name=value into the submit but draw nothing */
+                int texty = !type[0]||ieq(type,"text")||ieq(type,"search")||ieq(type,"url")||ieq(type,"email")||ieq(type,"password");
+                int hidden = ieq(type,"hidden");
+                if((texty||hidden)&&g_nfield<MAXFIELDS){
+                    fieldent *f=&g_field[g_nfield];
+                    f->name[0]=f->value[0]=0;
+                    html_attr_get(attrs,ae,"name",f->name,sizeof f->name);
+                    html_attr_get(attrs,ae,"value",f->value,sizeof f->value);
+                    if(texty){
+                        if(r_pend){ if(r_col>0&&r_col+1<g_wrap) rput(' '); r_pend=0; }
+                        if(r_col+FIELDW>g_wrap) rnewline();
+                        f->line=g_nlines-1; f->col=r_col; f->w=FIELDW;
+                        for(int i=0;i<FIELDW;i++) rput('_');   /* empty box; value overlaid at draw */
+                    } else { f->line=-1; f->col=0; f->w=0; }   /* hidden: not navigable/visible */
+                    g_nfield++;
+                }
             }
             else if(ieq(name,"img")&&!closing){
                 char alt[128];
@@ -226,7 +265,25 @@ static const char START_HTML[] =
     "follows it, g go to a URL, b back, r reload, F9 menu, q quit.</p>"
     "<p>Try <a href=\"http://example.com/\">example.com</a> or press g to type a URL.</p>";
 
-static int g_scroll, g_cur;     /* viewport scroll + current-link index (-1 none) */
+static int g_scroll;            /* viewport scroll (top line) */
+
+/* Build the Tab/arrow focus ring by merging links + visible fields in document
+ * order (each list is already position-ordered by the linear HTML walk). */
+static void build_focus(void){
+    g_nfocus=0; int li=0, fi=0; int cap=(int)(sizeof g_focus/sizeof g_focus[0]);
+    while((li<g_nlink||fi<g_nfield)&&g_nfocus<cap){
+        while(fi<g_nfield&&g_field[fi].line<0) fi++;   /* skip hidden fields */
+        if(fi>=g_nfield&&li>=g_nlink) break;
+        int take_link;
+        if(li>=g_nlink) take_link=0;
+        else if(fi>=g_nfield) take_link=1;
+        else { int ll=g_link[li].line,lc2=g_link[li].col, fl=g_field[fi].line,fc=g_field[fi].col;
+               take_link=(ll<fl||(ll==fl&&lc2<=fc)); }
+        if(take_link){ g_focus[g_nfocus].kind=F_LINK;  g_focus[g_nfocus].idx=li++; }
+        else         { g_focus[g_nfocus].kind=F_FIELD; g_focus[g_nfocus].idx=fi++; }
+        g_nfocus++;
+    }
+}
 
 static int load(const char *url){
     g_html[0]=0; g_htmllen=0;
@@ -245,7 +302,8 @@ static int load(const char *url){
     }
     scan_title(g_html,g_html+g_htmllen);
     render(g_html,g_htmllen,g_url);
-    g_scroll=0; g_cur = (g_nlink>0)?0:-1;
+    build_focus();
+    g_scroll=0; g_fi=(g_nfocus>0)?0:-1; g_field_caret=0;
     return 0;
 }
 
@@ -254,10 +312,25 @@ static void clamp_scroll(void){
     int maxs=g_nlines-(g_rows-2); if(maxs<0)maxs=0;
     if(g_scroll>maxs){g_scroll=maxs;} if(g_scroll<0){g_scroll=0;}
 }
-static void scroll_to_cur(void){
-    if(g_cur<0||g_cur>=g_nlink) return;
-    int li=g_link[g_cur].line, viewh=g_rows-2;
+/* focus-ring queries + movement -------------------------------------------- */
+static int  focus_kind(void){ return (g_fi>=0&&g_fi<g_nfocus)?g_focus[g_fi].kind:-1; }
+static int  focus_line(void){
+    if(g_fi<0||g_fi>=g_nfocus) return -1;
+    int i=g_focus[g_fi].idx;
+    return g_focus[g_fi].kind==F_LINK ? g_link[i].line : g_field[i].line;
+}
+static fieldent *focus_field(void){
+    return (focus_kind()==F_FIELD)?&g_field[g_focus[g_fi].idx]:0;
+}
+static void focus_scroll(void){
+    int li=focus_line(); if(li<0) return; int viewh=g_rows-2;
     if(li<g_scroll||li>=g_scroll+viewh){ g_scroll=li-viewh/2; clamp_scroll(); }
+}
+static void focus_move(int d){
+    if(g_nfocus<=0){ g_fi=-1; return; }
+    g_fi = (g_fi<0) ? (d>0?0:g_nfocus-1) : ((g_fi+d+g_nfocus)%g_nfocus);
+    fieldent *f=focus_field(); g_field_caret = f?sl(f->value):0;   /* land caret at end */
+    focus_scroll();
 }
 static void draw(void){
     g_ncells=0;
@@ -273,18 +346,40 @@ static void draw(void){
         unsigned char base=(li<g_nlines&&g_head[li])?CLR_HEAD:CLR_TEXT;
         for(int c=0;c<g_cols;c++){ char ch=(li<g_nlines&&c<MAXCOLS)?g_lines[li][c]:0; if(ch==0)ch=' '; put_at(c,row,(unsigned char)ch,base); }
     }
+    int fk=focus_kind(), fidx=(g_fi>=0&&g_fi<g_nfocus)?g_focus[g_fi].idx:-1;
     /* link overlay (later cells win per (col,row)) */
     for(int k=0;k<g_nlink;k++){
         int li=g_link[k].line; if(li<g_scroll||li>=g_scroll+viewh) continue;
-        int row=li-g_scroll+1; unsigned char cl=(k==g_cur)?CLR_LINKCUR:CLR_LINK;
+        int row=li-g_scroll+1; unsigned char cl=(fk==F_LINK&&k==fidx)?CLR_LINKCUR:CLR_LINK;
         for(int c=g_link[k].col;c<g_link[k].col+g_link[k].len&&c<g_cols&&c<MAXCOLS;c++){
             char ch=g_lines[li][c]; if(ch==0)ch=' '; put_at(c,row,(unsigned char)ch,cl);
         }
     }
-    /* status line: current link URL, else key hints */
+    /* form-field overlay: paint the live value into the box, h-scrolled to the
+     * caret; the focused field gets the cursor highlight + the text cursor. */
+    int cur_col=-1, cur_row=-1;
+    for(int k=0;k<g_nfield;k++){
+        int li=g_field[k].line; if(li<0||li<g_scroll||li>=g_scroll+viewh) continue;
+        int row=li-g_scroll+1, w=g_field[k].w, focused=(fk==F_FIELD&&k==fidx);
+        unsigned char cl=focused?CLR_LINKCUR:CLR_LINK;
+        const char *v=g_field[k].value; int vn=sl(v);
+        int off=(focused&&g_field_caret>w-1)?g_field_caret-(w-1):0;
+        for(int i=0;i<w&&g_field[k].col+i<g_cols&&g_field[k].col+i<MAXCOLS;i++){
+            int ci=off+i; char ch=(ci<vn)?v[ci]:'_';
+            put_at(g_field[k].col+i,row,(unsigned char)ch,cl);
+        }
+        if(focused){ cur_col=g_field[k].col+(g_field_caret-off); cur_row=row; }
+    }
+    /* status line: focused field hint, current link URL, else key hints */
     for(int c=0;c<g_cols;c++) put_at(c,g_rows-1,' ',CLR_BAR);
-    if(g_cur>=0&&g_cur<g_nlink){ char st[256]; int n=0; st[n++]='>'; st[n++]=' ';
-        const char *u=pool_at(g_link[g_cur].off); for(int i=0;u[i]&&n<(int)sizeof(st)-1;i++)st[n++]=u[i]; st[n]=0;
+    if(fk==F_FIELD&&fidx>=0){ char st[256]; int n=0; const char *pre="[field] ";
+        for(int i=0;pre[i];i++)st[n++]=pre[i];
+        const char *nm=g_field[fidx].name; if(nm[0]) for(int i=0;nm[i]&&n<60;i++)st[n++]=nm[i];
+        const char *h="   (type to edit  Enter submit  Tab next)";
+        for(int i=0;h[i]&&n<(int)sizeof(st)-1;i++)st[n++]=h[i]; st[n]=0;
+        put_str(1,g_rows-1,st,CLR_BAR);
+    } else if(fk==F_LINK&&fidx>=0){ char st[256]; int n=0; st[n++]='>'; st[n++]=' ';
+        const char *u=pool_at(g_link[fidx].off); for(int i=0;u[i]&&n<(int)sizeof(st)-1;i++)st[n++]=u[i]; st[n]=0;
         put_str(1,g_rows-1,st,CLR_BAR);
     } else {
         char st[256]; int n=0; const char *u=g_url; for(int i=0;u[i]&&n<140;i++)st[n++]=u[i];
@@ -293,7 +388,8 @@ static void draw(void){
         put_str(1,g_rows-1,st,CLR_BAR);
     }
     present();
-    sys_set_cursor((unsigned)(g_cols-1),(unsigned)(g_rows-1));
+    if(cur_col>=0&&cur_col<g_cols) sys_set_cursor((unsigned)cur_col,(unsigned)cur_row);
+    else sys_set_cursor((unsigned)(g_cols-1),(unsigned)(g_rows-1));
 }
 
 /* ---- one-line prompt at the status row (returns 1=entered, 0=cancel) ----- */
@@ -331,6 +427,35 @@ static void go(const char *raw){
     }
 }
 
+/* ---- form submit: action?name=value&... (urlencoded, GET-style) ----------- */
+static char *urlenc(char *o,const char *s){
+    static const char H[]="0123456789ABCDEF";
+    for(;*s;s++){ unsigned char c=(unsigned char)*s;
+        if((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='-'||c=='_'||c=='.'||c=='~') *o++=(char)c;
+        else if(c==' ') *o++='+';
+        else { *o++='%'; *o++=H[c>>4]; *o++=H[c&15]; } }
+    return o;
+}
+static void form_submit(void){
+    char act[URLCAP];
+    if(g_form_action[0]) html_url_resolve(g_url,g_form_action,act,sizeof act);
+    else scpy(act,g_url,sizeof act);
+    int has_q=0; for(const char *z=act;*z;z++) if(*z=='?') has_q=1;
+    char url[URLCAP]; char *o=url; const char *lim=url+URLCAP-16;
+    for(const char *z=act;*z&&o<lim;) *o++=*z++;
+    char sep=has_q?'&':'?';
+    for(int i=0;i<g_nfield&&o<lim;i++){ if(!g_field[i].name[0]) continue;
+        *o++=sep; sep='&'; o=urlenc(o,g_field[i].name); *o++='='; o=urlenc(o,g_field[i].value); }
+    *o=0;
+    go(url);
+}
+/* Enter / Right on a focus item: follow a link, or submit the field's form. */
+static void focus_activate(void){
+    if(g_fi<0||g_fi>=g_nfocus) return;
+    if(g_focus[g_fi].kind==F_LINK){ char u[URLCAP]; scpy(u,pool_at(g_link[g_focus[g_fi].idx].off),URLCAP); go(u); }
+    else form_submit();
+}
+
 int main(int argc,char **argv){
     int dump=0, ai=1;
     if(argc>=2&&(ieq(argv[1],"--dump")||ieq(argv[1],"-d"))){ dump=1; ai=2; }
@@ -361,20 +486,40 @@ int main(int argc,char **argv){
     for(;;){
         draw();
         int k=tkey_get();
-        if(k=='q'||k==KEY_CTRL_C) break;
-        else if(k==KEY_ARROW_DOWN){ if(g_nlink>0){ g_cur=(g_cur+1)%g_nlink; scroll_to_cur(); } else { g_scroll++; clamp_scroll(); } }
-        else if(k==KEY_ARROW_UP){ if(g_nlink>0){ g_cur=(g_cur-1+g_nlink)%g_nlink; scroll_to_cur(); } else { g_scroll--; clamp_scroll(); } }
-        else if(k==KEY_ARROW_RIGHT){ if(g_cur>=0&&g_cur<g_nlink){ char u[URLCAP]; scpy(u,pool_at(g_link[g_cur].off),URLCAP); go(u); } }
-        else if(k==KEY_ARROW_LEFT){ if(g_histn>0){ char prev[URLCAP]; scpy(prev,g_hist[--g_histn],URLCAP); load(prev); } }
+        fieldent *fe=focus_field();           /* non-NULL while editing a text box */
+        /* --- keys that work the same whether or not a field is focused --- */
+        if(k==KEY_CTRL_C) break;
+        else if(k==KEY_PAGE_DOWN){ g_scroll+=g_rows-3; clamp_scroll(); }
+        else if(k==KEY_PAGE_UP){ g_scroll-=g_rows-3; clamp_scroll(); }
+        else if(k=='\t'){ focus_move(+1); }
+        else if(k==KEY_ARROW_DOWN){ if(g_nfocus>0) focus_move(+1); else { g_scroll++; clamp_scroll(); } }
+        else if(k==KEY_ARROW_UP){ if(g_nfocus>0) focus_move(-1); else { g_scroll--; clamp_scroll(); } }
+        /* --- editing a text field: printable keys + caret edit, Enter submits --- */
+        else if(fe){
+            int vn=sl(fe->value);
+            if(k=='\n'||k=='\r') form_submit();
+            else if(k==KEY_ARROW_LEFT){ if(g_field_caret>0) g_field_caret--; }
+            else if(k==KEY_ARROW_RIGHT){ if(g_field_caret<vn) g_field_caret++; }
+            else if(k==KEY_HOME){ g_field_caret=0; }
+            else if(k==KEY_END){ g_field_caret=vn; }
+            else if(k==8||k==127){ if(g_field_caret>0){ for(int i=g_field_caret-1;i<vn;i++)fe->value[i]=fe->value[i+1]; g_field_caret--; } }
+            else if(k==KEY_DELETE){ if(g_field_caret<vn){ for(int i=g_field_caret;i<vn;i++)fe->value[i]=fe->value[i+1]; } }
+            else if(k==0x1B){ focus_move(+1); }   /* Esc: leave the field */
+            else if(k>=0x20&&k<0x7F&&vn<(int)sizeof(fe->value)-1){
+                for(int j=vn;j>g_field_caret;j--)fe->value[j]=fe->value[j-1];
+                fe->value[g_field_caret++]=(char)k; fe->value[vn+1]=0;
+            }
+        }
+        /* --- command mode (focus is a link or nothing) --- */
+        else if(k=='q') break;
+        else if(k==KEY_ARROW_RIGHT||k=='\n'||k=='\r'){ focus_activate(); }
+        else if(k==KEY_ARROW_LEFT||k=='b'){ if(g_histn>0){ char prev[URLCAP]; scpy(prev,g_hist[--g_histn],URLCAP); load(prev); } }
         else if(k=='j'){ g_scroll++; clamp_scroll(); }      /* line scroll (vim-style) */
         else if(k=='k'){ g_scroll--; clamp_scroll(); }
-        else if(k==KEY_PAGE_DOWN||k==' '){ g_scroll+=g_rows-3; clamp_scroll(); }
-        else if(k==KEY_PAGE_UP){ g_scroll-=g_rows-3; clamp_scroll(); }
-        else if(k=='\t'||k=='n'){ if(g_nlink>0){ g_cur=(g_cur+1)%g_nlink; scroll_to_cur(); } }
-        else if(k=='p'||k=='N'){ if(g_nlink>0){ g_cur=(g_cur-1+g_nlink)%g_nlink; scroll_to_cur(); } }
-        else if(k=='\n'||k=='\r'){ if(g_cur>=0&&g_cur<g_nlink){ char u[URLCAP]; scpy(u,pool_at(g_link[g_cur].off),URLCAP); go(u); } }
+        else if(k==' '){ g_scroll+=g_rows-3; clamp_scroll(); }
+        else if(k=='n'){ focus_move(+1); }
+        else if(k=='p'||k=='N'){ focus_move(-1); }
         else if(k=='g'||k=='G'){ char in[URLCAP]; if(prompt("Go to URL:",in,sizeof in)&&in[0]) go(in); }
-        else if(k=='b'){ if(g_histn>0){ char prev[URLCAP]; scpy(prev,g_hist[--g_histn],URLCAP); load(prev); } }
         else if(k=='r'){ char cur[URLCAP]; scpy(cur,g_url,URLCAP); load(cur); }
         else if(k==KEY_F9||k=='m'||k=='M'){
             /* File menu popup */
