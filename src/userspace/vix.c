@@ -11,6 +11,7 @@
  */
 
 #include "syscall.h"
+#include "tkey.h"   /* mxterm-compliant key input (fd 0, not keyboard-only) */
 
 #define VFS_PATH_MAX   128
 
@@ -500,7 +501,7 @@ int main(int argc, char **argv)
         vix_redraw();
         v_save_msg = 0;
 
-        int c = sys_getkey();
+        int c = tkey_get();
 
         if (c == KEY_CTRL_Q || c == CTRL_Q) {
             if (!v_dirty || v_quit_warn) break;

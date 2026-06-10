@@ -18,6 +18,7 @@
  */
 
 #include "syscall.h"
+#include "tkey.h"   /* mxterm-compliant key input (fd 0, not keyboard-only) */
 
 #define SECTOR_SIZE   512u
 #define PART_OFFSET   0x1BE
@@ -364,7 +365,7 @@ static int prompt(const char *label, char *out, int maxlen)
         flush();
         sys_set_cursor((unsigned int)(base + len), (unsigned int)row);
 
-        int c = sys_getkey();
+        int c = tkey_get();
         if (c == '\n' || c == '\r') return 1;
         if (c == 0x1B || c == KEY_CTRL_C) return 0;
         if (c == '\b') { if (len > 0) out[--len] = '\0'; continue; }
@@ -382,7 +383,7 @@ static void message(const char *msg)
     put_str(2, row, msg, CLR_WARN);
     put_str(2 + (int)ustrlen(msg) + 2, row, "[press a key]", CLR_WARN);
     flush();
-    sys_getkey();
+    tkey_get();
 }
 
 /*
@@ -569,7 +570,7 @@ int main(int argc, char **argv)
         if (g_sel < 0) g_sel = 0;
         draw();
 
-        int c = sys_getkey();
+        int c = tkey_get();
         if (c == KEY_ARROW_UP)    { if (g_sel > 0) g_sel--; }
         else if (c == KEY_ARROW_DOWN)  { if (g_sel < g_nitems - 1) g_sel++; }
         else if (c == KEY_ARROW_LEFT)  { if (g_btn > 0) g_btn--; }
