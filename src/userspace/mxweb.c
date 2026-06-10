@@ -1092,6 +1092,15 @@ static void web_copy(void){
     if(lo<0)lo=0; if(hi>g_runtextn)hi=g_runtextn;
     if(hi>lo) sys_clip_set(g_runtext+lo,(unsigned)(hi-lo));
 }
+/* Is (mx,my) over a link this frame?  (Selection skips link starts so a click on
+ * a link still navigates while body text drag-selects.) */
+static int link_at(int mx,int my,int cy0){
+    for(int i=0;i<g_nlink;i++){
+        int ly=cy0+g_links[i].y-g_scroll;
+        if(mx>=g_links[i].x && mx<g_links[i].x+g_links[i].w && my>=ly && my<ly+g_links[i].h) return 1;
+    }
+    return 0;
+}
 static void web_do(int a){
     switch(a){
     case W_BACK:    if(g_hist_i>0){ g_hist_i--; navigate(g_hist[g_hist_i],0); } break;
@@ -1202,7 +1211,7 @@ int main(int argc,char **argv){
         /* text selection: drag over body text highlights it (Copy via Ctrl-C /
          * Edit menu / right-click).  pos_at uses last frame's run positions. */
         if (!busy && c.mx<sbx && c.my>=cy0) {
-            if (c.mpressed) { int pp=pos_at(c.mx,c.my); if(pp>=0){ sel_on=1; sel_anchor=sel_caret=pp; } }
+            if (c.mpressed && !link_at(c.mx,c.my,cy0)) { int pp=pos_at(c.mx,c.my); if(pp>=0){ sel_on=1; sel_anchor=sel_caret=pp; } }
             if (c.rpressed) { g_ctx=1; g_ctx_x=c.mx; g_ctx_y=c.my; }
         }
         if (!busy && sel_on && c.mdown && !g_drag && c.my>=cy0) { int pp=pos_at(c.mx,c.my); if(pp>=0) sel_caret=pp; }
