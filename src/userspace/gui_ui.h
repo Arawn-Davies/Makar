@@ -83,6 +83,13 @@ int  ui_password(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
 void ui_label(ui_ctx *c, gfx_surface *s, int x, int y, const char *str,
               gfx_u32 fg);
 
+/* On/off switch (iOS/macOS-style), a fixed UI_TOGGLE_W x UI_TOGGLE_H footprint
+ * at (x,y).  *on is read/written; a click toggles it.  Returns 1 if it changed
+ * this frame.  The settings-app workhorse. */
+#define UI_TOGGLE_W 40
+#define UI_TOGGLE_H 20
+int  ui_toggle(ui_ctx *c, gfx_surface *s, int x, int y, int *on);
+
 /* Scrollable single-select list.  *sel is the selected row (read/written),
  * *scroll is the top row (caller-owned, may be 0).  Click selects a row;
  * when focused, Up/Down move the selection.  Returns 1 if *sel changed. */

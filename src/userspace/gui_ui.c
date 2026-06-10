@@ -26,6 +26,27 @@ void ui_label(ui_ctx *c, gfx_surface *s, int x, int y, const char *str, gfx_u32 
     gfx_str(s, x, y, str, fg);
 }
 
+int ui_toggle(ui_ctx *c, gfx_surface *s, int x, int y, int *on)
+{
+    int id  = ++c->cur_id;
+    int hot = pt_in(c, x, y, UI_TOGGLE_W, UI_TOGGLE_H);
+    int changed = 0;
+
+    if (hot && c->mpressed && !c->active) { c->active = id; c->got_input = 1; }
+    if (c->active == id && c->mreleased) {
+        if (hot) { *on = !*on; changed = 1; }
+        c->active = 0;
+    }
+
+    /* Track: accent-blue when on, muted when off.  Knob slides left/right. */
+    gfx_round(s, x, y, UI_TOGGLE_W, UI_TOGGLE_H,
+              *on ? UI_COL_BTN_ACT : UI_COL_TRACK, UI_COL_BORDER);
+    int kd = UI_TOGGLE_H - 4;
+    int kx = *on ? x + UI_TOGGLE_W - kd - 2 : x + 2;
+    gfx_round(s, kx, y + 2, kd, kd, UI_COL_TEXT, UI_COL_BORDER);
+    return changed;
+}
+
 int ui_btn_w(const char *label)
 {
     int w = gfx_text_w(label) + 2 * UI_BTN_PADX;
