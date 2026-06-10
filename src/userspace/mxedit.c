@@ -187,6 +187,13 @@ static void ed_frame(gfx_surface *s,ui_ctx *u,int focused,int rpressed){
         else if(k==KEY_ARROW_RIGHT){ ed_sel=-1; ed_coalesce=-2; if(ed_caret<ed_len)ed_caret++; }
         else if(k==KEY_ARROW_UP){ ed_sel=-1; ed_coalesce=-2; if(caret_row>0)ed_caret=ed_index_of(caret_row-1,caret_col); }
         else if(k==KEY_ARROW_DOWN){ ed_sel=-1; ed_coalesce=-2; ed_caret=ed_index_of(caret_row+1,caret_col); }
+        else if(k==KEY_HOME){ ed_sel=-1; ed_coalesce=-2; ed_caret=ed_index_of(caret_row,0); }
+        else if(k==KEY_END){ ed_sel=-1; ed_coalesce=-2; int eol=ed_index_of(caret_row+1,0); if(eol>0&&eol<=ed_len&&ed_buf[eol-1]=='\n')eol--; ed_caret=eol; }
+        else if(k==KEY_DELETE){ ed_coalesce=-2;
+            if(ed_has_sel()){ ed_checkpoint(); ed_del_range(ed_sel_lo(),ed_sel_hi()); ed_sel=-1; }
+            else if(ed_caret<ed_len){ ed_checkpoint(); for(int i=ed_caret;i<ed_len;i++)ed_buf[i]=ed_buf[i+1]; ed_len--; ed_buf[ed_len]=0; ed_dirty_flag=1; } }
+        else if(k==KEY_PAGE_UP){ ed_sel=-1; ed_coalesce=-2; int r=caret_row-vis_rows; if(r<0)r=0; ed_caret=ed_index_of(r,caret_col); }
+        else if(k==KEY_PAGE_DOWN){ ed_sel=-1; ed_coalesce=-2; ed_caret=ed_index_of(caret_row+vis_rows,caret_col); }
         else if(k>=32&&k<127) ed_insert((char)k);
         ed_rowcol(ed_caret,&caret_row,&caret_col); u->got_input=1; caretmoved=1;
     }

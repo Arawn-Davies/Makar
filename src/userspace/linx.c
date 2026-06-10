@@ -298,17 +298,22 @@ static void draw(void){
 
 /* ---- one-line prompt at the status row (returns 1=entered, 0=cancel) ----- */
 static int prompt(const char *label,char *out,int cap){
-    int row=g_rows-1,len=0; out[0]=0;
+    int row=g_rows-1,len=0,car=0,base=1+sl(label)+1; out[0]=0;
     for(;;){
         for(int c=0;c<g_cols;c++) put_at(c,row,' ',CLR_MENUSEL);
         put_str(1,row,label,CLR_MENUSEL);
-        int base=1+sl(label)+1; put_str(base,row,out,CLR_MENUSEL);
-        present(); sys_set_cursor((unsigned)(base+len),(unsigned)row);
+        put_str(base,row,out,CLR_MENUSEL);
+        present(); sys_set_cursor((unsigned)(base+car),(unsigned)row);
         int k=tkey_get();
         if(k=='\n'||k=='\r') return 1;
-        if(k==0x1B||k==KEY_CTRL_C) return 0;
-        if(k==8||k==127){ if(len>0) out[--len]=0; continue; }
-        if(k>=0x20&&k<0x7F&&len<cap-1){ out[len++]=(char)k; out[len]=0; }
+        else if(k==0x1B||k==KEY_CTRL_C) return 0;
+        else if(k==KEY_ARROW_LEFT){ if(car>0)car--; }
+        else if(k==KEY_ARROW_RIGHT){ if(car<len)car++; }
+        else if(k==KEY_HOME){ car=0; }
+        else if(k==KEY_END){ car=len; }
+        else if(k==8||k==127){ if(car>0){ for(int i=car-1;i<len;i++)out[i]=out[i+1]; len--; car--; out[len]=0; } }
+        else if(k==KEY_DELETE){ if(car<len){ for(int i=car;i<len;i++)out[i]=out[i+1]; len--; out[len]=0; } }
+        else if(k>=0x20&&k<0x7F&&len<cap-1){ for(int j=len;j>car;j--)out[j]=out[j-1]; out[car++]=(char)k; len++; out[len]=0; }
     }
 }
 
@@ -357,8 +362,12 @@ int main(int argc,char **argv){
         draw();
         int k=tkey_get();
         if(k=='q'||k==KEY_CTRL_C) break;
-        else if(k==KEY_ARROW_DOWN){ g_scroll++; clamp_scroll(); }
-        else if(k==KEY_ARROW_UP){ g_scroll--; clamp_scroll(); }
+        else if(k==KEY_ARROW_DOWN){ if(g_nlink>0){ g_cur=(g_cur+1)%g_nlink; scroll_to_cur(); } else { g_scroll++; clamp_scroll(); } }
+        else if(k==KEY_ARROW_UP){ if(g_nlink>0){ g_cur=(g_cur-1+g_nlink)%g_nlink; scroll_to_cur(); } else { g_scroll--; clamp_scroll(); } }
+        else if(k==KEY_ARROW_RIGHT){ if(g_cur>=0&&g_cur<g_nlink){ char u[URLCAP]; scpy(u,pool_at(g_link[g_cur].off),URLCAP); go(u); } }
+        else if(k==KEY_ARROW_LEFT){ if(g_histn>0){ char prev[URLCAP]; scpy(prev,g_hist[--g_histn],URLCAP); load(prev); } }
+        else if(k=='j'){ g_scroll++; clamp_scroll(); }      /* line scroll (vim-style) */
+        else if(k=='k'){ g_scroll--; clamp_scroll(); }
         else if(k==KEY_PAGE_DOWN||k==' '){ g_scroll+=g_rows-3; clamp_scroll(); }
         else if(k==KEY_PAGE_UP){ g_scroll-=g_rows-3; clamp_scroll(); }
         else if(k=='\t'||k=='n'){ if(g_nlink>0){ g_cur=(g_cur+1)%g_nlink; scroll_to_cur(); } }

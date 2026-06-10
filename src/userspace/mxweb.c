@@ -102,6 +102,8 @@ static int g_drag, g_drag_off;
 typedef struct { char name[64]; char value[256]; int x, dy, w, h; unsigned char shown; } formfield;
 static formfield g_fields[MAX_FIELDS]; static int g_nfields;
 static int  g_ff = -1;                 /* focused field index (-1 = none)      */
+static int  g_ff_caret = 0;            /* caret within the focused form field  */
+static int  g_ff_last = -1;            /* previous g_ff (reset caret on change) */
 static char g_form_action[URLCAP];     /* the first <form>'s action            */
 typedef struct { int x, dy, w, h; } subrect;
 static subrect g_subs[MAX_SUBS]; static int g_nsub;
@@ -1040,10 +1042,19 @@ int main(int argc,char **argv){
         int uikey = key;
         if (!busy && g_ff>=0 && g_ff<g_nfields) {
             uikey = -1;
+            char *v=g_fields[g_ff].value; int n=sl(v);
+            if (g_ff != g_ff_last) { g_ff_caret = n; g_ff_last = g_ff; }  /* newly focused -> caret at end */
+            int cr=g_ff_caret; if(cr>n)cr=n; if(cr<0)cr=0;
             if (key=='\n') form_submit();
-            else if (key==8 || key==127) { char *v=g_fields[g_ff].value; int n=sl(v); if(n>0) v[n-1]=0; }
-            else if (key>=32 && key<127) { char *v=g_fields[g_ff].value; int n=sl(v); if(n<255){ v[n]=(char)key; v[n+1]=0; } }
-        }
+            else if (key==KEY_ARROW_LEFT)  { if(cr>0)cr--; }
+            else if (key==KEY_ARROW_RIGHT) { if(cr<n)cr++; }
+            else if (key==KEY_HOME)        { cr=0; }
+            else if (key==KEY_END)         { cr=n; }
+            else if (key==8 || key==127)   { if(cr>0){ for(int i=cr-1;i<n;i++)v[i]=v[i+1]; cr--; } }
+            else if (key==KEY_DELETE)      { if(cr<n){ for(int i=cr;i<n;i++)v[i]=v[i+1]; } }
+            else if (key>=32 && key<127)   { if(n<255){ for(int j=n;j>cr;j--)v[j]=v[j-1]; v[cr++]=(char)key; v[n+1]=0; } }
+            g_ff_caret=cr;
+        } else g_ff_last = -1;
         ui_begin(&u,c.mx,c.my,c.mdown,c.mpressed,c.mreleased,(uikey=='\t')?-1:uikey);
         /* while a menu/About is open, gate the toolbar + content; the overlay
          * gets the real input snapshot restored before it draws (below). */
@@ -1063,9 +1074,17 @@ int main(int argc,char **argv){
         ui_label(&u,s,8,MENU_H+32,g_title[0]?g_title:g_cur_url,COL_MUTE);
         int stw=gfx_text_w(g_status); ui_label(&u,s,s->w-SBW-stw-6,MENU_H+32,g_status,COL_MUTE);
 
-        /* keyboard scroll (only when no in-page field owns the key) */
-        if (!busy && g_ff<0 && key==0x80) g_scroll -= 48;            /* up   */
-        else if (!busy && g_ff<0 && key==0x81) g_scroll += 48;       /* down */
+        /* keyboard scroll (only when neither the URL bar nor an in-page field
+         * owns the key) -- arrows, Page Up/Down, Home/End (top/bottom) */
+        if (!busy && g_ff<0 && u.focus==0) {
+            int pg = s->h - TOOLBAR_H - 24; if (pg < 40) pg = 40;
+            if      (key==KEY_ARROW_UP)   g_scroll -= 48;
+            else if (key==KEY_ARROW_DOWN) g_scroll += 48;
+            else if (key==KEY_PAGE_UP)    g_scroll -= pg;
+            else if (key==KEY_PAGE_DOWN)  g_scroll += pg;
+            else if (key==KEY_HOME)       g_scroll = 0;
+            else if (key==KEY_END)        g_scroll = g_content_h;
+        }
 
         /* page clipboard when neither the URL bar nor an in-page field is focused */
         if (!busy && g_ff<0 && u.focus==0) {
