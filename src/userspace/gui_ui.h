@@ -136,4 +136,29 @@ int  ui_context_menu(ui_ctx *c, gfx_surface *s, int x, int y,
 int  ui_about(ui_ctx *c, gfx_surface *s, const char *title,
              const char *const *lines, int nlines, int *open);
 
+/* ------------------------------------------------------------------------
+ * App chrome helpers -- so every window carries the same menu bar with a few
+ * lines instead of hand-rolled boilerplate.
+ * ------------------------------------------------------------------------ */
+
+/* Saved input snapshot for gating content while a menu/modal is open. */
+typedef struct { int key, mp, md, mr; } ui_gate;
+
+/* ui_gate_begin: stash the live input in `g`; if `busy`, blank the ctx's
+ * buttons/key so content widgets drawn after it don't react while a menu or
+ * modal is open.  ui_gate_end restores the snapshot before the overlay draws. */
+void ui_gate_begin(ui_ctx *c, ui_gate *g, int busy);
+void ui_gate_end(ui_ctx *c, const ui_gate *g);
+
+/* Standard application menu bar: a File menu (just "Exit"), then any `extra`
+ * menus (Edit/View/...), then a Help menu ("About <app>").  Draws the bar and
+ * the About modal at the top of the surface.  *open / *about_open / *quit are
+ * caller-owned: *quit is set when Exit is chosen, *about_open when About is.
+ * Returns the action (> 0) of a clicked `extra` item this frame, else 0.
+ * Call LAST in the frame (after ui_gate_end) so it overlays content. */
+int  ui_appbar(ui_ctx *c, gfx_surface *s, const char *app,
+               const char *const *about, int nabout,
+               const ui_menu *extra, int nextra,
+               int *open, int *about_open, int *quit);
+
 #endif /* GUI_UI_H */

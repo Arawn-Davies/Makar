@@ -349,3 +349,43 @@ int ui_about(ui_ctx *c, gfx_surface *s, const char *title,
     if (ok || (c->mpressed && !pt_in(c, x, y, w, h))) { *open = 0; return 1; }
     return 0;
 }
+
+void ui_gate_begin(ui_ctx *c, ui_gate *g, int busy)
+{
+    g->key = c->key; g->mp = c->mpressed; g->md = c->mdown; g->mr = c->mreleased;
+    if (busy) { c->key = -1; c->mpressed = c->mdown = c->mreleased = 0; }
+}
+void ui_gate_end(ui_ctx *c, const ui_gate *g)
+{
+    c->key = g->key; c->mpressed = g->mp; c->mdown = g->md; c->mreleased = g->mr;
+}
+
+int ui_appbar(ui_ctx *c, gfx_surface *s, const char *app,
+              const char *const *about, int nabout,
+              const ui_menu *extra, int nextra,
+              int *open, int *about_open, int *quit)
+{
+    enum { AB_EXIT = 1000000, AB_ABOUT = 1000001 };  /* private; won't clash with app enums */
+    static const ui_menu_item fitems[] = { { "Exit", AB_EXIT, 1, 0 } };
+
+    char hl[64];                                       /* "About <app>" (Help item + title) */
+    { int n = 0; const char *p = "About ";
+      while (*p && n < 62) hl[n++] = *p++;
+      for (const char *q = app; *q && n < 63; q++) hl[n++] = *q;
+      hl[n] = 0; }
+    ui_menu_item hitems[1];
+    hitems[0].label = hl; hitems[0].action = AB_ABOUT; hitems[0].enabled = 1; hitems[0].accel = 0;
+
+    ui_menu menus[18];
+    int n = 0;
+    menus[n].title = "File"; menus[n].items = fitems; menus[n].n = 1; n++;
+    for (int i = 0; i < nextra && n < 16; i++) menus[n++] = extra[i];
+    menus[n].title = "Help"; menus[n].items = hitems; menus[n].n = 1; n++;
+
+    int act = ui_menubar(c, s, menus, n, open);
+    if      (act == AB_EXIT)  { if (quit) *quit = 1; act = 0; }
+    else if (act == AB_ABOUT) { if (about_open) *about_open = 1; act = 0; }
+
+    if (about_open) ui_about(c, s, hl, about, nabout, about_open);
+    return act;
+}

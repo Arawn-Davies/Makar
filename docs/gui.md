@@ -175,7 +175,14 @@ copies both with the rest of `/usr`.
   get a ctx with no buttons/keys so they still draw but don't react) — this is
   how the per-window focus model reaches individual widgets. The pointer ctx
   carries both buttons: `ui_ctx`/`mx_conn` expose left **and** right
-  (`rpressed`/`rdown`/`rreleased`) so apps can raise context menus.
+  (`rpressed`/`rdown`/`rreleased`) so apps can raise context menus.  Two
+  convenience helpers give every window the same chrome cheaply: **`ui_appbar`**
+  draws a standard *File → Exit* + *Help → About &lt;app&gt;* bar (plus optional
+  Edit/View menus) and the About modal in one call, and **`ui_gate`** /
+  `ui_gate_begin` / `ui_gate_end` blank the content ctx's buttons/key while a
+  menu or modal is open so widgets drawn under it don't react.  Used by the
+  simple apps (clock/calc/tasks/net/disk/display) to carry a menu bar in ~3
+  lines; the richer apps add their own Edit/View menus on top.
 - **vt100** (`vt100.{c,h}`) — a standalone ANSI/VT100+ terminal emulator core:
   `vt_init`/`vt_resize`/`vt_putc` drive a colour `vt_cell` grid (cursor, scroll
   region, SGR colours, ED/EL, IL/DL/ICH/DCH/ECH, alt-screen, UTF-8 → one cell).

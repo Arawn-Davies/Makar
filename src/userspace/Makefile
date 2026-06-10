@@ -135,7 +135,7 @@ mxtasks.elf: crt0.o mxtasks.o gui_gfx.o gui_ui.o makx.o
 mxabout.elf: crt0.o mxabout.o gui_gfx.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-mxclock.elf: crt0.o mxclock.o gui_gfx.o makx.o
+mxclock.elf: crt0.o mxclock.o gui_gfx.o gui_ui.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 mxcalc.elf: crt0.o mxcalc.o gui_gfx.o gui_ui.o makx.o

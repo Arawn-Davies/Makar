@@ -66,13 +66,14 @@ int main(int argc, char **argv)
     char msg[48] = {0};             /* transient status / error line           */
 
     int first=1, lmx=-1, lmy=-1; unsigned last=0;
-    while (!c.closed) {
+    int g_menu=-1, g_about=0, g_quit=0;
+    while (!c.closed && !g_quit) {
         mx_pump(&c);
         (void)mx_key(&c);
         unsigned now = sys_uptime();
         int moved = (c.mx!=lmx||c.my!=lmy); lmx=c.mx; lmy=c.my;
         int tick = (now-last) >= 25u;          /* ~4 Hz: drive the countdown */
-        if (!(first||tick||moved||c.mpressed||c.mreleased||c.resized)) { sys_yield(); continue; }
+        if (!(first||tick||moved||c.mpressed||c.mreleased||c.rpressed||c.resized)) { sys_yield(); continue; }
         last=now; first=0;
 
         /* Auto-revert if the confirm window elapsed. */
@@ -85,15 +86,18 @@ int main(int argc, char **argv)
 
         gfx_surface *s = &c.surf;
         gfx_fill(s,0,0,s->w,s->h,COL_BG);
-        gfx_fill(s,0,0,s->w,2,RGB(0x35,0x6a,0xa8));
-        gfx_str(s,16,14,"Display Settings",COL_HD);
+        int top=UI_MENUBAR_H;
+        gfx_fill(s,0,top,s->w,2,RGB(0x35,0x6a,0xa8));
+        gfx_str(s,16,top+14,"Display Settings",COL_HD);
 
+        int busy=(g_menu>=0)||g_about;
         ui_begin(&u,c.mx,c.my,c.mdown,c.mpressed,c.mreleased,-1);
+        ui_gate g; ui_gate_begin(&u,&g,busy);
 
         if (st==ST_LIST) {
-            gfx_str(s,16,40,"Resolution:",COL_TX);
+            gfx_str(s,16,top+40,"Resolution:",COL_TX);
             for (int i=0;i<NMODES;i++){
-                int by=58+i*40;
+                int by=top+58+i*40;
                 char lab[24]; scpy(lab,MODES[i].name,sizeof lab);
                 int active = streq(cur_mode, MODES[i].name);
                 if (ui_button(&u,s,16,by,200,30,lab)){
@@ -112,27 +116,32 @@ int main(int argc, char **argv)
             if (msg[0]) gfx_str(s,16,s->h-24,msg,COL_ERR);
         } else { /* ST_CONFIRM */
             int left = ((int)(deadline - now))/100; if(left<0) left=0;
-            gfx_str(s,16,46,"Keep this resolution?",COL_TX);
+            gfx_str(s,16,top+46,"Keep this resolution?",COL_TX);
             char line[48]; char nb[12];
             scpy(line,"Reverting in ",sizeof line); int L=slen(line);
             scpy(line+L,u2s((unsigned)left,nb),(int)sizeof line-L); L=slen(line);
             scpy(line+L,"s ...",(int)sizeof line-L);
-            gfx_str(s,16,66,line,RGB(0x90,0xa0,0xb5));
-            if (ui_button(&u,s,16,100,160,32,"Keep changes")){
+            gfx_str(s,16,top+66,line,RGB(0x90,0xa0,0xb5));
+            if (ui_button(&u,s,16,top+100,160,32,"Keep changes")){
                 scpy(msg,"Resolution kept.",sizeof msg);
                 st=ST_LIST;
             }
-            if (ui_button(&u,s,188,100,160,32,"Revert now")){
+            if (ui_button(&u,s,188,top+100,160,32,"Revert now")){
                 sys_setmode(prev_mode);
                 scpy(cur_mode,prev_mode,sizeof cur_mode);
                 scpy(msg,"Reverted.",sizeof msg);
                 st=ST_LIST;
             }
         }
+        ui_gate_end(&u,&g);
+
+        static const char *al[]={"Makar display settings (mxdisplay)","(c) 2026 Arawn Davies  --  MIT","","Change resolution with a confirm + 15s auto-revert.","Part of Makar OS."};
+        ui_appbar(&u,s,"mxdisplay",al,5,0,0,&g_menu,&g_about,&g_quit);
 
         mx_present(&c);
         sys_yield();
     }
+    if (st==ST_CONFIRM) sys_setmode(prev_mode);   /* exiting mid-confirm must not strand an unconfirmed mode */
     mx_close(&c);
     return 0;
 }
