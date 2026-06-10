@@ -1648,17 +1648,35 @@ static void syscall_dispatch_inner(registers_t *regs)
             fe = fd_get(t->fd_table, fd);
             if (!fe || fe->kind != FD_KIND_FILE) { regs->eax = (uint32_t)-1; break; }
         }
+        /* A read-only, path-backed (lazy) file mapping shares frames straight
+         * out of the page cache: pagecache_acquire pins the cache's frame, so
+         * libc.so's ~700 KiB of text/rodata is one copy in RAM no matter how
+         * many processes map it.  Writable file maps, tmpfs-backed files and
+         * anon-fixed maps each take a private frame.  Either way a MAP_FIXED
+         * page replaces through vmm_unmap_and_free so the frame it overlays
+         * (e.g. musl's whole-library reserve) is released, not leaked. */
+        int shared_ro = (!anon && fe && fe->lazy && !(prot & MMAP_PROT_WRITE));
         int failed = 0;
         for (uint32_t i = 0; i < pages; i++) {
             uint32_t va   = base + (i << 12);
-            uint32_t phys = pmm_alloc_frame();
-            if (phys == PMM_ALLOC_ERROR) { failed = 1; break; }
-            memset((void *)phys, 0, 0x1000);
-            if (!anon) {
-                uint64_t off = ((uint64_t)pgoff << 12) + ((uint64_t)i << 12);
-                syscall_file_pread(fe, (uint8_t *)phys, off, 0x1000);
+            uint32_t phys = 0;
+
+            if (shared_ro)
+                phys = pagecache_acquire(fe->path, fe->size, pgoff + i, NULL);
+
+            if (!phys) {
+                /* Private frame: anon, a writable/tmpfs file, or a file page
+                 * wholly past EOF (left zero-filled, like the bss tail). */
+                phys = pmm_alloc_frame();
+                if (phys == PMM_ALLOC_ERROR) { failed = 1; break; }
+                memset((void *)phys, 0, 0x1000);
+                if (!anon && !shared_ro) {
+                    uint64_t off = ((uint64_t)pgoff << 12) + ((uint64_t)i << 12);
+                    syscall_file_pread(fe, (uint8_t *)phys, off, 0x1000);
+                }
             }
-            if (fixed) vmm_unmap_page(t->page_dir, va);   /* replace any existing */
+
+            if (fixed) vmm_unmap_and_free(t->page_dir, va);  /* release any prior frame */
             vmm_map_page(t->page_dir, va, phys, mflags);
         }
         if (failed) { regs->eax = (uint32_t)-1; break; }
