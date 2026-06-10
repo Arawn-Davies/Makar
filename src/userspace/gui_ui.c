@@ -273,7 +273,10 @@ static int ui_popup_list(ui_ctx *c, gfx_surface *s, int x, int y,
         if (items[i].accel)
             gfx_str_clip(s, x + w - padx - gfx_text_w(items[i].accel), cy + 4,
                          items[i].accel, UI_COL_MUTED, x + w - 2);
-        if (hot && c->mpressed) { action = items[i].action; c->got_input = 1; }
+        /* Consume the selecting click: clearing mpressed stops the same press
+         * from also dismissing a modal we're about to open (e.g. About) or
+         * hitting whatever sits underneath the menu this frame. */
+        if (hot && c->mpressed) { action = items[i].action; c->got_input = 1; c->mpressed = 0; }
         cy += rowh;
     }
     if (c->mpressed && !pt_in(c, x, y, w, h)) *outside = 1;
