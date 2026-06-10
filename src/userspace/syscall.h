@@ -576,6 +576,12 @@ static inline int sys_net_ctl(int cmd)
     return (int)syscall1(SYS_NET_CTL, (long)cmd);
 }
 
+/* Apply a network config (DHCP or static IPv4 + DNS).  Returns 0 on success. */
+static inline int sys_net_config(const net_cfg_t *cfg)
+{
+    return (int)syscall1(SYS_NET_CONFIG, (long)cfg);
+}
+
 /* Fetch an http:// URL and write the body to outpath.  Returns the number of
  * bytes saved (>=0), or negative on error (-(status) for a non-2xx reply). */
 static inline int sys_wget(const char *url, const char *outpath)

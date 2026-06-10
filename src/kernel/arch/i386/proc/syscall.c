@@ -2292,6 +2292,14 @@ static void syscall_dispatch_inner(registers_t *regs)
         break;
     }
 
+    /* SYS_NET_CONFIG(286): EBX = net_cfg_t * -- DHCP or a static IPv4 config. */
+    case SYS_NET_CONFIG: {
+        const net_cfg_t *cfg = (const net_cfg_t *)(uintptr_t)regs->ebx;
+        if (!cfg) { regs->eax = (uint32_t)-1; break; }
+        regs->eax = (uint32_t)net_lwip_config(cfg->dhcp, cfg->ip, cfg->mask, cfg->gw, cfg->dns);
+        break;
+    }
+
     /* ------------------------------------------------------------------
      * SYS_WGET(255): fetch an http:// URL and write the body to a VFS path.
      * EBX = url, ECX = outpath (user pointers; same direct-use convention as

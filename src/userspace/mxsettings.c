@@ -139,26 +139,61 @@ static void panel_statusbar(ui_ctx *u, gfx_surface *s, int cx, int cy, int cw, i
     }
 }
 
-/* ---- Network: status + DHCP controls ------------------------------------ */
+/* ---- Network: status + DHCP + manual/static ----------------------------- */
 static char n_info[512]; static int n_init=0;
+static char n_ip[20], n_mask[20]="255.255.255.0", n_gw[20], n_dns[20], n_msg[40];
+static int  n_static=0;
 static void n_refresh(void){ int n=sys_net_info(n_info,(unsigned)sizeof n_info-1); if(n<0)n=0; n_info[n]=0; }
+static void parse_ip(const char *s, unsigned char o[4]){
+    o[0]=o[1]=o[2]=o[3]=0; int part=0,val=0,have=0;
+    for(;;s++){ char ch=*s;
+        if(ch>='0'&&ch<='9'){ val=val*10+(ch-'0'); have=1; }
+        else { if(have&&part<4) o[part++]=(unsigned char)val; val=0; have=0; if(ch=='\0')break; }
+    }
+}
 static void panel_network(ui_ctx *u, gfx_surface *s, int cx, int cy, int cw, int ch)
 {
     (void)ch;
     if(!n_init){ n_refresh(); n_init=1; }
-    int y = section(s, cx, cy, "CONNECTION");
+    int y = section(s, cx, cy, "CONNECTION (DHCP)");
     int bx=cx;
-    if (ui_button(u,s,bx,y,84,24,"Renew"))   { sys_net_ctl(NET_CTL_DHCP_RENEW);   n_refresh(); } bx+=90;
-    if (ui_button(u,s,bx,y,84,24,"Release")) { sys_net_ctl(NET_CTL_DHCP_RELEASE); n_refresh(); } bx+=90;
-    if (ui_button(u,s,bx,y,96,24,"Flush DNS")){ sys_net_ctl(NET_CTL_DNS_FLUSH);   n_refresh(); }
-    y+=34;
-    for (const char *p=n_info; *p; ){
+    if (ui_button(u,s,bx,y,80,24,"Renew"))   { sys_net_ctl(NET_CTL_DHCP_RENEW);   n_refresh(); } bx+=86;
+    if (ui_button(u,s,bx,y,80,24,"Release")) { sys_net_ctl(NET_CTL_DHCP_RELEASE); n_refresh(); } bx+=86;
+    if (ui_button(u,s,bx,y,92,24,"Flush DNS")){ sys_net_ctl(NET_CTL_DNS_FLUSH);   n_refresh(); }
+    y+=32;
+    for (const char *p=n_info; *p && y<cy+150; ){
         char line[96]; int i=0; while(*p && *p!='\n' && i<(int)sizeof line-1) line[i++]=*p++;
         line[i]=0; if(*p=='\n')p++;
-        if (y < s->h-12){ gfx_str_clip(s,cx,y,line,COL_TEXT,cx+cw); y+=12; }
+        gfx_str_clip(s,cx,y,line,COL_TEXT,cx+cw); y+=12;
     }
-    /* Manual / static IP + DNS lands with the SYS_NET_CONFIG syscall. */
-    gfx_str(s,cx,s->h-22,"Manual / static config - coming next.",COL_MUTE);
+
+    y = section(s, cx, y+12, "MANUAL CONFIGURATION");
+    gfx_str(s,cx,y+4,"Use a static address", COL_TEXT);
+    ui_toggle(u,s,cx+200,y,&n_static);
+    y+=30;
+    if (n_static){
+        struct { const char *lab; char *buf; } f[4] = {
+            {"IP",n_ip},{"Netmask",n_mask},{"Gateway",n_gw},{"DNS",n_dns} };
+        for (int i=0;i<4;i++){
+            gfx_str(s,cx,y+5,f[i].lab,COL_MUTE);
+            ui_textbox(u,s,cx+80,y,150,22,f[i].buf,20);
+            y+=28;
+        }
+        if (ui_button(u,s,cx,y+4,140,28,"Apply static")){
+            net_cfg_t cfg; cfg.dhcp=0;
+            parse_ip(n_ip,cfg.ip); parse_ip(n_mask,cfg.mask);
+            parse_ip(n_gw,cfg.gw); parse_ip(n_dns,cfg.dns);
+            scpy(n_msg, sys_net_config(&cfg)==0 ? "Static config applied." : "Failed.", sizeof n_msg);
+            n_refresh();
+        }
+    } else {
+        if (ui_button(u,s,cx,y+4,140,28,"Switch to DHCP")){
+            net_cfg_t cfg; for(unsigned i=0;i<sizeof cfg;i++)((unsigned char*)&cfg)[i]=0; cfg.dhcp=1;
+            scpy(n_msg, sys_net_config(&cfg)==0 ? "DHCP requested." : "Failed.", sizeof n_msg);
+            n_refresh();
+        }
+    }
+    if (n_msg[0]) gfx_str(s,cx+150,y+10,n_msg, n_msg[0]=='F'?COL_ERR:COL_OK);
 }
 
 /* ---- Date & Time: live clock + set (SYS_SETTIME) ------------------------ */
