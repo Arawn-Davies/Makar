@@ -95,9 +95,11 @@ int  ui_toggle(ui_ctx *c, gfx_surface *s, int x, int y, int *on);
  * ------------------------------------------------------------------------ */
 
 /* Numeric spin box: a fixed w x h field showing *val with stacked up/down
- * steppers on the right.  Clicking a stepper steps *val by 1, clamped to
- * [lo,hi].  Returns 1 if *val changed this frame.  Fixed footprint, so rows of
- * spinners line up under their labels. */
+ * steppers on the right (the stepper column is UI_SPIN_BTN px wide; the value
+ * field is the rest).  Clicking a stepper steps *val by 1, clamped to [lo,hi].
+ * Returns 1 if *val changed this frame.  Fixed footprint, so rows of spinners
+ * line up under their labels. */
+#define UI_SPIN_BTN 16
 int  ui_spinner(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
                 int *val, int lo, int hi);
 

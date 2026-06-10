@@ -418,7 +418,7 @@ int ui_appbar(ui_ctx *c, gfx_surface *s, const char *app,
  * Standard form controls
  * ------------------------------------------------------------------------- */
 
-#define UI_SPIN_BTN 16          /* stepper column width */
+/* UI_SPIN_BTN (stepper column width) is defined in gui_ui.h */
 
 int ui_spinner(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
                int *val, int lo, int hi)

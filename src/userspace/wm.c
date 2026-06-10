@@ -213,11 +213,9 @@ static const icon_def_t icon_defs[] = {
     {"About",   RGB(0x35,0x6a,0xa8),"/apps/mxabout.elf",  568,454, 0,        "about"},
     {"Clock",   RGB(0x40,0xc0,0xb0),"/apps/mxclock.elf",  384,232, 0,        "clock"},
     {"Calc",    RGB(0xe0,0x80,0x40),"/apps/mxcalc.elf",   264,324, 0,        "calc"},
-    {"Net",     RGB(0x4c,0xb0,0xff),"/apps/mxnet.elf",    468,344, 0,        "net"},
     {"Disk",    RGB(0xc0,0xa0,0x40),"/apps/mxdisk.elf",   528,384, 0,        "disk"},
     {"Install", RGB(0xff,0x70,0x70),"/apps/mxinstall.elf",588,492, "install","install"},
     {"Image",   RGB(0x70,0xb0,0x70),"/apps/mximg.elf",    608,468, 0,        "image"},
-    {"Display", RGB(0x60,0x90,0xc0),"/apps/mxdisplay.elf",380,300, 0,        "display"},
     {"Settings",RGB(0x6a,0x71,0x80),"/apps/mxsettings.elf",720,520, 0,       "settings"},
 };
 #define ICON_DEF_N (int)(sizeof icon_defs / sizeof icon_defs[0])
@@ -981,7 +979,7 @@ static unsigned dock_busy_ticks(void)
     }
     return sum;
 }
-static void dock_stats(char *out)
+static void dock_stats(char *cpu_out, char *ram_out)
 {
     static unsigned last_busy=0,last_up=0,cpu=0,ram=0; static int have=0;
     unsigned up=sys_uptime();
@@ -993,24 +991,23 @@ static void dock_stats(char *out)
         ram=(tot>fr)?(tot-fr)*100u/tot:0u;
         last_busy=busy; last_up=up; have=1;
     }
-    char n[8]; int o=0; const char *p;
-    p="CPU "; while(*p)out[o++]=*p++; u2s(cpu,n); for(int i=0;n[i];i++)out[o++]=n[i]; out[o++]='%';
-    out[o++]=' '; out[o++]=' ';
-    p="RAM "; while(*p)out[o++]=*p++; u2s(ram,n); for(int i=0;n[i];i++)out[o++]=n[i]; out[o++]='%';
-    out[o]=0;
+    char n[8]; int o; const char *p;
+    o=0; p="CPU "; while(*p)cpu_out[o++]=*p++; u2s(cpu,n); for(int i=0;n[i];i++)cpu_out[o++]=n[i]; cpu_out[o++]='%'; cpu_out[o]=0;
+    o=0; p="RAM "; while(*p)ram_out[o++]=*p++; u2s(ram,n); for(int i=0;n[i];i++)ram_out[o++]=n[i]; ram_out[o++]='%'; ram_out[o]=0;
 }
 
 /* ---- system tray: net status + clock/date (lives in the dock, far right) - */
 static int      g_net_state = -1;        /* 0 down, 1 limited, 2 connected   */
 /* Dock tray element visibility (toggled via the dock right-click menu, persisted
  * in ~/.mxrc).  Default all on. */
-static int g_tray_clock=1, g_tray_date=1, g_tray_net=1, g_tray_stats=1, g_tray_gpu=1;
+static int g_tray_clock=1, g_tray_date=1, g_tray_net=1, g_tray_cpu=1, g_tray_ram=1, g_tray_gpu=1;
 static char g_gpu_name[20] = "";          /* active video backend (queried once)  */
 static void load_tray_prefs(void){
     g_tray_clock = mxrc_get_int("TrayClock", 1);
     g_tray_date  = mxrc_get_int("TrayDate",  1);
     g_tray_net   = mxrc_get_int("TrayNet",   1);
-    g_tray_stats = mxrc_get_int("TrayStats", 1);
+    g_tray_cpu   = mxrc_get_int("TrayCpu",   1);
+    g_tray_ram   = mxrc_get_int("TrayRam",   1);
     g_tray_gpu   = mxrc_get_int("TrayGpu",   1);
     if (sys_video_name(g_gpu_name, sizeof g_gpu_name) <= 0) scpy(g_gpu_name, "VGA", sizeof g_gpu_name);
 }
@@ -1104,12 +1101,13 @@ static void draw_dock(void)
     if (g_tray_date){ rx -= gfx_text_w(g_date); gfx_str(&scr, rx, ty, g_date, tcol); rx -= 12; }
     if (g_tray_clock){ rx -= gfx_text_w(g_clk);  gfx_str(&scr, rx, ty, g_clk,  tcol); rx -= 16; }
     if (g_tray_net){ rx -= 16; draw_net_icon(rx, y0+(DOCK_H-12)/2, g_net_state); rx -= 14; }
-    if (g_tray_stats){ char st[32]; dock_stats(st);
-        rx -= gfx_text_w(st); gfx_str(&scr, rx, ty, st, RGB(0x90,0xa0,0xb5)); rx -= 12; }
+    if (g_tray_cpu || g_tray_ram){ char cpu[16], ram[16]; dock_stats(cpu, ram);
+        if (g_tray_ram){ rx -= gfx_text_w(ram); gfx_str(&scr, rx, ty, ram, tcol); rx -= 14; }
+        if (g_tray_cpu){ rx -= gfx_text_w(cpu); gfx_str(&scr, rx, ty, cpu, tcol); rx -= 14; } }
     if (g_tray_gpu && g_gpu_name[0]){
         char gp[28]; int o=0; const char *p="GPU "; while(*p)gp[o++]=*p++;
         for(const char *q=g_gpu_name; *q && o<(int)sizeof gp-1; q++) gp[o++]=*q; gp[o]=0;
-        rx -= gfx_text_w(gp); gfx_str(&scr, rx, ty, gp, RGB(0x7a,0xc0,0x90)); }
+        rx -= gfx_text_w(gp); gfx_str(&scr, rx, ty, gp, tcol); }
 }
 static int dock_hit(int px,int py,int *out_win)
 {
@@ -1120,11 +1118,11 @@ static int dock_hit(int px,int py,int *out_win)
 
 /* ---- dock right-click menu: toggle which tray elements show (persist ~/.mxrc) */
 #define TRAYMENU_W 150
-#define TRAYMENU_N 5
-static const char *TRAY_LABELS[TRAYMENU_N] = {"Clock","Date","Network","CPU / RAM","GPU"};
-static const char *TRAY_KEYS[TRAYMENU_N]   = {"TrayClock","TrayDate","TrayNet","TrayStats","TrayGpu"};
+#define TRAYMENU_N 6
+static const char *TRAY_LABELS[TRAYMENU_N] = {"Clock","Date","Network","CPU","RAM","GPU"};
+static const char *TRAY_KEYS[TRAYMENU_N]   = {"TrayClock","TrayDate","TrayNet","TrayCpu","TrayRam","TrayGpu"};
 static int g_tray_menu=0, g_tray_menu_x=0;     /* open flag + anchor x (pops up from dock) */
-static int *tray_flag(int i){ return i==0?&g_tray_clock : i==1?&g_tray_date : i==2?&g_tray_net : i==3?&g_tray_stats : &g_tray_gpu; }
+static int *tray_flag(int i){ return i==0?&g_tray_clock : i==1?&g_tray_date : i==2?&g_tray_net : i==3?&g_tray_cpu : i==4?&g_tray_ram : &g_tray_gpu; }
 static void tray_menu_box(int *x,int *y,int *w,int *h){
     int rh=22; *w=TRAYMENU_W; *h=6+TRAYMENU_N*rh+6;
     *x=g_tray_menu_x; if(*x+*w>(int)FBW)*x=(int)FBW-*w; if(*x<0)*x=0;

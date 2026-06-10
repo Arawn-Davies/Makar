@@ -125,10 +125,10 @@ static void panel_display(ui_ctx *u, gfx_surface *s, int cx, int cy, int cw, int
 }
 
 /* ---- Status Bar: dock tray widget visibility ---------------------------- */
-#define N_TRAY 5
+#define N_TRAY 6
 static const struct { const char *key, *label; } TRAY[N_TRAY] = {
     {"TrayClock","Clock"},{"TrayDate","Date"},{"TrayNet","Network"},
-    {"TrayStats","CPU / RAM"},{"TrayGpu","GPU"},
+    {"TrayCpu","CPU"},{"TrayRam","RAM"},{"TrayGpu","GPU"},
 };
 static int  t_val[N_TRAY], t_init=0;
 static void panel_statusbar(ui_ctx *u, gfx_surface *s, int cx, int cy, int cw, int ch)
@@ -207,9 +207,10 @@ static void panel_network(ui_ctx *u, gfx_surface *s, int cx, int cy, int cw, int
 static int  dt_y, dt_mo, dt_d, dt_h, dt_mi, dt_s;
 static char dt_msg[40];
 static int  dt_init=0;
-/* centre a label under a fixed-width spinner so the YYYY/MM/DD row lines up */
+/* centre a label under a spinner's *value field* (the box left of the +/-
+ * steppers, width w-UI_SPIN_BTN) so the YYYY/MM/DD row lines up under the digits */
 static void splbl(gfx_surface *s,int x,int w,int y,const char *t){
-    int tw=gfx_text_w(t); gfx_str(s,x+(w-tw)/2,y,t,COL_MUTE);
+    int vw=w-UI_SPIN_BTN; int tw=gfx_text_w(t); gfx_str(s,x+(vw-tw)/2,y,t,COL_MUTE);
 }
 static void panel_datetime(ui_ctx *u, gfx_surface *s, int cx, int cy, int cw, int ch)
 {
