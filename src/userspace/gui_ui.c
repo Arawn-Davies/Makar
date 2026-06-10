@@ -413,3 +413,111 @@ int ui_appbar(ui_ctx *c, gfx_surface *s, const char *app,
     if (about_open) ui_about(c, s, hl, about, nabout, about_open);
     return act;
 }
+
+/* ---------------------------------------------------------------------------
+ * Standard form controls
+ * ------------------------------------------------------------------------- */
+
+#define UI_SPIN_BTN 16          /* stepper column width */
+
+int ui_spinner(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
+               int *val, int lo, int hi)
+{
+    int idu = ++c->cur_id;      /* up   */
+    int idd = ++c->cur_id;      /* down */
+    int bx   = x + w - UI_SPIN_BTN;
+    int uh   = h / 2, dh = h - uh;
+    int hu   = pt_in(c, bx, y,      UI_SPIN_BTN, uh);
+    int hd   = pt_in(c, bx, y + uh, UI_SPIN_BTN, dh);
+    int changed = 0;
+
+    if (hu && c->mpressed && !c->active) { c->active = idu; c->got_input = 1; }
+    if (c->active == idu && c->mreleased) { if (hu && *val < hi) { (*val)++; changed = 1; } c->active = 0; }
+    if (hd && c->mpressed && !c->active) { c->active = idd; c->got_input = 1; }
+    if (c->active == idd && c->mreleased) { if (hd && *val > lo) { (*val)--; changed = 1; } c->active = 0; }
+
+    /* value field */
+    gfx_round(s, x, y, w - UI_SPIN_BTN, h, UI_COL_FIELD, UI_COL_BORDER);
+    char b[16]; int n = 0, v = *val;
+    if (v < 0) { b[n++] = '-'; v = -v; }
+    char t[12]; int ti = 0;
+    if (!v) t[ti++] = '0';
+    while (v) { t[ti++] = (char)('0' + v % 10); v /= 10; }
+    while (ti) b[n++] = t[--ti];
+    b[n] = 0;
+    int tw = gfx_text_w(b);
+    gfx_str_clip(s, x + (w - UI_SPIN_BTN - tw) / 2, y + (h - 8) / 2, b, UI_COL_TEXT, bx - 2);
+
+    /* steppers */
+    gfx_round(s, bx, y,      UI_SPIN_BTN, uh,
+              (c->active == idu) ? UI_COL_BTN_ACT : hu ? UI_COL_BTN_HOT : UI_COL_BTN, UI_COL_BORDER);
+    gfx_round(s, bx, y + uh, UI_SPIN_BTN, dh,
+              (c->active == idd) ? UI_COL_BTN_ACT : hd ? UI_COL_BTN_HOT : UI_COL_BTN, UI_COL_BORDER);
+    int pw = gfx_text_w("+");
+    gfx_str(s, bx + (UI_SPIN_BTN - pw) / 2, y + (uh - 8) / 2,        "+", UI_COL_TEXT);
+    gfx_str(s, bx + (UI_SPIN_BTN - pw) / 2, y + uh + (dh - 8) / 2,   "-", UI_COL_TEXT);
+    return changed;
+}
+
+int ui_radio(ui_ctx *c, gfx_surface *s, int x, int y, const char *label,
+             int *sel, int value)
+{
+    int id  = ++c->cur_id;
+    int lw  = label ? gfx_text_w(label) : 0;
+    int hot = pt_in(c, x, y, UI_RADIO_SZ + 6 + lw, UI_RADIO_SZ);
+    int changed = 0;
+
+    if (hot && c->mpressed && !c->active) { c->active = id; c->got_input = 1; }
+    if (c->active == id && c->mreleased) {
+        if (hot && *sel != value) { *sel = value; changed = 1; }
+        c->active = 0;
+    }
+    /* rounded (circle-ish) outer + filled dot when selected */
+    gfx_round(s, x, y, UI_RADIO_SZ, UI_RADIO_SZ, UI_COL_FIELD, UI_COL_BORDER);
+    if (*sel == value) {
+        int d = UI_RADIO_SZ - 8;
+        gfx_round(s, x + 4, y + 4, d, d, UI_COL_BTN_ACT, UI_COL_BTN_ACT);
+    }
+    if (label) gfx_str(s, x + UI_RADIO_SZ + 6, y + (UI_RADIO_SZ - 8) / 2, label, UI_COL_TEXT);
+    return changed;
+}
+
+int ui_checkbox(ui_ctx *c, gfx_surface *s, int x, int y, const char *label, int *on)
+{
+    int id  = ++c->cur_id;
+    int lw  = label ? gfx_text_w(label) : 0;
+    int hot = pt_in(c, x, y, UI_CHECK_SZ + 6 + lw, UI_CHECK_SZ);
+    int changed = 0;
+
+    if (hot && c->mpressed && !c->active) { c->active = id; c->got_input = 1; }
+    if (c->active == id && c->mreleased) { if (hot) { *on = !*on; changed = 1; } c->active = 0; }
+
+    /* square box (vs the radio's rounded one) + a tick when on */
+    gfx_fill(s, x, y, UI_CHECK_SZ, UI_CHECK_SZ, *on ? UI_COL_BTN_ACT : UI_COL_FIELD);
+    gfx_outline(s, x, y, UI_CHECK_SZ, UI_CHECK_SZ, UI_COL_BORDER);
+    if (*on) {
+        gfx_fill(s, x + 3, y + 7, 2, 2, UI_COL_TEXT);
+        gfx_fill(s, x + 5, y + 9, 2, 2, UI_COL_TEXT);
+        gfx_fill(s, x + 7, y + 7, 2, 2, UI_COL_TEXT);
+        gfx_fill(s, x + 8, y + 5, 2, 2, UI_COL_TEXT);
+        gfx_fill(s, x + 9, y + 3, 2, 2, UI_COL_TEXT);
+    }
+    if (label) gfx_str(s, x + UI_CHECK_SZ + 6, y + (UI_CHECK_SZ - 8) / 2, label, UI_COL_TEXT);
+    return changed;
+}
+
+void ui_progress(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h, int pct)
+{
+    (void)c;
+    if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+    gfx_round(s, x, y, w, h, UI_COL_TRACK, UI_COL_BORDER);
+    int fw = (w - 2) * pct / 100;
+    if (fw > 0) gfx_round(s, x + 1, y + 1, fw, h - 2, UI_COL_BTN_ACT, UI_COL_BTN_ACT);
+}
+
+void ui_separator(ui_ctx *c, gfx_surface *s, int x, int y, int w)
+{
+    (void)c;
+    gfx_fill(s, x, y,     w, 1, UI_COL_BORDER);
+    gfx_fill(s, x, y + 1, w, 1, UI_COL_FIELD_FC);
+}
