@@ -32,7 +32,7 @@ DOOM_CFLAGS=$(CFLAGS) -I$(DOOM_DIR) -include stddef.h -Wno-unused \
 DESTDIR?=
 ISODIR?=$(CURDIR)/../../isodir
 
-PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf lspci.elf maknetcfg.elf kbtester.elf mouseprobe.elf about.elf makbox.elf makmux.elf statusbar.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf fdisk.elf cfdisk.elf basic.elf filetest.elf alloctest.elf sh.elf ar.elf microhash.elf sha256.elf md5.elf wget.elf ktest_uspace.elf gui.elf doom.elf files.elf mxterm.elf mxedit.elf mxfiles.elf mxtasks.elf mxabout.elf mxclock.elf mxcalc.elf mxnet.elf mxdisk.elf mximg.elf mxinstall.elf mxdisplay.elf mxdoom.elf mxweb.elf
+PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf lspci.elf maknetcfg.elf kbtester.elf mouseprobe.elf about.elf makbox.elf makmux.elf statusbar.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf fdisk.elf cfdisk.elf basic.elf filetest.elf alloctest.elf sh.elf ar.elf microhash.elf sha256.elf md5.elf wget.elf tar.elf ktest_uspace.elf gui.elf doom.elf files.elf mxterm.elf mxedit.elf mxfiles.elf mxtasks.elf mxabout.elf mxclock.elf mxcalc.elf mxnet.elf mxdisk.elf mximg.elf mxinstall.elf mxdisplay.elf mxdoom.elf mxweb.elf
 
 # libc.a -- single archive of the userspace shim (malloc + FILE* stdio +
 # setjmp/longjmp + string/memory helpers).  Shipped under /usr/lib on the
@@ -103,6 +103,9 @@ md5.elf: crt0.o md5.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 wget.elf: crt0.o wget.o web.o tls.o libbearssl.a libc.a
+	$(LD) $(LDFLAGS) -o $@ $^
+
+tar.elf: crt0.o tar.o libc.a
 	$(LD) $(LDFLAGS) -o $@ $^
 
 ktest_uspace.elf: crt0.o ktest_uspace.o
