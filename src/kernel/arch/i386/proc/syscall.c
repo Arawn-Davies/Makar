@@ -395,6 +395,20 @@ static long syscall_fd_write(int fd, const char *buf, uint32_t len)
     return -1;   /* KEYBOARD etc: not writable */
 }
 
+/* Read up to `n` bytes from a regular file fd at byte offset `off` into `dst`
+ * (a kernel-accessible buffer).  Returns bytes read; 0 past EOF.  Handles both
+ * lazy page-cached disk files (the ISO) and in-memory tmpfs files.  Backs the
+ * file-backed mmap path (musl's dynamic linker maps libc.so this way). */
+static long syscall_file_pread(fd_entry_t *e, uint8_t *dst, uint64_t off, uint32_t n)
+{
+    if (!e || e->kind != FD_KIND_FILE || off >= (uint64_t)e->size) return 0;
+    uint32_t avail = ((uint64_t)e->size - off) < (uint64_t)n
+                   ? (uint32_t)((uint64_t)e->size - off) : n;
+    if (e->lazy) return pagecache_read(e->path, e->size, (uint32_t)off, dst, avail);
+    memcpy(dst, e->data + (uint32_t)off, avail);
+    return (long)avail;
+}
+
 /* -------------------------------------------------------------------------
  * syscall_dispatch
  * ------------------------------------------------------------------------- */
@@ -1584,31 +1598,90 @@ static void syscall_dispatch_inner(registers_t *regs)
      * a hosted malloc (musl mallocng) needs beyond brk.
      * ------------------------------------------------------------------ */
     case SYS_MMAP2: {
-        #define MMAP_MAP_ANONYMOUS 0x20u
         #define MMAP_MAP_FIXED     0x10u
+        #define MMAP_MAP_ANONYMOUS 0x20u
+        #define MMAP_PROT_WRITE    0x2u
+        uint32_t addr  = regs->ebx;
         uint32_t len   = regs->ecx;
+        uint32_t prot  = regs->edx;
         uint32_t flags = regs->esi;
+        int      fd    = (int)regs->edi;
+        uint32_t pgoff = regs->ebp;          /* file offset in 4 KiB pages */
         task_t  *t     = task_current();
 
-        if (!t || len == 0 || !(flags & MMAP_MAP_ANONYMOUS) ||
-            (flags & MMAP_MAP_FIXED)) {
-            regs->eax = (uint32_t)-1; break;          /* MAP_FAILED */
+        if (!t || len == 0) { regs->eax = (uint32_t)-1; break; }
+
+        uint32_t pages  = (len + 0xFFFu) >> 12;
+        int      fixed  = (flags & MMAP_MAP_FIXED) != 0;
+        int      anon   = (flags & MMAP_MAP_ANONYMOUS) != 0;
+        uint32_t mflags = VMM_FLAG_USER |
+                          ((prot & MMAP_PROT_WRITE) ? VMM_FLAG_WRITABLE : 0);
+
+        /* Choose the base address. */
+        uint32_t base;
+        if (fixed) {
+            base = addr & ~0xFFFu;
+            if (base < 0x10000000u || base + (pages << 12) > 0xBFFF0000u) {
+                regs->eax = (uint32_t)-1; break;
+            }
+        } else {
+            if (t->mmap_next == 0) t->mmap_next = USER_MMAP_BASE;
+            base = t->mmap_next;
+            if (base + (pages << 12) >= 0xBFFF0000u - (8u * 0x1000u)) {
+                regs->eax = (uint32_t)-1; break;
+            }
+            t->mmap_next = base + (pages << 12);
         }
 
-        uint32_t pages = (len + 0xFFFu) >> 12;
-        if (t->mmap_next == 0) t->mmap_next = USER_MMAP_BASE;
-        uint32_t base = t->mmap_next;
+        /* Anonymous + growable window: keep the demand-paged reserve -- the
+         * page-fault handler zero-fills [USER_MMAP_BASE, mmap_next) on touch
+         * (same lazy model as brk). */
+        if (anon && !fixed) { regs->eax = base; break; }
 
-        /* Don't collide with the ring-3 stack region. */
-        if (base + (pages << 12) >= 0xBFFF0000u - (8u * 0x1000u)) {
-            regs->eax = (uint32_t)-1; break;
+        /* Anonymous-fixed OR file-backed: map eagerly now.  musl's dynamic
+         * linker maps each shared object as a file-backed MAP_PRIVATE span,
+         * then MAP_FIXED-overlays the segments (own prot) + an anon bss tail. */
+        fd_entry_t *fe = NULL;
+        if (!anon) {
+            fe = fd_get(t->fd_table, fd);
+            if (!fe || fe->kind != FD_KIND_FILE) { regs->eax = (uint32_t)-1; break; }
         }
-
-        /* Demand-paged anonymous mmap: reserve the window only; the page-fault
-         * handler maps a zeroed frame on first touch in [USER_MMAP_BASE,
-         * mmap_next).  Same lazy model as brk above. */
-        t->mmap_next = base + (pages << 12);
+        int failed = 0;
+        for (uint32_t i = 0; i < pages; i++) {
+            uint32_t va   = base + (i << 12);
+            uint32_t phys = pmm_alloc_frame();
+            if (phys == PMM_ALLOC_ERROR) { failed = 1; break; }
+            memset((void *)phys, 0, 0x1000);
+            if (!anon) {
+                uint64_t off = ((uint64_t)pgoff << 12) + ((uint64_t)i << 12);
+                syscall_file_pread(fe, (uint8_t *)phys, off, 0x1000);
+            }
+            if (fixed) vmm_unmap_page(t->page_dir, va);   /* replace any existing */
+            vmm_map_page(t->page_dir, va, phys, mflags);
+        }
+        if (failed) { regs->eax = (uint32_t)-1; break; }
         regs->eax = base;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_MPROTECT(125): EBX=addr, ECX=len, EDX=prot.  Rewrites the
+     * writable bit across the range (keeps each page's frame), so musl's
+     * dynamic linker can RELRO-protect the GOT after relocation.  i386 has
+     * no NX, so PROT_EXEC is implicit; PROT_NONE is treated as read-only.
+     * ------------------------------------------------------------------ */
+    case SYS_MPROTECT: {
+        uint32_t addr = regs->ebx & ~0xFFFu;
+        uint32_t len  = regs->ecx;
+        uint32_t prot = regs->edx;
+        task_t  *t    = task_current();
+        if (!t || len == 0) { regs->eax = (uint32_t)-1; break; }
+        uint32_t pages  = ((regs->ebx & 0xFFFu) + len + 0xFFFu) >> 12;
+        uint32_t mflags = VMM_FLAG_USER |
+                          ((prot & 0x2u /*PROT_WRITE*/) ? VMM_FLAG_WRITABLE : 0);
+        for (uint32_t i = 0; i < pages; i++)
+            vmm_protect_page(t->page_dir, addr + (i << 12), mflags);
+        regs->eax = 0;
         break;
     }
 

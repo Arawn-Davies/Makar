@@ -761,6 +761,13 @@ _build_iso() {
     if [ -z "${CI:-}" ] && [ -f "$REPO_ROOT/getfreedoom.sh" ]; then
         bash "$REPO_ROOT/getfreedoom.sh" || true
     fi
+    # Stage the musl dynamic-linking demos (muslhello.elf + libc.so) into isodir
+    # so the `iso test` musl smoke tests run.  Dev-only: the script self-skips if
+    # the host musl cross-toolchain isn't built, and CI skips it entirely (CI's
+    # ktest job is kernel-only and never runs the shell drivers).
+    if [ -z "${CI:-}" ] && [ -f "$REPO_ROOT/toolchain/build-musl-demos.sh" ]; then
+        bash "$REPO_ROOT/toolchain/build-musl-demos.sh" || true
+    fi
     # Forward KERNEL_ARGS (extra GRUB cmdline, e.g. `kbtest`) into the build
     # container; iso.sh appends it to the interactive menuentry.
     local _kenv=()

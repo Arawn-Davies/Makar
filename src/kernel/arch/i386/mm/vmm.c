@@ -71,6 +71,25 @@ void vmm_map_page(uint32_t *pd, uint32_t virt, uint32_t phys, uint32_t flags)
     pt[pti] = (phys & ~0xFFFu) | (flags & 0xFFFu) | PAGE_PRESENT;
 }
 
+/* vmm_protect_page – change the permission bits of an existing mapping while
+ * keeping its physical frame.  No-op if the page isn't mapped.  Backs
+ * mprotect() (musl's dynamic linker re-protects RELRO after relocation).
+ * Flushes the TLB for `virt` (the calling task owns the active address space). */
+void vmm_protect_page(uint32_t *pd, uint32_t virt, uint32_t flags)
+{
+    uint32_t pdi = virt >> 22;
+    uint32_t pti = (virt >> 12) & 0x3FFu;
+
+    if (pd[pdi] & PAGE_LARGE)      return;
+    if (!(pd[pdi] & PAGE_PRESENT)) return;
+    uint32_t *pt = (uint32_t *)(pd[pdi] & ~0xFFFu);
+    if (!(pt[pti] & PAGE_PRESENT)) return;
+
+    uint32_t phys = pt[pti] & ~0xFFFu;
+    pt[pti] = phys | (flags & 0xFFFu) | PAGE_PRESENT;
+    __asm__ volatile("invlpg (%0)" :: "r"(virt) : "memory");
+}
+
 void vmm_unmap_page(uint32_t *pd, uint32_t virt)
 {
     uint32_t pdi = virt >> 22;
