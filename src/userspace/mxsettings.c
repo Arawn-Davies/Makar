@@ -12,6 +12,7 @@
 #include "gui_gfx.h"
 #include "gui_ui.h"
 #include "makx.h"
+#include "gui_browser.h"
 #include "mxrc.h"
 #include "time.h"
 
@@ -46,16 +47,23 @@ static int section(gfx_surface *s, int x, int y, const char *title)
 { gfx_str(s, x, y, title, COL_MUTE); return y + 18; }
 
 /* ---- Appearance: desktop wallpaper -------------------------------------- */
-static char ap_path[160];
-static char ap_msg[40];
-static int  ap_init=0;
+static char    ap_path[160];
+static char    ap_msg[40];
+static int     ap_init=0;
+static browser ap_brz;          /* file picker for the Browse... button */
 static void panel_appearance(ui_ctx *u, gfx_surface *s, int cx, int cy, int cw, int ch)
 {
     (void)ch;
     if (!ap_init){ if (mxrc_get("Wallpaper", ap_path, sizeof ap_path)!=0) ap_path[0]=0; ap_init=1; }
     int y = section(s, cx, cy, "WALLPAPER");
     gfx_str(s, cx, y, "Image path (PNG / BMP / JPEG):", COL_TEXT); y+=20;
-    ui_textbox(u, s, cx, y, cw-110, 24, ap_path, sizeof ap_path);
+    ui_textbox(u, s, cx, y, cw-208, 24, ap_path, sizeof ap_path);
+    if (ui_button(u, s, cx+cw-198, y, 94, 24, "Browse...")){
+        if (!ap_brz.cwd[0]) scpy(ap_brz.cwd, "/usr/share", sizeof ap_brz.cwd);
+        char chosen[256]; chosen[0]=0;
+        if (br_dialog_window(g_c, &ap_brz, 1, (char*)0, 0, chosen, sizeof chosen)==1 && chosen[0])
+            scpy(ap_path, chosen, sizeof ap_path);
+    }
     if (ui_button(u, s, cx+cw-100, y, 92, 24, "Apply")){
         mxrc_set("Wallpaper", ap_path);        /* the WM polls this key + repaints */
         scpy(ap_msg, ap_path[0] ? "Wallpaper set." : "Wallpaper cleared.", sizeof ap_msg);

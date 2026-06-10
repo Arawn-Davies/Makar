@@ -94,6 +94,50 @@ void path_base(const char *path, char *out, int max)
     scpy(out, path+last+1, max);
 }
 
+/* Icon-grid view of the directory (the alternative to the listbox).  Draws a
+ * folder/file glyph + name per item with a scrollbar; sets b->sel on click and
+ * returns 1 when an already-selected item is clicked (the "activate" gesture,
+ * mirroring the listbox's click-on-selected). */
+static int br_icons(browser *b, ui_ctx *u, gfx_surface *s, int x, int y, int w, int h, int prev)
+{
+    gfx_fill(s, x, y, w, h, UI_COL_FIELD);
+    int cellw=90, cellh=60;
+    int cols=(w-12)/cellw; if (cols<1) cols=1;
+    int rows=(b->n+cols-1)/cols; if (rows<1) rows=1;
+    int visrows=h/cellh; if (visrows<1) visrows=1;
+    if (b->scroll>rows-visrows) b->scroll = rows-visrows>0 ? rows-visrows : 0;
+    if (b->scroll<0) b->scroll=0;
+
+    int activate=0;
+    for (int idx=0; idx<b->n; idx++){
+        int r=idx/cols, c=idx%cols;
+        int cy=y + (r-b->scroll)*cellh;
+        if (cy+cellh<=y || cy>=y+h) continue;
+        int cxp=x + c*cellw;
+        int isdir=(b->type[idx]==DT_DIR);
+        if (idx==b->sel) gfx_round(s, cxp+2, cy+2, cellw-6, cellh-6, UI_COL_SEL, UI_COL_BTN_ACT);
+        int ix=cxp+(cellw-32)/2, iy=cy+6;
+        if (isdir){
+            gfx_fill(s, ix+2, iy, 12, 4, GFX_RGB(0xE0,0xB0,0x40));
+            gfx_round(s, ix, iy+3, 30, 20, GFX_RGB(0xF0,0xC8,0x50), UI_COL_BORDER);
+        } else {
+            gfx_round(s, ix+5, iy, 20, 26, GFX_RGB(0xCE,0xD6,0xE0), UI_COL_BORDER);
+            gfx_fill(s, ix+9, iy+6, 12, 2, UI_COL_MUTED);
+            gfx_fill(s, ix+9, iy+11,12, 2, UI_COL_MUTED);
+            gfx_fill(s, ix+9, iy+16, 9, 2, UI_COL_MUTED);
+        }
+        gfx_str_clip(s, cxp+4, cy+34, b->name[idx], UI_COL_TEXT, cxp+cellw-4);
+        if (u->mpressed && u->mx>=cxp && u->mx<cxp+cellw && u->my>=cy && u->my<cy+cellh
+            && u->my>=y && u->my<y+h){
+            u->got_input=1;
+            if (prev==idx) activate=1;     /* click an already-selected item = open */
+            b->sel=idx;
+        }
+    }
+    ui_vscroll(u, s, x+w-10, y, 10, h, rows, visrows, &b->scroll);
+    return activate;
+}
+
 /* Shared open/save file dialog (see gui_browser.h).  Pure function of the
  * browser model + a per-frame ui_ctx -- any windowed client can drop it into a
  * rect of its surface.  Lifted out of the editor so it's reusable. */
@@ -104,18 +148,20 @@ int br_dialog(browser *b, ui_ctx *u, gfx_surface *s,
     gfx_fill(s, x, y, w, h, UI_COL_FIELD);
     gfx_outline(s, x, y, w, h, UI_COL_BTN_ACT);
     int bx=x+6, by=y+6;
-    int up_c  = ui_button(u, s, bx,     by, 52, 20, "Up");
-    int act_c = ui_button(u, s, bx+60,  by, 76, 20, mode==1?"Open":"Save");
-    int can_c = ui_button(u, s, bx+144, by, 72, 20, "Cancel");
+    int up_c   = ui_button(u, s, bx,     by, 52, 20, "Up");
+    int act_c  = ui_button(u, s, bx+60,  by, 70, 20, mode==1?"Open":"Save");
+    int can_c  = ui_button(u, s, bx+138, by, 64, 20, "Cancel");
+    int view_c = ui_button(u, s, bx+210, by, 56, 20, b->view?"List":"Icons");
     /* editable path box: type a directory to jump to it, or a file to open it
      * (Enter while it's focused), instead of only clicking through the list. */
     if (!b->pathedit[0]) scpy(b->pathedit, b->cwd, sizeof b->pathedit);
-    int _pbx = bx+224, _pbw = (x+w-6) - _pbx;
+    int _pbx = bx+274, _pbw = (x+w-6) - _pbx;
     int _pb_id = u->cur_id + 1;
     ui_textbox(u, s, _pbx, by, _pbw<60?60:_pbw, 20, b->pathedit, sizeof b->pathedit);
     int _pb_focused = (u->focus == _pb_id);
-    if (up_c)  br_up(b);
-    if (can_c) return 2;
+    if (up_c)   { br_up(b); }
+    if (view_c) { b->view=!b->view; b->scroll=0; }
+    if (can_c)  return 2;
     if (_pb_focused && u->key=='\n'){
         if (br_goto(b, b->pathedit, out, outcap)==1) return 1;   /* a file -> open */
         return 0;                                                /* a dir -> navigated */
@@ -128,10 +174,15 @@ int br_dialog(browser *b, ui_ctx *u, gfx_surface *s,
         listy = rowy+26;
     }
     int lx=x+6, ly=listy, lw=w-12, lh=(y+h)-listy-6, prev=b->sel;
-    ui_listbox(u, s, lx, ly, lw, lh, b->ptr, b->n, &b->sel, &b->scroll);
+    int activate;
+    if (b->view==0){
+        ui_listbox(u, s, lx, ly, lw, lh, b->ptr, b->n, &b->sel, &b->scroll);
+        activate = act_c || (u->key=='\n')
+            || (u->mpressed && prev==b->sel && u->mx>=lx && u->mx<lx+lw && u->my>=ly && u->my<ly+lh);
+    } else {
+        activate = br_icons(b, u, s, lx, ly, lw, lh, prev) || act_c || (u->key=='\n');
+    }
 
-    int activate = act_c || (u->key=='\n')
-        || (u->mpressed && prev==b->sel && u->mx>=lx && u->mx<lx+lw && u->my>=ly && u->my<ly+lh);
     if (mode==1){
         if (activate){
             if (br_sel_isdir(b)) br_enter_sel(b);
@@ -143,4 +194,31 @@ int br_dialog(browser *b, ui_ctx *u, gfx_surface *s,
         if (act_c && savename[0]){ br_join(b, savename, out, outcap); return 1; }
     }
     return 0;
+}
+
+/* Run br_dialog as its own centred makx window (see gui_browser.h). */
+int br_dialog_window(const mx_conn *parent, browser *b, int mode,
+                     char *savename, int savecap, char *out, int outcap)
+{
+    mx_conn dlg;
+    int dw=560, dh=400;
+    if (mx_open_window(&dlg, parent, dw, dh, 0) != 0) return -1;
+    if (!b->loaded) br_load(b);
+
+    ui_ctx u;
+    int result=0;
+    while (!dlg.closed){
+        mx_pump(&dlg);
+        ui_begin(&u, dlg.mx, dlg.my, dlg.mdown, dlg.mpressed, dlg.mreleased, mx_key(&dlg));
+        gfx_fill(&dlg.surf, 0, 0, dlg.surf.w, dlg.surf.h, UI_COL_BTN);
+        int r = br_dialog(b, &u, &dlg.surf, 0, 0, dlg.surf.w, dlg.surf.h,
+                          mode, savename, savecap, out, outcap);
+        mx_present(&dlg);
+        if (r==1){ result=1; break; }
+        if (r==2){ result=2; break; }
+        sys_yield();
+    }
+    if (result==0) result=2;          /* window closed via its X = cancel */
+    mx_close(&dlg);                    /* per-window MX_BYE -> server frees the dialog */
+    return result;
 }

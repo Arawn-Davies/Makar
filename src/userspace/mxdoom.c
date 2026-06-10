@@ -58,7 +58,6 @@ int main(int argc, char **argv)
 
     ui_ctx u; for(unsigned i=0;i<sizeof u/sizeof(int);i++)((int*)&u)[i]=0;
     browser brz; for(unsigned i=0;i<sizeof brz/sizeof(int);i++)((int*)&brz)[i]=0;
-    int dlg=0;
 
     int sel=0, skill=2, ep=1, map=1, nomon=0, fast=0, respawn=0;
     static char pwad[256]={0};
@@ -91,7 +90,7 @@ int main(int argc, char **argv)
         /* Custom WAD (PWAD) */
         gfx_str(s,lx,y+8,"Custom WAD:",COL_TEXT);
         ui_textbox(&u,s,fx,y,fw-74,22,pwad,sizeof pwad);
-        if (ui_button(&u,s,fx+fw-70,y,70,22,"Browse")){ scpy(brz.cwd,"/usr/share/games/doom",sizeof brz.cwd); brz.sel=brz.scroll=0; brz.loaded=0; br_load(&brz); dlg=1; }
+        if (ui_button(&u,s,fx+fw-70,y,70,22,"Browse")){ char full[256]; full[0]=0; scpy(brz.cwd,"/usr/share/games/doom",sizeof brz.cwd); brz.sel=brz.scroll=0; brz.loaded=0; if(br_dialog_window(&c,&brz,1,(char*)0,0,full,sizeof full)==1) scpy(pwad,full,sizeof pwad); }
         y+=rh;
 
         /* Skill (cycle) */
@@ -119,15 +118,8 @@ int main(int argc, char **argv)
         int newg = ui_button(&u,s,lx,y,120,26, niwad? "New Game":"(no WAD)");
         int canc = ui_button(&u,s,s->w-14-90,y,90,26,"Cancel");
 
-        if(dlg){
-            char full[256];
-            int r=br_dialog(&brz,&u,s,14,30,s->w-28,s->h-30-44,1,(char*)0,0,full,sizeof full);
-            if(r==1){ scpy(pwad,full,sizeof pwad); dlg=0; }
-            else if(r==2){ dlg=0; }
-        }
-
         if(canc){ mx_close(&c); return 0; }
-        if(newg && niwad && !dlg){
+        if(newg && niwad){
             char pidb[12]; u2s((unsigned)c.server,pidb);
             char skb[4]={(char)('0'+skill),0}, epb[4]={(char)('0'+ep),0}, mpb[4]={(char)('0'+map),0};
             char *av[24]; int n=0;

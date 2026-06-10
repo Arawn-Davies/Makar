@@ -156,7 +156,7 @@ mxinstall.elf: crt0.o mxinstall.o gui_gfx.o gui_ui.o makx.o
 mxdisplay.elf: crt0.o mxdisplay.o gui_gfx.o gui_ui.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-mxsettings.elf: crt0.o mxsettings.o gui_gfx.o gui_ui.o mxrc.o makx.o libc.a
+mxsettings.elf: crt0.o mxsettings.o gui_gfx.o gui_ui.o gui_browser.o mxrc.o makx.o libc.a
 	$(LD) $(LDFLAGS) -o $@ $^
 
 mximg.elf: crt0.o mximg.o gui_gfx.o gui_ui.o gui_browser.o img_bmp.o img_png.o img_jpg.o mxrc.o makx.o

@@ -79,6 +79,7 @@ typedef struct {
     int          minimized, maximized;
     int          resizable;     /* MX_F_RESIZABLE: re-flow (blit 1:1) vs scale */
     int          rawkeys;       /* MX_F_RAWKEYS: wants make/break scancodes     */
+    int          is_dialog;     /* MX_F_DIALOG: a client's transient 2nd window */
     int          sx, sy, sw, sh;/* geometry saved before maximise          */
     char         title[40];
     mxev         ev[EVQ]; int eh, et;     /* per-window event queue        */
@@ -589,7 +590,11 @@ static void serve_requests(void)
              * re-HELLO from the same pid -- e.g. a launcher that execve'd into
              * the real app (mxdoom -> doom) keeps the WM-launched pid, so the
              * app is still reaped and its window closes on exit. */
-            for(int k=0;k<MAXWIN;k++) if(W[k].in_use && W[k].client==src){ i=k; break; }
+            /* A dialog HELLO (MX_F_DIALOG) always gets a FRESH window so a client
+             * can own a second, transient open/save window; a normal HELLO
+             * matches/reuses the client's existing window. */
+            if (!(flags & MX_F_DIALOG))
+                for(int k=0;k<MAXWIN;k++) if(W[k].in_use && W[k].client==src && !W[k].is_dialog){ i=k; break; }
             if (i<0){ /* a client we didn't reserve: give it a default window
                        * (e.g. doom auto-connecting from a GUI terminal).  Size a
                        * game (MX_F_RAWKEYS) enlarged + with chrome, like the
@@ -602,9 +607,14 @@ static void serve_requests(void)
                         int availw=(int)FBW-6, availh=(int)FBH-DOCK_H-MENU_H-6;
                         int sc=1; while ((w*(sc+1))<=availw && (h*(sc+1))<=availh) sc++;
                         ww=w*sc+2; wh=h*sc+TH+1;
-                    }
+                    } else if (flags & MX_F_DIALOG){ ww=w+2; wh=h+TH+1; }
                     W[i].w=ww; W[i].h=wh;
-                    W[i].x=140; W[i].y=MENU_H+40; scpy(W[i].title,"App",sizeof W[i].title); }
+                    if (flags & MX_F_DIALOG){           /* centre the dialog window */
+                        W[i].is_dialog=1;
+                        W[i].x=((int)FBW-ww)/2; if(W[i].x<0)W[i].x=0;
+                        W[i].y=((int)FBH-DOCK_H-wh)/2; if(W[i].y<MENU_H)W[i].y=MENU_H;
+                        scpy(W[i].title,"Open File",sizeof W[i].title);
+                    } else { W[i].x=140; W[i].y=MENU_H+40; scpy(W[i].title,"App",sizeof W[i].title); } }
             }
             if (i>=0 && W[i].sid>=0){            /* re-HELLO: drop the old surface, refit window */
                 sys_surface_unmap(W[i].sid); sys_surface_destroy(W[i].sid);
@@ -664,7 +674,12 @@ static void serve_requests(void)
             if (win_valid(i,src)) win_pop(&W[i],&r);
             else r.type=MXEV_CLOSE;
         } else if (m.type==MX_BYE){
-            /* The client acks then exits; the reap loop frees the slot. */
+            /* Per-window close: free this window slot now.  A dialog closes its
+             * window with mx_close() while the client keeps running; a normal app
+             * sends BYE then exits, and this is idempotent with the reap loop
+             * (the slot is already free when the client is later reaped). */
+            int i=(int)m.data[0];
+            if (win_valid(i,src) && W[i].is_dialog) win_free(i);  /* dialog: free now; normal app: reap on exit */
             r.type=MXEV_NONE;
         } else if (m.type==MX_WALLPAPER){
             /* A client (mximg) handed us a decoded wallpaper as a shared surface

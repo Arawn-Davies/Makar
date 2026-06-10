@@ -88,6 +88,31 @@ int mx_connect(mx_conn *c, int argc, char **argv, int w, int h, int flags)
     return 0;
 }
 
+int mx_open_window(mx_conn *dlg, const mx_conn *parent, int w, int h, int flags)
+{
+    for (unsigned i = 0; i < sizeof *dlg; i++) ((unsigned char *)dlg)[i] = 0;
+    dlg->server = (parent ? parent->server : -1);
+    dlg->win = -1; dlg->sid = -1;
+    flags |= MX_F_DIALOG;
+    dlg->flags = flags;
+    if (dlg->server <= 0) return -1;
+
+    ipc_msg_t m;
+    for (unsigned i = 0; i < IPC_MSG_DATA_WORDS; i++) m.data[i] = 0;
+    m.type = MX_HELLO; m.data[0] = (unsigned)w; m.data[1] = (unsigned)h; m.data[2] = (unsigned)flags;
+    if (sys_ipc_sendrec(dlg->server, &m) != 0) return -1;
+
+    int win = (int)m.data[0], sid = (int)m.data[1];
+    if (win < 0 || sid < 0) return -1;
+    void *base = sys_surface_map(sid);
+    if (!base) return -1;
+
+    dlg->win = win; dlg->sid = sid;
+    dlg->surf.px = (gfx_u32 *)base; dlg->surf.w = w; dlg->surf.h = h;
+    dlg->kh = dlg->kt = 0;
+    return 0;
+}
+
 /* Re-flow to a new client size the server requested: ask it to reallocate our
  * surface (MX_RESIZE), map the new one and release the old.  Only for resizable
  * clients; on any failure we keep the current surface. */

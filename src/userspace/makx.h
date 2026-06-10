@@ -56,6 +56,12 @@
  * each scancode (low7 | 0x80=break) as the MXEV_KEY value; on focus loss it
  * restores cooked mode.  Mirrors a display server flipping evdev/tty modes. */
 #define MX_F_RAWKEYS    2
+/* MX_F_DIALOG: this HELLO opens a SECOND, separate window for an already-
+ * connected client (an open/save dialog), instead of reusing the client's main
+ * window.  The server allocates a fresh, centred, focused window slot.  The app
+ * pumps it with its own mx_conn (see mx_open_window) and closes it with
+ * mx_close() (per-window MX_BYE) without exiting.  X11-style transient child. */
+#define MX_F_DIALOG     4
 
 /* server -> client reply event kinds (carried in the reply ipc_msg_t.type).
  * data[5] always carries the count of further events still queued, so the
@@ -103,6 +109,13 @@ typedef struct {
  * of `w`x`h` pixels.  Maps the server-allocated surface into c->surf.  Returns
  * 0 on success, -1 on failure (no -makx arg, server gone, surface map failed). */
 int  mx_connect(mx_conn *c, int argc, char **argv, int w, int h, int flags);
+
+/* Open a SECOND window for an already-connected client -- a separate dialog
+ * window (open/save, etc.).  Reuses `parent`'s server handle, sends a HELLO with
+ * MX_F_DIALOG so the server makes a fresh centred window, and fills `dlg` as its
+ * own mx_conn (own win/sid/surface) for the caller to pump/draw/present.  Close
+ * it with mx_close(dlg) -- the parent keeps running.  Returns 0, or -1. */
+int  mx_open_window(mx_conn *dlg, const mx_conn *parent, int w, int h, int flags);
 
 /* Drain all queued input events from the server into c (mouse/focus/close are
  * folded into the struct; keys are buffered -- read them with mx_key()).
