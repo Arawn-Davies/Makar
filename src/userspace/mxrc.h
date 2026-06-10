@@ -24,4 +24,9 @@ int  mxrc_get_int(const char *key, int def);
 void mxrc_set(const char *key, const char *val);
 void mxrc_set_int(const char *key, int val);
 
+/* Same get/set against an arbitrary per-user rc file (e.g. "/.mxwebrc"): the
+ * rcname is the "~/<rcname>" suffix.  mxrc_get/_set are these with "/.mxrc". */
+int  mxrc_get_file(const char *rcname, const char *key, char *out, int cap);
+void mxrc_set_file(const char *rcname, const char *key, const char *val);
+
 #endif /* MXRC_H */

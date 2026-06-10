@@ -15,6 +15,7 @@
  */
 #include "syscall.h"
 #include "web.h"
+#include "mxrc.h"
 #include "gui_gfx.h"
 #include "gui_ui.h"
 #include "makx.h"
@@ -63,6 +64,7 @@ static int  has_scheme(const char *s){ for(int i=0;s[i]&&i<16;i++){ if(s[i]==':'
 static char *g_html;  static int g_html_len;
 static char *g_pool;  static int g_pool_used;
 static char  g_cur_url[URLCAP];
+static char  g_home[URLCAP] = "about:start";   /* ~/.mxwebrc Homepage= (hand-editable) */
 static char  g_urlbar[URLCAP];
 static char  g_title[128];
 static char  g_status[160];
@@ -1052,8 +1054,12 @@ int main(int argc,char **argv){
         if (argv[i][0]=='-') { if(seqi(argv[i],"-makx")) i++; continue; }
         target=argv[i]; break;
     }
+    /* Homepage from ~/.mxwebrc ("Homepage=<url>", hand-editable); else about:start.
+     * mxrc_get_file leaves g_home untouched on a miss, so the initializer stands. */
+    mxrc_get_file("/.mxwebrc","Homepage",g_home,sizeof g_home);
+    if (!g_home[0]) scpy(g_home,"about:start",sizeof g_home);
     if (target) navigate(target,1);
-    else navigate("about:start",1);
+    else navigate(g_home,1);
 
     ui_ctx u; for (unsigned i=0;i<sizeof u/sizeof(int);i++) ((int*)&u)[i]=0;
     int first=1, lmx=-1, lmy=-1, lfocus=-1, lkey=-2;
@@ -1084,7 +1090,8 @@ int main(int argc,char **argv){
         int back_c = ui_button(&u,s,6,6,46,20,"Back");
         int fwd_c  = ui_button(&u,s,54,6,46,20,"Fwd");
         int home_c = ui_button(&u,s,102,6,52,20,"Home");
-        int bx=158, bw=s->w-12-bx-44; if(bw<60)bw=60;
+        int seth_c = ui_button(&u,s,156,6,26,20,"+H");   /* save current page as the homepage */
+        int bx=186, bw=s->w-12-bx-44; if(bw<60)bw=60;
         ui_textbox(&u,s,bx,6,bw,20,g_urlbar,(int)sizeof g_urlbar);
         int go_c   = ui_button(&u,s,bx+bw+4,6,40,20,"Go");
 
@@ -1146,7 +1153,15 @@ int main(int argc,char **argv){
         /* navigation buttons (Reload = press Enter in the URL bar) */
         if      (back_c && g_hist_i>0)              { g_hist_i--; navigate(g_hist[g_hist_i],0); }
         else if (fwd_c  && g_hist_i<g_hist_n-1)     { g_hist_i++; navigate(g_hist[g_hist_i],0); }
-        else if (home_c)                            navigate("about:start",1);
+        else if (home_c)                            navigate(g_home,1);
+        else if (seth_c) {                          /* pin the current page as Home */
+            const char *uu = g_cur_url[0] ? g_cur_url : g_urlbar;
+            if (uu[0]) {
+                scpy(g_home,uu,sizeof g_home);
+                mxrc_set_file("/.mxwebrc","Homepage",g_home);
+                char *o=pcat(g_status,"Homepage saved to ~/.mxwebrc: "); o=pcat(o,g_home); *o=0;
+            }
+        }
         else if (go_c && g_urlbar[0])               navigate(g_urlbar,1);
         else if (key=='\n' && g_urlbar[0])          navigate(g_urlbar,1);
 
