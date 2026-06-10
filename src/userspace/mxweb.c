@@ -1,13 +1,17 @@
 /*
  * mxweb.elf -- a minimal, Dillo-like web browser, as a makx client.
  *
- * Phase 1: plain HTTP (via SYS_WGET) + a from-scratch HTML tokeniser and a
+ * Fetches HTTP and HTTPS via the userspace web layer (web_fetch over kernel TCP
+ * sockets + BearSSL), then renders with a from-scratch HTML tokeniser + a
  * block/inline renderer -- headings, paragraphs, lists, bold, links, word-wrap,
- * horizontal rules and inline images (PNG/JPEG/BMP via the shared decoders).
- * No CSS and no JS yet (their content is stripped); HTTPS is a later phase and
- * is reported, not attempted (wget is HTTP-only).  The renderer re-flows to the
- * window width (a resizable makx window) and the whole thing is network-free
+ * horizontal rules, inline images (PNG/JPEG/BMP via the shared decoders), a
+ * small CSS engine and HTML forms.  JS content is stripped.  The renderer
+ * re-flows to the window width (a resizable makx window) and is network-free
  * except on an explicit navigation (Go / Enter / a link / Reload / Back).
+ *
+ * The renderer-independent parser primitives -- HTML-entity decoding, tag
+ * attribute extraction and URL split/resolve/normalise -- live in the shared
+ * html.{h,c} engine core, used identically by the text browser (linx).
  *
  * It also opens a local .html file directly (the WM's default-app dispatch
  * hands mxweb a filesystem path for .htm / .html files -- see wm.c wm_open_path), so
@@ -15,6 +19,7 @@
  */
 #include "syscall.h"
 #include "web.h"
+#include "html.h"      /* shared HTML/URL engine core (entity, attr, URL) */
 #include "mxrc.h"
 #include "gui_gfx.h"
 #include "gui_ui.h"
@@ -59,7 +64,6 @@ static int  seqi(const char *a,const char *b){ int i=0; for(;;){ char x=lc(a[i])
 static int  starts_ci(const char *s,const char *pfx){ for(int i=0;pfx[i];i++){ if(lc(s[i])!=lc(pfx[i]))return 0; } return 1; }
 static char *pcat(char *p,const char *s){ while(s&&*s)*p++=*s++; return p; }
 static char *pnum(char *p,unsigned v){ char t[12]; int i=0; if(!v)t[i++]='0'; while(v){t[i++]=(char)('0'+v%10);v/=10;} while(i)*p++=t[--i]; return p; }
-static int  has_scheme(const char *s){ for(int i=0;s[i]&&i<16;i++){ if(s[i]==':'&&s[i+1]=='/'&&s[i+2]=='/')return 1; if(s[i]=='/')return 0; } return 0; }
 
 /* ---- globals ------------------------------------------------------------- */
 static char *g_html;  static int g_html_len;
@@ -141,130 +145,6 @@ static unsigned char *read_file(const char *path, int *len){
     return buf;
 }
 
-/* ---- URL handling -------------------------------------------------------- */
-/* Split a URL into scheme/host/path (path always begins with '/').  A bare
- * path (no scheme) yields empty scheme+host and path = the input. */
-static void url_split(const char *u, char *scheme, char *host, char *path){
-    scheme[0]=host[0]=0; path[0]=0;
-    const char *p = u;
-    int has = has_scheme(u);
-    if (has) {
-        int i=0; while(*p && *p!=':' && i<15) scheme[i++]=lc(*p++); scheme[i]=0;
-        if (*p==':') p++;
-        if (*p=='/') p++;
-        if (*p=='/') p++;                                       /* skip "://" */
-        i=0; while(*p && *p!='/' && i<255) host[i++]=*p++; host[i]=0;
-    }
-    if (*p=='/' ) scpy(path, p, URLCAP);
-    else if (!has) scpy(path, u, URLCAP);      /* relative / local path */
-    else { path[0]='/'; scpy(path+1, p, URLCAP-1); }
-    if (!path[0]) { path[0]='/'; path[1]=0; }
-}
-
-/* Resolve `ref` (an href/src) against the current page URL into `out`. */
-static void url_resolve(const char *ref, char *out, int cap){
-    if (!ref || !ref[0]) { scpy(out, g_cur_url, cap); return; }
-    if (has_scheme(ref)) { scpy(out, ref, cap); return; }
-    char scheme[16], host[256], path[URLCAP];
-    url_split(g_cur_url, scheme, host, path);
-    char *o = out;
-    if (ref[0]=='/' && ref[1]=='/') {                 /* protocol-relative */
-        o = pcat(o, scheme[0]?scheme:"http"); o = pcat(o, ":"); o = pcat(o, ref);
-    } else if (ref[0]=='/') {                          /* root-relative */
-        if (scheme[0]) { o=pcat(o,scheme); o=pcat(o,"://"); o=pcat(o,host); }
-        o = pcat(o, ref);
-    } else {                                           /* same-dir relative */
-        if (scheme[0]) { o=pcat(o,scheme); o=pcat(o,"://"); o=pcat(o,host); }
-        /* directory part of the current path (up to the last '/') */
-        int last=0; for(int i=0; path[i]; i++) if(path[i]=='/') last=i;
-        for(int i=0;i<=last;i++) *o++=path[i];
-        const char *r = ref; if (r[0]=='.'&&r[1]=='/') r+=2;   /* trim "./" */
-        o = pcat(o, r);
-    }
-    *o = 0;
-    (void)cap;
-}
-
-/* Normalise a user-typed address: add http:// when no scheme and not a local
- * absolute path, and give a bare host a "/" path. */
-static void url_normalise(const char *in, char *out){
-    while (*in==' '||*in=='\t') in++;
-    char tmp[URLCAP];
-    if (in[0]=='/' || has_scheme(in)) scpy(tmp, in, sizeof tmp);
-    else { char *o=pcat(tmp,"http://"); scpy(o, in, (int)(sizeof tmp-7)); }
-    /* strip trailing whitespace */
-    int n=sl(tmp); while(n>0 && (tmp[n-1]==' '||tmp[n-1]=='\n'||tmp[n-1]=='\r')) tmp[--n]=0;
-    /* a bare http://host with no path -> add "/" */
-    if (has_scheme(tmp)) {
-        char sc[16],ho[256],pa[URLCAP]; url_split(tmp,sc,ho,pa);
-        char *o=pcat(out,sc); o=pcat(o,"://"); o=pcat(o,ho); o=pcat(o,pa); *o=0;
-    } else scpy(out, tmp, URLCAP);
-}
-
-/* ---- entity decoding ----------------------------------------------------- */
-static int udec(const char *s){ int v=0; while(*s>='0'&&*s<='9') v=v*10+(*s++-'0'); return v; }
-static int uhex(const char *s){ int v=0; for(;;){ char c=lc(*s++); int d; if(c>='0'&&c<='9')d=c-'0'; else if(c>='a'&&c<='f')d=c-'a'+10; else break; v=v*16+d; } return v; }
-
-/* Decode one entity starting at *pp (which points at '&').  Writes up to a few
- * bytes into out, returns the count, and advances *pp past the entity. */
-static int entity(const char **pp, const char *end, char *out){
-    const char *p = *pp;
-    const char *s = p+1; char nm[16]; int k=0;
-    while (s<end && *s!=';' && *s!='&' && *s!='<' && k<15 &&
-           ((*s>='a'&&*s<='z')||(*s>='A'&&*s<='Z')||(*s>='0'&&*s<='9')||*s=='#')) nm[k++]=*s++;
-    nm[k]=0;
-    if (s<end && *s==';' && k>0) {
-        *pp = s+1;
-        if (nm[0]=='#') {
-            int code = (nm[1]=='x'||nm[1]=='X') ? uhex(nm+2) : udec(nm+1);
-            if (code==0xA0) { out[0]=' '; return 1; }
-            if (code<128 && code>=32) { out[0]=(char)code; return 1; }
-            if (code==0x2019||code==0x2018) { out[0]='\''; return 1; }
-            if (code==0x201C||code==0x201D) { out[0]='"';  return 1; }
-            if (code==0x2013||code==0x2014) { out[0]='-';  return 1; }
-            out[0]='?'; return 1;
-        }
-        if (seqi(nm,"amp"))  { out[0]='&'; return 1; }
-        if (seqi(nm,"lt"))   { out[0]='<'; return 1; }
-        if (seqi(nm,"gt"))   { out[0]='>'; return 1; }
-        if (seqi(nm,"quot")) { out[0]='"'; return 1; }
-        if (seqi(nm,"apos")) { out[0]='\''; return 1; }
-        if (seqi(nm,"nbsp")) { out[0]=' '; return 1; }
-        if (seqi(nm,"copy")) { out[0]='(';out[1]='c';out[2]=')'; return 3; }
-        if (seqi(nm,"reg"))  { out[0]='(';out[1]='r';out[2]=')'; return 3; }
-        if (seqi(nm,"mdash")||seqi(nm,"ndash")) { out[0]='-'; return 1; }
-        if (seqi(nm,"hellip")) { out[0]='.';out[1]='.';out[2]='.'; return 3; }
-        if (seqi(nm,"rsquo")||seqi(nm,"lsquo")) { out[0]='\''; return 1; }
-        if (seqi(nm,"rdquo")||seqi(nm,"ldquo")) { out[0]='"'; return 1; }
-        return 0;                                  /* unknown named entity */
-    }
-    *pp = p+1; out[0]='&'; return 1;               /* a literal ampersand */
-}
-
-/* ---- attribute extraction ------------------------------------------------ */
-/* Find attribute `name` in the tag-attr region [a,e) and copy its value into
- * out.  Returns 1 if found.  Handles "x", 'x' and bare values. */
-static int attr_get(const char *a, const char *e, const char *name, char *out, int cap){
-    int nl = sl(name);
-    for (const char *p=a; p+nl < e; p++) {
-        if (p!=a && p[-1]!=' ' && p[-1]!='\t' && p[-1]!='\n') continue;
-        int i=0; while(i<nl && lc(p[i])==lc(name[i])) i++;
-        if (i!=nl) continue;
-        const char *q = p+nl; while(q<e && (*q==' '||*q=='\t')) q++;
-        if (q>=e || *q!='=') continue;
-        q++; while(q<e && (*q==' '||*q=='\t')) q++;
-        char quote = 0; if (q<e && (*q=='"'||*q=='\'')) quote=*q++;
-        int o=0;
-        while (q<e && o<cap-1) {
-            if (quote) { if(*q==quote) break; }
-            else if (*q==' '||*q=='\t'||*q=='>') break;
-            out[o++]=*q++;
-        }
-        out[o]=0;
-        return 1;
-    }
-    return 0;
-}
 
 /* ---- image cache --------------------------------------------------------- */
 static void reset_images(void){
@@ -281,7 +161,7 @@ static gfx_surface *img_find(const char *src){
 /* Fetch + decode one image (resolved URL or local path) into a surface. */
 static int img_decode(const char *resolved, gfx_surface *out){
     const char *fpath;
-    if (has_scheme(resolved)) {
+    if (html_has_scheme(resolved)) {
         if (web_fetch(resolved, "/tmp/mxweb.img") < 0) return -1;   /* http+https in ring 3 */
         fpath = "/tmp/mxweb.img";
     } else {
@@ -316,12 +196,12 @@ static void scan_images(void){
         if (!(lc(q[0])=='i'&&lc(q[1])=='m'&&lc(q[2])=='g')) { p++; continue; }
         const char *a=q+3, *e=a; while(e<end && *e!='>') e++;
         char src[256];
-        if (attr_get(a,e,"src",src,sizeof src) && src[0]) {
+        if (html_attr_get(a,e,"src",src,sizeof src) && src[0]) {
             int dup=0; for(int i=0;i<g_nimg;i++) if(seqi(g_imgs[i].key,src)){dup=1;break;}
             if (!dup) {
                 imgent *ie=&g_imgs[g_nimg];
                 scpy(ie->key, src, sizeof ie->key);
-                char res[URLCAP]; url_resolve(src,res,sizeof res);
+                char res[URLCAP]; html_url_resolve(g_cur_url,src,res,sizeof res);
                 ie->ok = (img_decode(res,&ie->surf)==0);
                 g_nimg++;
             }
@@ -573,8 +453,8 @@ static void lay_push(Lay *L,const char *name,const char *a,const char *e){
     if (L->sd>=32) return;
     int hfg=0,hbg=0,bold=0; gfx_u32 fg=0,bg=0;
     char cls[80]={0}, id[48]={0};
-    attr_get(a,e,"class",cls,sizeof cls);
-    attr_get(a,e,"id",id,sizeof id);
+    html_attr_get(a,e,"class",cls,sizeof cls);
+    html_attr_get(a,e,"id",id,sizeof id);
     int cssscale=0;
     if (g_ncss) css_match(name,cls,id,&hfg,&fg,&hbg,&bg,&bold,&cssscale);
     int heading = (name[0]=='h'&&name[1]>='1'&&name[1]<='6'&&!name[2]);
@@ -582,7 +462,7 @@ static void lay_push(Lay *L,const char *name,const char *a,const char *e){
     int scale=1; if (heading){ int lv=name[1]-'0'; scale=(lv==1)?3:(lv<=3)?2:1; }
     if (cssscale>scale) scale=cssscale;
     char stv[192];
-    if (attr_get(a,e,"style",stv,sizeof stv)) {
+    if (html_attr_get(a,e,"style",stv,sizeof stv)) {
         cssrule r; r.tag[0]=r.cls[0]=r.id[0]=0; r.fg=fg; r.bg=bg; r.width=0; r.scale=0; r.center=0;
         r.hfg=(unsigned char)hfg; r.hbg=(unsigned char)hbg; r.bold=(unsigned char)bold;
         css_decls(&r, stv, stv+sl(stv));
@@ -730,7 +610,7 @@ static void handle_tag(Lay *L,const char *name,int close,const char *a,const cha
         if (close) { L->link=0; L->href=0; }
         else {
             char href[URLCAP];
-            if (attr_get(a,e,"href",href,sizeof href) && href[0] && g_pool_used+sl(href)+1<POOL_MAX) {
+            if (html_attr_get(a,e,"href",href,sizeof href) && href[0] && g_pool_used+sl(href)+1<POOL_MAX) {
                 char *dst=g_pool+g_pool_used; scpy(dst,href,POOL_MAX-g_pool_used);
                 g_pool_used += sl(dst)+1; L->href=dst; L->link=1;
             } else { L->link=1; L->href=0; }
@@ -763,25 +643,25 @@ static void handle_tag(Lay *L,const char *name,int close,const char *a,const cha
     }
     if (seqi(name,"img")) {
         char src[256], alt[64]; alt[0]=0;
-        if (attr_get(a,e,"src",src,sizeof src)) {
-            attr_get(a,e,"alt",alt,sizeof alt);
+        if (html_attr_get(a,e,"src",src,sizeof src)) {
+            html_attr_get(a,e,"alt",alt,sizeof alt);
             char tmp[48], st[192]; int rw=0, rh=0;
-            if (attr_get(a,e,"width",tmp,sizeof tmp))  rw=css_px(tmp,sl(tmp));
-            if (attr_get(a,e,"height",tmp,sizeof tmp)) rh=css_px(tmp,sl(tmp));
-            if (attr_get(a,e,"style",st,sizeof st)) { int v; if((v=find_px(st,"width")))rw=v; if((v=find_px(st,"height")))rh=v; }
+            if (html_attr_get(a,e,"width",tmp,sizeof tmp))  rw=css_px(tmp,sl(tmp));
+            if (html_attr_get(a,e,"height",tmp,sizeof tmp)) rh=css_px(tmp,sl(tmp));
+            if (html_attr_get(a,e,"style",st,sizeof st)) { int v; if((v=find_px(st,"width")))rw=v; if((v=find_px(st,"height")))rh=v; }
             emit_img(L,src,alt,rw,rh);
         }
         return;
     }
     if (seqi(name,"input")) {
-        char type[16]={0}; attr_get(a,e,"type",type,sizeof type);
+        char type[16]={0}; html_attr_get(a,e,"type",type,sizeof type);
         int ishidden=seqi(type,"hidden");
         int istext=(!type[0]||seqi(type,"text")||seqi(type,"search")||seqi(type,"url")||seqi(type,"email")||seqi(type,"password"));
         int issubmit=(seqi(type,"submit")||seqi(type,"button")||seqi(type,"image"));
         if (istext||ishidden) {
             int fi=L->field_n++;
             if (ishidden) return;                         /* counted, not drawn */
-            char szs[8]; int bw=180; if (attr_get(a,e,"size",szs,sizeof szs)){ int s=css_px(szs,sl(szs)); if(s>0)bw=s*8+10; }
+            char szs[8]; int bw=180; if (html_attr_get(a,e,"size",szs,sizeof szs)){ int s=css_px(szs,sl(szs)); if(s>0)bw=s*8+10; }
             if (bw>L->cw) bw=L->cw;
             int bh=18;
             if (L->cx>L->indent && L->cx+bw>L->cw) newline(L,0);
@@ -803,7 +683,7 @@ static void handle_tag(Lay *L,const char *name,int close,const char *a,const cha
             return;
         }
         if (issubmit) {
-            char val[48]; if (!attr_get(a,e,"value",val,sizeof val)||!val[0]) scpy(val,"Search",sizeof val);
+            char val[48]; if (!html_attr_get(a,e,"value",val,sizeof val)||!val[0]) scpy(val,"Search",sizeof val);
             int bw=gfx_text_w(val)+16, bh=18;
             if (L->cx>L->indent && L->cx+bw>L->cw) newline(L,0);
             if (bh+2>L->line_h) L->line_h=bh+2;
@@ -902,12 +782,12 @@ static int render_page(gfx_surface *s,int scroll){
             if (c=='\n') { if(wl){emit_word(&L,word,wl);wl=0;} newline(&L,0); }
             else if (c=='\t') { if(wl){emit_word(&L,word,wl);wl=0;} L.cx+=4*SPACE_W; }
             else if (c==' ')  { if(wl){emit_word(&L,word,wl);wl=0;} L.cx+=SPACE_W; }
-            else if (c=='&')  { char eb[8]; int en=entity(&p,end,eb); for(int i=0;i<en&&wl<255;i++)word[wl++]=eb[i]; continue; }
+            else if (c=='&')  { char eb[8]; int en=html_entity(&p,end,eb); for(int i=0;i<en&&wl<255;i++)word[wl++]=eb[i]; continue; }
             else { if(wl<255)word[wl++]=c; }
             p++; continue;
         }
         if (c==' '||c=='\n'||c=='\t'||c=='\r') { if(wl){emit_word(&L,word,wl);wl=0;} L.need_sp=1; p++; continue; }
-        if (c=='&') { char eb[8]; int en=entity(&p,end,eb); for(int i=0;i<en&&wl<255;i++)word[wl++]=eb[i]; continue; }
+        if (c=='&') { char eb[8]; int en=html_entity(&p,end,eb); for(int i=0;i<en&&wl<255;i++)word[wl++]=eb[i]; continue; }
         if (wl<255) word[wl++]=c;
         p++;
     }
@@ -935,7 +815,7 @@ static void error_page(const char *url,const char *why){
  * g_status to the reason). */
 static int get_page(const char *tgt){
     const char *fpath;
-    if (has_scheme(tgt)) {
+    if (html_has_scheme(tgt)) {
         /* http:// and https:// both fetch in userspace (web.c over kernel TCP
          * sockets; TLS via BearSSL).  3xx redirects are followed automatically. */
         int rc = web_fetch(tgt, "/tmp/mxweb.page");
@@ -982,18 +862,18 @@ static void scan_forms(void){
             const char *q=p+1; if (*q=='/') { p++; continue; }
             if (lc(q[0])=='f'&&lc(q[1])=='o'&&lc(q[2])=='r'&&lc(q[3])=='m'&&!alnum_c(q[4])) {
                 const char *a=q+4,*e=a; while(e<end&&*e!='>')e++;
-                if (!g_form_action[0]) attr_get(a,e,"action",g_form_action,sizeof g_form_action);
+                if (!g_form_action[0]) html_attr_get(a,e,"action",g_form_action,sizeof g_form_action);
                 p=(e<end)?e+1:end; continue;
             }
             if (lc(q[0])=='i'&&lc(q[1])=='n'&&lc(q[2])=='p'&&lc(q[3])=='u'&&lc(q[4])=='t'&&!alnum_c(q[5])) {
                 const char *a=q+5,*e=a; while(e<end&&*e!='>')e++;
-                char type[16]={0}; attr_get(a,e,"type",type,sizeof type);
+                char type[16]={0}; html_attr_get(a,e,"type",type,sizeof type);
                 if (!type[0]||seqi(type,"text")||seqi(type,"search")||seqi(type,"url")||
                     seqi(type,"email")||seqi(type,"password")||seqi(type,"hidden")) {
                     formfield *f=&g_fields[g_nfields++];
                     f->name[0]=f->value[0]=0; f->x=f->dy=f->w=f->h=0; f->shown=0;
-                    attr_get(a,e,"name",f->name,sizeof f->name);
-                    attr_get(a,e,"value",f->value,sizeof f->value);
+                    html_attr_get(a,e,"name",f->name,sizeof f->name);
+                    html_attr_get(a,e,"value",f->value,sizeof f->value);
                 }
                 p=(e<end)?e+1:end; continue;
             }
@@ -1017,7 +897,7 @@ static void navigate(const char *input,int push){
         g_scroll=0; g_drag=0; sel_on=0; sel_anchor=sel_caret=0;
         return;
     }
-    url_normalise(input,tgt);
+    html_url_normalise(input,tgt,URLCAP);
     scpy(g_urlbar,tgt,sizeof g_urlbar);
     g_status[0]=0;
     reset_images();
@@ -1043,7 +923,7 @@ static char *urlenc(char *o, const char *s){
 }
 static void form_submit(void){
     char act[URLCAP];
-    if (g_form_action[0]) url_resolve(g_form_action, act, sizeof act);
+    if (g_form_action[0]) html_url_resolve(g_cur_url, g_form_action, act, sizeof act);
     else scpy(act, g_cur_url, sizeof act);
     int has_q=0; for (const char *z=act; *z; z++) if (*z=='?') has_q=1;
     char url[URLCAP]; char *o=url; const char *lim=url+URLCAP-16;
@@ -1242,7 +1122,7 @@ int main(int argc,char **argv){
                     int ly=cy0+g_links[i].y-g_scroll;          /* doc-y -> screen-y */
                     if (c.mx>=g_links[i].x && c.mx<g_links[i].x+g_links[i].w &&
                         c.my>=ly && c.my<ly+g_links[i].h && g_links[i].href) {
-                        char res[URLCAP]; url_resolve(g_links[i].href,res,sizeof res);
+                        char res[URLCAP]; html_url_resolve(g_cur_url,g_links[i].href,res,sizeof res);
                         navigate(res,1); break;
                     }
                 }

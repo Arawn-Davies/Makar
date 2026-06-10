@@ -165,7 +165,7 @@ mximg.elf: crt0.o mximg.o gui_gfx.o gui_ui.o gui_browser.o img_bmp.o img_png.o i
 mxdoom.elf: crt0.o mxdoom.o gui_gfx.o gui_ui.o gui_browser.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-mxweb.elf: crt0.o mxweb.o web.o tls.o mxrc.o gui_gfx.o gui_ui.o img_bmp.o img_png.o img_jpg.o makx.o libbearssl.a libc.a
+mxweb.elf: crt0.o mxweb.o web.o tls.o html.o mxrc.o gui_gfx.o gui_ui.o img_bmp.o img_png.o img_jpg.o makx.o libbearssl.a libc.a
 	$(LD) $(LDFLAGS) -o $@ $^
 
 files.elf: crt0.o files.o
