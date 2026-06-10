@@ -90,8 +90,8 @@ location during live boots.
 | Feature | Status | Notes |
 |---|---|---|
 | `brk` | Present | Main heap-growth mechanism for the userspace malloc shim. |
-| `mmap2` | Anonymous + file-backed | Anon non-fixed = demand-paged bump window at `0x90000000`; a real `fd` or `MAP_FIXED` eager-maps (file region read into private frames, bss tail zeroed). Backs musl `ld.so`'s library maps. |
-| `munmap` | Present | Unmaps the range; address reuse is not implemented. |
+| `mmap2` | Anonymous + file-backed (RO shared) | Anon non-fixed = demand-paged bump window at `0x90000000`. A **read-only** file map shares frames from the page cache (`pagecache_acquire`), so libc.so's text/rodata is one copy in RAM across all mappers; writable/tmpfs file maps and anon-fixed take a private frame. Backs musl `ld.so`'s library maps. |
+| `munmap` | Present | Unmaps the range and releases each frame (`vmm_unmap_and_free`, refcount-decrement — shared cache frames survive while others map them). Address reuse within the bump window is not implemented. |
 | `MAP_FIXED` | Present | Maps at the caller's exact address, replacing any existing mapping in that window. |
 | `mprotect` | Present | `SYS_MPROTECT` (125) rewrites PTE R/W/USER over the range (`ld.so` RELRO). i386 non-PAE has no NX, so X is implicit. |
 | executable mmap/JIT | Unsupported | TCC compiles to files and `exec`s them; `tcc -run` is not the supported model. |

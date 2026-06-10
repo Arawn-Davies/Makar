@@ -119,6 +119,17 @@ Chosen over newlib / an own-libc / an own dynamic linker.  Plan:
   window → relocates → RELRO `mprotect` → `main` prints via `writev`, exit 0
   (`shell-smoke.sh: musl-dynamic`).  `SYS_OPEN` now returns `-ENOENT` (not `-1`)
   on a missing file so `ld.so` can walk its search path.  Full gate 885/0.
+- [x] **Phase 6 — page-cache-backed *shared* file mmap (the RAM win).** Without
+  this, every dynamic process got a *private* ~800 KiB copy of `libc.so` —
+  dynamic linking would *cost* RAM vs the static shim.  Now the page cache backs
+  each page with a refcounted PMM frame (`pagecache_acquire`), and a read-only
+  file `mmap` maps that shared frame straight in: libc.so's ~700 KiB of
+  text/rodata is **one copy in RAM** for every process (writable/data stays
+  private; the Linux page-cache model).  Also fixed a latent leak — `munmap`
+  never freed frames (`vmm_unmap_and_free`).  Proven by the `pagecache_share`
+  ktest (a 2nd mapper of a page allocates **zero** new frames).  Gate 894/0.
+  This **unblocks** the userspace static→dynamic migration (was gated on exactly
+  this so it wouldn't regress memory on a 32 MiB kernel).
 
 ### Desktop UX (T52) — framework landed, wiring in progress
 - [x] **T52.1 — menu/window framework (PR #205).** `gui_ui` gained **`ui_menubar`** (File/Edit/View/Help bar + dropdowns), **`ui_context_menu`** (right-click popup), **`ui_about`** (modal credits card) — Windows-style: greyed disabled items, separators, right-aligned accelerators, dropdown width sized to the longest label. **`ui_btn_w()`** centralises button-label padding (mxweb toolbar = first adopter). **Double-click a title bar → maximise/restore** (`wm.c`). `LICENCES/` collects every external licence (BearSSL/lwIP/doomgeneric/FreeDoom/TinyCC/Limine/musl) with per-file coverage notes, feeding the About dialogs.
