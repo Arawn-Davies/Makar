@@ -1502,6 +1502,7 @@ int main(int argc, char **argv, char **envp)
 
     int cx=(int)FBW/2, cy=(int)FBH/2, prev_left=0;
     int dragging=0, resizing=0, drag_win=-1, drag_dx=0, drag_dy=0;
+    unsigned int last_tt=0; int last_tw=-1, win_dragmoved=0;  /* title double-click + drag-move tracking */
     int drag_icon=-1, icon_moved=0, icon_dx=0, icon_dy=0, icon_px=0, icon_py=0;
     int prev_right=0;
     int announced=0, exit_to_shell=0, power_action=0;
@@ -1566,7 +1567,11 @@ int main(int argc, char **argv, char **envp)
                     else if (in_min(&W[hk],cx,cy)){ W[hk].minimized=1; focus=-1; refocus(); }
                     else if (in_max(&W[hk],cx,cy)) win_toggle_max(hk);
                     else if (in_resize(&W[hk],cx,cy)){ resizing=1; drag_win=hk; W[hk].maximized=0; }
-                    else if (in_titlebar(&W[hk],cx,cy)){ dragging=1; drag_win=hk; drag_dx=cx-W[hk].x; drag_dy=cy-W[hk].y; W[hk].maximized=0; }
+                    else if (in_titlebar(&W[hk],cx,cy)){
+                        unsigned int now=sys_uptime();
+                        if (hk==last_tw && now-last_tt<35u){ win_toggle_max(hk); last_tw=-1; }   /* double-click -> maximise/restore */
+                        else { dragging=1; drag_win=hk; drag_dx=cx-W[hk].x; drag_dy=cy-W[hk].y; win_dragmoved=0; last_tt=now; last_tw=hk; }
+                    }
                 } else {
                     int ii=icon_hit(cx,cy);
                     if (ii>=0){           /* select + begin a potential drag (launch on release if not moved) */
@@ -1603,8 +1608,11 @@ int main(int argc, char **argv, char **envp)
             }
         }
         if (dragging && drag_win>=0 && W[drag_win].in_use){ swin *w=&W[drag_win];
+            int nx=cx-drag_dx, ny=cy-drag_dy;
+            if (!win_dragmoved && (iabs(nx-w->x)>3 || iabs(ny-w->y)>3)) win_dragmoved=1;
+            if (win_dragmoved && w->maximized) w->maximized=0;   /* tear a maximised window off only on real drag */
             damage_win(drag_win);                /* old position (erase trail) */
-            w->x=cx-drag_dx; w->y=cy-drag_dy;
+            w->x=nx; w->y=ny;
             if(w->x<0)w->x=0; if(w->y<MENU_H)w->y=MENU_H;
             if(w->x+w->w>(int)FBW)w->x=(int)FBW-w->w;
             if(w->y+w->h>(int)FBH-DOCK_H)w->y=(int)FBH-DOCK_H-w->h;
