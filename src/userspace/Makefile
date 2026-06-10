@@ -18,7 +18,10 @@ LDFLAGS=-T link.ld -nostdlib
 
 # ---- doomgeneric (vendored) ----------------------------------------------
 # Core Doom + the generic glue; exclude every foreign platform backend and
-# use our own doomgeneric_makar.c.  Compiled against the hosted libc + headers.
+# use our own Makar platform backend, which lives in its own folder
+# (doomgeneric-makar/, a candidate for extraction to its own repo alongside a
+# future quakegeneric-makar).  Compiled against the hosted libc + headers.
+DGM_DIR=doomgeneric-makar
 DOOM_DIR=../../vendor/doomgeneric/doomgeneric
 DOOM_PLATFORMS=allegro emscripten linuxvt sdl soso sosox win xlib
 DOOM_EXCL=$(addprefix $(DOOM_DIR)/doomgeneric_,$(addsuffix .c,$(DOOM_PLATFORMS)))
@@ -175,15 +178,16 @@ files.elf: crt0.o files.o
 $(DOOM_DIR)/%.o: $(DOOM_DIR)/%.c
 	$(CC) $(DOOM_CFLAGS) -c -o $@ $<
 
-doomgeneric_makar.o: doomgeneric_makar.c
+# Makar platform backend (its own folder; see doomgeneric-makar/README.md).
+$(DGM_DIR)/doomgeneric_makar.o: $(DGM_DIR)/doomgeneric_makar.c
 	$(CC) $(DOOM_CFLAGS) -c -o $@ $<
 
 # Link via the gcc driver so -lgcc (64-bit math helpers) resolves.  makx.o adds
 # the (dormant unless `-makx` is passed) windowed makx-client backend; Doom's
 # fullscreen text-mode path is unchanged.  No gui_gfx: the backend uses only the
 # gfx_surface *type* from makx.h, not any drawing code.
-doom.elf: crt0.o doomgeneric_makar.o $(DOOM_OBJ) makx.o libc.a
-	$(CC) $(LDFLAGS) -o $@ crt0.o doomgeneric_makar.o $(DOOM_OBJ) makx.o libc.a -lgcc
+doom.elf: crt0.o $(DGM_DIR)/doomgeneric_makar.o $(DOOM_OBJ) makx.o libc.a
+	$(CC) $(LDFLAGS) -o $@ crt0.o $(DGM_DIR)/doomgeneric_makar.o $(DOOM_OBJ) makx.o libc.a -lgcc
 
 ls.elf: crt0.o ls.o
 	$(LD) $(LDFLAGS) -o $@ $^
