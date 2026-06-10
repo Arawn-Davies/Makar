@@ -74,6 +74,16 @@ static int   g_scroll, g_content_h;
 typedef struct { int x,y,w,h; const char *href; } link_t;
 static link_t g_links[MAX_LINKS]; static int g_nlink;
 
+/* ---- selectable text runs (drag-to-highlight + Copy) --------------------- */
+#define MAX_RUNS    8192
+#define RUN_TEXTCAP 131072
+typedef struct { int x, docy, gw, n, off; } textrun;   /* one drawn word, doc space */
+static textrun g_runs[MAX_RUNS]; static int g_nruns;
+static char    g_runtext[RUN_TEXTCAP]; static int g_runtextn;
+static int     g_last_docy;
+static int     sel_on, sel_anchor, sel_caret;   /* global char indices into g_runtext */
+static int     g_sel_lo, g_sel_hi;              /* normalized [lo,hi) for the renderer */
+
 typedef struct { char key[256]; gfx_surface surf; int ok; } imgent;
 static imgent g_imgs[MAX_IMGS]; static int g_nimg;
 
@@ -652,7 +662,24 @@ static void emit_word(Lay *L,const char *w,int n){
     if (gw+2 > L->line_h) L->line_h = gw+2;
     fill_line_bg(L);
     int sx = L->x0+L->cx, sy = L->y0+L->cy-L->scroll;
+    /* record this word as a selectable run (document space -- x doesn't scroll);
+     * a separator char goes into the copy text between runs (space, or newline on
+     * a new line) so a copied range reads naturally. */
+    int base=-1;
+    if (g_nruns<MAX_RUNS) {
+        int sep = (g_nruns>0) ? ((L->cy!=g_last_docy) ? '\n' : ' ') : -1;
+        if (sep>=0 && g_runtextn<RUN_TEXTCAP) g_runtext[g_runtextn++]=(char)sep;
+        if (g_runtextn+n<=RUN_TEXTCAP) {
+            base=g_runtextn;
+            g_runs[g_nruns].x=sx; g_runs[g_nruns].docy=L->cy; g_runs[g_nruns].gw=gw;
+            g_runs[g_nruns].n=n; g_runs[g_nruns].off=base;
+            for(int i=0;i<n;i++) g_runtext[g_runtextn++]=w[i];
+            g_nruns++; g_last_docy=L->cy;
+        }
+    }
     if (sy >= L->y0 && sy+gw <= L->y0+L->vh) {
+        if (base>=0 && g_sel_hi>g_sel_lo)                 /* selection highlight */
+            for(int i=0;i<n;i++){ int gi=base+i; if(gi>=g_sel_lo&&gi<g_sel_hi) gfx_fill(L->s,sx+i*gw,sy,gw,gw+1,UI_COL_SEL); }
         gfx_u32 col = L->link ? COL_LINK : (L->cur_fg_on ? L->cur_fg : (L->cur_bold?COL_HEAD:COL_TEXT));
         draw_chars(L->s, sx, sy, w, n, col, L->cur_bold, L->x0+L->cw, sc);
         if (L->link) {
@@ -825,6 +852,7 @@ static int render_page(gfx_surface *s,int scroll){
     L.sd=0; L.bg_line=-1;
     L.cur_fg=COL_TEXT; L.cur_fg_on=0; L.cur_bg=PAGE_BG; L.cur_bg_on=0; L.cur_bold=0; L.cur_scale=1;
     g_nlink=0; g_pool_used=0; g_nsub=0; L.field_n=0;
+    g_nruns=0; g_runtextn=0; g_last_docy=-999999;   /* rebuild selectable text runs */
 
     const char *p=g_html, *end=g_html+g_html_len;
     char word[256]; int wl=0;
@@ -986,7 +1014,7 @@ static void navigate(const char *input,int push){
         scpy(g_status,"Home",sizeof g_status);
         scpy(g_cur_url,tgt,sizeof g_cur_url);
         if (push) hist_push(tgt);
-        g_scroll=0; g_drag=0;
+        g_scroll=0; g_drag=0; sel_on=0; sel_anchor=sel_caret=0;
         return;
     }
     url_normalise(input,tgt);
@@ -998,7 +1026,7 @@ static void navigate(const char *input,int push){
     if (push) hist_push(tgt);
     if (ok) { scan_title(); scan_css(); scan_images(); scan_forms(); }
     else    { css_reset(); g_nfields=0; g_ff=-1; error_page(tgt,g_status); }
-    g_scroll=0; g_drag=0;
+    g_scroll=0; g_drag=0; sel_on=0; sel_anchor=sel_caret=0;
 }
 
 /* Submit the form: resolve the action, append name=value pairs as a query
@@ -1042,8 +1070,28 @@ static void draw_scrollbar(gfx_surface *s,int cy,int vh){
 }
 
 /* ---- menu bar + About (T52) --------------------------------------------- */
-static int g_menu=-1, g_about=0, g_exit_req=0;
-enum { W_BACK=1, W_FWD, W_RELOAD, W_HOME, W_SETHOME, W_EXIT, W_ABOUT };
+static int g_menu=-1, g_about=0, g_ctx=0, g_ctx_x, g_ctx_y, g_exit_req=0;
+enum { W_BACK=1, W_FWD, W_RELOAD, W_HOME, W_SETHOME, W_EXIT, W_ABOUT, W_COPY, W_SELALL };
+
+/* Map a client pixel to a global char index in g_runtext (reading order). */
+static int pos_at(int mx,int my){
+    int best=-1, bestd=0x7fffffff;
+    for(int r=0;r<g_nruns;r++){
+        int ry=TOOLBAR_H+g_runs[r].docy-g_scroll, gh=g_runs[r].gw+1, gw=g_runs[r].gw;
+        int dy = (my<ry)?(ry-my):(my>=ry+gh)?(my-(ry+gh-1)):0;
+        for(int i=0;i<=g_runs[r].n;i++){
+            int cx=g_runs[r].x+i*gw, dx=(mx<cx)?(cx-mx):(mx-cx);
+            int d=dy*8192+dx;
+            if(d<bestd){ bestd=d; best=g_runs[r].off+i; }
+        }
+    }
+    return best;
+}
+static void web_copy(void){
+    int lo=g_sel_lo, hi=g_sel_hi;
+    if(lo<0)lo=0; if(hi>g_runtextn)hi=g_runtextn;
+    if(hi>lo) sys_clip_set(g_runtext+lo,(unsigned)(hi-lo));
+}
 static void web_do(int a){
     switch(a){
     case W_BACK:    if(g_hist_i>0){ g_hist_i--; navigate(g_hist[g_hist_i],0); } break;
@@ -1055,6 +1103,8 @@ static void web_do(int a){
                                  char *o=pcat(g_status,"Homepage saved to ~/.mxwebrc: "); o=pcat(o,g_home); *o=0; } } break;
     case W_EXIT:    g_exit_req=1; break;
     case W_ABOUT:   g_about=1; break;
+    case W_COPY:    web_copy(); break;
+    case W_SELALL:  sel_on=1; sel_anchor=0; sel_caret=g_runtextn; break;
     }
 }
 
@@ -1085,8 +1135,8 @@ int main(int argc,char **argv){
     while (!c.closed && !g_exit_req) {
         mx_pump(&c);
         int key = mx_key(&c);
-        int busy = (g_menu>=0) || g_about;     /* an overlay owns input this frame */
-        int changed = first || key>=0 || c.mpressed || c.mreleased || c.mdown ||
+        int busy = (g_menu>=0) || g_about || g_ctx;  /* an overlay owns input this frame */
+        int changed = first || key>=0 || c.mpressed || c.mreleased || c.mdown || c.rpressed ||
                       c.mx!=lmx || c.my!=lmy || c.focused!=lfocus || c.resized || key!=lkey;
         lmx=c.mx; lmy=c.my; lfocus=c.focused; lkey=key; first=0;
         if (!changed) { sys_yield(); continue; }
@@ -1128,6 +1178,12 @@ int main(int argc,char **argv){
         if (!busy && g_ff<0 && key==0x80) g_scroll -= 48;            /* up   */
         else if (!busy && g_ff<0 && key==0x81) g_scroll += 48;       /* down */
 
+        /* page clipboard when neither the URL bar nor an in-page field is focused */
+        if (!busy && g_ff<0 && u.focus==0) {
+            if (key==3) web_copy();                                  /* Ctrl-C */
+            else if (key==1) { sel_on=1; sel_anchor=0; sel_caret=g_runtextn; }  /* Ctrl-A */
+        }
+
         /* scrollbar interaction (uses last frame's content height) */
         int sbx=s->w-SBW, maxsc=g_content_h-vh; if(maxsc<0)maxsc=0;
         if (g_content_h>vh) {
@@ -1142,6 +1198,16 @@ int main(int argc,char **argv){
         if (!c.mdown) g_drag=0;
         if (g_scroll>maxsc) g_scroll=maxsc;
         if (g_scroll<0) g_scroll=0;
+
+        /* text selection: drag over body text highlights it (Copy via Ctrl-C /
+         * Edit menu / right-click).  pos_at uses last frame's run positions. */
+        if (!busy && c.mx<sbx && c.my>=cy0) {
+            if (c.mpressed) { int pp=pos_at(c.mx,c.my); if(pp>=0){ sel_on=1; sel_anchor=sel_caret=pp; } }
+            if (c.rpressed) { g_ctx=1; g_ctx_x=c.mx; g_ctx_y=c.my; }
+        }
+        if (!busy && sel_on && c.mdown && !g_drag && c.my>=cy0) { int pp=pos_at(c.mx,c.my); if(pp>=0) sel_caret=pp; }
+        g_sel_lo = sel_anchor<sel_caret ? sel_anchor : sel_caret;
+        g_sel_hi = sel_anchor<sel_caret ? sel_caret : sel_anchor;
 
         /* render the document */
         g_content_h = render_page(s,g_scroll);
@@ -1192,16 +1258,21 @@ int main(int argc,char **argv){
 
         /* restore real input, then draw the menu bar + About overlay last */
         u.key=rk; u.mpressed=rpr; u.mdown=rdn; u.mreleased=rrl;
+        int hassel = g_sel_hi>g_sel_lo;
         static const ui_menu_item fitems[]={{"Home",W_HOME,1,0},{"Set as homepage",W_SETHOME,1,0},{0,0,0,0},{"Exit",W_EXIT,1,0}};
+        ui_menu_item eitems[]={{"Copy",W_COPY,hassel,"^C"},{"Select All",W_SELALL,1,"^A"}};
         ui_menu_item vitems[]={{"Back",W_BACK,g_hist_i>0,0},{"Forward",W_FWD,g_hist_i<g_hist_n-1,0},{"Reload",W_RELOAD,1,0}};
         static const ui_menu_item hitems[]={{"About mxweb",W_ABOUT,1,0}};
-        ui_menu menus[]={{"File",fitems,4},{"View",vitems,3},{"Help",hitems,1}};
-        int mact=ui_menubar(&u,s,menus,3,&g_menu);
+        ui_menu menus[]={{"File",fitems,4},{"Edit",eitems,2},{"View",vitems,3},{"Help",hitems,1}};
+        int mact=ui_menubar(&u,s,menus,4,&g_menu);
         if(mact) web_do(mact);
         static const char *al[]={"Makar web browser (mxweb)","(c) 2026 Arawn Davies  --  MIT","",
                                  "TLS by BearSSL (MIT).  TCP/IP by lwIP (BSD-3).",
                                  "HTML render + image decoders: part of Makar OS."};
         ui_about(&u,s,"About mxweb",al,5,&g_about);
+        ui_menu_item citems[]={{"Copy",W_COPY,hassel,"^C"},{"Select All",W_SELALL,1,0}};
+        int cact=ui_context_menu(&u,s,g_ctx_x,g_ctx_y,citems,2,&g_ctx);
+        if(cact) web_do(cact);
 
         mx_present(&c);
         sys_yield();

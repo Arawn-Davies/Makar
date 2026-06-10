@@ -87,7 +87,7 @@ Last reordered 2026-06-09 (after PR #204 merged).
 
 ### Desktop UX (T52) — framework landed, wiring in progress
 - [x] **T52.1 — menu/window framework (PR #205).** `gui_ui` gained **`ui_menubar`** (File/Edit/View/Help bar + dropdowns), **`ui_context_menu`** (right-click popup), **`ui_about`** (modal credits card) — Windows-style: greyed disabled items, separators, right-aligned accelerators, dropdown width sized to the longest label. **`ui_btn_w()`** centralises button-label padding (mxweb toolbar = first adopter). **Double-click a title bar → maximise/restore** (`wm.c`). `LICENCES/` collects every external licence (BearSSL/lwIP/doomgeneric/FreeDoom/TinyCC/Limine/musl) with per-file coverage notes, feeding the About dialogs.
-- [~] **T52.2 — wire the menus into apps.** Kernel **clipboard syscalls** (`SYS_CLIP_SET/GET` + buffer) for cross-app Cut/Copy/Paste; per-app File/Edit/View/Help bars + right-click context menu (Cut/Copy/Paste/Undo/Redo, enable/disable by context) + **Ctrl-A/C/X/V/Z/Y**; Help→About with per-app credits. **Undo/redo** = two bounded LIFO stacks.
+- [x] **T52.2 — wire the menus into apps.** Kernel **clipboard syscalls** (`SYS_CLIP_SET/GET` + buffer) for cross-app Cut/Copy/Paste; per-app File/Edit/View/Help bars + right-click context menu (Cut/Copy/Paste/Undo/Redo, enable/disable by context) + **Ctrl-A/C/X/V/Z/Y**; Help→About with per-app credits. **Undo/redo** = two bounded LIFO stacks.
   - [x] **makx right mouse button** plumbed end-to-end: `wm.c` forwards bit1 in `MXEV_MOUSE`, `mx_pump` exposes `c.rpressed/rdown/rreleased` — the prerequisite for any right-click menu.
   - [x] **`ui_vscroll`** reusable scrollbar widget (track + proportional thumb, click/drag) added to `gui_ui`.
   - [x] **`ui_textbox` clipboard shortcuts** — every textbox now takes **Ctrl-A** (select all, with highlight), **Ctrl-C/X** (copy/cut to the system clipboard; suppressed on password fields) and **Ctrl-V** (paste, replacing a selection).
@@ -95,7 +95,7 @@ Last reordered 2026-06-09 (after PR #204 merged).
   - [x] **mxfiles**: File/View/Help bar + About + right-click context menu (Open/Refresh) + **scrollbar** (list & icon views).
   - [x] **mxweb / mximg**: menu bar + Help→About with per-app credits (mxweb → BearSSL + lwIP; mximg → Arawn Davies).
   - [x] **mxterm**: Edit/Help menu bar + right-click menu (Copy/Paste/Select All), **drag-to-select** cells → clipboard, and a **scrollback buffer** (`vt100` keeps the last `VT_SCROLLBACK=500` evicted lines) with a draggable **scrollbar**; typing snaps to the live tail. Ctrl-C still reaches the shell as SIGINT (copy/paste are menu/RCCM/drag, terminal-correct).
-  - [ ] **mxweb**: drag-to-highlight page text + Copy (next).
+  - [x] **mxweb**: File/**Edit**/View/Help bar; **drag-to-highlight page text** (the renderer records each drawn word as a doc-space run; a drag maps to a character range, highlighted live) → **Copy** via Ctrl-C / Edit menu / right-click; Select All. Selection resets on navigation.
 
 ### Userspace tooling / terminals
 - [ ] **T54 — `tar`** (userspace ELF): USTAR **c / x / t / v / f**, plus **gzip `z`** (decompress via the shared `inflate.h`; create via stored-DEFLATE + CRC32 — real DEFLATE compression is a follow-up). **`xz` not planned** (LZMA too heavy for the hobby target). Started: `inflate.h` extracted (header-only, shared with `img_png`).
