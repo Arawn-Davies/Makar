@@ -145,6 +145,11 @@ All apps in `/Users/arawn/Makar/src/userspace/` compile to `.elf` files and are 
 - Plain HTTP only (no TLS). Also available as an in-kernel shell builtin (`shell_cmd_net.c`)
 - Pairs with the `unzip` shell command (`fs/unzip.c` + `fs/inflate.c`) to fetch + extract archives
 
+### **linx.elf** (linx.c) — text-mode web browser
+- Lynx/links-style terminal browser: fetches HTTP/HTTPS via `web_fetch` (userspace `web.c`/`tls.c`), reflows HTML to the terminal with ANSI + inline numbered `[N]` link markers + a command prompt (number=follow, `b`/`r`/URL/`q`/`h`)
+- `linx [--dump] <url|file>`; also opens local/`file://` paths and an `about:linx` start page. Works in a text VT and under mxterm (bgetline input)
+- Shares mxweb's HTML engine via **`html.{h,c}`** (entity decode, attribute extraction, URL resolution — the renderer-independent tokeniser core used by both browsers)
+
 ### **gui.elf** (wm.c) — the makx display server
 - X11-style **display server**: owns the framebuffer + keyboard + mouse, draws the desktop chrome (window borders, dock, menu bar, cursor) and composites client windows. The sole `SYS_FB_PRESENT` caller.
 - Applications are separate **client** processes over IPC (control) + shared surfaces (pixels); protocol + client lib in `makx.{h,c}`. Server launches clients with `-makx <pid>`.
