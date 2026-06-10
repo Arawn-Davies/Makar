@@ -24,4 +24,8 @@ int rtc_read(rtc_time_t *out);
  * Returns 0 on success. */
 int rtc_unix_time(uint32_t *out_secs);
 
+/* Write the CMOS RTC (halts updates while writing, BCD-encodes as needed).
+ * Returns 0 on success.  Backs SYS_SETTIME. */
+int rtc_write(const rtc_time_t *t);
+
 #endif /* _KERNEL_RTC_H */

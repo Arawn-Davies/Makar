@@ -32,6 +32,7 @@ static int  streq(const char *a,const char *b){int i=0;while(a[i]&&a[i]==b[i])i+
 static char *u2s(unsigned v,char *o){char t[12];int i=0;if(!v)t[i++]='0';while(v){t[i++]=(char)('0'+v%10u);v/=10u;}int j=0;while(i)o[j++]=t[--i];o[j]=0;return o;}
 /* zero-padded 2-digit into d[0..1] */
 static void p2(char *d,int v){ d[0]=(char)('0'+(v/10)%10); d[1]=(char)('0'+v%10); }
+static int  s2i(const char *s){ int v=0; while(*s==' ')s++; while(*s>='0'&&*s<='9'){v=v*10+(*s-'0');s++;} return v; }
 
 enum { CAT_APPEARANCE, CAT_DISPLAY, CAT_STATUSBAR, CAT_NETWORK,
        CAT_DATETIME, CAT_AUTOSTART, CAT_N };
@@ -160,22 +161,43 @@ static void panel_network(ui_ctx *u, gfx_surface *s, int cx, int cy, int cw, int
     gfx_str(s,cx,s->h-22,"Manual / static config - coming next.",COL_MUTE);
 }
 
-/* ---- Date & Time: live clock (set lands with SYS_SETTIME) --------------- */
+/* ---- Date & Time: live clock + set (SYS_SETTIME) ------------------------ */
+static char dt_y[6], dt_mo[4], dt_d[4], dt_h[4], dt_mi[4], dt_s[4], dt_msg[40];
+static int  dt_init=0;
 static void panel_datetime(ui_ctx *u, gfx_surface *s, int cx, int cy, int cw, int ch)
 {
-    (void)u;(void)cw;(void)ch;
+    (void)cw;(void)ch;
     int y = section(s, cx, cy, "CURRENT (UTC)");
-    struct timeval tv; char buf[24];
-    if (sys_gettimeofday(&tv)==0){
-        time_t t=(time_t)tv.tv_sec; struct tm tmv; gmtime_r(&t,&tmv);
-        /* YYYY-MM-DD HH:MM:SS */
-        char nb[12]; u2s((unsigned)(tmv.tm_year+1900),nb);
-        int n=0; for(int i=0;nb[i];i++)buf[n++]=nb[i]; buf[n++]='-';
-        p2(buf+n,tmv.tm_mon+1); n+=2; buf[n++]='-'; p2(buf+n,tmv.tm_mday); n+=2; buf[n++]=' ';
-        p2(buf+n,tmv.tm_hour); n+=2; buf[n++]=':'; p2(buf+n,tmv.tm_min); n+=2; buf[n++]=':'; p2(buf+n,tmv.tm_sec); n+=2; buf[n]=0;
+    struct timeval tv; struct tm tmv; int have=0;
+    if (sys_gettimeofday(&tv)==0){ time_t t=(time_t)tv.tv_sec; gmtime_r(&t,&tmv); have=1; }
+    if (have){
+        char buf[24], nb[12]; int n=0;
+        u2s((unsigned)(tmv.tm_year+1900),nb); for(int i=0;nb[i];i++)buf[n++]=nb[i]; buf[n++]='-';
+        p2(buf+n,tmv.tm_mon+1);n+=2;buf[n++]='-';p2(buf+n,tmv.tm_mday);n+=2;buf[n++]=' ';
+        p2(buf+n,tmv.tm_hour);n+=2;buf[n++]=':';p2(buf+n,tmv.tm_min);n+=2;buf[n++]=':';p2(buf+n,tmv.tm_sec);n+=2;buf[n]=0;
         gfx_str(s,cx,y,buf,COL_TEXT);
+        if(!dt_init){                          /* prefill the edit fields once */
+            u2s((unsigned)(tmv.tm_year+1900),dt_y); u2s((unsigned)(tmv.tm_mon+1),dt_mo);
+            u2s((unsigned)tmv.tm_mday,dt_d); u2s((unsigned)tmv.tm_hour,dt_h);
+            u2s((unsigned)tmv.tm_min,dt_mi); u2s((unsigned)tmv.tm_sec,dt_s); dt_init=1;
+        }
     } else gfx_str(s,cx,y,"(clock unavailable)",COL_ERR);
-    gfx_str(s,cx,y+28,"Setting the clock lands with the SYS_SETTIME syscall.",COL_MUTE);
+
+    y = section(s, cx, y+34, "SET CLOCK (UTC)");
+    gfx_str(s,cx,y+5,"Date",COL_MUTE);
+    ui_textbox(u,s,cx+44, y,56,22,dt_y, sizeof dt_y);
+    ui_textbox(u,s,cx+104,y,34,22,dt_mo,sizeof dt_mo);
+    ui_textbox(u,s,cx+142,y,34,22,dt_d, sizeof dt_d);
+    gfx_str(s,cx+186,y+5,"Time",COL_MUTE);
+    ui_textbox(u,s,cx+230,y,34,22,dt_h, sizeof dt_h);
+    ui_textbox(u,s,cx+268,y,34,22,dt_mi,sizeof dt_mi);
+    ui_textbox(u,s,cx+306,y,34,22,dt_s, sizeof dt_s);
+    gfx_str(s,cx+44,y+26,"YYYY  MM  DD        HH  MM  SS",COL_MUTE);
+    if (ui_button(u,s,cx,y+46,120,28,"Set clock")){
+        int rc=sys_settime(s2i(dt_y),s2i(dt_mo),s2i(dt_d),s2i(dt_h),s2i(dt_mi),s2i(dt_s));
+        scpy(dt_msg, rc==0 ? "Clock updated." : "Invalid date/time.", sizeof dt_msg);
+    }
+    if (dt_msg[0]) gfx_str(s,cx+132,y+52,dt_msg, dt_msg[0]=='C'?COL_OK:COL_ERR);
 }
 
 /* ---- Autostart: apps launched at login (~/.mxrc Autostart=) -------------- */

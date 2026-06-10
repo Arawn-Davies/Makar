@@ -60,6 +60,46 @@ int rtc_read(rtc_time_t *out)
     return 0;
 }
 
+static inline void cmos_write(uint8_t reg, uint8_t val)
+{
+    outb(0x70, reg);
+    outb(0x71, val);
+}
+
+static inline uint8_t bin_to_bcd(uint8_t v)
+{
+    return (uint8_t)(((v / 10u) << 4) | (v % 10u));
+}
+
+/* Write the CMOS RTC.  Halts updates (status-B SET bit) while writing the six
+ * fields, encoding BCD when the clock is in BCD mode (status B bit 2 clear),
+ * matching rtc_read's decode.  Assumes 24-hour mode (QEMU's default; the read
+ * path only masks the 12/24h bit, so a 24h write round-trips cleanly).  Backs
+ * SYS_SETTIME -- since gettimeofday reads the RTC live, this is the whole clock. */
+int rtc_write(const rtc_time_t *t)
+{
+    if (!t) return -1;
+
+    for (int spin = 0; spin < 1000000; spin++)
+        if (!(cmos_read(0x0A) & 0x80u)) break;          /* wait out any update */
+
+    uint8_t statB = cmos_read(0x0B);
+    uint8_t sec  = t->sec, min = t->min, hour = t->hour;
+    uint8_t day  = t->day, mon = t->mon;
+    uint8_t year = (uint8_t)((t->year >= 2000u ? t->year - 2000u : 0u) % 100u);
+
+    if (!(statB & 0x04u)) {                              /* BCD mode -> encode */
+        sec=bin_to_bcd(sec); min=bin_to_bcd(min); hour=bin_to_bcd(hour);
+        day=bin_to_bcd(day); mon=bin_to_bcd(mon); year=bin_to_bcd(year);
+    }
+
+    cmos_write(0x0B, (uint8_t)(statB | 0x80u));          /* SET: halt updates */
+    cmos_write(0x00, sec);  cmos_write(0x02, min);  cmos_write(0x04, hour);
+    cmos_write(0x07, day);  cmos_write(0x08, mon);  cmos_write(0x09, year);
+    cmos_write(0x0B, statB);                             /* resume updates */
+    return 0;
+}
+
 /* Days-since-epoch for the first of each month (non-leap). */
 static const uint16_t s_mdays[12] = {
     0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334
