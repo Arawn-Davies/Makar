@@ -465,8 +465,24 @@ The text installer renders as a real ANSI/VT100 byte stream to its stdout, so it
 also works from a shell VT and inside an `mxterm` window with one code path.
 
 An always-on **top menu bar** (drawn after the windows, never occluded) carries
-the Makar brand, the focused window's title, and a **power icon** at the
-right. Clicking it (or pressing **Ctrl-Alt-Del**, see below) opens a centred
+the Makar brand, macOS-style **Edit** / **View** dropdowns, the focused window's
+title, and a **power icon** at the right.
+
+**Desktop menus (Edit / View) + right-click context menu.** The menu-bar **Edit**
+dropdown offers **Cut / Copy / Paste** and **View** offers **Auto Arrange**; a
+**right-click on the empty desktop** opens the same actions as a context menu
+(RCCM). Cut/Copy/Paste inject the `^X`/`^C`/`^V` byte into the focused client via
+`win_push`, so the application's own clipboard handling runs exactly as if the
+keystroke had been typed — there is no separate desktop clipboard and **no
+undo/redo**. Auto Arrange re-grids every desktop icon (`icon_grid_pos`) and
+persists the positions back to each `.desktop` (best-effort; a no-op on a
+read-only live ISO). The edit verbs grey out when no window is focused. One
+shared popup module (`menu_items`/`menu_box`/`draw_desk_menu`/`desk_menu_click`,
+`wm.c`) backs both the menu-bar dropdowns and the RCCM, mirroring the dock
+tray-menu pattern; `menubar_hit` opens a dropdown, an empty-desktop right-click
+(gated off windows, icons and the dock) opens the RCCM.
+
+Clicking the power icon (or pressing **Ctrl-Alt-Del**, see below) opens a centred
 modal **power menu** (`show_power_menu`) with: **Log out (graphical)**
 (→ `sys_logout`, re-shows login), **Log out to shell** (→ `sys_gui_close`,
 back to the CLI shell), **Shut down** (→ `sys_shutdown`), **Reboot**

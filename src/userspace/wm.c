@@ -1151,6 +1151,78 @@ static int tray_menu_click(int px,int py){
     return 1;
 }
 
+/* ---- desktop menus: macOS-style menu-bar dropdowns + right-click context ---
+ * The top menu bar carries Edit/View dropdowns; a right-click on the empty
+ * desktop opens the same actions as a context menu (RCCM).  Items dispatch a
+ * desk_action(): Cut/Copy/Paste inject the Ctrl-X/C/V byte into the focused
+ * client (so the app's own clipboard handling runs, exactly as if the user had
+ * typed it); Auto Arrange re-grids every desktop icon.  No undo/redo (the same
+ * scope the user asked for -- a Finder-style desktop, not a document editor). */
+enum { DA_NONE=0, DA_CUT, DA_COPY, DA_PASTE, DA_ARRANGE };
+typedef struct { const char *label; int action; } menuitem;
+static const menuitem MENU_EDIT[] = {{"Cut",DA_CUT},{"Copy",DA_COPY},{"Paste",DA_PASTE}};
+static const menuitem MENU_VIEW[] = {{"Auto Arrange",DA_ARRANGE}};
+static const menuitem MENU_RCCM[] = {{"Cut",DA_CUT},{"Copy",DA_COPY},{"Paste",DA_PASTE},
+                                     {0,DA_NONE},{"Auto Arrange",DA_ARRANGE}};
+#define DMENU_W 150
+static int g_menu=0;                 /* 0 none; 1=Edit dropdown; 2=View dropdown; 3=RCCM */
+static int g_menu_x=0, g_menu_y=0;   /* top-left anchor of the open menu                */
+static const menuitem *menu_items(int id,int *n){
+    if(id==1){ *n=(int)(sizeof MENU_EDIT/sizeof MENU_EDIT[0]); return MENU_EDIT; }
+    if(id==2){ *n=(int)(sizeof MENU_VIEW/sizeof MENU_VIEW[0]); return MENU_VIEW; }
+    if(id==3){ *n=(int)(sizeof MENU_RCCM/sizeof MENU_RCCM[0]); return MENU_RCCM; }
+    *n=0; return 0;
+}
+/* an action is greyed out when it can't apply (Finder-style): edit verbs need a
+ * focused client to receive the keystroke; Auto Arrange is always available. */
+static int action_enabled(int a){ return a==DA_ARRANGE ? 1 : (focus>=0 && W[focus].in_use); }
+static void menu_box(int *x,int *y,int *w,int *h){
+    int n; menu_items(g_menu,&n); int rh=20;
+    *w=DMENU_W; *h=5+n*rh+5;
+    *x=g_menu_x; if(*x+*w>(int)FBW)*x=(int)FBW-*w; if(*x<0)*x=0;
+    *y=g_menu_y; if(*y+*h>(int)FBH)*y=(int)FBH-*h; if(*y<MENU_H)*y=MENU_H;
+}
+static void draw_desk_menu(void){
+    if(!g_menu) return;
+    int n; const menuitem *it=menu_items(g_menu,&n);
+    int x,y,w,h,rh=20; menu_box(&x,&y,&w,&h);
+    gfx_round(&scr,x,y,w,h,COL_WIN,COL_BORDER);
+    for(int i=0;i<n;i++){ int ry=y+5+i*rh;
+        if(!it[i].label){ gfx_fill(&scr,x+10,ry+rh/2,w-20,1,RGB(0x30,0x3a,0x4c)); continue; }
+        gfx_str(&scr,x+14,ry+(rh-8)/2, it[i].label,
+                action_enabled(it[i].action)?0xFFFFFF:RGB(0x5a,0x62,0x70));
+    }
+}
+static void desk_arrange(void){
+    for(int i=0;i<g_icon_n;i++){ icon_grid_pos(i,&icons[i].x,&icons[i].y); icon_save_pos(i); }
+    g_dirty=1; damage_full();
+}
+static void desk_action(int a){
+    switch(a){
+        case DA_CUT:   if(focus>=0&&W[focus].in_use) win_push(&W[focus],MXEV_KEY,24,0,0); break; /* ^X */
+        case DA_COPY:  if(focus>=0&&W[focus].in_use) win_push(&W[focus],MXEV_KEY, 3,0,0); break; /* ^C */
+        case DA_PASTE: if(focus>=0&&W[focus].in_use) win_push(&W[focus],MXEV_KEY,22,0,0); break; /* ^V */
+        case DA_ARRANGE: desk_arrange(); break;
+    }
+}
+/* Left-click while a desktop menu is open: fire the hit row (if any) and close.
+ * Returns 1 if the menu was open (click consumed). */
+static int desk_menu_click(int px,int py){
+    if(!g_menu) return 0;
+    int n; const menuitem *it=menu_items(g_menu,&n);
+    int x,y,w,h,rh=20; menu_box(&x,&y,&w,&h);
+    if(in_rect(px,py,x,y,w,h)){
+        for(int i=0;i<n;i++){ int ry=y+5+i*rh;
+            if(it[i].label && in_rect(px,py,x,ry,w,rh)){
+                if(action_enabled(it[i].action)) desk_action(it[i].action);
+                break;
+            }
+        }
+    }
+    g_menu=0;                                     /* any click closes the menu */
+    return 1;
+}
+
 /* top menu bar -------------------------------------------------------------- */
 /* IEC 5009 "standby" power glyph (11x11): a broken ring with a vertical bar. */
 #define POWER_W 30
@@ -1172,18 +1244,36 @@ static void draw_power_icon(int bx,int by,gfx_u32 col)
         if(PWR_ICON[r][c]=='X') gfx_px(&scr,bx+c,by+r,col);
 }
 
+/* macOS-style menu-bar titles: clicking one drops down the matching menu. */
+typedef struct { const char *name; int id; int x; int w; } mbar_t;
+static const mbar_t g_mbar[] = {{"Edit",1,64,40},{"View",2,108,42}};
+#define MBAR_N (int)(sizeof g_mbar / sizeof g_mbar[0])
+
 static void draw_menubar(void)
 {
     gfx_fill(&scr,0,0,(int)FBW,MENU_H,COL_MENU);
     gfx_fill(&scr,0,MENU_H-1,(int)FBW,1,RGB(0x28,0x32,0x44));
     gfx_str(&scr,8,(MENU_H-8)/2,"Makar",RGB(0x8a,0xe2,0x34));
-    gfx_str(&scr,64,(MENU_H-8)/2, (focus>=0&&W[focus].in_use)?W[focus].title:"Desktop", RGB(0x90,0xa0,0xb5));
+    for(int i=0;i<MBAR_N;i++){
+        int open=(g_menu==g_mbar[i].id);
+        if(open) gfx_fill(&scr,g_mbar[i].x-6,2,g_mbar[i].w,MENU_H-4,UI_COL_BTN);
+        gfx_str(&scr,g_mbar[i].x,(MENU_H-8)/2,g_mbar[i].name,
+                open?0xFFFFFF:RGB(0xc8,0xd0,0xdc));
+    }
+    gfx_str(&scr,168,(MENU_H-8)/2, (focus>=0&&W[focus].in_use)?W[focus].title:"Desktop", RGB(0x90,0xa0,0xb5));
     /* power button stays top-right; the net/clock/date tray moved to the dock */
     int px0=(int)FBW-POWER_W-4;
     gfx_fill(&scr,px0,2,POWER_W,MENU_H-4,UI_COL_BTN);
     draw_power_icon(px0+(POWER_W-11)/2,(MENU_H-11)/2,0xFFFFFF);
 }
 static int power_hit(int px,int py){ int x0=(int)FBW-POWER_W-4; return in_rect(px,py,x0,2,POWER_W,MENU_H-4); }
+/* returns the menu id under a menu-bar click, or 0 */
+static int menubar_hit(int px,int py){
+    if(py>=MENU_H) return 0;
+    for(int i=0;i<MBAR_N;i++) if(in_rect(px,py,g_mbar[i].x-6,2,g_mbar[i].w,MENU_H-4)) return g_mbar[i].id;
+    return 0;
+}
+static int menubar_anchor_x(int id){ for(int i=0;i<MBAR_N;i++) if(g_mbar[i].id==id) return g_mbar[i].x-6; return 0; }
 
 /* ---- mouse cursor ------------------------------------------------------- */
 /* Two 11-wide (+NUL) sprites: the arrow and a busy hourglass shown while a
@@ -1600,11 +1690,23 @@ int main(int argc, char **argv, char **envp)
          * (polled below) -- both set this so the action dispatch lives once. */
         int want_power_menu = 0;
 
-        /* right-click on the dock opens the tray-visibility menu */
-        if (rpressed && cy >= (int)FBH-DOCK_H){ g_tray_menu_x=cx; g_tray_menu=1; g_dirty=1; damage_full(); }
+        /* right-click on the dock opens the tray-visibility menu; a right-click
+         * on the empty desktop opens the Cut/Copy/Paste/Auto-Arrange context
+         * menu (RCCM) -- but not over a window, an icon, the dock or the bar. */
+        if (rpressed && cy >= (int)FBH-DOCK_H){ g_tray_menu_x=cx; g_tray_menu=1; g_dirty=1; damage_full(); rpressed=0; }
+        else if (rpressed && cy>=MENU_H && cy<(int)FBH-DOCK_H &&
+                 hit_window(cx,cy)<0 && icon_hit(cx,cy)<0){
+            g_tray_menu=0; g_menu=3; g_menu_x=cx; g_menu_y=cy; g_dirty=1; damage_full(); rpressed=0;
+        }
 
-        if (mpressed && g_tray_menu){          /* a click while the menu is open: toggle/close */
-            tray_menu_click(cx,cy); g_dirty=1; damage_full();
+        if (mpressed && g_tray_menu){          /* a click while the tray menu is open: toggle/close */
+            tray_menu_click(cx,cy); g_dirty=1; damage_full(); mpressed=0;
+        } else if (mpressed && g_menu){        /* a click while a desktop menu is open: fire/close */
+            desk_menu_click(cx,cy); g_dirty=1; damage_full(); mpressed=0;
+        } else if (mpressed && menubar_hit(cx,cy)){   /* open/toggle a menu-bar dropdown */
+            int mb=menubar_hit(cx,cy);
+            g_tray_menu=0; g_menu=(g_menu==mb)?0:mb;
+            g_menu_x=menubar_anchor_x(mb); g_menu_y=MENU_H; g_dirty=1; damage_full(); mpressed=0;
         } else if (mpressed){
             int dk;
             g_sel_icon=-1;                    /* clear selection unless an icon is hit */
@@ -1750,6 +1852,7 @@ int main(int argc, char **argv, char **envp)
             draw_dock();
             draw_menubar();
             draw_tray_menu();
+            draw_desk_menu();
             int ox=cur_sx, oy=cur_sy;
             if (!g_hwcursor){ cursor_capture(cx,cy); draw_cursor(cx,cy); }
             /* ---- but PUSH only the damaged region to the framebuffer ---- */
