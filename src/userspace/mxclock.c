@@ -5,6 +5,7 @@
  */
 #include "syscall.h"
 #include "gui_gfx.h"
+#include "gui_ui.h"
 #include "makx.h"
 #include "font8x8.h"
 
@@ -68,11 +69,13 @@ int main(int argc, char **argv)
 
     char date[16] = "----------", tstr[16] = "--:--:--";
     unsigned next = 0;          /* uptime tick of the next refresh */
-    int first = 1;
+    int first = 1, lmx = -1, lmy = -1;
+    int g_menu = -1, g_about = 0, g_quit = 0;
+    ui_ctx u; for (unsigned i = 0; i < sizeof u/sizeof(int); i++) ((int*)&u)[i] = 0;
 
-    while (!c.closed) {
+    while (!c.closed && !g_quit) {
         mx_pump(&c);
-        while (mx_key(&c) >= 0) { /* clock ignores keys */ }
+        while (mx_key(&c) >= 0) { /* clock ignores typed keys (menu is mouse-driven) */ }
 
         int tick_due = 0;
         unsigned now = sys_uptime();
@@ -84,7 +87,8 @@ int main(int argc, char **argv)
             tick_due = 1;
         }
 
-        if (tick_due || first || c.resized) {
+        int moved = (c.mx != lmx || c.my != lmy); lmx = c.mx; lmy = c.my;
+        if (tick_due || first || c.resized || c.mpressed || c.mreleased || c.rpressed || moved) {
             gfx_surface *s = &c.surf;
             gfx_fill(s, 0, 0, s->w, s->h, COL_BG);
             /* Pick a time scale that fits the width with margin. */
@@ -94,11 +98,16 @@ int main(int argc, char **argv)
             int tw = str_scaled_w(tstr, sc);
             int th = 8 * sc;
             int tx = (s->w - tw) / 2;
-            int ty = (s->h - th) / 2 - 8;
+            int ty = UI_MENUBAR_H + (s->h - UI_MENUBAR_H - th) / 2 - 8;   /* centred below the bar */
             str_scaled(s, tx, ty, tstr, sc, COL_TIME);
             /* Date in plain 8x8, centred under the time. */
             int dx = (s->w - gfx_text_w(date)) / 2;
             gfx_str(s, dx, ty + th + 10, date, COL_DATE);
+
+            ui_begin(&u, c.mx, c.my, c.mdown, c.mpressed, c.mreleased, -1);
+            static const char *al[] = {"Makar clock (mxclock)", "(c) 2026 Arawn Davies  --  MIT", "",
+                                       "Reads the time/date from /proc/rtc.", "Part of Makar OS."};
+            ui_appbar(&u, s, "mxclock", al, 5, 0, 0, &g_menu, &g_about, &g_quit);
             mx_present(&c);
             first = 0;
         }

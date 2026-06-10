@@ -162,16 +162,38 @@ copies both with the rest of `/usr`.
 - **gui_ui** — an immediate-mode toolkit. Each frame the caller snapshots input
   with `ui_begin` then calls widgets in a fixed order; widget identity is the
   call order. Widgets: `ui_button`, `ui_slider`, `ui_textbox`, `ui_label`,
-  `ui_listbox`. Transient interaction (pressed/dragged widget, keyboard focus)
-  lives in `ui_ctx`; all content is caller-owned. The window manager hit-tests
-  windows first and only feeds the focused window a "live" ctx (others get a ctx
-  with no buttons/keys so they still draw but don't react) — this is how the
-  per-window focus model reaches individual widgets.
+  `ui_listbox`, `ui_vscroll` (track + proportional thumb, click/drag), and the
+  Windows-style menu set `ui_menubar` / `ui_context_menu` / `ui_about` (greyed
+  disabled items, separators, accelerators, popup width sized to the longest
+  label; they draw **last** so callers gate their own content while a menu is
+  open). `ui_textbox` honours the clipboard shortcuts on every field —
+  **Ctrl-A** select-all (highlighted), **Ctrl-C/X** copy/cut (suppressed on
+  password fields), **Ctrl-V** paste — over the kernel clipboard (`SYS_CLIP_*`).
+  Transient interaction (pressed/dragged widget, keyboard focus, textbox
+  selection) lives in `ui_ctx`; all content is caller-owned. The window manager
+  hit-tests windows first and only feeds the focused window a "live" ctx (others
+  get a ctx with no buttons/keys so they still draw but don't react) — this is
+  how the per-window focus model reaches individual widgets. The pointer ctx
+  carries both buttons: `ui_ctx`/`mx_conn` expose left **and** right
+  (`rpressed`/`rdown`/`rreleased`) so apps can raise context menus.  Two
+  convenience helpers give every window the same chrome cheaply: **`ui_appbar`**
+  draws a standard *File → Exit* + *Help → About &lt;app&gt;* bar (plus optional
+  Edit/View menus) and the About modal in one call, and **`ui_gate`** /
+  `ui_gate_begin` / `ui_gate_end` blank the content ctx's buttons/key while a
+  menu or modal is open so widgets drawn under it don't react.  Used by the
+  simple apps (clock/calc/tasks/net/disk/display) to carry a menu bar in ~3
+  lines; the richer apps add their own Edit/View menus on top.
 - **vt100** (`vt100.{c,h}`) — a standalone ANSI/VT100+ terminal emulator core:
   `vt_init`/`vt_resize`/`vt_putc` drive a colour `vt_cell` grid (cursor, scroll
   region, SGR colours, ED/EL, IL/DL/ICH/DCH/ECH, alt-screen, UTF-8 → one cell).
   Used by `mxterm` (and reusable by a future serial console); freestanding (no
   libc). The front-end renders the grid via a 16-colour palette → `gfx_char`.
+  A full-screen scroll pushes the evicted top line into a **scrollback ring**
+  (`sb[VT_SCROLLBACK]`, alt-screen excluded) that `mxterm` reads for its
+  scrollbar. `mxterm` adds an Edit/Help **menu bar**, a right-click **Copy /
+  Paste / Select All** menu, and **drag-to-select** over the cells (mapped to
+  logical scrollback+screen lines) that copies to the system clipboard; typing
+  snaps the view back to the live tail.
 
 ### Text-mode (TUI) apps in the GUI terminal — cell-API → ANSI bridge
 
@@ -492,6 +514,12 @@ menus/turning, a known limitation. Without `-makx`, DOOM runs its normal
 fullscreen path (shell `doom`), unchanged — so DOOM works the same in GUI and
 text mode. Only `makx.o` is linked in (no `gui_gfx`): the backend uses the
 `gfx_surface` *type* from `makx.h`, not any drawing code.
+
+`convertToDoomKey` translates set-1 scancodes to Doom keys for **both** paths.
+Besides the movement/action bindings it maps the full **a–z / 0–9** rows to
+ASCII, so the engine's built-in **cheat responder** (`iddqd`, `idkfa`, `idclip`,
+`idspispopd`, `idbehold`, `idclev##`, `idmus##`, `idchoppers`) and save-game name
+entry receive the letters — type them in-game the same as on a PC.
 
 ## Status
 

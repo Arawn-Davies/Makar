@@ -1,13 +1,14 @@
-/* wget.elf -- userspace HTTP downloader.
+/* wget.elf -- userspace HTTP/HTTPS downloader.
  *
- * Thin wrapper over the SYS_WGET syscall: the kernel resolves the host via
- * lwIP DNS, fetches the http:// URL over TCP, and writes the body to a VFS
- * path.  Plain HTTP only (no TLS).
+ * Fetches the URL entirely in userspace (web.c) over kernel TCP sockets:
+ * http:// via a plain socket, https:// via BearSSL (TLS).  Follows 3xx
+ * redirects; writes the body to a VFS path.  The kernel owns only TCP/IP now.
  *
- * Usage: wget <http://host[:port]/path> [outfile]
+ * Usage: wget <http[s]://host[:port]/path> [outfile]
  *        outfile defaults to /tmp/<basename>.
  */
 #include "syscall.h"
+#include "web.h"
 
 static void puts1(const char *s) { unsigned n = 0; while (s[n]) n++; sys_write(1, s, n); }
 
@@ -46,12 +47,12 @@ int main(int argc, char **argv)
         out = outbuf;
     }
 
-    int r = sys_wget(url, out);
+    int r = web_fetch(url, out);
     if (r >= 0) {
         puts1("saved "); putu((unsigned)r); puts1(" bytes to "); puts1(out); puts1("\n");
         return 0;
     }
-    if (r <= -200 && r > -600) {
+    if (r <= -100 && r > -600) {
         puts1("wget: HTTP status "); putu((unsigned)(-r)); puts1(" (not saved)\n");
         return 1;
     }
@@ -59,6 +60,6 @@ int main(int argc, char **argv)
         puts1("wget: write failed (read-only path? use /tmp or a mounted disk)\n");
         return 1;
     }
-    puts1("wget: failed -- bad URL, DNS/connect error, or https:// (no TLS)\n");
+    puts1("wget: failed -- bad URL, DNS/connect, or TLS handshake error\n");
     return 1;
 }

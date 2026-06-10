@@ -218,6 +218,22 @@
 #define SYS_VIDEO_NAME      278 /* int video_name(char *buf, int cap) - active backend name */
 #define SYS_MAKX_SERVER     279 /* int makx_server(void) - display-server (gui.elf) pid, 0 if no GUI session */
 
+/* BSD sockets (subset) -- TCP/IPv4 over the in-kernel lwIP stack.  The kernel
+ * owns the TCP/IP stack; userspace owns the protocols above it (HTTP, TLS) and
+ * reaches the wire through these.  read()/write()/close() operate on the socket
+ * fd directly (Linux-uniform), so only create + connect + DNS need new numbers.
+ * DNS resolution lives in the kernel (lwIP) -- no userspace resolver yet -- so
+ * resolve is a syscall, not a libc routine. */
+#define SYS_SOCKET          280 /* int socket(int domain, int type, int proto) -> fd */
+#define SYS_CONNECT         281 /* int connect(int fd, const struct sockaddr_in*, int len) */
+#define SYS_NET_RESOLVE     282 /* int net_resolve(const char *host, unsigned char ip[4]) */
+
+/* System clipboard -- one kernel-held byte buffer shared by every task, so
+ * Cut/Copy/Paste work across GUI apps (the desktop-UX slice).  Text today (apps
+ * treat it as UTF-8/ASCII); the ABI is just bytes. */
+#define SYS_CLIP_SET        283 /* int clip_set(const void *buf, unsigned len) -> len stored */
+#define SYS_CLIP_GET        284 /* int clip_get(void *buf, unsigned cap) -> total len (may exceed cap) */
+
 /* video_caps() bits (mirror VID_CAP_* in kernel/video.h). */
 #define VIDEO_CAP_ACCEL_COPY 0x1u
 #define VIDEO_CAP_HW_CURSOR  0x2u

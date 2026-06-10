@@ -17,6 +17,7 @@
 #include <kernel/fd.h>
 #include <kernel/heap.h>
 #include <kernel/serial.h>
+#include <kernel/socket.h>
 #include <kernel/vfs.h>
 #include <string.h>
 
@@ -77,6 +78,8 @@ void fd_table_destroy(fd_table_t *tbl)
                 kfree(e->data);
         } else if (e->kind == FD_KIND_PIPE) {
             pipe_release(e);
+        } else if (e->kind == FD_KIND_SOCKET) {
+            ksock_close(e->sock_id); /* abort/close the TCP connection */
         }
     }
     kfree(tbl);
@@ -126,6 +129,13 @@ fd_table_t *fd_table_clone(const fd_table_t *src)
                 t->slots[i].pipe->refcount_w++;
             else
                 t->slots[i].pipe->refcount_r++;
+        } else if (t->slots[i].kind == FD_KIND_SOCKET) {
+            /* A live TCP connection is single-owner here (one pcb, one rx
+             * ring): don't alias it into the child, or both would close the
+             * same ksock slot.  Diverges from POSIX fd-sharing -- acceptable;
+             * nothing forks around an open socket.  Drop it in the child. */
+            t->slots[i].kind    = FD_KIND_NONE;
+            t->slots[i].sock_id = 0;
         }
     }
     return t;
@@ -178,6 +188,8 @@ int fd_close(fd_table_t *tbl, int fd)
         }
     } else if (e->kind == FD_KIND_PIPE) {
         pipe_release(e);
+    } else if (e->kind == FD_KIND_SOCKET) {
+        ksock_close(e->sock_id);   /* close/abort the TCP connection */
     }
     memset(e, 0, sizeof(*e));
     /* memset already zeroes e->kind (== FD_KIND_NONE). */

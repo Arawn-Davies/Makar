@@ -20,6 +20,7 @@
 #define VT_MAXCOLS  200
 #define VT_MAXROWS  100
 #define VT_MAXPARAM 16
+#define VT_SCROLLBACK 500       /* history lines kept for the scrollbar         */
 
 /* Colour indices 0-7 normal, 8-15 bright (bold brightens 0-7).  Defaults:
  * fg 7 (light grey), bg 0 (black).  A front-end maps these to RGB. */
@@ -51,6 +52,12 @@ typedef struct {
     /* UTF-8 decode */
     int u8_left;
     unsigned int u8_cp;
+
+    /* scrollback ring: full-width lines that scrolled off the top of the primary
+     * screen (alt-screen output is not captured).  History line i is at
+     * sb[(sb_head - sb_count + i) mod VT_SCROLLBACK]. */
+    vt_cell sb[VT_SCROLLBACK][VT_MAXCOLS];
+    int sb_count, sb_head;
 } vt_term;
 
 void vt_init(vt_term *t, int cols, int rows);

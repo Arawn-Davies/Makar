@@ -61,12 +61,23 @@ static void puthex2(unsigned char v)
 /* Read one line from stdin (without trailing newline).  Returns length. */
 static int readline(void)
 {
-    long n = sys_read(0, line, (unsigned int)sizeof(line) - 1);
-    if (n <= 0) { line[0] = '\0'; return 0; }
-    int len = (int)n;
-    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) len--;
-    line[len] = '\0';
-    return len;
+    /* Accumulate until a newline so this works under mxterm (a pipe delivers
+     * keystrokes one byte at a time, no echo) as well as a text VT (one read
+     * returns the whole echoed line).  Self-echo + Backspace only when the input
+     * is raw (no newline in the first read), to avoid doubling the VT echo. */
+    int len = 0, raw = -1;
+    for (;;) {
+        char ch[128];
+        long n = sys_read(0, ch, sizeof ch);
+        if (n <= 0) { line[len] = '\0'; return len; }
+        if (raw < 0) { raw = 1; for (long i = 0; i < n; i++) if (ch[i] == '\n' || ch[i] == '\r') { raw = 0; break; } }
+        for (long i = 0; i < n; i++) {
+            unsigned char c = (unsigned char)ch[i];
+            if (c == '\n' || c == '\r') { line[len] = '\0'; if (raw) sys_write(1, "\r\n", 2); return len; }
+            if (c == 8 || c == 127) { if (len > 0) { len--; if (raw) sys_write(1, "\b \b", 3); } continue; }
+            if (c >= 32 && c < 127 && len < (int)sizeof(line) - 1) { line[len++] = (char)c; if (raw) sys_write(1, (char *)&c, 1); }
+        }
+    }
 }
 
 static unsigned int parse_uint(const char *s)

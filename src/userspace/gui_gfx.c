@@ -64,6 +64,25 @@ int gfx_text_w(const char *str)
     int n = 0; while (str[n]) n++; return n * 8;
 }
 
+void gfx_char_scaled(gfx_surface *s, int x, int y, unsigned char ch, gfx_u32 fg, int scale)
+{
+    if (scale <= 1) { gfx_char(s, x, y, ch, fg); return; }
+    if (ch >= 128) ch = '?';
+    const gfx_u8 *g = FONT8x8[ch];
+    for (int row = 0; row < 8; row++) {
+        gfx_u8 bits = g[row];
+        for (int col = 0; col < 8; col++)
+            if (bits & (1u << col))
+                gfx_fill(s, x + col * scale, y + row * scale, scale, scale, fg);
+    }
+}
+
+void gfx_str_scaled(gfx_surface *s, int x, int y, const char *str, gfx_u32 fg, int scale)
+{
+    int adv = 8 * (scale > 1 ? scale : 1);
+    for (; *str; str++, x += adv) gfx_char_scaled(s, x, y, (unsigned char)*str, fg, scale);
+}
+
 void gfx_blit(gfx_surface *dst, int dx, int dy,
               const gfx_surface *src, int sx, int sy, int w, int h)
 {

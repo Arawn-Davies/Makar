@@ -32,7 +32,7 @@ DOOM_CFLAGS=$(CFLAGS) -I$(DOOM_DIR) -include stddef.h -Wno-unused \
 DESTDIR?=
 ISODIR?=$(CURDIR)/../../isodir
 
-PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf lspci.elf maknetcfg.elf kbtester.elf mouseprobe.elf about.elf makbox.elf makmux.elf statusbar.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf fdisk.elf cfdisk.elf basic.elf filetest.elf alloctest.elf sh.elf ar.elf microhash.elf sha256.elf md5.elf wget.elf ktest_uspace.elf gui.elf doom.elf files.elf mxterm.elf mxedit.elf mxfiles.elf mxtasks.elf mxabout.elf mxclock.elf mxcalc.elf mxnet.elf mxdisk.elf mximg.elf mxinstall.elf mxdisplay.elf mxdoom.elf
+PROGS=hello.elf help.elf calc.elf vix.elf diskinfo.elf lspci.elf maknetcfg.elf kbtester.elf mouseprobe.elf about.elf makbox.elf makmux.elf statusbar.elf sigtest.elf maktop.elf clock.elf lines.elf forktest.elf execvetest.elf fdisk.elf cfdisk.elf basic.elf filetest.elf alloctest.elf sh.elf ar.elf microhash.elf sha256.elf md5.elf wget.elf tar.elf ktest_uspace.elf gui.elf doom.elf files.elf mxterm.elf mxedit.elf mxfiles.elf mxtasks.elf mxabout.elf mxclock.elf mxcalc.elf mxnet.elf mxdisk.elf mximg.elf mxinstall.elf mxdisplay.elf mxdoom.elf mxweb.elf
 
 # libc.a -- single archive of the userspace shim (malloc + FILE* stdio +
 # setjmp/longjmp + string/memory helpers).  Shipped under /usr/lib on the
@@ -49,6 +49,34 @@ TCC_ELF=$(wildcard tcc.elf)
 # Headers shipped to /usr/include on the OS image so userland (and
 # tcc-compiled programs) can resolve `#include <name.h>` directly.
 SYSROOT_HEADERS=malloc.h stdio.h stdlib.h ctype.h setjmp.h string.h syscall.h dirent.h errno.h stdarg.h unistd.h time.h
+
+# ---- BearSSL (vendored) -> userspace TLS ---------------------------------
+# Compile the vendored BearSSL into a userspace archive.  Objects go under
+# bssl-obj/ (mirroring the src tree) so they never collide with the kernel's
+# in-place vendor/bearssl/*.o build.  Linked into mxweb.elf / wget.elf, which
+# do TLS in ring 3 (the kernel owns only TCP/IP + sockets now).
+BSSL_DIR=../../vendor/bearssl
+BSSL_SRC=$(wildcard $(BSSL_DIR)/src/*/*.c) $(BSSL_DIR)/src/settings.c
+BSSL_OBJ=$(patsubst $(BSSL_DIR)/src/%.c,bssl-obj/%.o,$(BSSL_SRC))
+# BearSSL's *_x86ni.c / *_pclmul.c force BR_ENABLE_INTRINSICS and #include
+# <x86intrin.h>, which -nostdinc hides.  i686-elf-gcc is a bare cross-compiler
+# (no host libc to leak), so -- like the kernel build, which is -ffreestanding
+# but NOT -nostdinc -- drop -nostdinc here: gcc's own x86intrin.h/cpuid.h/stddef.h
+# resolve, our string.h/stdint.h still win via -I., and the intrinsic AES-NI/
+# PCLMUL paths compile (behind #pragma GCC target) but runtime-CPUID-gate off on
+# qemu32, falling back to the aes_ct/ghash_ctmul/i31 software paths.
+BSSL_CFLAGS=$(filter-out -nostdinc,$(CFLAGS)) -I$(BSSL_DIR)/inc -I$(BSSL_DIR)/src -Wno-unused-parameter
+
+bssl-obj/%.o: $(BSSL_DIR)/src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(BSSL_CFLAGS) -c -o $@ $<
+
+libbearssl.a: $(BSSL_OBJ)
+	$(AR) rcs $@ $(BSSL_OBJ)
+
+# tls.c needs the BearSSL public headers; web.c only sees tls.h (opaque).
+tls.o: tls.c
+	$(CC) $(CFLAGS) -I$(BSSL_DIR)/inc -MMD -c -o $@ $<
 
 
 all: $(PROGS) libc.a
@@ -74,7 +102,10 @@ sha256.elf: crt0.o sha256.o
 md5.elf: crt0.o md5.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-wget.elf: crt0.o wget.o
+wget.elf: crt0.o wget.o web.o tls.o libbearssl.a libc.a
+	$(LD) $(LDFLAGS) -o $@ $^
+
+tar.elf: crt0.o tar.o libc.a
 	$(LD) $(LDFLAGS) -o $@ $^
 
 ktest_uspace.elf: crt0.o ktest_uspace.o
@@ -89,13 +120,13 @@ gui.elf: crt0.o wm.o gui_gfx.o gui_ui.o gui_browser.o img_bmp.o img_png.o img_ic
 # makx clients: each links the gui_gfx/gui_ui/gui_browser helpers it uses plus
 # the makx client library (makx.o).  Applications are independent processes that
 # talk to gui.elf (the display server) over IPC + a shared surface; see makx.h.
-mxterm.elf: crt0.o mxterm.o vt100.o gui_gfx.o makx.o
+mxterm.elf: crt0.o mxterm.o vt100.o gui_gfx.o gui_ui.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 mxfiles.elf: crt0.o mxfiles.o gui_gfx.o gui_ui.o gui_browser.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-mxedit.elf: crt0.o mxedit.o gui_gfx.o gui_ui.o gui_browser.o makx.o
+mxedit.elf: crt0.o mxedit.o gui_gfx.o gui_ui.o gui_browser.o makx.o libc.a
 	$(LD) $(LDFLAGS) -o $@ $^
 
 mxtasks.elf: crt0.o mxtasks.o gui_gfx.o gui_ui.o makx.o
@@ -104,7 +135,7 @@ mxtasks.elf: crt0.o mxtasks.o gui_gfx.o gui_ui.o makx.o
 mxabout.elf: crt0.o mxabout.o gui_gfx.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-mxclock.elf: crt0.o mxclock.o gui_gfx.o makx.o
+mxclock.elf: crt0.o mxclock.o gui_gfx.o gui_ui.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 mxcalc.elf: crt0.o mxcalc.o gui_gfx.o gui_ui.o makx.o
@@ -126,6 +157,9 @@ mximg.elf: crt0.o mximg.o gui_gfx.o gui_ui.o gui_browser.o img_bmp.o img_png.o i
 	$(LD) $(LDFLAGS) -o $@ $^
 
 mxdoom.elf: crt0.o mxdoom.o gui_gfx.o gui_ui.o gui_browser.o makx.o
+	$(LD) $(LDFLAGS) -o $@ $^
+
+mxweb.elf: crt0.o mxweb.o web.o tls.o mxrc.o gui_gfx.o gui_ui.o img_bmp.o img_png.o img_jpg.o makx.o libbearssl.a libc.a
 	$(LD) $(LDFLAGS) -o $@ $^
 
 files.elf: crt0.o files.o
@@ -297,7 +331,8 @@ endif
 install-headers:
 
 clean:
-	rm -f *.o *.d $(PROGS) *.elf libc.a
+	rm -f *.o *.d $(PROGS) *.elf libc.a libbearssl.a
+	rm -rf bssl-obj
 
 .PHONY: all install install-headers clean
 

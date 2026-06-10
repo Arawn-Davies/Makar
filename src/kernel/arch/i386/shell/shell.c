@@ -1314,15 +1314,13 @@ void shell_login_loop(void)
              * on a fast host.  Ease the bar by whichever is further along --
              * real test progress or elapsed time toward the floor -- and only
              * dismiss once BOTH the tests are done and the floor has elapsed. */
-            uint32_t splash_t0 = timer_get_ticks();
-            const uint32_t splash_min = 5u * TIMER_HZ;
+            /* No artificial floor: the background self-tests take long enough to
+             * make the splash feel real on their own.  Track their real progress
+             * and dismiss the instant they finish. */
             for (;;) {
-                uint32_t el = timer_get_ticks() - splash_t0;
                 int      kt = ktest_bg_total > 0 ? ktest_bg_total : 1;
-                uint32_t f_test = (uint32_t)ktest_bg_completed * 1000u / (uint32_t)kt;
-                uint32_t f_time = el >= splash_min ? 1000u : el * 1000u / splash_min;
-                uint32_t f = f_test > f_time ? f_test : f_time;
-                if (ktest_bg_done && el >= splash_min) break;
+                uint32_t f = (uint32_t)ktest_bg_completed * 1000u / (uint32_t)kt;
+                if (ktest_bg_done) break;
                 if (f > 999u) f = 999u;          /* hold just under full until done */
                 vesa_splash_progress((int)f, 1000);
                 task_yield();

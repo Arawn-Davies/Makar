@@ -347,6 +347,31 @@ static void do_print(void)
     if (newline) putc_('\n');
 }
 
+/* Read a line from stdin into out[0..cap).  Works whether stdin is the kernel's
+ * line-buffered keyboard (a VT: one read returns the whole echoed line) OR a raw
+ * pipe (running inside mxterm: bytes arrive one keystroke at a time, no echo, and
+ * mxterm has already mapped Enter to '\n').  We accumulate until a newline; if
+ * the first read had no newline it's the raw/pipe case, so we echo characters
+ * and handle Backspace ourselves (the VT case is left to the kernel's echo to
+ * avoid doubling).  Returns the length, -1 on EOF, or -2 on Ctrl-C. */
+static int bgetline(char *out, int cap)
+{
+    int len = 0, raw = -1;
+    for (;;) {
+        char ch[160];
+        long n = sys_read(0, ch, sizeof ch);
+        if (n <= 0) { if (len > 0) { out[len] = 0; return len; } return -1; }
+        if (raw < 0) { raw = 1; for (long i = 0; i < n; i++) if (ch[i] == '\n' || ch[i] == '\r') { raw = 0; break; } }
+        for (long i = 0; i < n; i++) {
+            unsigned char c = (unsigned char)ch[i];
+            if (c == 3) { out[0] = 0; return -2; }                  /* Ctrl-C */
+            if (c == '\n' || c == '\r') { out[len] = 0; if (raw) sys_write(1, "\r\n", 2); return len; }
+            if (c == 8 || c == 127) { if (len > 0) { len--; if (raw) sys_write(1, "\b \b", 3); } continue; }
+            if (c >= 32 && c < 127 && len < cap - 1) { out[len++] = (char)c; if (raw) sys_write(1, (char *)&c, 1); }
+        }
+    }
+}
+
 static void do_input(void)
 {
     skipsp();
@@ -355,7 +380,7 @@ static void do_input(void)
     else puts_("? ");
     skipsp();
     char nm[3]; var_key(&g_cur, nm); int *s=var_slot(nm);
-    char buf[64]; long n=sys_read(0,buf,sizeof(buf)-1);
+    char buf[64]; int n=bgetline(buf,(int)sizeof buf); if(n<0)n=0;
     int v=0,i=0,neg=0; if(n>0){ while(buf[i]==' ')i++; if(buf[i]=='-'){neg=1;i++;} while(i<n&&is_digit(buf[i])){v=v*10+(buf[i]-'0');i++;} }
     if (s) *s = neg?-v:v;
 }
@@ -696,9 +721,20 @@ int main(int argc, char **argv)
      * the interpreter. */
     sys_signal(SIGINT, on_sigint);
 
-    if (argc>=2) return load_and_run(argv[1]);
+    /* "basic -l <file>" loads the program into the interpreter and drops to the
+     * prompt (the file browser uses this to open a .bas); "basic <file>" still
+     * loads-and-runs. */
+    const char *preload=0;
+    if (argc>=3 && argv[1][0]=='-' && (argv[1][1]=='l'||argv[1][1]=='L')) preload=argv[2];
+    else if (argc>=2) return load_and_run(argv[1]);
 
     puts_("Makar BASIC\n");
+    if (preload) {
+        if (load_file(preload,0)==0) {
+            puts_("Loaded "); puts_(preload); putc_('\n');
+            puts_("To run this program, type RUN and press Enter.\n");
+        } else { puts_("basic: could not load "); puts_(preload); putc_('\n'); }
+    }
     puts_("READY.\n");
     static char line[LINE_CAP*2];
     for (;;) {
@@ -706,16 +742,14 @@ int main(int argc, char **argv)
          * exits to the shell.  Checked before AND after the read because
          * signal delivery can land just after sys_read returns. */
         if (g_break) break;
-        long n=sys_read(0,line,sizeof(line)-1);
-        /* A Ctrl-C during the read aborts the line (^C) but its SIGINT is
-         * only delivered on the next ring-3 return; yield once so the
-         * handler runs and g_break is current before we test it. */
+        int len=bgetline(line,(int)sizeof(line));
+        /* A Ctrl-C during the read aborts the line; its SIGINT is only delivered
+         * on the next ring-3 return, so yield once before testing g_break. */
         sys_yield();
         if (g_break) break;
-        if (n<=0) continue;
-        /* strip newline */
-        int len=(int)n; while(len>0 && (line[len-1]=='\n'||line[len-1]=='\r')) len--;
-        line[len]='\0';
+        if (len==-2){ g_break=0; continue; }   /* Ctrl-C at the prompt: fresh line */
+        if (len==-1) break;                    /* EOF -- terminal closed */
+        if (len==0)  continue;                 /* empty line */
         /* EXIT / QUIT / BYE leave the interpreter */
         char c0=up(line[0]),c1=up(line[1]);
         if ((c0=='E'&&c1=='X') || (c0=='B'&&c1=='Y') || (c0=='Q'&&c1=='U')) break;

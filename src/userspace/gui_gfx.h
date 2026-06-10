@@ -43,6 +43,12 @@ void gfx_str_clip(gfx_surface *s, int x, int y, const char *str, gfx_u32 fg, int
 /* Pixel width of a string in the 8x8 font. */
 int  gfx_text_w(const char *str);
 
+/* As gfx_char/gfx_str, but each glyph pixel becomes a scale*scale block (integer
+ * upscaling).  Only an 8x8 bitmap font exists, so this is how a browser draws a
+ * larger heading.  scale<=1 falls back to the 1:1 path. */
+void gfx_char_scaled(gfx_surface *s, int x, int y, unsigned char ch, gfx_u32 fg, int scale);
+void gfx_str_scaled(gfx_surface *s, int x, int y, const char *str, gfx_u32 fg, int scale);
+
 /* Copy a w*h region of `src` (from sx,sy) into `dst` at (dx,dy), clipped. */
 void gfx_blit(gfx_surface *dst, int dx, int dy,
               const gfx_surface *src, int sx, int sy, int w, int h);

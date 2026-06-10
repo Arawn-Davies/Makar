@@ -34,9 +34,25 @@ static void clear_region(vt_term *t, int r0, int c0, int r1, int c1)
 }
 
 /* ---- scrolling within the current region --------------------------------- */
+/* Copy a primary-screen row into the scrollback ring before it is overwritten. */
+static void sb_push(vt_term *t, int row)
+{
+    if (t->alt_active) return;                       /* alt-screen: no history */
+    vt_cell bl = blank_cell(t);
+    vt_cell *dst = t->sb[t->sb_head];
+    for (int c = 0; c < t->cols; c++)          dst[c] = t->cell[row][c];
+    for (int c = t->cols; c < VT_MAXCOLS; c++)  dst[c] = bl;
+    t->sb_head = (t->sb_head + 1) % VT_SCROLLBACK;
+    if (t->sb_count < VT_SCROLLBACK) t->sb_count++;
+}
 static void scroll_up(vt_term *t, int n)
 {
     if (n < 1) return;
+    /* A full-screen scroll evicts the top n rows -> save them to scrollback. */
+    if (t->s_top == 0 && t->s_bot == t->rows - 1) {
+        int k = n; if (k > t->rows) k = t->rows;
+        for (int i = 0; i < k; i++) sb_push(t, i);
+    }
     vt_cell bl = blank_cell(t);
     for (int r = t->s_top; r <= t->s_bot; r++) {
         int src = r + n;

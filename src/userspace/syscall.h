@@ -575,6 +575,69 @@ static inline int sys_wget(const char *url, const char *outpath)
     return (int)syscall2(SYS_WGET, (long)url, (long)outpath);
 }
 
+/* ---- BSD sockets (TCP/IPv4 over the kernel lwIP stack) -------------------
+ * The kernel owns the TCP/IP stack; these reach it.  read()/write()/close()
+ * work on the returned fd directly, so HTTP and TLS live entirely up here in
+ * userspace.  DNS is a kernel call (no userspace resolver yet). */
+static inline unsigned short mk_htons(unsigned short p)
+{
+    return (unsigned short)((p << 8) | (p >> 8));
+}
+
+/* socket(AF_INET, SOCK_STREAM, IPPROTO_TCP) -> fd, or -1. */
+static inline int sys_socket(int domain, int type, int proto)
+{
+    return (int)syscall3(SYS_SOCKET, (long)domain, (long)type, (long)proto);
+}
+
+/* connect(fd, sockaddr_in*, addrlen).  Blocks until connected.  0 / -1. */
+static inline int sys_connect(int fd, const struct sockaddr_in *addr, int addrlen)
+{
+    return (int)syscall3(SYS_CONNECT, (long)fd, (long)addr, (long)addrlen);
+}
+
+/* Resolve `host` to ip[4] via kernel lwIP DNS.  0 on success, -1 on failure. */
+static inline int sys_resolve(const char *host, unsigned char ip[4])
+{
+    return (int)syscall2(SYS_NET_RESOLVE, (long)host, (long)ip);
+}
+
+/* Convenience: resolve `host`, open a TCP socket, connect to host:port (host
+ * byte order).  Returns a connected fd >= 0, or -1.  Use read()/write()/close(). */
+static inline int sys_tcp_connect(const char *host, unsigned short port)
+{
+    unsigned char ip[4];
+    if (sys_resolve(host, ip) != 0)
+        return -1;
+    int fd = sys_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (fd < 0)
+        return -1;
+    struct sockaddr_in sa;
+    sa.sin_family      = AF_INET;
+    sa.sin_port        = mk_htons(port);
+    sa.sin_addr.s_addr = (unsigned int)ip[0] | ((unsigned int)ip[1] << 8) |
+                         ((unsigned int)ip[2] << 16) | ((unsigned int)ip[3] << 24);
+    for (int i = 0; i < 8; i++) sa.sin_zero[i] = 0;
+    if (sys_connect(fd, &sa, (int)sizeof(sa)) != 0) {
+        sys_close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/* ---- system clipboard (cross-app Cut/Copy/Paste) ------------------------- */
+/* Store `len` bytes; returns bytes stored. */
+static inline int sys_clip_set(const void *buf, unsigned len)
+{
+    return (int)syscall2(SYS_CLIP_SET, (long)buf, (long)len);
+}
+/* Copy up to `cap` bytes into buf; returns the FULL clipboard length (so >cap
+ * means it was truncated). */
+static inline int sys_clip_get(void *buf, unsigned cap)
+{
+    return (int)syscall2(SYS_CLIP_GET, (long)buf, (long)cap);
+}
+
 /* Delete a file. Returns 0 on success, -1 on error. */
 static inline int sys_delete_file(const char *path)
 {

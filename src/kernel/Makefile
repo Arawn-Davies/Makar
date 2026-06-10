@@ -18,6 +18,13 @@ CPPFLAGS:=$(CPPFLAGS) -D__is_kernel -Iinclude -DDEV_BUILD
 LDFLAGS:=$(LDFLAGS)
 LIBS:=$(LIBS) -nostdlib -lk -lgcc
 
+# BearSSL (vendored TLS, src/userspace HTTPS): built as a static archive so the
+# kernel link pulls only the TLS-client objects it references, not the whole lib.
+AR?=i686-elf-ar
+BEARSSL_DIR=../../vendor/bearssl
+BEARSSL_LIB=$(BEARSSL_DIR)/libbearssl.a
+BEARSSL_OBJS=$(patsubst %.c,%.o,$(wildcard $(BEARSSL_DIR)/src/*/*.c) $(BEARSSL_DIR)/src/settings.c)
+
 ARCHDIR=arch/$(HOSTARCH)
 
 include $(ARCHDIR)/make.config
@@ -43,6 +50,7 @@ $(LDFLAGS) \
 $(ARCHDIR)/boot/crti.o \
 $(ARCHDIR)/crtbegin.o \
 $(KERNEL_OBJS) \
+$(BEARSSL_LIB) \
 $(LIBS) \
 $(ARCHDIR)/crtend.o \
 $(ARCHDIR)/boot/crtn.o \
@@ -52,9 +60,12 @@ $(ARCHDIR)/boot/crtn.o \
 
 all: makar.kernel
 
-makar.kernel: $(OBJS) $(ARCHDIR)/linker.ld
+makar.kernel: $(OBJS) $(BEARSSL_LIB) $(ARCHDIR)/linker.ld
 	$(CC) -T $(ARCHDIR)/linker.ld -o $@ $(CFLAGS) $(LINK_LIST)
 	grub-file --is-x86-multiboot2 makar.kernel
+
+$(BEARSSL_LIB): $(BEARSSL_OBJS)
+	$(AR) rcs $@ $(BEARSSL_OBJS)
 
 $(ARCHDIR)/crtbegin.o $(ARCHDIR)/crtend.o:
 	OBJ=`$(CC) $(CFLAGS) $(LDFLAGS) -print-file-name=$(@F)` && cp "$$OBJ" $@
@@ -72,6 +83,7 @@ clean:
 	rm -f makar.kernel
 	rm -f $(OBJS) *.o */*.o */*/*.o */*/*/*.o
 	rm -f $(OBJS:.o=.d) *.d */*.d */*/*.d */*/*/*.d
+	rm -f $(BEARSSL_LIB) $(BEARSSL_OBJS) $(BEARSSL_OBJS:.o=.d)
 
 install: install-headers install-kernel
 

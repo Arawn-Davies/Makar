@@ -38,6 +38,7 @@ static void mx_apply(mx_conn *c, const ipc_msg_t *m)
         c->mx    = (int)m->data[0];
         c->my    = (int)m->data[1];
         c->mdown = (int)(m->data[2] & 1u);
+        c->rdown = (int)((m->data[2] & 2u) ? 1 : 0);
         break;
     case MXEV_FOCUS:
         c->focused = (int)m->data[0];
@@ -111,7 +112,9 @@ static void mx_apply_resize(mx_conn *c, int w, int h)
 int mx_pump(mx_conn *c)
 {
     int cur = c->last_mdown;       /* running button state across this drain */
+    int curR = c->last_rdown;      /* same for the right button              */
     c->mpressed = c->mreleased = 0;
+    c->rpressed = c->rreleased = 0;
     c->resized = 0;
     if (c->closed) return -1;
 
@@ -130,6 +133,10 @@ int mx_pump(mx_conn *c)
             if (nd && !cur) c->mpressed = 1;
             if (!nd && cur) c->mreleased = 1;
             cur = nd;
+            int nr = (int)((m.data[2] & 2u) ? 1 : 0);
+            if (nr && !curR) c->rpressed = 1;
+            if (!nr && curR) c->rreleased = 1;
+            curR = nr;
         }
         mx_apply(c, &m);
         if (m.data[MX_PENDING] == 0) break;
@@ -143,6 +150,7 @@ int mx_pump(mx_conn *c)
     }
 
     c->last_mdown = c->mdown;       /* = cur (the final applied state) */
+    c->last_rdown = c->rdown;
     return 0;
 }
 

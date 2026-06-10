@@ -20,9 +20,9 @@ void mxrc_home(const char *suffix, char *out, int cap)
     out[n]=0;
 }
 
-int mxrc_get(const char *key, char *out, int cap)
+int mxrc_get_file(const char *rcname, const char *key, char *out, int cap)
 {
-    char path[96]; mxrc_home("/.mxrc", path, sizeof path);
+    char path[96]; mxrc_home(rcname, path, sizeof path);
     int fd = sys_open(path, O_RDONLY);
     if (fd < 0) return -1;
     static char buf[2048]; int n=0; long r;
@@ -38,6 +38,9 @@ int mxrc_get(const char *key, char *out, int cap)
     return -1;
 }
 
+int mxrc_get(const char *key, char *out, int cap)
+{ return mxrc_get_file("/.mxrc", key, out, cap); }
+
 int mxrc_get_int(const char *key, int def)
 {
     char v[32];
@@ -50,9 +53,9 @@ int mxrc_get_int(const char *key, int def)
 }
 
 /* Read-modify-write: replace `key`'s line (or append it), keep every other. */
-void mxrc_set(const char *key, const char *val)
+void mxrc_set_file(const char *rcname, const char *key, const char *val)
 {
-    char path[96]; mxrc_home("/.mxrc", path, sizeof path);
+    char path[96]; mxrc_home(rcname, path, sizeof path);
     static char buf[2048]; int n=0;
     int fd = sys_open(path, O_RDONLY);
     if (fd >= 0){ long r; while (n<(int)sizeof buf-1 && (r=sys_read(fd, buf+n, (unsigned)((int)sizeof buf-1-n)))>0) n+=(int)r; sys_close(fd); }
@@ -77,6 +80,9 @@ void mxrc_set(const char *key, const char *val)
     sys_write(fd, out, (unsigned)(o-out));
     sys_close(fd);
 }
+
+void mxrc_set(const char *key, const char *val)
+{ mxrc_set_file("/.mxrc", key, val); }
 
 void mxrc_set_int(const char *key, int val)
 {

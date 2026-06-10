@@ -11,6 +11,7 @@
  */
 
 #include "syscall.h"
+#include "tkey.h"   /* mxterm-compliant key input (fd 0, not keyboard-only) */
 
 #define VFS_PATH_MAX   128
 
@@ -457,12 +458,6 @@ static void vix_load_vixrc(void)
 
 int main(int argc, char **argv)
 {
-    if (argc < 2) {
-        const char *msg = "Usage: vix <filename>\n";
-        sys_write(1, msg, vix_strlen(msg));
-        sys_exit(1);
-    }
-
     /* Resolution-agnostic geometry from the pane. */
     v_cols       = (int)sys_term_cols();
     int rows     = (int)sys_term_rows();
@@ -478,8 +473,9 @@ int main(int argc, char **argv)
     vix_load_vixrc();
     vix_recompute_geometry();
 
-    /* Store path. */
-    const char *src = argv[1];
+    /* Store path.  No filename (e.g. launched from the GUI) -> a blank, unnamed
+     * "untitled.txt" buffer; the open below fails and we start empty. */
+    const char *src = (argc >= 2) ? argv[1] : "untitled.txt";
     int pi = 0;
     while (*src && pi < VFS_PATH_MAX - 1) v_path[pi++] = *src++;
     v_path[pi] = '\0';
@@ -505,7 +501,7 @@ int main(int argc, char **argv)
         vix_redraw();
         v_save_msg = 0;
 
-        int c = sys_getkey();
+        int c = tkey_get();
 
         if (c == KEY_CTRL_Q || c == CTRL_Q) {
             if (!v_dirty || v_quit_warn) break;

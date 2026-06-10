@@ -297,6 +297,11 @@ static int gallery_render(gfx_surface *s, ui_ctx *u, int x,int y,int w,int h){
     return clicked;
 }
 
+/* ---- menu bar + About (T52) --------------------------------------------- */
+#define MENU_H 18
+static int g_menu=-1, g_about=0, g_exit_req=0;
+enum { I_OPEN=1, I_WALLPAPER, I_GALLERY, I_EXIT, I_ABOUT };
+
 int main(int argc, char **argv)
 {
     mx_conn c;
@@ -317,7 +322,7 @@ int main(int argc, char **argv)
     }
 
     int first=1, lmx=-1, lmy=-1;
-    while(!c.closed){
+    while(!c.closed && !g_exit_req){
         mx_pump(&c);
         int gk=-1, kk; while((kk=mx_key(&c))>=0) gk=kk;   /* last key (gallery scroll) */
         int moved=(c.mx!=lmx||c.my!=lmy); lmx=c.mx; lmy=c.my;
@@ -327,13 +332,16 @@ int main(int argc, char **argv)
         gfx_surface *s=&c.surf;
         gfx_fill(s,0,0,s->w,s->h,COL_BG);
 
-        /* toolbar */
-        gfx_fill(s,0,0,s->w,30,COL_BAR);
+        /* menu bar (drawn last) + toolbar */
+        int busy = (g_menu>=0) || g_about;
+        gfx_fill(s,0,MENU_H,s->w,30,COL_BAR);
         ui_begin(&u,c.mx,c.my,c.mdown,c.mpressed,c.mreleased,-1);
-        int open_c=ui_button(&u,s,6,5,64,20,"Open");
-        int wp_c=ui_button(&u,s,74,5,112,20,"Set Wallpaper");
-        int gal_c=ui_button(&u,s,190,5,70,20, g_gallery?"Viewer":"Gallery");
-        gfx_str_clip(s,266,11,msg,COL_TEXT,s->w-8);
+        int rpr=u.mpressed, rdn=u.mdown, rrl=u.mreleased;
+        if(busy){ u.mpressed=u.mdown=u.mreleased=0; }
+        int open_c=ui_button(&u,s,6,MENU_H+5,64,20,"Open");
+        int wp_c=ui_button(&u,s,74,MENU_H+5,112,20,"Set Wallpaper");
+        int gal_c=ui_button(&u,s,190,MENU_H+5,70,20, g_gallery?"Viewer":"Gallery");
+        gfx_str_clip(s,266,MENU_H+11,msg,COL_TEXT,s->w-8);
         if(open_c){ scpy(brz.cwd,"/apps",sizeof brz.cwd); brz.sel=brz.scroll=0; brz.loaded=0; br_load(&brz); dlg=1; g_gallery=0; }
         if(wp_c && img_w>0 && !g_gallery) set_wallpaper(&c);
         if(gal_c){ g_gallery=!g_gallery;
@@ -343,18 +351,18 @@ int main(int argc, char **argv)
         }
 
         if(g_gallery){
-            if(gk==0x81) gal_scroll++;                 /* arrow down */
-            else if(gk==0x80 && gal_scroll>0) gal_scroll--;  /* arrow up */
-            int ci=gallery_render(s,&u,4,34,s->w-8,s->h-34-4);
+            if(!busy && gk==0x81) gal_scroll++;                 /* arrow down */
+            else if(!busy && gk==0x80 && gal_scroll>0) gal_scroll--;  /* arrow up */
+            int ci=gallery_render(s,&u,4,MENU_H+34,s->w-8,s->h-(MENU_H+34)-4);
             if(ci>=0){ load_image(gal_path[ci]); g_gallery=0; }
         } else if(dlg){
             char full[256];
-            int r=br_dialog(&brz,&u,s,6,34,s->w-12,s->h-34-6,1,(char*)0,0,full,sizeof full);
+            int r=br_dialog(&brz,&u,s,6,MENU_H+34,s->w-12,s->h-(MENU_H+34)-6,1,(char*)0,0,full,sizeof full);
             if(r==1){ load_image(full); dlg=0; }
             else if(r==2){ dlg=0; }
         } else if(img_w>0){
             /* aspect-fit the image into the area below the toolbar */
-            int ax=4, ay=34, aw=s->w-8, ah=s->h-34-4;
+            int ax=4, ay=MENU_H+34, aw=s->w-8, ah=s->h-(MENU_H+34)-4;
             int fw, fh;
             if((long)img_w*ah > (long)img_h*aw){ fw=aw; fh=(int)((long)img_h*aw/img_w); }
             else { fh=ah; fw=(int)((long)img_w*ah/img_h); }
@@ -372,6 +380,26 @@ int main(int argc, char **argv)
             const char *h="No image. Click Open to choose a BMP, GIF, PNG or JPEG file.";
             gfx_str(s,(s->w-gfx_text_w(h))/2, s->h/2, h, (msg[0]&&msg[slen(msg)-1]!='.')?COL_ERR:COL_TEXT);
         }
+
+        /* restore real input + draw the menu bar / About overlay last */
+        u.mpressed=rpr; u.mdown=rdn; u.mreleased=rrl;
+        int sel_img = (img_w>0 && !g_gallery);
+        ui_menu_item fitems[]={{"Open...",I_OPEN,1,0},{"Set as wallpaper",I_WALLPAPER,sel_img,0},{0,0,0,0},{"Exit",I_EXIT,1,0}};
+        ui_menu_item vitems[]={{g_gallery?"Single image":"Gallery",I_GALLERY,1,0}};
+        static const ui_menu_item hitems[]={{"About mximg",I_ABOUT,1,0}};
+        ui_menu menus[]={{"File",fitems,4},{"View",vitems,1},{"Help",hitems,1}};
+        int mact=ui_menubar(&u,s,menus,3,&g_menu);
+        if(mact==I_OPEN){ scpy(brz.cwd,"/apps",sizeof brz.cwd); brz.sel=brz.scroll=0; brz.loaded=0; br_load(&brz); dlg=1; g_gallery=0; }
+        else if(mact==I_WALLPAPER){ if(img_w>0 && !g_gallery) set_wallpaper(&c); }
+        else if(mact==I_GALLERY){ g_gallery=!g_gallery;
+            if(g_gallery){ dlg=0; gal_scan(); }
+            else if(g_cur_path[0]) load_image(g_cur_path); else img_w=0; }
+        else if(mact==I_EXIT) g_exit_req=1;
+        else if(mact==I_ABOUT) g_about=1;
+        static const char *al[]={"Makar image viewer (mximg)","(c) 2026 Arawn Davies  --  MIT","",
+                                 "Decodes BMP, GIF, PNG and JPEG.","Part of Makar OS."};
+        ui_about(&u,s,"About mximg",al,5,&g_about);
+
         mx_present(&c);
         sys_yield();
     }

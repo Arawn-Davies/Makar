@@ -1,15 +1,20 @@
 #include <kernel/net_lwip.h>
 #include <kernel/netdev.h>
 #include <kernel/serial.h>
+#include <kernel/socket.h>
 #include <kernel/task.h>
 #include <kernel/timer.h>
+#include <kernel/heap.h>
 #include <lwip/dhcp.h>
 #include <lwip/init.h>
 #include <lwip/dns.h>
 #include <lwip/ip4_addr.h>
 #include <lwip/netif.h>
+#include <lwip/tcp.h>
+#include <lwip/pbuf.h>
 #include <lwip/timeouts.h>
 #include <netif/ethernet.h>
+#include <string.h>
 
 err_t makar_netif_init(struct netif *netif);
 int makar_netif_poll(struct netif *netif);
@@ -418,6 +423,247 @@ int net_lwip_info(char *buf, uint32_t cap)
     int r = net_lwip_info_locked(buf, cap);
     net_unlock();
     return r;
+}
+
+/* ===== BSD socket core (kernel/socket.h) ================================
+ * A fixed pool of TCP/IPv4 sockets over the lwIP raw API.  Every public op
+ * holds the net big-lock and pumps lwIP itself (net_lwip_poll_ready) in its
+ * wait loop -- the net_lwip_resolve() pattern above -- so a ring-3 socket call
+ * and the net task never re-enter NO_SYS lwIP concurrently.  The recv callback
+ * runs under that same lock (it fires inside net_lwip_poll_ready), so ksock_recv
+ * and the callback never touch the rx ring at the same time.
+ *
+ * Backpressure is loose: the recv callback tcp_recved()s immediately and buffers
+ * into a growable per-socket ring (compacted as the app drains, hard-capped) --
+ * fine for a hobby browser pulling one page at a time.
+ */
+#define KSOCK_MAX         16
+#define KSOCK_RX_CAP_MAX  (4u * 1024u * 1024u)  /* per-socket recv backlog cap   */
+#define KSOCK_CONNECT_TMO 500u                  /* ticks (100 Hz): connect ~5 s  */
+#define KSOCK_IDLE_TMO    6000u                 /* ticks: recv no-data wedge ~60s*/
+#define KSOCK_SEND_TMO    6000u                 /* ticks: send-buffer stall  ~60s*/
+
+typedef struct {
+    int             used;
+    struct tcp_pcb *pcb;
+    uint8_t        *rx;
+    uint32_t        rxlen, rxcap, rxrd;
+    int             connected;
+    int             closed_remote;   /* FIN received from peer        */
+    int             err;             /* lwIP error / our OOM          */
+    int             aborted;         /* tcp_err fired -> pcb is freed */
+} ksock_t;
+
+static ksock_t s_socks[KSOCK_MAX];
+
+/* Append received bytes to the rx ring, compacting consumed bytes off the front
+ * first so the ring tracks the unread backlog, not the whole transfer.  Runs in
+ * the recv callback (under the net lock). */
+static int ksock_rx_push(ksock_t *ks, const uint8_t *data, uint32_t n)
+{
+    if (ks->rxrd > 0) {
+        uint32_t rem = ks->rxlen - ks->rxrd;
+        if (rem) memmove(ks->rx, ks->rx + ks->rxrd, rem);
+        ks->rxlen = rem;
+        ks->rxrd  = 0;
+    }
+    if (ks->rxlen + n > ks->rxcap) {
+        uint32_t ncap = ks->rxcap ? ks->rxcap : 8192u;
+        while (ncap < ks->rxlen + n) ncap <<= 1;
+        if (ncap > KSOCK_RX_CAP_MAX) { ks->err = 1; return -1; }
+        uint8_t *nb = krealloc(ks->rx, ncap);
+        if (!nb) { ks->err = 1; return -1; }
+        ks->rx = nb; ks->rxcap = ncap;
+    }
+    memcpy(ks->rx + ks->rxlen, data, n);
+    ks->rxlen += n;
+    return 0;
+}
+
+static err_t ksock_recv_cb(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
+{
+    ksock_t *ks = (ksock_t *)arg;
+    if (!ks) { if (p) pbuf_free(p); return ERR_OK; }
+    if (err != ERR_OK) { ks->err = 1; if (p) pbuf_free(p); return ERR_OK; }
+    if (!p) { ks->closed_remote = 1; return ERR_OK; }      /* FIN: remote closed */
+    for (struct pbuf *q = p; q; q = q->next)
+        ksock_rx_push(ks, (const uint8_t *)q->payload, q->len);
+    tcp_recved(pcb, p->tot_len);
+    pbuf_free(p);
+    return ERR_OK;
+}
+
+static err_t ksock_connected_cb(void *arg, struct tcp_pcb *pcb, err_t err)
+{
+    ksock_t *ks = (ksock_t *)arg;
+    if (!ks) return ERR_OK;
+    if (err != ERR_OK) { ks->err = 1; return ERR_OK; }
+    ks->connected = 1;
+    tcp_recv(pcb, ksock_recv_cb);
+    return ERR_OK;
+}
+
+static void ksock_err_cb(void *arg, err_t err)
+{
+    (void)err;
+    ksock_t *ks = (ksock_t *)arg;
+    /* lwIP frees the pcb before this fires; null it so we never touch it. */
+    if (ks) { ks->err = 1; ks->aborted = 1; ks->pcb = NULL; }
+}
+
+static ksock_t *ksock_get(int id)
+{
+    if (id < 0 || id >= KSOCK_MAX || !s_socks[id].used)
+        return NULL;
+    return &s_socks[id];
+}
+
+int ksock_open(void)
+{
+    net_lock();
+    int id = -1;
+    for (int i = 0; i < KSOCK_MAX; i++) {
+        if (!s_socks[i].used) {
+            memset(&s_socks[i], 0, sizeof(s_socks[i]));
+            s_socks[i].used = 1;
+            id = i;
+            break;
+        }
+    }
+    net_unlock();
+    return id;
+}
+
+int ksock_connect(int id, const uint8_t ip[4], uint16_t port)
+{
+    if (!ip)
+        return -1;
+    /* s_ready is set once at boot; by the time ring 3 opens a socket this just
+     * returns 0.  Done outside the lock (net_lwip_init isn't lock-reentrant). */
+    if (net_lwip_init() != 0 || !net_lwip_ready()) {
+        Serial_WriteString("[ksock] connect: net not ready\n");
+        return -1;
+    }
+
+    net_lock();
+    ksock_t *ks = ksock_get(id);
+    if (!ks || ks->pcb) { net_unlock(); Serial_WriteString("[ksock] connect: bad id\n"); return -1; }
+
+    struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
+    if (!pcb) { net_unlock(); Serial_WriteString("[ksock] connect: tcp_new OOM\n"); return -1; }
+    tcp_arg(pcb, ks);
+    tcp_err(pcb, ksock_err_cb);
+    ks->pcb = pcb;
+
+    ip_addr_t dst;
+    IP_ADDR4(&dst, ip[0], ip[1], ip[2], ip[3]);
+    Serial_WriteString("[ksock] connect -> ");
+    Serial_WriteHex(ip[0]); Serial_WriteString("."); Serial_WriteHex(ip[1]); Serial_WriteString(".");
+    Serial_WriteHex(ip[2]); Serial_WriteString("."); Serial_WriteHex(ip[3]);
+    Serial_WriteString(" port "); Serial_WriteHex(port); Serial_WriteString("\n");
+    if (tcp_connect(pcb, &dst, port, ksock_connected_cb) != ERR_OK) {
+        tcp_abort(pcb);
+        ks->pcb = NULL;
+        net_unlock();
+        Serial_WriteString("[ksock] connect: tcp_connect != ERR_OK\n");
+        return -1;
+    }
+
+    uint32_t t0 = timer_get_ticks();
+    while (!ks->connected && !ks->err &&
+           timer_get_ticks() - t0 < KSOCK_CONNECT_TMO) {
+        net_lwip_poll_ready();      /* we hold the lock; pump lwIP ourselves */
+        task_yield();
+    }
+    int ok = ks->connected && !ks->err;
+    if (ok)           Serial_WriteString("[ksock] connect: established\n");
+    else if (ks->err) Serial_WriteString("[ksock] connect: error/refused\n");
+    else              Serial_WriteString("[ksock] connect: TIMEOUT (no SYN-ACK)\n");
+    if (!ok && !ks->aborted && ks->pcb) {
+        tcp_abort(ks->pcb);
+        ks->pcb = NULL;
+    }
+    net_unlock();
+    return ok ? 0 : -1;
+}
+
+long ksock_send(int id, const void *buf, uint32_t len)
+{
+    if (!buf) return -1;
+    if (len == 0) return 0;
+
+    net_lock();
+    ksock_t *ks = ksock_get(id);
+    if (!ks || !ks->pcb || !ks->connected || ks->err || ks->aborted) {
+        net_unlock();
+        return -1;
+    }
+    const uint8_t *p = (const uint8_t *)buf;
+    uint32_t sent = 0;
+    uint32_t t0 = timer_get_ticks();
+    while (sent < len) {
+        if (ks->err || ks->aborted || !ks->pcb) break;
+        u16_t sb = tcp_sndbuf(ks->pcb);
+        if (sb > 0) {
+            uint32_t n = (len - sent < sb) ? (len - sent) : sb;
+            if (tcp_write(ks->pcb, p + sent, (u16_t)n, TCP_WRITE_FLAG_COPY) != ERR_OK)
+                break;
+            tcp_output(ks->pcb);
+            sent += n;
+            t0 = timer_get_ticks();
+        } else {
+            if (timer_get_ticks() - t0 > KSOCK_SEND_TMO) break;
+            net_lwip_poll_ready();
+            task_yield();
+        }
+    }
+    net_unlock();
+    return sent ? (long)sent : -1;
+}
+
+long ksock_recv(int id, void *buf, uint32_t len)
+{
+    if (!buf) return -1;
+    if (len == 0) return 0;
+
+    net_lock();
+    ksock_t *ks = ksock_get(id);
+    if (!ks) { net_unlock(); return -1; }
+
+    uint32_t t0 = timer_get_ticks();
+    while (ks->rxrd >= ks->rxlen) {                 /* nothing buffered */
+        if (ks->rxlen == 0 && ks->closed_remote) { net_unlock(); return 0; }  /* EOF */
+        if (ks->err || ks->aborted) { net_unlock(); return -1; }
+        if (timer_get_ticks() - t0 > KSOCK_IDLE_TMO) { net_unlock(); return -1; }
+        net_lwip_poll_ready();
+        task_yield();
+    }
+    uint32_t avail = ks->rxlen - ks->rxrd;
+    uint32_t n = (len < avail) ? len : avail;
+    memcpy(buf, ks->rx + ks->rxrd, n);
+    ks->rxrd += n;
+    if (ks->rxrd >= ks->rxlen) { ks->rxlen = 0; ks->rxrd = 0; }  /* drained */
+    net_unlock();
+    return (long)n;
+}
+
+int ksock_close(int id)
+{
+    net_lock();
+    ksock_t *ks = ksock_get(id);
+    if (!ks) { net_unlock(); return -1; }
+    if (ks->pcb && !ks->aborted) {
+        /* Detach callbacks first so a late pbuf can't reach a freed slot. */
+        tcp_arg(ks->pcb, NULL);
+        tcp_recv(ks->pcb, NULL);
+        tcp_err(ks->pcb, NULL);
+        if (tcp_close(ks->pcb) != ERR_OK)
+            tcp_abort(ks->pcb);
+    }
+    if (ks->rx) kfree(ks->rx);
+    memset(ks, 0, sizeof(*ks));     /* used = 0: slot returns to the pool */
+    net_unlock();
+    return 0;
 }
 
 void net_lwip_task(void)

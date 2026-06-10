@@ -40,6 +40,13 @@ echo "makar" > isodir/etc/hostname
 
 # Copy source tree and docs onto the ISO so they're readable via VIX.
 cp -r src/. isodir/src/
+# Strip build intermediates from the on-ISO source tree: it ships source +
+# binaries, not object files.  The kernel/lwIP/BearSSL *.o/*.d alone are ~900
+# files (and bssl-obj/ is the userspace BearSSL object tree); the in-OS rebuild
+# recompiles from source anyway.
+find isodir/src \( -name '*.o' -o -name '*.d' -o -name '*.a' -o -name '*.stamp' \) -delete 2>/dev/null || true
+rm -rf isodir/src/userspace/bssl-obj
+find isodir/src -type d -empty -delete 2>/dev/null || true
 cp -r docs/. isodir/docs/
 
 # Kernel headers re-exposed at /usr/include/kernel-build/ so the in-OS

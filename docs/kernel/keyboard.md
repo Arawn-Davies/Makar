@@ -44,7 +44,7 @@ SPSC ring race, and a tearing slot table - see "Why the rewrite" below.
               │
               ▼ (mostly make events; break events update state and stop)
             on_make
-              │   (Alt+Fn → vtty_switch; Ctrl-A prefix; Ctrl+C SIGINT;
+              │   (Alt+Fn → vtty_switch; Ctrl+C SIGINT;
               │    raw mode may deliver function/modifier sentinels)
               ▼
         translate_make
@@ -76,9 +76,7 @@ modifier state and never reaches the translator.
 | `keyboard_poll()` | Non-blocking single-byte read; returns `0` if queue is empty. |
 | `keyboard_set_focus(task)` | Set the task that receives input. `NULL` routes to the global ring. |
 | `keyboard_send_to(task, c)` | Inject a byte directly into a task's ring (used by `vtty_switch` for `KEY_FOCUS_GAIN`). |
-| `keyboard_release_task(task)` | Free a task's slot and clear focus/pane bindings on exit. |
-| `keyboard_bind_pane(pane, task)` | Bind a task to `KB_PANE_TOP` / `KB_PANE_BOTTOM` for `Ctrl-A,U` / `Ctrl-A,J`. |
-| `keyboard_focus_pane(pane)` | Move focus to the task bound to `pane`. |
+| `keyboard_release_task(task)` | Free a task's slot and clear focus if it points at the task, on exit. |
 | `keyboard_set_raw(on)` | Enable diagnostic raw mode for focused tools such as `kbtester`. |
 | `keyboard_inject_key(kc, shift, ctrl, alt)` | Test hook: inject one synthetic key into the live input path. |
 | `keyboard_inject_text(text)` | Test hook: type a synthetic string into the live input path. |
@@ -189,7 +187,7 @@ slot index is stable for the task's lifetime.
 - **Registration** (`slot_register`): fast path is a lock-free lookup;
   slow path takes `kb_slots_lock` and does a CAS-based claim of the first
   `NULL` slot. SMP-safe - concurrent registrations resolve via CAS.
-- **Release** (`keyboard_release_task`): clears focus and pane bindings
+- **Release** (`keyboard_release_task`): clears focus
   *before* nulling the owner pointer, so the IRQ never routes a byte to a
   released slot.
 
@@ -214,7 +212,7 @@ require revisits when a second CPU comes online:
 - Both spinlocks are IRQ-safe (`pushfl; cli` on acquire; `popfl` on
   release), so a CPU holding the lock cannot deadlock against its own IRQ
   handler trying to take the same lock.
-- `kb_focused` and `kb_pane[]` are pointer-sized, naturally aligned, and
+- `kb_focused` is pointer-sized, naturally aligned, and
   always accessed via `__atomic_load_n` / `__atomic_store_n` with
   acquire/release semantics - so a future SMP runtime always sees a
   fully-published owner pointer for the current focus.
@@ -279,7 +277,6 @@ that lands, default and ignored dispositions are the reliable behavior.
 `keyboard_set_raw(1)` suspends cooked shortcuts for diagnostic tools:
 
 - Alt+F1-F4 stop switching VTs and can be observed as key events;
-- Ctrl+A stops arming the pane-switch prefix;
 - modifier press events are delivered as `KEY_*_DOWN` sentinels;
 - F1-F12 are delivered as function-key sentinels;
 - Ctrl+C still routes `0x03` and sends `SIGINT`, so raw tools can still be

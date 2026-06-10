@@ -100,30 +100,33 @@ int main(int argc, char **argv)
         { "0", "=", "%", "+" },
     };
     int first=1, lmx=-1, lmy=-1;
+    int g_menu=-1, g_about=0, g_quit=0;
 
-    while(!c.closed){
+    while(!c.closed && !g_quit){
         mx_pump(&c);
+        int busy = (g_menu>=0) || g_about;
         int k, keyed=0;
-        while((k=mx_key(&c))>=0){ feed((char)k); keyed=1; }
+        while((k=mx_key(&c))>=0){ if(!busy){ feed((char)k); keyed=1; } }
 
         int moved = (c.mx!=lmx||c.my!=lmy); lmx=c.mx; lmy=c.my;
-        if(!(first||keyed||c.mpressed||c.mreleased||moved||c.resized)){ sys_yield(); continue; }
+        if(!(first||keyed||c.mpressed||c.mreleased||c.rpressed||moved||c.resized)){ sys_yield(); continue; }
         first=0;
 
         gfx_surface *s=&c.surf;
         gfx_fill(s,0,0,s->w,s->h,COL_BG);
 
-        /* display */
-        int dh=36, pad=6;
-        gfx_fill(s,pad,pad,s->w-2*pad,dh,COL_DISP);
+        /* display (below the menu bar) */
+        int top=UI_MENUBAR_H, dh=36, pad=6;
+        gfx_fill(s,pad,top+pad,s->w-2*pad,dh,COL_DISP);
         const char *shown = expr[0] ? expr : "0";
-        gfx_str(s,pad+8,pad+(dh-8)/2, shown, err?COL_ERR:COL_TEXT);
+        gfx_str(s,pad+8,top+pad+(dh-8)/2, shown, err?COL_ERR:COL_TEXT);
 
         /* keypad fills the area below the display */
-        int gy=pad+dh+pad, gx=pad;
+        int gy=top+pad+dh+pad, gx=pad;
         int gw=s->w-2*pad, gh=s->h-gy-pad;
         int bw=gw/4, bh=gh/5;
         ui_begin(&u,c.mx,c.my,c.mdown,c.mpressed,c.mreleased,-1);
+        ui_gate g; ui_gate_begin(&u,&g,busy);
         for(int r=0;r<5;r++) for(int col=0;col<4;col++){
             const char *lab=labels[r][col];
             if(ui_button(&u,s,gx+col*bw,gy+r*bh,bw-4,bh-4,lab)){
@@ -132,6 +135,9 @@ int main(int argc, char **argv)
                 else feed(ch);
             }
         }
+        ui_gate_end(&u,&g);
+        static const char *al[]={"Makar calculator (mxcalc)","(c) 2026 Arawn Davies  --  MIT","","Integer expression evaluator (+ - * / %, parens).","Part of Makar OS."};
+        ui_appbar(&u,s,"mxcalc",al,5,0,0,&g_menu,&g_about,&g_quit);
         mx_present(&c);
         sys_yield();
     }

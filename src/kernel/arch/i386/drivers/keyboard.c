@@ -449,12 +449,6 @@ static kb_slot_t kb_slots[KB_TASK_SLOTS];
  * on x86; we use __atomic_{load,store}_n for explicit publication semantics. */
 static task_t * volatile kb_focused = NULL;
 
-/* Pane bindings (used by Ctrl-A,U / Ctrl-A,J shortcuts). */
-static task_t * volatile kb_pane[2] = {NULL, NULL};
-
-/* Ctrl-A prefix latch. Single byte, accessed only from IRQ context. */
-static volatile uint8_t kb_prefix = 0;
-
 /* SIGINT delivery on Ctrl+C is now via sig_send(kb_focused, SIGINT) -- see
  * the Ctrl+C handler below.  The previous kb_sigint global plus
  * keyboard_sigint_consume() shim is gone (slice 8 phase 3); consumers
@@ -587,13 +581,13 @@ static int slot_register(task_t *t)
 }
 
 /*
- * keyboard_release_task - free the slot bound to t and clear any focus or
- * pane bindings that point at it. Called when a task exits or relinquishes
- * its keyboard input (e.g. shell after `exec` returns).
+ * keyboard_release_task - free the slot bound to t and clear the focus if it
+ * points at t. Called when a task exits or relinquishes its keyboard input
+ * (e.g. shell after `exec` returns).
  *
- * Order matters: clear focus and pane bindings *before* freeing the slot,
- * so the IRQ handler (which loads kb_focused with acquire ordering) cannot
- * route a byte to a slot that has already been NULL'd out.
+ * Order matters: clear focus *before* freeing the slot, so the IRQ handler
+ * (which loads kb_focused with acquire ordering) cannot route a byte to a
+ * slot that has already been NULL'd out.
  *
  * Idempotent and NULL-safe.
  */
@@ -607,12 +601,6 @@ void keyboard_release_task(task_t *t)
         __atomic_compare_exchange_n(&kb_focused, &expected, (task_t *)NULL,
                                     /*weak=*/0,
                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
-    for (int p = 0; p < 2; p++) {
-        expected = t;
-        __atomic_compare_exchange_n(&kb_pane[p], &expected, (task_t *)NULL,
-                                    /*weak=*/0,
-                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
-    }
 
     for (int i = 0; i < KB_TASK_SLOTS; i++) {
         if (__atomic_load_n(&kb_slots[i].owner, __ATOMIC_ACQUIRE) == t) {
@@ -648,8 +636,8 @@ void keyboard_release_task(task_t *t)
  *
  * Called from IRQ context only; it never mutates the slot table, never
  * blocks, and never recurses. The acquire load on kb_focused pairs with
- * the release stores in keyboard_set_focus() / keyboard_focus_pane() /
- * slot_register(), so we always see a fully-published owner pointer for
+ * the release stores in keyboard_set_focus() / slot_register(), so we
+ * always see a fully-published owner pointer for
  * whatever task is currently focused.
  */
 /* Test-mode flag (set by keyboard_test_begin, cleared by keyboard_test_end).
@@ -799,7 +787,7 @@ static void kb_sync_leds(void)
 
 /* Raw mode: see keyboard_set_raw().  When set, on_make delivers modifier
  * presses, F-keys, Caps, and Super as sentinel bytes; cooked shortcuts
- * (Alt+F1..F4 vtty switch, Ctrl-A pane prefix) are suspended.  Ctrl+C
+ * (Alt+F1..F4 vtty switch) are suspended.  Ctrl+C
  * still fires so a raw-mode app can be exited the usual way.  The active
  * flags mirror the focused task's saved slot state so console switching
  * restores each owner without leaking modes across sessions. */
@@ -963,10 +951,7 @@ static void apply_modifier(kc_t kc, int is_break)
  *
  *   1. Modifier keys never produce output.
  *   2. Alt + F1..F4 switches the active virtual TTY.
- *   3. Ctrl-A arms the pane prefix (consumed; never reaches the task).
- *   4. While the prefix is armed, the next make is interpreted as a pane
- *      command; anything else silently cancels the prefix.
- *   5. Ctrl-C raises the SIGINT flag and *also* delivers 0x03 to the
+ *   3. Ctrl-C raises the SIGINT flag and *also* delivers 0x03 to the
  *      focused task -- the shell readline observes the byte to abort the
  *      current input line, while shell_cmd_apps uses the flag to force-
  *      kill a child task during exec.
@@ -1001,10 +986,10 @@ static void on_make(kc_t kc)
         default: break;
     }
 
-    /* Cooked-mode shortcuts: Alt+Fn TTY switch, Ctrl+Tab cycle, and
-     * Ctrl-A pane prefix.  Raw-mode apps (kbtester) need every keystroke
-     * as data, so the global F5/F6 console switch is handled earlier in
-     * deliver_kc(), before raw/scancode routing chooses the active owner. */
+    /* Cooked-mode shortcuts: Alt+Fn TTY switch and Ctrl+Tab cycle.  Raw-mode
+     * apps (kbtester) need every keystroke as data, so the global F5/F6 console
+     * switch is handled earlier in deliver_kc(), before raw/scancode routing
+     * chooses the active owner. */
     if (!raw) {
         if (mod_alt) {
             switch (kc) {
@@ -1030,23 +1015,11 @@ static void on_make(kc_t kc)
         }
     }
 
-    /* Resolve the unshifted ASCII letter once for the Ctrl-A / Ctrl-C
-     * shortcuts; this avoids hardcoding scancode magic numbers. */
+    /* Resolve the unshifted ASCII letter for the Ctrl-C shortcut below; this
+     * avoids hardcoding scancode magic numbers.  Ctrl + any other letter is
+     * folded to its 0x01..0x1A control byte by translate_make() and delivered
+     * to the focused app -- e.g. Ctrl-A = "select all" in a GUI text field. */
     unsigned char letter = (kc < sizeof(kc_ascii_lower)) ? kc_ascii_lower[kc] : 0;
-
-    if (!raw) {
-        if (mod_ctrl && letter == 'a') {
-            kb_prefix = 1;
-            return;
-        }
-
-        if (kb_prefix) {
-            kb_prefix = 0;
-            if (letter == 'u')      keyboard_focus_pane(KB_PANE_TOP);
-            else if (letter == 'j') keyboard_focus_pane(KB_PANE_BOTTOM);
-            return;
-        }
-    }
 
     /* Ctrl+C fires in BOTH modes - it's how a raw-mode app gets exited.
      * Deliver SIGINT to the focused task (Linux-style); the kernel's
@@ -1551,31 +1524,6 @@ void keyboard_init(void)
 }
 
 /*
- * keyboard_bind_pane - associate task t with pane_id (KB_PANE_TOP or
- * KB_PANE_BOTTOM) so that Ctrl-A,U / Ctrl-A,J can switch focus to it.
- *
- * Idempotently registers t in the slot table (so it has somewhere for
- * input to land) and then publishes the pane binding atomically.
- */
-void keyboard_bind_pane(int pane_id, task_t *t)
-{
-    if (pane_id < 0 || pane_id > 1 || !t) return;
-    slot_register(t);
-    __atomic_store_n(&kb_pane[pane_id], t, __ATOMIC_RELEASE);
-}
-
-/*
- * keyboard_focus_pane - switch keyboard focus to the task currently bound
- * to pane_id, if any. No-op if the pane is unbound.
- */
-void keyboard_focus_pane(int pane_id)
-{
-    if (pane_id < 0 || pane_id > 1) return;
-    task_t *t = __atomic_load_n(&kb_pane[pane_id], __ATOMIC_ACQUIRE);
-    if (t) __atomic_store_n(&kb_focused, t, __ATOMIC_RELEASE);
-}
-
-/*
  * keyboard_set_focus - direct-assign keyboard focus to t (used by
  * vtty_switch and shell_cmd_apps for explicit focus transitions). Passing
  * NULL means "no focused task; route to the global ring".
@@ -1672,7 +1620,6 @@ void keyboard_test_reset(void)
     mod_lshift = mod_rshift = 0;
     mod_lctrl  = mod_rctrl  = 0;
     mod_lalt   = mod_ralt   = 0;
-    kb_prefix  = 0;
     kb_buf_head = kb_buf_tail = 0;
     for (int i = 0; i < 256; i++) s_modkey_held[i] = 0;
     kb_spin_unlock_irqrestore(&kb_io_lock, flags);

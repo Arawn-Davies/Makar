@@ -52,7 +52,9 @@
 #include <kernel/pci.h>
 #include <kernel/netdev.h>
 #include <kernel/net_lwip.h>
+#include <kernel/socket.h>
 #include <kernel/wget.h>
+#include <makar_abi.h>
 #include <kernel/timer.h>
 #include <kernel/rtc.h>
 #include <string.h>
@@ -66,6 +68,11 @@
  * pages; keep these two in sync with the matching defines in elf.c. */
 #define USER_STACK_TOP    0xBFFF0000u
 #define USER_STACK_PAGES  8u
+
+/* System clipboard: one kernel-held buffer shared across all tasks, so
+ * Cut/Copy/Paste work between GUI apps (SYS_CLIP_SET / SYS_CLIP_GET). */
+static char    *g_clip;
+static uint32_t g_clip_len, g_clip_cap;
 
 /* Standard CGA/VGA 16-colour palette for SYS_PUTCH_AT VESA rendering. */
 static const uint32_t s_vga_palette[16] = {
@@ -711,6 +718,11 @@ static void syscall_dispatch_inner(registers_t *regs)
                 }
                 task_yield();
             }
+        } else if (e->kind == FD_KIND_SOCKET) {
+            /* TCP socket: ksock_recv blocks (bounded) for >=1 byte; returns
+             * 0 on a clean remote close (read() EOF), -1 on error. */
+            long r = ksock_recv(e->sock_id, buf, len);
+            regs->eax = (uint32_t)r;
         } else {
             regs->eax = (uint32_t)-1;   /* not a readable kind */
         }
@@ -834,6 +846,11 @@ static void syscall_dispatch_inner(registers_t *regs)
                 written += chunk;
             }
             if (written == len) regs->eax = written;
+        } else if (e->kind == FD_KIND_SOCKET) {
+            /* TCP socket: ksock_send blocks (bounded) while the send buffer
+             * drains; returns bytes written or -1. */
+            long r = ksock_send(e->sock_id, buf, len);
+            regs->eax = (uint32_t)r;
         } else {
             /* KEYBOARD: not writable. */
             regs->eax = (uint32_t)-1;
@@ -854,9 +871,9 @@ static void syscall_dispatch_inner(registers_t *regs)
      * SYS_KEYBOARD_RAW(212): enable/disable raw key event delivery
      * for the duration of the current app.  EBX = 0/1.
      *
-     * Raw mode suppresses cooked shortcuts (Alt+Fn TTY switch, Ctrl+A
-     * pane prefix) and delivers modifier presses + every F-key as
-     * sentinel bytes - kbtester is the canonical consumer.  shell_exec_elf
+     * Raw mode suppresses cooked shortcuts (Alt+Fn TTY switch) and
+     * delivers modifier presses + every F-key as sentinel bytes -
+     * kbtester is the canonical consumer.  shell_exec_elf
      * defensively forces raw=0 after the child exits in case the app
      * was killed before its own cleanup ran.
      * ------------------------------------------------------------------ */
@@ -2187,6 +2204,97 @@ static void syscall_dispatch_inner(registers_t *regs)
         int wr = vfs_write_file(outpath, body, len);
         kfree(body);
         regs->eax = (wr == 0) ? len : (uint32_t)-2;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_SOCKET(280): create a TCP/IPv4 socket -> fd.
+     * EBX = domain (AF_INET), ECX = type (SOCK_STREAM), EDX = protocol.
+     * Allocates a ksock + a FD_KIND_SOCKET fd; read/write/close then work on
+     * the fd directly.  Returns the fd, or -1 (bad args / pool or fd full).
+     * ------------------------------------------------------------------ */
+    case SYS_SOCKET: {
+        int domain = (int)regs->ebx;
+        int type   = (int)regs->ecx;
+        task_t *cur = task_current();
+        if (!cur || !cur->fd_table) { regs->eax = (uint32_t)-1; break; }
+        if (domain != AF_INET || type != SOCK_STREAM) { regs->eax = (uint32_t)-1; break; }
+        int sid = ksock_open();
+        if (sid < 0) { regs->eax = (uint32_t)-1; break; }
+        int fd = fd_alloc(cur->fd_table);
+        if (fd < 0) { ksock_close(sid); regs->eax = (uint32_t)-1; break; }  /* EMFILE */
+        fd_entry_t *e = &cur->fd_table->slots[fd];
+        memset(e, 0, sizeof(*e));
+        e->kind    = FD_KIND_SOCKET;
+        e->sock_id = sid;
+        regs->eax  = (uint32_t)fd;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_CONNECT(281): connect a socket fd to an address.
+     * EBX = fd, ECX = const struct sockaddr_in* (user ptr), EDX = addrlen.
+     * Blocks (yielding) until connected.  Returns 0 on success, -1 on error.
+     * ------------------------------------------------------------------ */
+    case SYS_CONNECT: {
+        int fd = (int)regs->ebx;
+        const struct sockaddr_in *sa =
+            (const struct sockaddr_in *)(uintptr_t)regs->ecx;
+        task_t     *cur = task_current();
+        fd_entry_t *e   = fd_get(cur ? cur->fd_table : NULL, fd);
+        if (!e || e->kind != FD_KIND_SOCKET || !sa) { regs->eax = (uint32_t)-1; break; }
+        if (sa->sin_family != AF_INET) { regs->eax = (uint32_t)-1; break; }
+        /* sin_addr is network byte order: on little-endian x86 the in-memory
+         * octet order [a,b,c,d] reads back as byte i = (s_addr >> 8*i). */
+        unsigned int a = sa->sin_addr.s_addr;
+        uint8_t ip[4] = { (uint8_t)(a & 0xff), (uint8_t)((a >> 8) & 0xff),
+                          (uint8_t)((a >> 16) & 0xff), (uint8_t)((a >> 24) & 0xff) };
+        unsigned short np = sa->sin_port;            /* network order */
+        uint16_t port = (uint16_t)(((np & 0xff) << 8) | ((np >> 8) & 0xff));  /* ntohs */
+        regs->eax = (uint32_t)ksock_connect(e->sock_id, ip, port);
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_NET_RESOLVE(282): resolve a hostname to an IPv4 address via lwIP DNS.
+     * EBX = const char *host, ECX = unsigned char ip[4] out.
+     * Returns 0 on success, -1 on failure/timeout.  (DNS is kernel-side; there
+     * is no userspace resolver yet.)
+     * ------------------------------------------------------------------ */
+    case SYS_NET_RESOLVE: {
+        const char *host  = (const char *)(uintptr_t)regs->ebx;
+        uint8_t    *ipout = (uint8_t *)(uintptr_t)regs->ecx;
+        if (!host || !ipout) { regs->eax = (uint32_t)-1; break; }
+        regs->eax = (uint32_t)net_lwip_resolve(host, ipout, 400);
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_CLIP_SET(283) / SYS_CLIP_GET(284): the shared system clipboard.
+     * SET: EBX=buf, ECX=len -> stores up to 1 MiB, returns bytes stored.
+     * GET: EBX=buf, ECX=cap -> copies min(len,cap), returns the FULL length
+     *      (so the caller can tell it was truncated and retry with a bigger buf).
+     * ------------------------------------------------------------------ */
+    case SYS_CLIP_SET: {
+        const char *buf = (const char *)(uintptr_t)regs->ebx;
+        uint32_t    len = regs->ecx;
+        if (len > (1u << 20)) len = 1u << 20;
+        if (len > g_clip_cap) {
+            char *p = (char *)krealloc(g_clip, len ? len : 1);
+            if (!p) { regs->eax = (uint32_t)-1; break; }
+            g_clip = p; g_clip_cap = len ? len : 1;
+        }
+        if (buf && len) memcpy(g_clip, buf, len);
+        g_clip_len = len;
+        regs->eax = len;
+        break;
+    }
+    case SYS_CLIP_GET: {
+        char    *buf = (char *)(uintptr_t)regs->ebx;
+        uint32_t cap = regs->ecx;
+        uint32_t n   = (g_clip_len < cap) ? g_clip_len : cap;
+        if (buf && n) memcpy(buf, g_clip, n);
+        regs->eax = g_clip_len;
         break;
     }
 
