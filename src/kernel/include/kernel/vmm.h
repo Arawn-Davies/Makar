@@ -36,6 +36,20 @@ void vmm_map_page(uint32_t *pd, uint32_t virt, uint32_t phys, uint32_t flags);
 void vmm_unmap_page(uint32_t *pd, uint32_t virt);
 
 /*
+ * vmm_unmap_and_free – like vmm_unmap_page, but also releases the page's
+ * backing frame via pmm_free_frame (refcount-decrement; freed at zero).  Use
+ * for mappings the task owns a ref on: anonymous and file-backed mmap pages,
+ * including shared page-cache frames.  No-op if the PDE/PTE is absent.
+ */
+void vmm_unmap_and_free(uint32_t *pd, uint32_t virt);
+
+/*
+ * vmm_protect_page – rewrite the permission bits of an existing mapping,
+ * keeping its physical frame (backs mprotect()).  No-op if unmapped.
+ */
+void vmm_protect_page(uint32_t *pd, uint32_t virt, uint32_t flags);
+
+/*
  * vmm_switch – activate a page directory by loading it into CR3.
  */
 void vmm_switch(uint32_t *pd);

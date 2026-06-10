@@ -12,6 +12,7 @@
 #include <kernel/netdev.h>
 #include <kernel/net_lwip.h>
 #include <kernel/pmm.h>
+#include <kernel/pagecache.h>
 #include <kernel/heap.h>
 #include <kernel/vmm.h>
 #include <kernel/paging.h>
@@ -1162,6 +1163,67 @@ static void test_pmm(void)
     ktest_summary();
 }
 
+/* ---------------------------------------------------------------------------
+ * Suite: shared file-backed mmap via the page cache (kernel/pagecache.h)
+ *
+ * The mechanism that makes dynamic linking a RAM win: a read-only file mmap
+ * page comes straight from the page cache, so every process mapping a file
+ * (libc.so) shares one physical copy.  This drives the primitive directly --
+ * pagecache_acquire -- without needing a user address space: two acquires of
+ * the same file page must return the *same* frame, bump its refcount, and
+ * crucially allocate *zero* new frames the second time.  A private-copy
+ * implementation would return distinct frames and consume RAM each time.
+ * ------------------------------------------------------------------------- */
+static void test_pagecache_share(void)
+{
+    ktest_begin("pagecache_share",
+        "file mmap sharing: one refcounted cache frame per (file,page); a 2nd "
+        "mapper of the same page allocates zero new frames");
+
+    /* A real, page-cacheable ISO file -- /apps/hello.elf always ships. */
+    const char *path = "/apps/hello.elf";
+    vfs_stat_info_t si;
+    if (vfs_stat(path, &si) != 0 || si.kind != VFS_STAT_FILE || si.size == 0) {
+        /* Backend without stat / file absent: skip rather than fail. */
+        KTEST_ASSERT(1);
+        ktest_summary();
+        return;
+    }
+    uint32_t size = si.size;
+
+    /* Warm the cache so page 0 is resident -- the measurement below then sees
+     * only refcount changes, not the one-time fill. */
+    uint32_t warm = pagecache_acquire(path, size, 0, NULL);
+    KTEST_ASSERT(warm != 0);
+    KTEST_ASSERT((warm & 0xFFFu) == 0);          /* page-aligned frame */
+    pmm_free_frame(warm);                         /* drop our ref; cache keeps it */
+
+    /* Two independent "mappers" acquire the same page. */
+    uint32_t fc_before = pmm_free_count();
+    uint32_t fr1 = pagecache_acquire(path, size, 0, NULL);
+    uint32_t fr2 = pagecache_acquire(path, size, 0, NULL);
+
+    KTEST_ASSERT(fr1 != 0);
+    KTEST_ASSERT(fr2 == fr1);                     /* SAME frame -> one shared copy */
+    KTEST_ASSERT(pmm_free_count() == fc_before);  /* the win: zero new frames */
+    KTEST_ASSERT(pmm_ref_count(fr1) >= 3);        /* cache + the two mappers */
+
+    /* Each mapper's teardown drops its ref (as vmm_unmap_and_free would). */
+    pmm_free_frame(fr2);
+    pmm_free_frame(fr1);
+    KTEST_ASSERT(pmm_free_count() == fc_before);  /* still balanced */
+    KTEST_ASSERT(pmm_ref_count(fr1) >= 1);        /* cache still holds the page */
+
+    /* A different page index is a different frame (sanity: not aliasing). */
+    if (size > PAGECACHE_PGSZ) {
+        uint32_t pg1 = pagecache_acquire(path, size, 1, NULL);
+        KTEST_ASSERT(pg1 != 0 && pg1 != fr1);
+        pmm_free_frame(pg1);
+    }
+
+    ktest_summary();
+}
+
 /* Walk page directory `pd` and return the physical frame backing virtual
  * address `va`, or 0 if not present.  Mirrors the inline walk in test_vmm. */
 static uint32_t kt_pte_phys(uint32_t *pd, uint32_t va)
@@ -2039,12 +2101,13 @@ static void test_syscall(void)
     syscall_dispatch(&regs);
     KTEST_ASSERT(1);
 
-    /* SYS_OPEN on a non-existent path must return -1. */
+    /* SYS_OPEN on a non-existent path must return -ENOENT (Linux convention):
+     * musl's ld.so reads -errno to walk its library search path. */
     regs.eax = SYS_OPEN;
     regs.ebx = (uint32_t)(uintptr_t)"/no/such/file";
     regs.ecx = O_RDONLY;
     syscall_dispatch(&regs);
-    KTEST_ASSERT(regs.eax == (uint32_t)-1);
+    KTEST_ASSERT(regs.eax == (uint32_t)-2);   /* -ENOENT */
 
     /* SYS_BRK(0): query current break on a kernel task (user_brk == 0). */
     regs.eax = SYS_BRK;
@@ -3540,6 +3603,10 @@ int ktest_run_all(void)
     total_fail += ktest_fail_count;
 
     test_pmm();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_pagecache_share();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 

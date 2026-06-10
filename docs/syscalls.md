@@ -54,7 +54,7 @@ without a detailed errno. Check the wrapper before assuming Linux parity.
 | 2 | `SYS_FORK` | none | COW fork; parent gets child pid, child gets 0 |
 | 3 | `SYS_READ` | `fd, buf, len` | fd-backed read |
 | 4 | `SYS_WRITE` | `fd, buf, len` | fd-backed write |
-| 5 | `SYS_OPEN` | `path, flags, mode` | mode ignored; read-only disk files are lazy (page-cached) |
+| 5 | `SYS_OPEN` | `path, flags, mode` | mode ignored; read-only disk files are lazy (page-cached); missing file w/o `O_CREAT` → `-ENOENT` (musl `ld.so` walks its search path on this) |
 | 6 | `SYS_CLOSE` | `fd` | closes and flushes |
 | 10 | `SYS_UNLINK` | `path` | delete file |
 | 11 | `SYS_EXECVE` | `path, argv, envp` | envp ignored |
@@ -74,15 +74,17 @@ without a detailed errno. Check the wrapper before assuming Linux parity.
 | 63 | `SYS_DUP2` | `oldfd, newfd` | duplicate onto requested fd |
 | 64 | `SYS_GETPPID` | none | parent pid |
 | 78 | `SYS_GETTIMEOFDAY` | `timeval *, tz` | tz ignored |
-| 91 | `SYS_MUNMAP` | `addr, len` | unmap anonymous pages |
+| 91 | `SYS_MUNMAP` | `addr, len` | unmap a range and release each frame (refcount-decrement; shared cache frames survive while others map them) |
 | 106 | `SYS_STAT` | `path, stat *` | limited Linux-shaped stat |
 | 108 | `SYS_FSTAT` | `fd, stat *` | limited Linux-shaped stat |
 | 114 | `SYS_WAIT4` | `pid, status *, options, rusage` | supports `WNOHANG`; rusage ignored |
 | 119 | `SYS_SIGRETURN` | internal | signal trampoline return |
 | 141 | `SYS_READDIR` | `path, index, dirent *` | indexed Makar syscall, libc wraps it |
+| 146 | `SYS_WRITEV` | `fd, iovec *, iovcnt` | gather-write; shares the `SYS_WRITE` dispatch. musl's buffered stdio writes through this |
 | 158 | `SYS_YIELD` | none | scheduler yield |
+| 125 | `SYS_MPROTECT` | `addr, len, prot` | rewrites PTE R/W/USER over the range (`ld.so` RELRO); no NX on i386 |
 | 175 | `SYS_RT_SIGPROCMASK` | Linux args | startup compatibility stub |
-| 192 | `SYS_MMAP2` | `addr, len, prot, flags, fd, pgoff` | anonymous only, demand-paged |
+| 192 | `SYS_MMAP2` | `addr, len, prot, flags, fd, pgoff` | anon non-fixed = demand-paged reserve; a **read-only** file map shares page-cache frames (`pagecache_acquire` — one libc.so in RAM for all mappers); writable/tmpfs/anon-fixed take a private frame (bss tail zeroed) — backs musl `ld.so`'s library maps |
 | 240 | `SYS_FUTEX` | Linux args | single-threaded compatibility stub |
 | 243 | `SYS_SET_THREAD_AREA` | `user_desc *` | one-slot i386 TLS |
 | 252 | `SYS_EXIT_GROUP` | `status` | same as exit |
@@ -297,24 +299,31 @@ The scheduler restores TLS state for TLS-active tasks.
 
 ## mmap Details
 
-`SYS_MMAP2` is intentionally narrow:
+`SYS_MMAP2` covers the cases the dynamic linker and libc allocators need:
 
-- requires `MAP_ANONYMOUS`
-- rejects `MAP_FIXED`
-- ignores file descriptors and offsets
-- **demand-paged**: only reserves the range (advances a per-task bump pointer);
-  zero-filled frames are mapped on first touch by the page-fault handler, the
-  same lazy model Linux uses. A large mapping therefore costs O(1) in the call
-  rather than mapping every page up front.
+- **anonymous, non-fixed** (malloc's big allocations): **demand-paged** — only
+  reserves the range (advances a per-task bump pointer); zero-filled frames are
+  mapped on first touch by the page-fault handler, the same lazy model Linux
+  uses. A large mapping costs O(1) in the call rather than mapping every page.
+- **file-backed, read-only**: pages are shared straight from the page cache
+  (`pagecache_acquire`), so a file mapped by many processes — libc.so above all
+  — is **one physical copy in RAM**. This is the Linux page-cache model and what
+  makes dynamic linking a memory win rather than a per-process cost.
+- **file-backed, writable / tmpfs-backed**, and **`MAP_FIXED`**: eager — a
+  private frame per page (file region read in, bss tail zeroed), mapped at the
+  caller's exact address for `MAP_FIXED`. musl's `ld.so` uses `MAP_FIXED` to
+  overlay each library segment onto its whole-library reserve.
 - returns `MAP_FAILED` (`(void *)-1`) on unsupported requests
 
 `SYS_BRK` is likewise lazy: growing the break only advances `user_brk`; pages in
 `[user_brk_base, user_brk)` fault in zeroed on first touch. (Query/shrink-to
 forms behave as before; the break only ever grows.)
 
-`SYS_MUNMAP` unmaps pages but does not currently recycle virtual addresses.
-Because the mmap window is a grow-only bump arena, touching a munmap'd address
-below `mmap_next` simply re-faults a fresh zero page rather than `SIGSEGV`-ing —
+`SYS_MUNMAP` clears each PTE and releases its frame (`vmm_unmap_and_free`, a
+refcount decrement — a shared page-cache frame survives while other processes
+still map it). It does not currently recycle *virtual* addresses: because the
+mmap window is a grow-only bump arena, touching a munmap'd address below
+`mmap_next` simply re-faults a fresh zero page rather than `SIGSEGV`-ing —
 acceptable for the current bring-up (no address reuse).
 
 ## Compatibility Stubs

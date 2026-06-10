@@ -314,6 +314,101 @@ static int user_range_mapped(uint32_t base, uint32_t len)
     return 1;
 }
 
+/* k_iovec: the Linux i386 `struct iovec` (8 bytes: ptr + size).  Used by writev. */
+struct k_iovec { uint32_t iov_base; uint32_t iov_len; };
+
+/* Shared write dispatch by fd kind: writes `len` bytes of `buf` to `fd` and
+ * returns the count, or < 0 on error.  Backs both SYS_WRITE and SYS_WRITEV --
+ * musl's buffered stdio writes go through writev(), so a stub there silently
+ * dropped all libc output even though the program exited cleanly. */
+static long syscall_fd_write(int fd, const char *buf, uint32_t len)
+{
+    if (!buf) return -1;
+    task_t     *cur = task_current();
+    fd_entry_t *e   = fd_get(cur ? cur->fd_table : NULL, fd);
+    if (!e) return -1;
+
+    if (e->kind == FD_KIND_VGA) {
+        if (!ktest_muted)
+            for (uint32_t i = 0; i < len; i++) t_putchar(buf[i]);
+        return (long)len;
+    } else if (e->kind == FD_KIND_VGA_SERIAL) {
+        if (!ktest_muted)
+            for (uint32_t i = 0; i < len; i++) t_putchar(buf[i]);
+        if (!g_serial_verbose)
+            for (uint32_t i = 0; i < len; i++) Serial_WriteChar(buf[i]);
+        return (long)len;
+    } else if (e->kind == FD_KIND_SERIAL) {
+        for (uint32_t i = 0; i < len; i++) Serial_WriteChar(buf[i]);
+        return (long)len;
+    } else if (e->kind == FD_KIND_BLOCKDEV) {
+        long r = vfs_blockdev_pwrite(e->dev_node, buf, len, e->pos);
+        if (r < 0) return -1;
+        e->pos += (uint32_t)r;
+        return r;
+    } else if (e->kind == FD_KIND_FILE) {
+        if (!e->writable) return -1;
+        if (e->append) e->pos = e->size;
+        uint64_t want_end = (uint64_t)e->pos + (uint64_t)len;
+        if (want_end > SYSCALL_FILE_MAX) return -1;        /* EFBIG */
+        if (want_end > e->capacity) {
+            uint32_t new_cap = e->capacity ? e->capacity : SYSCALL_FILE_INITIAL;
+            while ((uint64_t)new_cap < want_end) new_cap <<= 1;
+            if (new_cap > SYSCALL_FILE_MAX) new_cap = SYSCALL_FILE_MAX;
+            uint8_t *p = (uint8_t *)krealloc(e->data, new_cap);
+            if (!p) return -1;                              /* ENOMEM */
+            if (new_cap > e->capacity)
+                memset(p + e->capacity, 0, new_cap - e->capacity);
+            e->data = p; e->capacity = new_cap;
+        }
+        if (e->pos > e->size) memset(e->data + e->size, 0, e->pos - e->size);
+        memcpy(e->data + e->pos, buf, len);
+        e->pos += len;
+        if (e->pos > e->size) e->size = e->pos;
+        e->dirty = 1;
+        return (long)len;
+    } else if (e->kind == FD_KIND_PIPE) {
+        if (!e->pipe_is_writer || !e->pipe) return -1;
+        pipe_ring_t *r = e->pipe;
+        uint32_t written = 0;
+        while (written < len) {
+            if (r->refcount_r == 0) return written ? (long)written : -32;  /* EPIPE */
+            uint32_t inflight = r->head - r->tail;
+            uint32_t space    = PIPE_RING_CAP - inflight;
+            if (space == 0) {
+                if (e->flags & FD_FLAG_NONBLOCK)
+                    return written ? (long)written : -11;  /* EAGAIN */
+                task_yield();
+                continue;
+            }
+            uint32_t chunk = len - written;
+            if (chunk > space) chunk = space;
+            for (uint32_t i = 0; i < chunk; i++)
+                r->buf[(r->head + i) % PIPE_RING_CAP] = (uint8_t)buf[written + i];
+            r->head += chunk;
+            written += chunk;
+        }
+        return (long)written;
+    } else if (e->kind == FD_KIND_SOCKET) {
+        return ksock_send(e->sock_id, buf, len);
+    }
+    return -1;   /* KEYBOARD etc: not writable */
+}
+
+/* Read up to `n` bytes from a regular file fd at byte offset `off` into `dst`
+ * (a kernel-accessible buffer).  Returns bytes read; 0 past EOF.  Handles both
+ * lazy page-cached disk files (the ISO) and in-memory tmpfs files.  Backs the
+ * file-backed mmap path (musl's dynamic linker maps libc.so this way). */
+static long syscall_file_pread(fd_entry_t *e, uint8_t *dst, uint64_t off, uint32_t n)
+{
+    if (!e || e->kind != FD_KIND_FILE || off >= (uint64_t)e->size) return 0;
+    uint32_t avail = ((uint64_t)e->size - off) < (uint64_t)n
+                   ? (uint32_t)((uint64_t)e->size - off) : n;
+    if (e->lazy) return pagecache_read(e->path, e->size, (uint32_t)off, dst, avail);
+    memcpy(dst, e->data + (uint32_t)off, avail);
+    return (long)avail;
+}
+
 /* -------------------------------------------------------------------------
  * syscall_dispatch
  * ------------------------------------------------------------------------- */
@@ -742,119 +837,34 @@ static void syscall_dispatch_inner(registers_t *regs)
      * FILE:       not yet implemented (eager-buffer fd model).
      * ------------------------------------------------------------------ */
     case SYS_WRITE: {
-        int         fd  = (int)regs->ebx;
-        const char *buf = (const char *)(uintptr_t)regs->ecx;
-        uint32_t    len = regs->edx;
+        regs->eax = (uint32_t)syscall_fd_write((int)regs->ebx,
+                        (const char *)(uintptr_t)regs->ecx, regs->edx);
+        break;
+    }
 
-        if (!buf) { regs->eax = (uint32_t)-1; break; }
-
-        task_t     *cur = task_current();
-        fd_entry_t *e   = fd_get(cur ? cur->fd_table : NULL, fd);
-        if (!e) { regs->eax = (uint32_t)-1; break; }
-
-        if (e->kind == FD_KIND_VGA) {
-            if (!ktest_muted) {
-                for (uint32_t i = 0; i < len; i++)
-                    t_putchar(buf[i]);
-            }
-            regs->eax = len;
-        } else if (e->kind == FD_KIND_VGA_SERIAL) {
-            if (!ktest_muted) {
-                for (uint32_t i = 0; i < len; i++)
-                    t_putchar(buf[i]);
-            }
-            /* t_putchar already mirrors to COM1 when verbose mode is on
-             * (default).  Only echo here when verbose is off so stderr
-             * always reaches the serial log -- otherwise we'd write the
-             * same bytes twice and the log shows every chunk doubled. */
-            if (!g_serial_verbose) {
-                for (uint32_t i = 0; i < len; i++)
-                    Serial_WriteChar(buf[i]);
-            }
-            regs->eax = len;
-        } else if (e->kind == FD_KIND_SERIAL) {
-            for (uint32_t i = 0; i < len; i++)
-                Serial_WriteChar(buf[i]);
-            regs->eax = len;
-        } else if (e->kind == FD_KIND_BLOCKDEV) {
-            long r = vfs_blockdev_pwrite(e->dev_node, buf, len, e->pos);
-            if (r < 0) { regs->eax = (uint32_t)-1; }
-            else { e->pos += (uint32_t)r; regs->eax = (uint32_t)r; }
-        } else if (e->kind == FD_KIND_FILE) {
-            if (!e->writable) { regs->eax = (uint32_t)-1; break; }
-            if (e->append) e->pos = e->size;
-            /* Refuse writes that would push the buffer past the hard cap. */
-            uint64_t want_end = (uint64_t)e->pos + (uint64_t)len;
-            if (want_end > SYSCALL_FILE_MAX) {
-                regs->eax = (uint32_t)-1;   /* EFBIG */
-                break;
-            }
-            /* Grow geometrically (doubling) so many small TCC-style writes
-             * stay amortised O(1).  Floor the first allocation at INITIAL. */
-            if (want_end > e->capacity) {
-                uint32_t new_cap = e->capacity ? e->capacity : SYSCALL_FILE_INITIAL;
-                while ((uint64_t)new_cap < want_end) new_cap <<= 1;
-                if (new_cap > SYSCALL_FILE_MAX) new_cap = SYSCALL_FILE_MAX;
-                uint8_t *p = (uint8_t *)krealloc(e->data, new_cap);
-                if (!p) { regs->eax = (uint32_t)-1; break; }  /* ENOMEM */
-                /* Zero the newly-allocated tail so leftover heap garbage
-                 * never leaks into ring-3 reads. */
-                if (new_cap > e->capacity)
-                    memset(p + e->capacity, 0, new_cap - e->capacity);
-                e->data     = p;
-                e->capacity = new_cap;
-            }
-            /* lseek-past-EOF: zero-fill the gap between current EOF and pos. */
-            if (e->pos > e->size)
-                memset(e->data + e->size, 0, e->pos - e->size);
-            memcpy(e->data + e->pos, buf, len);
-            e->pos += len;
-            if (e->pos > e->size) e->size = e->pos;
-            e->dirty = 1;
-            regs->eax = len;
-        } else if (e->kind == FD_KIND_PIPE) {
-            /* Writer on a pipe: spin-yield while ring is full.  If every
-             * reader closes (refcount_r == 0), writing returns -EPIPE. */
-            if (!e->pipe_is_writer || !e->pipe) {
-                regs->eax = (uint32_t)-1;
-                break;
-            }
-            pipe_ring_t *r = e->pipe;
-            uint32_t written = 0;
-            while (written < len) {
-                if (r->refcount_r == 0) {
-                    /* SIGPIPE not yet implemented; surface as -EPIPE. */
-                    regs->eax = written ? written : (uint32_t)-32;
-                    break;
-                }
-                uint32_t inflight = r->head - r->tail;
-                uint32_t space    = PIPE_RING_CAP - inflight;
-                if (space == 0) {
-                    if (e->flags & FD_FLAG_NONBLOCK) {
-                        regs->eax = written ? written : (uint32_t)-11;  /* EAGAIN */
-                        break;
-                    }
-                    task_yield();
-                    continue;
-                }
-                uint32_t chunk = len - written;
-                if (chunk > space) chunk = space;
-                for (uint32_t i = 0; i < chunk; i++) {
-                    r->buf[(r->head + i) % PIPE_RING_CAP] = (uint8_t)buf[written + i];
-                }
-                r->head += chunk;
-                written += chunk;
-            }
-            if (written == len) regs->eax = written;
-        } else if (e->kind == FD_KIND_SOCKET) {
-            /* TCP socket: ksock_send blocks (bounded) while the send buffer
-             * drains; returns bytes written or -1. */
-            long r = ksock_send(e->sock_id, buf, len);
-            regs->eax = (uint32_t)r;
-        } else {
-            /* KEYBOARD: not writable. */
-            regs->eax = (uint32_t)-1;
+    /* ------------------------------------------------------------------
+     * SYS_WRITEV(146): gather-write.  EBX=fd, ECX=const struct iovec*,
+     * EDX=iovcnt.  Returns the total bytes written (EAX), or (uint32_t)-1.
+     * musl's buffered stdio writes go through writev(), so without this
+     * every printf/fprintf produced no output even though the program ran.
+     * Stops at the first failed/short segment, matching Linux writev(2).
+     * ------------------------------------------------------------------ */
+    case SYS_WRITEV: {
+        int  fd     = (int)regs->ebx;
+        const struct k_iovec *iov = (const struct k_iovec *)(uintptr_t)regs->ecx;
+        int  iovcnt = (int)regs->edx;
+        if (!iov || iovcnt < 0) { regs->eax = (uint32_t)-1; break; }
+        long total = 0;
+        for (int i = 0; i < iovcnt; i++) {
+            const char *base = (const char *)(uintptr_t)iov[i].iov_base;
+            uint32_t    l    = iov[i].iov_len;
+            if (l == 0) continue;
+            long n = syscall_fd_write(fd, base, l);
+            if (n < 0) { if (total == 0) total = n; break; }
+            total += n;
+            if ((uint32_t)n < l) break;   /* short write -> stop */
         }
+        regs->eax = (uint32_t)total;
         break;
     }
 
@@ -1342,7 +1352,9 @@ static void syscall_dispatch_inner(registers_t *regs)
         memset(e, 0, sizeof(*e));
 
         if (!exists) {
-            if (!o_creat) { regs->eax = (uint32_t)-1; break; }
+            if (!o_creat) { regs->eax = (uint32_t)-2; break; }   /* -ENOENT: musl's
+                ld.so reads -errno to know a library path is absent and try the
+                next; existing apps only test <0 so the value change is safe. */
             /* Create: allocate an empty growable buffer and mark dirty
              * so close flushes (even if no writes follow) -- this is
              * what makes `touch`-style "create empty file" work. */
@@ -1588,31 +1600,108 @@ static void syscall_dispatch_inner(registers_t *regs)
      * a hosted malloc (musl mallocng) needs beyond brk.
      * ------------------------------------------------------------------ */
     case SYS_MMAP2: {
-        #define MMAP_MAP_ANONYMOUS 0x20u
         #define MMAP_MAP_FIXED     0x10u
+        #define MMAP_MAP_ANONYMOUS 0x20u
+        #define MMAP_PROT_WRITE    0x2u
+        uint32_t addr  = regs->ebx;
         uint32_t len   = regs->ecx;
+        uint32_t prot  = regs->edx;
         uint32_t flags = regs->esi;
+        int      fd    = (int)regs->edi;
+        uint32_t pgoff = regs->ebp;          /* file offset in 4 KiB pages */
         task_t  *t     = task_current();
 
-        if (!t || len == 0 || !(flags & MMAP_MAP_ANONYMOUS) ||
-            (flags & MMAP_MAP_FIXED)) {
-            regs->eax = (uint32_t)-1; break;          /* MAP_FAILED */
+        if (!t || len == 0) { regs->eax = (uint32_t)-1; break; }
+
+        uint32_t pages  = (len + 0xFFFu) >> 12;
+        int      fixed  = (flags & MMAP_MAP_FIXED) != 0;
+        int      anon   = (flags & MMAP_MAP_ANONYMOUS) != 0;
+        uint32_t mflags = VMM_FLAG_USER |
+                          ((prot & MMAP_PROT_WRITE) ? VMM_FLAG_WRITABLE : 0);
+
+        /* Choose the base address. */
+        uint32_t base;
+        if (fixed) {
+            base = addr & ~0xFFFu;
+            if (base < 0x10000000u || base + (pages << 12) > 0xBFFF0000u) {
+                regs->eax = (uint32_t)-1; break;
+            }
+        } else {
+            if (t->mmap_next == 0) t->mmap_next = USER_MMAP_BASE;
+            base = t->mmap_next;
+            if (base + (pages << 12) >= 0xBFFF0000u - (8u * 0x1000u)) {
+                regs->eax = (uint32_t)-1; break;
+            }
+            t->mmap_next = base + (pages << 12);
         }
 
-        uint32_t pages = (len + 0xFFFu) >> 12;
-        if (t->mmap_next == 0) t->mmap_next = USER_MMAP_BASE;
-        uint32_t base = t->mmap_next;
+        /* Anonymous + growable window: keep the demand-paged reserve -- the
+         * page-fault handler zero-fills [USER_MMAP_BASE, mmap_next) on touch
+         * (same lazy model as brk). */
+        if (anon && !fixed) { regs->eax = base; break; }
 
-        /* Don't collide with the ring-3 stack region. */
-        if (base + (pages << 12) >= 0xBFFF0000u - (8u * 0x1000u)) {
-            regs->eax = (uint32_t)-1; break;
+        /* Anonymous-fixed OR file-backed: map eagerly now.  musl's dynamic
+         * linker maps each shared object as a file-backed MAP_PRIVATE span,
+         * then MAP_FIXED-overlays the segments (own prot) + an anon bss tail. */
+        fd_entry_t *fe = NULL;
+        if (!anon) {
+            fe = fd_get(t->fd_table, fd);
+            if (!fe || fe->kind != FD_KIND_FILE) { regs->eax = (uint32_t)-1; break; }
         }
+        /* A read-only, path-backed (lazy) file mapping shares frames straight
+         * out of the page cache: pagecache_acquire pins the cache's frame, so
+         * libc.so's ~700 KiB of text/rodata is one copy in RAM no matter how
+         * many processes map it.  Writable file maps, tmpfs-backed files and
+         * anon-fixed maps each take a private frame.  Either way a MAP_FIXED
+         * page replaces through vmm_unmap_and_free so the frame it overlays
+         * (e.g. musl's whole-library reserve) is released, not leaked. */
+        int shared_ro = (!anon && fe && fe->lazy && !(prot & MMAP_PROT_WRITE));
+        int failed = 0;
+        for (uint32_t i = 0; i < pages; i++) {
+            uint32_t va   = base + (i << 12);
+            uint32_t phys = 0;
 
-        /* Demand-paged anonymous mmap: reserve the window only; the page-fault
-         * handler maps a zeroed frame on first touch in [USER_MMAP_BASE,
-         * mmap_next).  Same lazy model as brk above. */
-        t->mmap_next = base + (pages << 12);
+            if (shared_ro)
+                phys = pagecache_acquire(fe->path, fe->size, pgoff + i, NULL);
+
+            if (!phys) {
+                /* Private frame: anon, a writable/tmpfs file, or a file page
+                 * wholly past EOF (left zero-filled, like the bss tail). */
+                phys = pmm_alloc_frame();
+                if (phys == PMM_ALLOC_ERROR) { failed = 1; break; }
+                memset((void *)phys, 0, 0x1000);
+                if (!anon && !shared_ro) {
+                    uint64_t off = ((uint64_t)pgoff << 12) + ((uint64_t)i << 12);
+                    syscall_file_pread(fe, (uint8_t *)phys, off, 0x1000);
+                }
+            }
+
+            if (fixed) vmm_unmap_and_free(t->page_dir, va);  /* release any prior frame */
+            vmm_map_page(t->page_dir, va, phys, mflags);
+        }
+        if (failed) { regs->eax = (uint32_t)-1; break; }
         regs->eax = base;
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_MPROTECT(125): EBX=addr, ECX=len, EDX=prot.  Rewrites the
+     * writable bit across the range (keeps each page's frame), so musl's
+     * dynamic linker can RELRO-protect the GOT after relocation.  i386 has
+     * no NX, so PROT_EXEC is implicit; PROT_NONE is treated as read-only.
+     * ------------------------------------------------------------------ */
+    case SYS_MPROTECT: {
+        uint32_t addr = regs->ebx & ~0xFFFu;
+        uint32_t len  = regs->ecx;
+        uint32_t prot = regs->edx;
+        task_t  *t    = task_current();
+        if (!t || len == 0) { regs->eax = (uint32_t)-1; break; }
+        uint32_t pages  = ((regs->ebx & 0xFFFu) + len + 0xFFFu) >> 12;
+        uint32_t mflags = VMM_FLAG_USER |
+                          ((prot & 0x2u /*PROT_WRITE*/) ? VMM_FLAG_WRITABLE : 0);
+        for (uint32_t i = 0; i < pages; i++)
+            vmm_protect_page(t->page_dir, addr + (i << 12), mflags);
+        regs->eax = 0;
         break;
     }
 
@@ -1628,7 +1717,7 @@ static void syscall_dispatch_inner(registers_t *regs)
         if (t && len) {
             uint32_t pages = (len + 0xFFFu) >> 12;
             for (uint32_t i = 0; i < pages; i++)
-                vmm_unmap_page(t->page_dir, addr + (i << 12));
+                vmm_unmap_and_free(t->page_dir, addr + (i << 12));  /* release frames, not just PTEs */
         }
         regs->eax = 0;
         break;

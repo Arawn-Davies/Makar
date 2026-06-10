@@ -9,6 +9,13 @@
 #define PAGE_USER      0x4u
 #define PAGE_LARGE     0x80u
 
+/* Upper bound of the permanent low identity map (0..256 MiB): the window
+ * through which the kernel reaches page-table and data frames by their physical
+ * address.  Frames/PTs at or above it are out-of-window -- treated as corrupt
+ * by the PD walkers, and not released by the frame helpers (vmm_unmap_and_free
+ * / vmm_free_pd), which only ever own RAM frames from pmm_alloc_frame. */
+#define VMM_KERNEL_IDMAP_END 0x10000000u
+
 /* Higher-half kernel virtual base (must match KERNEL_VBASE in linker.ld /
  * boot.S / paging.c).  Per-task user page directories come from
  * pmm_alloc_frame() and so are addressed by their (low) physical address,
@@ -71,6 +78,25 @@ void vmm_map_page(uint32_t *pd, uint32_t virt, uint32_t phys, uint32_t flags)
     pt[pti] = (phys & ~0xFFFu) | (flags & 0xFFFu) | PAGE_PRESENT;
 }
 
+/* vmm_protect_page – change the permission bits of an existing mapping while
+ * keeping its physical frame.  No-op if the page isn't mapped.  Backs
+ * mprotect() (musl's dynamic linker re-protects RELRO after relocation).
+ * Flushes the TLB for `virt` (the calling task owns the active address space). */
+void vmm_protect_page(uint32_t *pd, uint32_t virt, uint32_t flags)
+{
+    uint32_t pdi = virt >> 22;
+    uint32_t pti = (virt >> 12) & 0x3FFu;
+
+    if (pd[pdi] & PAGE_LARGE)      return;
+    if (!(pd[pdi] & PAGE_PRESENT)) return;
+    uint32_t *pt = (uint32_t *)(pd[pdi] & ~0xFFFu);
+    if (!(pt[pti] & PAGE_PRESENT)) return;
+
+    uint32_t phys = pt[pti] & ~0xFFFu;
+    pt[pti] = phys | (flags & 0xFFFu) | PAGE_PRESENT;
+    __asm__ volatile("invlpg (%0)" :: "r"(virt) : "memory");
+}
+
 void vmm_unmap_page(uint32_t *pd, uint32_t virt)
 {
     uint32_t pdi = virt >> 22;
@@ -93,6 +119,40 @@ void vmm_unmap_page(uint32_t *pd, uint32_t virt)
         asm volatile("invlpg (%0)" :: "r"(virt) : "memory");
 }
 
+/* Like vmm_unmap_page, but also releases the page's backing frame (decrementing
+ * its refcount; the PMM frees it only at zero).  Use this for mappings whose
+ * frames the task owns a ref on -- anonymous pages and file-backed mmap pages,
+ * including shared page-cache frames (pmm_inc_ref'd at map time).  Plain
+ * vmm_unmap_page (no free) stays for callers that deliberately don't own the
+ * frame.  Mirrors vmm_free_pd's guards: only release a real, non-kernel frame
+ * inside the identity map. */
+void vmm_unmap_and_free(uint32_t *pd, uint32_t virt)
+{
+    uint32_t pdi = virt >> 22;
+    uint32_t pti = (virt >> 12) & 0x3FFu;
+
+    if (!(pd[pdi] & PAGE_PRESENT) || (pd[pdi] & PAGE_LARGE))
+        return;
+
+    uint32_t *pt = (uint32_t *)(pd[pdi] & ~0xFFFu);
+    uint32_t pte = pt[pti];
+    if (!(pte & PAGE_PRESENT))
+        return;
+
+    uint32_t frame = pte & ~0xFFFu;
+    pt[pti] = 0;
+
+    /* Release the frame iff it is a real RAM frame inside the identity map --
+     * the same guard vmm_free_pd uses for teardown. */
+    if (frame && frame < VMM_KERNEL_IDMAP_END)
+        pmm_free_frame(frame);
+
+    uint32_t cr3;
+    asm volatile("mov %%cr3, %0" : "=r"(cr3));
+    if (cr3 == v2p_pd(pd))
+        asm volatile("invlpg (%0)" :: "r"(virt) : "memory");
+}
+
 void vmm_switch(uint32_t *pd)
 {
     /* CR3 needs a physical address.  User PDs are physical already; the kernel
@@ -105,8 +165,8 @@ void vmm_switch(uint32_t *pd)
  * by the kernel -- the PT-pointer dereference would itself page-fault.
  * Any PDE whose physical address is >= this bound is treated as corrupt
  * and skipped.  Real user-task PTs always come from pmm_alloc_frame which
- * only hands out frames within this identity-mapped window. */
-#define VMM_KERNEL_IDMAP_END 0x10000000u
+ * only hands out frames within this identity-mapped window.  (The bound,
+ * VMM_KERNEL_IDMAP_END, is defined near the top of this file.) */
 
 uint32_t *vmm_clone_pd_cow(uint32_t *parent_pd)
 {
@@ -129,8 +189,12 @@ uint32_t *vmm_clone_pd_cow(uint32_t *parent_pd)
 
         if (!(ppde & PAGE_PRESENT) || (ppde & PAGE_LARGE))
             continue;
-        /* PDE shared with kernel - already mirrored above, nothing to clone. */
-        if (ppde == kpd[pdi])
+        /* PDE pointing at a kernel-owned page table - already mirrored above,
+         * nothing to clone.  Compare the PT frame only (not the whole PDE): the
+         * CPU's asynchronous Accessed/Dirty updates make the parent's copy
+         * diverge from kpd by status bits, and an exact compare would then
+         * wrongly clone the kernel PT into the child. */
+        if ((ppde & ~0xFFFu) == (kpd[pdi] & ~0xFFFu))
             continue;
 
         uint32_t parent_pt_phys = ppde & ~0xFFFu;
@@ -195,9 +259,13 @@ void vmm_free_pd(uint32_t *pd)
         uint32_t pde = pd[pdi];
         if (!(pde & PAGE_PRESENT) || (pde & PAGE_LARGE))
             continue;
-        /* Skip PDEs shared with the kernel - freeing them would corrupt the
-         * kernel's own mappings. */
-        if (pde == kpd[pdi])
+        /* Skip PDEs that point at a kernel-owned page table - freeing it would
+         * corrupt the kernel's mappings (and underflow its refcount, since
+         * kernel PTs never go through pmm_alloc).  Compare the PT *frame* only:
+         * the CPU sets Accessed/Dirty asynchronously on the kernel's PDE copy
+         * (e.g. drawing to the framebuffer at 0xFD400000), so an exact PDE
+         * compare would diverge by those status bits and miss the share. */
+        if ((pde & ~0xFFFu) == (kpd[pdi] & ~0xFFFu))
             continue;
 
         uint32_t pt_phys = pde & ~0xFFFu;

@@ -38,7 +38,8 @@
 #define SYS_RMDIR      40   /* int rmdir(const char *path)                      */
 #define SYS_BRK        45   /* void *brk(void *addr)                            */
 #define SYS_MUNMAP     91   /* int munmap(void *addr, size_t len)               */
-#define SYS_MMAP2     192   /* void *mmap2(addr,len,prot,flags,fd,pgoff) -- anon only */
+#define SYS_MPROTECT  125   /* int mprotect(addr, len, prot) -- toggles writable */
+#define SYS_MMAP2     192   /* void *mmap2(addr,len,prot,flags,fd,pgoff) -- anon + file-backed */
 /* musl/Linux process-startup syscalls (hosted toolchain bring-up) */
 #define SYS_IOCTL          54   /* int ioctl(fd, req, ...) -- stub (-ENOTTY)        */
 #define SYS_WRITEV        146   /* ssize_t writev(fd, const struct iovec*, int)     */
