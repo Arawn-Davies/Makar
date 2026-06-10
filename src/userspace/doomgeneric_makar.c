@@ -51,20 +51,24 @@ static unsigned char convertToDoomKey(unsigned char sc)
         case 0x38: return KEY_STRAFE_L;     /* Alt (strafe modifier in vanilla) */
         case 0x2A: case 0x36: return KEY_RSHIFT;  /* Shift = run */
         case 0x0F: return KEY_TAB;          /* Tab = map    */
+        case 0x0E: return KEY_BACKSPACE;    /* Backspace (menu / save-name)     */
         case 0x3B: return KEY_F1;
         case 0x3C: return KEY_F2;
         case 0x3D: return KEY_F3;
         case 0x3E: return KEY_F4;
-        case 0x2C: return 'z';
-        case 0x2D: return 'x';
-        case 0x15: return 'y';
-        case 0x31: return 'n';
-        /* number row 1..7 -> weapon select */
-        case 0x02: return '1'; case 0x03: return '2'; case 0x04: return '3';
-        case 0x05: return '4'; case 0x06: return '5'; case 0x07: return '6';
-        case 0x08: return '7';
-        default:   return 0;
+        default:   break;
     }
+    /* Letters a-z, digits 0-9 and common punctuation -> ASCII, so the engine's
+     * cheat responder (iddqd / idkfa / idclip / idspispopd / idbehold / idclev /
+     * idmus / idchoppers) and the save-game name entry receive them.  Weapon
+     * select (1-7) falls out of the digit row too. */
+    static const unsigned char ascii[0x40] = {
+        0,   0,  '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', 0,   0,
+        'q','w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', 0,   0,  'a', 's',
+        'd','f', 'g', 'h', 'j', 'k', 'l', ';','\'', '`', 0,  '\\','z', 'x', 'c', 'v',
+        'b','n', 'm', ',', '.', '/', 0,   0,   0,   0,   0,   0,   0,   0,   0,   0
+    };
+    return (sc < 0x40) ? ascii[sc] : 0;
 }
 
 void DG_Init(void)

@@ -515,6 +515,12 @@ fullscreen path (shell `doom`), unchanged — so DOOM works the same in GUI and
 text mode. Only `makx.o` is linked in (no `gui_gfx`): the backend uses the
 `gfx_surface` *type* from `makx.h`, not any drawing code.
 
+`convertToDoomKey` translates set-1 scancodes to Doom keys for **both** paths.
+Besides the movement/action bindings it maps the full **a–z / 0–9** rows to
+ASCII, so the engine's built-in **cheat responder** (`iddqd`, `idkfa`, `idclip`,
+`idspispopd`, `idbehold`, `idclev##`, `idmus##`, `idchoppers`) and save-game name
+entry receive the letters — type them in-game the same as on a PC.
+
 ## Status
 
 - **Phase 1 (done):** kernel shared surfaces + ktest.
