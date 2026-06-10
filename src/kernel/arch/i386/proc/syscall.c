@@ -314,6 +314,87 @@ static int user_range_mapped(uint32_t base, uint32_t len)
     return 1;
 }
 
+/* k_iovec: the Linux i386 `struct iovec` (8 bytes: ptr + size).  Used by writev. */
+struct k_iovec { uint32_t iov_base; uint32_t iov_len; };
+
+/* Shared write dispatch by fd kind: writes `len` bytes of `buf` to `fd` and
+ * returns the count, or < 0 on error.  Backs both SYS_WRITE and SYS_WRITEV --
+ * musl's buffered stdio writes go through writev(), so a stub there silently
+ * dropped all libc output even though the program exited cleanly. */
+static long syscall_fd_write(int fd, const char *buf, uint32_t len)
+{
+    if (!buf) return -1;
+    task_t     *cur = task_current();
+    fd_entry_t *e   = fd_get(cur ? cur->fd_table : NULL, fd);
+    if (!e) return -1;
+
+    if (e->kind == FD_KIND_VGA) {
+        if (!ktest_muted)
+            for (uint32_t i = 0; i < len; i++) t_putchar(buf[i]);
+        return (long)len;
+    } else if (e->kind == FD_KIND_VGA_SERIAL) {
+        if (!ktest_muted)
+            for (uint32_t i = 0; i < len; i++) t_putchar(buf[i]);
+        if (!g_serial_verbose)
+            for (uint32_t i = 0; i < len; i++) Serial_WriteChar(buf[i]);
+        return (long)len;
+    } else if (e->kind == FD_KIND_SERIAL) {
+        for (uint32_t i = 0; i < len; i++) Serial_WriteChar(buf[i]);
+        return (long)len;
+    } else if (e->kind == FD_KIND_BLOCKDEV) {
+        long r = vfs_blockdev_pwrite(e->dev_node, buf, len, e->pos);
+        if (r < 0) return -1;
+        e->pos += (uint32_t)r;
+        return r;
+    } else if (e->kind == FD_KIND_FILE) {
+        if (!e->writable) return -1;
+        if (e->append) e->pos = e->size;
+        uint64_t want_end = (uint64_t)e->pos + (uint64_t)len;
+        if (want_end > SYSCALL_FILE_MAX) return -1;        /* EFBIG */
+        if (want_end > e->capacity) {
+            uint32_t new_cap = e->capacity ? e->capacity : SYSCALL_FILE_INITIAL;
+            while ((uint64_t)new_cap < want_end) new_cap <<= 1;
+            if (new_cap > SYSCALL_FILE_MAX) new_cap = SYSCALL_FILE_MAX;
+            uint8_t *p = (uint8_t *)krealloc(e->data, new_cap);
+            if (!p) return -1;                              /* ENOMEM */
+            if (new_cap > e->capacity)
+                memset(p + e->capacity, 0, new_cap - e->capacity);
+            e->data = p; e->capacity = new_cap;
+        }
+        if (e->pos > e->size) memset(e->data + e->size, 0, e->pos - e->size);
+        memcpy(e->data + e->pos, buf, len);
+        e->pos += len;
+        if (e->pos > e->size) e->size = e->pos;
+        e->dirty = 1;
+        return (long)len;
+    } else if (e->kind == FD_KIND_PIPE) {
+        if (!e->pipe_is_writer || !e->pipe) return -1;
+        pipe_ring_t *r = e->pipe;
+        uint32_t written = 0;
+        while (written < len) {
+            if (r->refcount_r == 0) return written ? (long)written : -32;  /* EPIPE */
+            uint32_t inflight = r->head - r->tail;
+            uint32_t space    = PIPE_RING_CAP - inflight;
+            if (space == 0) {
+                if (e->flags & FD_FLAG_NONBLOCK)
+                    return written ? (long)written : -11;  /* EAGAIN */
+                task_yield();
+                continue;
+            }
+            uint32_t chunk = len - written;
+            if (chunk > space) chunk = space;
+            for (uint32_t i = 0; i < chunk; i++)
+                r->buf[(r->head + i) % PIPE_RING_CAP] = (uint8_t)buf[written + i];
+            r->head += chunk;
+            written += chunk;
+        }
+        return (long)written;
+    } else if (e->kind == FD_KIND_SOCKET) {
+        return ksock_send(e->sock_id, buf, len);
+    }
+    return -1;   /* KEYBOARD etc: not writable */
+}
+
 /* -------------------------------------------------------------------------
  * syscall_dispatch
  * ------------------------------------------------------------------------- */
@@ -742,119 +823,34 @@ static void syscall_dispatch_inner(registers_t *regs)
      * FILE:       not yet implemented (eager-buffer fd model).
      * ------------------------------------------------------------------ */
     case SYS_WRITE: {
-        int         fd  = (int)regs->ebx;
-        const char *buf = (const char *)(uintptr_t)regs->ecx;
-        uint32_t    len = regs->edx;
+        regs->eax = (uint32_t)syscall_fd_write((int)regs->ebx,
+                        (const char *)(uintptr_t)regs->ecx, regs->edx);
+        break;
+    }
 
-        if (!buf) { regs->eax = (uint32_t)-1; break; }
-
-        task_t     *cur = task_current();
-        fd_entry_t *e   = fd_get(cur ? cur->fd_table : NULL, fd);
-        if (!e) { regs->eax = (uint32_t)-1; break; }
-
-        if (e->kind == FD_KIND_VGA) {
-            if (!ktest_muted) {
-                for (uint32_t i = 0; i < len; i++)
-                    t_putchar(buf[i]);
-            }
-            regs->eax = len;
-        } else if (e->kind == FD_KIND_VGA_SERIAL) {
-            if (!ktest_muted) {
-                for (uint32_t i = 0; i < len; i++)
-                    t_putchar(buf[i]);
-            }
-            /* t_putchar already mirrors to COM1 when verbose mode is on
-             * (default).  Only echo here when verbose is off so stderr
-             * always reaches the serial log -- otherwise we'd write the
-             * same bytes twice and the log shows every chunk doubled. */
-            if (!g_serial_verbose) {
-                for (uint32_t i = 0; i < len; i++)
-                    Serial_WriteChar(buf[i]);
-            }
-            regs->eax = len;
-        } else if (e->kind == FD_KIND_SERIAL) {
-            for (uint32_t i = 0; i < len; i++)
-                Serial_WriteChar(buf[i]);
-            regs->eax = len;
-        } else if (e->kind == FD_KIND_BLOCKDEV) {
-            long r = vfs_blockdev_pwrite(e->dev_node, buf, len, e->pos);
-            if (r < 0) { regs->eax = (uint32_t)-1; }
-            else { e->pos += (uint32_t)r; regs->eax = (uint32_t)r; }
-        } else if (e->kind == FD_KIND_FILE) {
-            if (!e->writable) { regs->eax = (uint32_t)-1; break; }
-            if (e->append) e->pos = e->size;
-            /* Refuse writes that would push the buffer past the hard cap. */
-            uint64_t want_end = (uint64_t)e->pos + (uint64_t)len;
-            if (want_end > SYSCALL_FILE_MAX) {
-                regs->eax = (uint32_t)-1;   /* EFBIG */
-                break;
-            }
-            /* Grow geometrically (doubling) so many small TCC-style writes
-             * stay amortised O(1).  Floor the first allocation at INITIAL. */
-            if (want_end > e->capacity) {
-                uint32_t new_cap = e->capacity ? e->capacity : SYSCALL_FILE_INITIAL;
-                while ((uint64_t)new_cap < want_end) new_cap <<= 1;
-                if (new_cap > SYSCALL_FILE_MAX) new_cap = SYSCALL_FILE_MAX;
-                uint8_t *p = (uint8_t *)krealloc(e->data, new_cap);
-                if (!p) { regs->eax = (uint32_t)-1; break; }  /* ENOMEM */
-                /* Zero the newly-allocated tail so leftover heap garbage
-                 * never leaks into ring-3 reads. */
-                if (new_cap > e->capacity)
-                    memset(p + e->capacity, 0, new_cap - e->capacity);
-                e->data     = p;
-                e->capacity = new_cap;
-            }
-            /* lseek-past-EOF: zero-fill the gap between current EOF and pos. */
-            if (e->pos > e->size)
-                memset(e->data + e->size, 0, e->pos - e->size);
-            memcpy(e->data + e->pos, buf, len);
-            e->pos += len;
-            if (e->pos > e->size) e->size = e->pos;
-            e->dirty = 1;
-            regs->eax = len;
-        } else if (e->kind == FD_KIND_PIPE) {
-            /* Writer on a pipe: spin-yield while ring is full.  If every
-             * reader closes (refcount_r == 0), writing returns -EPIPE. */
-            if (!e->pipe_is_writer || !e->pipe) {
-                regs->eax = (uint32_t)-1;
-                break;
-            }
-            pipe_ring_t *r = e->pipe;
-            uint32_t written = 0;
-            while (written < len) {
-                if (r->refcount_r == 0) {
-                    /* SIGPIPE not yet implemented; surface as -EPIPE. */
-                    regs->eax = written ? written : (uint32_t)-32;
-                    break;
-                }
-                uint32_t inflight = r->head - r->tail;
-                uint32_t space    = PIPE_RING_CAP - inflight;
-                if (space == 0) {
-                    if (e->flags & FD_FLAG_NONBLOCK) {
-                        regs->eax = written ? written : (uint32_t)-11;  /* EAGAIN */
-                        break;
-                    }
-                    task_yield();
-                    continue;
-                }
-                uint32_t chunk = len - written;
-                if (chunk > space) chunk = space;
-                for (uint32_t i = 0; i < chunk; i++) {
-                    r->buf[(r->head + i) % PIPE_RING_CAP] = (uint8_t)buf[written + i];
-                }
-                r->head += chunk;
-                written += chunk;
-            }
-            if (written == len) regs->eax = written;
-        } else if (e->kind == FD_KIND_SOCKET) {
-            /* TCP socket: ksock_send blocks (bounded) while the send buffer
-             * drains; returns bytes written or -1. */
-            long r = ksock_send(e->sock_id, buf, len);
-            regs->eax = (uint32_t)r;
-        } else {
-            /* KEYBOARD: not writable. */
-            regs->eax = (uint32_t)-1;
+    /* ------------------------------------------------------------------
+     * SYS_WRITEV(146): gather-write.  EBX=fd, ECX=const struct iovec*,
+     * EDX=iovcnt.  Returns the total bytes written (EAX), or (uint32_t)-1.
+     * musl's buffered stdio writes go through writev(), so without this
+     * every printf/fprintf produced no output even though the program ran.
+     * Stops at the first failed/short segment, matching Linux writev(2).
+     * ------------------------------------------------------------------ */
+    case SYS_WRITEV: {
+        int  fd     = (int)regs->ebx;
+        const struct k_iovec *iov = (const struct k_iovec *)(uintptr_t)regs->ecx;
+        int  iovcnt = (int)regs->edx;
+        if (!iov || iovcnt < 0) { regs->eax = (uint32_t)-1; break; }
+        long total = 0;
+        for (int i = 0; i < iovcnt; i++) {
+            const char *base = (const char *)(uintptr_t)iov[i].iov_base;
+            uint32_t    l    = iov[i].iov_len;
+            if (l == 0) continue;
+            long n = syscall_fd_write(fd, base, l);
+            if (n < 0) { if (total == 0) total = n; break; }
+            total += n;
+            if ((uint32_t)n < l) break;   /* short write -> stop */
         }
+        regs->eax = (uint32_t)total;
         break;
     }
 

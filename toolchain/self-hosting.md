@@ -120,7 +120,11 @@ is itself a project. This is the "awful lot" — correctly intuited.
 ## Recommended path (most value per unit pain)
 
 1. **Finish B** — TLS gate + `writev`; prove a cross-built static-musl `hello`
-   runs. (In progress; prerequisites committed.)
+   runs. **Done** (`feat/dynamic-libc` Phase 0): TLS + futex were already in;
+   `SYS_WRITEV` (146) was the missing piece and is now implemented. A static-musl
+   `hello` runs end-to-end in-OS (`/apps/muslhello.elf`, gated by
+   `shell-smoke.sh: musl-static`). Next: **dynamic** linking (musl `libc.so` +
+   `ld-musl-i386.so.1`) — see `~/.claude/plans/melodic-honking-river.md`.
 2. **Tier 1: musl as the system libc** — futex no-op, the ~30 syscalls, errno
    convention, ship musl to `/usr/lib`. Unlocks running a *lot* of real hosted
    software in-OS. **This is the high-value milestone.**

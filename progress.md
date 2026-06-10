@@ -82,8 +82,30 @@ Last reordered 2026-06-09 (after PR #204 merged).
   - [ ] **T51.3 — strip the in-kernel HTTP/TLS** now that ring 3 owns it: remove `SYS_WGET` + `cmd_wget` + `wget_fetch`/`wget_tls` from `shell_cmd_net.c`, and `libbearssl.a` from the kernel image (make.config / `Makefile`). End state: kernel = TCP/IP + sockets only (empties the http + TLS boxes in `krnlsepr.md`).
 - [ ] **T49** — SSH over the NIC, on the T51 crypto layer. **Target: a Dropbear port** (lightweight, self-contained crypto/SSH); needs the userspace TCP sockets + a pty path.
 
-### Self-hosted toolchain (after HTTPS; unblocks hosted ports)
-- [ ] **T53** — A proper **`i686-makar`** OS-specific cross toolchain (per the OSDev *OS-Specific-Toolchain* / *Hosted-GCC* / *Creating-a-C-Library* pages): patch binutils + GCC (`config.sub` / `config.gcc` / `makar.h`) for an `i686-makar` target and **port newlib** as the libc with Makar syscall stubs + a sysroot. **Decided** over the existing `i686-linux-musl` shortcut (which already builds Makar-runnable ELFs via the Linux-i386 ABI — see `toolchain/`) and over an own-libc. Big multi-session slice; the foundation for hosted ports (lynx, dash, Dropbear).
+### Self-hosted musl libc + dynamic linking (EPIC, ACTIVE — branch `feat/dynamic-libc`)
+Ship **musl as a shared `libc.so`** and run **dynamically-linked** programs, using
+musl's own dynamic linker (`ld-musl-i386.so.1`).  Reuses the existing host musl
+cross-toolchain in `toolchain/` (already produces `libc.so` + the interpreter +
+PIE startfiles).  Scope: capability + demo; the ~50 in-tree apps stay static.
+Chosen over newlib / an own-libc / an own dynamic linker.  Plan:
+`~/.claude/plans/melodic-honking-river.md`.
+- [x] **Phase 0 — static musl runs in-OS.** A real static-musl `hello`
+  (`toolchain/test/hello.c`, staged via `toolchain/build-musl-demos.sh` as
+  `/apps/muslhello.elf`, linked at `0x40000000`) executes end-to-end: musl
+  startup (auxv walk, `set_thread_area` TLS, `futex` locks), `argc` plumbing,
+  `printf`/`fprintf`, buffered-stdout flush on `exit()`, clean exit 0.  Found +
+  fixed the blocker: **`SYS_WRITEV` (146) was unimplemented** — musl's stdio
+  writes through `writev`, so all libc output was silently dropped.  Implemented
+  it sharing one `syscall_fd_write` dispatch with `SYS_WRITE`.  Smoke-gated
+  (`shell-smoke.sh: musl-static`); full gate stays 885/0.
+- [ ] **Phase 1** — dynamic build path (PIE, `PT_INTERP`) + stage `libc.so` +
+  `ld-musl-i386.so.1` into the ISO (`/lib`).
+- [ ] **Phase 2** — kernel: file-backed `mmap` (`MAP_PRIVATE`/`MAP_FIXED`) +
+  `mprotect` (`SYS_MPROTECT 125`).
+- [ ] **Phase 3** — kernel ELF loader: `ET_DYN`/PIE + `PT_INTERP` + full auxv
+  (`AT_PHDR`/`AT_BASE`/`AT_ENTRY`…), enter at the interpreter.
+- [ ] **Phase 4/5** — run `muslhellodyn.elf` dynamically; errno-negative pass for
+  the ldso-facing syscalls; docs.
 
 ### Desktop UX (T52) — framework landed, wiring in progress
 - [x] **T52.1 — menu/window framework (PR #205).** `gui_ui` gained **`ui_menubar`** (File/Edit/View/Help bar + dropdowns), **`ui_context_menu`** (right-click popup), **`ui_about`** (modal credits card) — Windows-style: greyed disabled items, separators, right-aligned accelerators, dropdown width sized to the longest label. **`ui_btn_w()`** centralises button-label padding (mxweb toolbar = first adopter). **Double-click a title bar → maximise/restore** (`wm.c`). `LICENCES/` collects every external licence (BearSSL/lwIP/doomgeneric/FreeDoom/TinyCC/Limine/musl) with per-file coverage notes, feeding the About dialogs.

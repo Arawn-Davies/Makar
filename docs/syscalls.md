@@ -80,6 +80,7 @@ without a detailed errno. Check the wrapper before assuming Linux parity.
 | 114 | `SYS_WAIT4` | `pid, status *, options, rusage` | supports `WNOHANG`; rusage ignored |
 | 119 | `SYS_SIGRETURN` | internal | signal trampoline return |
 | 141 | `SYS_READDIR` | `path, index, dirent *` | indexed Makar syscall, libc wraps it |
+| 146 | `SYS_WRITEV` | `fd, iovec *, iovcnt` | gather-write; shares the `SYS_WRITE` dispatch. musl's buffered stdio writes through this |
 | 158 | `SYS_YIELD` | none | scheduler yield |
 | 175 | `SYS_RT_SIGPROCMASK` | Linux args | startup compatibility stub |
 | 192 | `SYS_MMAP2` | `addr, len, prot, flags, fd, pgoff` | anonymous only, demand-paged |

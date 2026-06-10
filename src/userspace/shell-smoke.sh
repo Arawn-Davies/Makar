@@ -43,6 +43,22 @@ else
     fail=1
 fi
 
+# Static-musl smoke (dynamic-linking epic, Phase 0): proves a *real* musl libc
+# ELF runs in-OS -- musl startup (auxv walk, set_thread_area TLS, futex locks)
+# and printf->write(1)->exit all work.  Same flat top-level `exec` shape as
+# exec-hello above (the kernel sh's `exec` doesn't survive an if/else nest).
+# The binary prints "hello from musl libc" to serial; clean exit (0) -> PASS.
+# Always staged by toolchain/build-musl-demos.sh before `iso build`/`iso test`.
+echo SHELL-SMOKE: musl-static
+exec /apps/muslhello.elf musltest
+if [ $? -eq 0 ]
+then
+    echo SHELL-SMOKE: [PASS] musl-static
+else
+    echo SHELL-SMOKE: [FAIL] musl-static
+    fail=1
+fi
+
 echo SHELL-SMOKE: cd-root
 cd /
 pwd
