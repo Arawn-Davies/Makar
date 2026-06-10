@@ -212,9 +212,11 @@ copies both with the rest of `/usr`.
   Windows-style menu set `ui_menubar` / `ui_context_menu` / `ui_about` (greyed
   disabled items, separators, accelerators, popup width sized to the longest
   label; they draw **last** so callers gate their own content while a menu is
-  open). `ui_textbox` honours the clipboard shortcuts on every field —
-  **Ctrl-A** select-all (highlighted), **Ctrl-C/X** copy/cut (suppressed on
-  password fields), **Ctrl-V** paste — over the kernel clipboard (`SYS_CLIP_*`).
+  open). `ui_textbox` has a **caret model** — Left/Right move it, Home/End jump,
+  Delete forward-deletes, a click places it, and the view scrolls to keep it
+  visible — plus the clipboard shortcuts on every field: **Ctrl-A** select-all
+  (highlighted), **Ctrl-C/X** copy/cut (suppressed on password fields), **Ctrl-V**
+  paste — over the kernel clipboard (`SYS_CLIP_*`).
   Transient interaction (pressed/dragged widget, keyboard focus, textbox
   selection) lives in `ui_ctx`; all content is caller-owned. The window manager
   hit-tests windows first and only feeds the focused window a "live" ctx (others
