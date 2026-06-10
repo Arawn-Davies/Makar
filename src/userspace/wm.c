@@ -529,6 +529,15 @@ static void wm_open_path(const char *path){
         { launch_cmd("/apps/mximg.elf", path, "Image", 608,468); return; }
     if (ext_is(path,".htm")||ext_is(path,".html"))
         { launch_cmd("/apps/mxweb.elf", path, "Web", 700,500); return; }
+    if (ext_is(path,".bas")){
+        /* open in BASIC, loaded but not run, inside a terminal window
+         * (basic -l <file> -> prints "type RUN" and drops to the prompt) */
+        static char cmd[256]; char *o=cmd; const char *pre="basic -l ";
+        while (*pre) *o++=*pre++;
+        for (const char *p=path; *p && o<cmd+sizeof(cmd)-1; ) *o++=*p++;
+        *o=0;
+        launch_cmd("/apps/mxterm.elf", cmd, "BASIC", 648,440); return;
+    }
     if (ext_is(path,".elf")){
         /* a makx GUI app (mx-prefixed, gui, doom) connects to the server itself
          * -> run it directly; any other executable is a CLI tool -> terminal. */
