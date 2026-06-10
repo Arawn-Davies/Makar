@@ -878,6 +878,55 @@ static void test_lwip_net_info(void)
     ktest_summary();
 }
 
+/* SYS_NET_CONFIG (Settings > Network): apply a static IPv4 address through the
+ * syscall ABI and confirm the live netif took it, then switch back to DHCP so
+ * the rest of the run keeps its slirp lease.  Net-section only -- needs lwIP up
+ * (DHCP'd by the time the earlier net suites have run). */
+static void test_net_config(void)
+{
+    ktest_begin("net_config", "SYS_NET_CONFIG: static IPv4 applied to netif, then DHCP restored");
+
+    registers_t regs;
+
+    /* NULL config pointer is rejected. */
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_NET_CONFIG;
+    regs.ebx = 0;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, -1);
+
+    /* Apply a static address via the syscall. */
+    net_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.dhcp = 0;
+    cfg.ip[0]=192;  cfg.ip[1]=168;  cfg.ip[2]=50;  cfg.ip[3]=42;
+    cfg.mask[0]=255;cfg.mask[1]=255;cfg.mask[2]=255;cfg.mask[3]=0;
+    cfg.gw[0]=192;  cfg.gw[1]=168;  cfg.gw[2]=50;  cfg.gw[3]=1;
+    cfg.dns[0]=8;   cfg.dns[1]=8;   cfg.dns[2]=8;   cfg.dns[3]=8;
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_NET_CONFIG;
+    regs.ebx = (uint32_t)(uintptr_t)&cfg;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, 0);
+
+    /* netif_set_addr is synchronous under the net lock, so the address is live
+     * immediately. */
+    uint8_t ip[4] = { 0, 0, 0, 0 };
+    KTEST_ASSERT_EQ(net_lwip_local_ip(ip), 0);
+    KTEST_ASSERT(ip[0]==192 && ip[1]==168 && ip[2]==50 && ip[3]==42);
+
+    /* Restore DHCP (this suite runs last in the net section). */
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.dhcp = 1;
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_NET_CONFIG;
+    regs.ebx = (uint32_t)(uintptr_t)&cfg;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, 0);
+
+    ktest_summary();
+}
+
 static void test_devfs(void)
 {
     ktest_begin("devfs", "/dev block-device nodes: lookup, readonly, pread");
@@ -1996,6 +2045,67 @@ static void test_rtc_unix_time(void)
     syscall_dispatch(&regs);
     uint32_t dup = regs.eax - up0;
     KTEST_ASSERT(dup >= 16u && dup <= 24u);   /* ~20 user-ticks, ±20% */
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
+ * Suite: settime
+ *
+ * SYS_SETTIME (Settings > Date & Time) packs the wall-clock fields into two
+ * registers and writes the CMOS RTC.  Verify a round-trip through the syscall
+ * (set -> rtc_read reflects it -> gettimeofday's epoch advances) and that an
+ * out-of-range field is rejected without touching the clock.  The gate VM's
+ * real RTC is saved up front and restored at the end so no later wall-clock
+ * assertion (e.g. rtc_unix_time's 2025+ floor) is perturbed.
+ * ------------------------------------------------------------------------- */
+static void test_settime(void)
+{
+    ktest_begin("settime", "SYS_SETTIME writes CMOS RTC; round-trips; clamps bad input");
+
+    rtc_time_t saved;
+    rtc_read(&saved);                       /* preserve the host clock */
+
+    registers_t regs;
+    /* Set 2021-07-15 13:24:35 UTC via the syscall ABI. */
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_SETTIME;
+    regs.ebx = ((uint32_t)2021u << 16) | (7u << 8) | 15u;
+    regs.ecx = ((uint32_t)13u   << 16) | (24u << 8) | 35u;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, 0);
+
+    rtc_time_t got;
+    rtc_read(&got);
+    KTEST_ASSERT_EQ((int)got.year, 2021);
+    KTEST_ASSERT_EQ((int)got.mon, 7);
+    KTEST_ASSERT_EQ((int)got.day, 15);
+    KTEST_ASSERT_EQ((int)got.hour, 13);
+    KTEST_ASSERT_EQ((int)got.min, 24);
+    /* seconds may tick once between write and read; allow a small window. */
+    KTEST_ASSERT(got.sec >= 35 && got.sec <= 41);
+
+    /* gettimeofday reads the RTC live, so its epoch must now reflect 2021.
+     * 2021-07-15 00:00:00 UTC = 1626307200. */
+    struct timeval tv = { 0, 0 };
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_GETTIMEOFDAY;
+    regs.ebx = (uint32_t)(uintptr_t)&tv;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, 0);
+    KTEST_ASSERT((uint32_t)tv.tv_sec >= 1626307200u);
+
+    /* An out-of-range month (13) must be rejected, leaving the RTC at 2021. */
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_SETTIME;
+    regs.ebx = ((uint32_t)2021u << 16) | (13u << 8) | 15u;
+    regs.ecx = 0;
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, -1);
+    rtc_read(&got);
+    KTEST_ASSERT_EQ((int)got.year, 2021);   /* unchanged by the rejected write */
+
+    rtc_write(&saved);                      /* restore the host clock */
 
     ktest_summary();
 }
@@ -3654,6 +3764,10 @@ int ktest_run_all(void)
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 
+    test_settime();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
     test_syscall();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
@@ -3758,6 +3872,10 @@ int ktest_run_net(void)
     total_fail += ktest_fail_count;
 
     test_lwip_net_info();           /* SYS_NET_INFO text + DHCP/DNS controls */
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_net_config();              /* SYS_NET_CONFIG static IPv4 + DHCP restore */
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 

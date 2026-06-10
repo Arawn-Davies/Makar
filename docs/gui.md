@@ -75,6 +75,49 @@ While a launched client has forked but not yet sent its surface
 hourglass** cursor instead of the arrow: it re-uploads the HW-cursor sprite on
 the accelerated path, or swaps the software bitmap otherwise.
 
+### Settings (`mxsettings`)
+
+`mxsettings.elf` is the **centralised Settings app**, laid out like macOS System
+Settings: a left **sidebar** of categories (`ui_listbox`) + a right **content
+pane** of grouped rows. It **reimplements each panel inline** rather than
+shelling out to the single-purpose apps, driving the underlying mechanisms
+directly (the `~/.mxrc` prefs, `SYS_SETMODE`, the net syscalls, the new
+clock/network syscalls). The standalone `mxdisplay`/`mxnet` and the dock's
+right-click tray toggle still exist; Settings is the one place that gathers them.
+Panels:
+
+- **Appearance** — wallpaper path field → writes `~/.mxrc` `Wallpaper=`; the WM
+  already polls that key each frame (`apply_wallpaper()`), so the change is live
+  with no image decoder in `mxsettings`. (Colour schemes are a stub for now.)
+- **Display** — ports `mxdisplay`'s logic inline: the `MODES[]` list,
+  `sys_fb_info()` for the current mode, `sys_setmode()` to apply, and the same
+  15 s **confirm / auto-revert** countdown.
+- **Status Bar** — `ui_toggle` switches for the five `Tray*` prefs
+  (`TrayClock/TrayDate/TrayNet/TrayStats/TrayGpu`). On change it writes the
+  `~/.mxrc` int **and** sends `MX_RELOAD_PREFS` so the dock re-reads them and
+  redraws **immediately** (without it, tray changes would only apply next login).
+- **Network** — live `sys_net_info` status; DHCP **Renew/Release/Flush** via
+  `sys_net_ctl`; a "Use a static address" toggle revealing IP/Netmask/Gateway/DNS
+  fields → `SYS_NET_CONFIG` (static), or "Switch to DHCP".
+- **Date & Time** — a live UTC clock (`sys_gettimeofday` + `gmtime_r`) + editable
+  Y/M/D H:M:S fields → `SYS_SETTIME` (writes the CMOS RTC; the tray clock follows
+  on the next read).
+- **Autostart** — a toggle per GUI app; on present its path is in the `~/.mxrc`
+  `Autostart=` comma-separated list.
+
+**`MX_RELOAD_PREFS` (makx msg 8):** a no-argument client→server message asking
+the WM to re-run `load_tray_prefs()` and repaint. `mx_reload_prefs(c)` sends it;
+the `wm.c` poll loop handles it (re-read prefs → `damage_full()`).
+
+**Autostart at login:** `wm.c`'s `load_autostart()` runs once at desktop startup
+— it reads the `~/.mxrc` `Autostart=` list and `launch_cmd`s each entry. This is
+Makar's prefs-model take on XDG `~/.config/autostart/*.desktop` (a noted future
+refinement). The Settings → Autostart panel is just the editor for that list.
+
+A first-class desktop launcher ships too: `data/icons/settings.bmp` (a gear, the
+same 32×26 tile format as the other icons) + `data/shortcuts/18-settings.desktop`
++ a fallback entry in `wm.c`'s built-in `icon_defs[]`.
+
 ## Shared pixel surfaces (kernel)
 
 `kernel/surface.h` + `arch/i386/proc/surface.c`. A surface is a kernel-owned run
@@ -253,6 +296,9 @@ Client → server requests (sent with `sys_ipc_sendrec`):
   and is reaped normally (a client-forked grandchild would ghost — the same
   parenting rule the Doom launcher relies on). Files double-clicked in `mxfiles`
   go through this.
+- `MX_RELOAD_PREFS()` → ack: re-read `~/.mxrc` prefs (the dock's `Tray*` widgets)
+  and repaint the desktop. Sent by `mxsettings` after a Status-Bar toggle so the
+  change is live without a re-login; see *Settings (`mxsettings`)* above.
 
 ### Keyboard delivery (cooked vs raw)
 

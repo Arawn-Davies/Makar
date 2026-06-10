@@ -239,12 +239,16 @@ than user/credential based.
 | 271 `SYS_CAD_PENDING` | — | test-and-clear the Ctrl-Alt-Del flag; `1` if it was pressed. The GUI server polls it each frame to open its power menu |
 | 272 `SYS_PTY_WINSIZE` | `fd, (cols<<16)\|rows` | publish a pty window size onto a pipe fd so a piped child's `SYS_TERM_SIZE` reports it (GUI terminal → shell); `0` ok, `-1` if not a pipe |
 | 273 `SYS_INSTALL_EXEC` | `cmd, ptr` | stepped headless installer for the GUI front-end (`mxinstall.elf`). `cmd`: `0` begin(`install_params_t*`), `1` step(`install_progress_t*`, copies one file), `2` finish(`install_params_t*`), `3` list-drives(`install_drive_t[4]`). Returns the engine result (see `kernel/installer.h`). Runs preemptibly so the compositor stays live during the copy |
+| 285 `SYS_SETTIME` | `(year<<16)\|(mon<<8)\|day, (hour<<16)\|(min<<8)\|sec` | set the wall clock by writing the CMOS RTC (`rtc_write`). Fields are range-checked (year 1970–2099, mon 1–12, day 1–31, hour ≤ 23, min/sec ≤ 59); `0` ok, `-1` on any bad field (the RTC is left untouched). Because `SYS_GETTIMEOFDAY`/`SYS_CLOCK_GETTIME` read the RTC live, the new time takes effect immediately. Backs **Settings → Date & Time** |
+| 286 `SYS_NET_CONFIG` | `const net_cfg_t *` | apply a network configuration (`net_lwip_config`): `dhcp != 0` (re)starts DHCP and ignores the address fields; otherwise the four dotted-quad octet arrays set a static IPv4 address + netmask + gateway + DNS server on the live lwIP netif. `0` ok, `-1` if the stack isn't ready or the pointer is null. `net_cfg_t` is defined in `makar_abi.h`. Backs **Settings → Network** |
 
 `SYS_LOGIN` backs the GUI graphical login (`gui.elf`'s `do_login`); `SYS_PASSWD`
 backs its change-password dialog (the power menu's "Change password..."). Both
 are documented in `docs/gui.md`.  `SYS_INSTALL_EXEC` backs the graphical
 installer `mxinstall.elf`; the text installer (`install` builtin →
 `SYS_INSTALL`) and the GUI share one execution engine (see `docs/gui.md`).
+`SYS_SETTIME` and `SYS_NET_CONFIG` back the centralised Settings app
+(`mxsettings.elf`) — its Date & Time and Network panels (see `docs/gui.md`).
 
 ### Virtual Terminals and makmux
 

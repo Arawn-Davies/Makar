@@ -141,6 +141,24 @@ DNS: 10.0.2.3
 `flush-dns` clears lwIP's DNS cache and pending resolver requests while keeping
 the configured DNS server.
 
+## Static configuration (Settings → Network)
+
+By default `eth0` is DHCP-driven. The **Settings** app (`mxsettings.elf`, the
+Network panel) can also assign a **static IPv4** address via `SYS_NET_CONFIG`
+(`net_cfg_t` in `makar_abi.h`) → `net_lwip_config()`:
+
+- **Static** (`dhcp = 0`): under the net big-lock, stop the DHCP client
+  (`dhcp_release_and_stop` + note DHCP off), then `netif_set_addr()` with the
+  caller's IP/netmask/gateway and `dns_setserver()` with the caller's DNS — the
+  same primitives as the slirp static fallback above, but with user-supplied
+  values. Takes effect immediately on the live netif.
+- **DHCP** (`dhcp != 0`): restart the DHCP client (equivalent to `renew`).
+
+`net_lwip_config()` returns `0` on success, `-1` if the stack isn't ready. The
+panel reads the current state back through `SYS_NET_INFO`, so an applied static
+address shows up right away. There's no persistence across reboots yet (the
+config is applied to the running interface only).
+
 ## Current Limits
 
 Networking is still early:

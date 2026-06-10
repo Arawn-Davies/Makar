@@ -158,6 +158,7 @@ All apps in `/Users/arawn/Makar/src/userspace/` compile to `.elf` files and are 
 - **mxclock / mxcalc / mxnet / mxdisk** (mx*.c) — GUI peers of `clock` / `calc` / `maknetcfg` / `diskinfo`.
 - **mximg** (mximg.c) — image viewer (BMP + GIF + PNG + baseline JPEG); Open dialog / path arg / **Gallery** thumbnail grid of ~/Pictures + bundled images; "Set Wallpaper".
 - **mxdisplay** (mxdisplay.c) — display-settings panel: change resolution with a confirm/auto-revert countdown.
+- **mxsettings** (mxsettings.c) — centralised Settings app (macOS-style sidebar + content pane): Appearance (wallpaper), Display (resolution), Status Bar (tray-widget toggles, live via `MX_RELOAD_PREFS`), Network (DHCP + static IP/DNS via `SYS_NET_CONFIG`), Date & Time (display + set via `SYS_SETTIME`), Autostart (`~/.mxrc Autostart=`). Reimplements each panel inline; see `docs/gui.md`.
 - **mxabout** (mxabout.c) — graphical About panel (platform/CPU/GPU/NIC/memory); `about.elf` is its text-console counterpart, streaming `/proc/{uname,cpuinfo,meminfo}`.
 - **mxinstall** (mxinstall.c) — graphical OS installer; drives the shared install engine via `SYS_INSTALL_EXEC` (see Installer section + `docs/gui.md`).
 - **mxdoom** (mxdoom.c) — Doom95-style launcher: pick IWAD / PWAD / skill / episode-map / monster options, forks `doom.elf` with the matching args.
