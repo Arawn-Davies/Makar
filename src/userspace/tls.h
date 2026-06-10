@@ -31,6 +31,9 @@ int  tls_flush(tls_ctx *t);
  * end-of-stream / on error (a close without close_notify reads as <=0). */
 int  tls_read(tls_ctx *t, void *buf, int len);
 
+/* BearSSL's last engine error code (BR_ERR_*), for diagnostics.  0 = none. */
+int  tls_error(tls_ctx *t);
+
 /* Free the context (does NOT close the underlying fd). */
 void tls_close(tls_ctx *t);
 

@@ -15,6 +15,17 @@
 
 #define WEB_MAX_BYTES (8u * 1024u * 1024u)
 
+/* --- temporary diagnostics to COM1 (serial only; invisible in the GUI) ----
+ * Pinpoints where a fetch dies (DNS / connect / TLS).  Remove once verified. */
+static void wdbg(const char *s) { unsigned n = 0; while (s[n]) n++; (void)syscall2(SYS_WRITE_SERIAL, (long)s, (long)n); }
+static void wdbgn(unsigned v) {
+    char b[12]; int i = 0;
+    if (!v) { wdbg("0"); return; }
+    while (v) { b[i++] = (char)('0' + v % 10u); v /= 10u; }
+    char o[12]; for (int j = 0; j < i; j++) o[j] = b[i - 1 - j];
+    (void)syscall2(SYS_WRITE_SERIAL, (long)o, (long)i);
+}
+
 /* scheme://host[:port][/path] -> pieces.  Returns 0, or -1 on a malformed URL. */
 static int parse_url(const char *url, char *host, unsigned hostcap,
                      unsigned short *port, char *path, unsigned pathcap, int *tls)
@@ -174,11 +185,27 @@ static int fetch_once(const char *url, unsigned char **out_body, unsigned *out_l
     unsigned short port; int tls;
     if (parse_url(url, host, sizeof host, &port, path, sizeof path, &tls) != 0) return -1;
 
-    int fd = sys_tcp_connect(host, port);   /* resolve + socket + connect */
-    if (fd < 0) return -1;
+    wdbg("[web] fetch host="); wdbg(host); wdbg(" port="); wdbgn(port); wdbg(tls ? " https\n" : " http\n");
+    unsigned char ip[4];
+    if (sys_resolve(host, ip) != 0) { wdbg("[web] DNS resolve FAILED (network up? nic attached?)\n"); return -1; }
+    wdbg("[web] dns ok ip="); wdbgn(ip[0]); wdbg("."); wdbgn(ip[1]); wdbg("."); wdbgn(ip[2]); wdbg("."); wdbgn(ip[3]); wdbg("\n");
+
+    int fd = sys_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (fd < 0) { wdbg("[web] socket() FAILED\n"); return -1; }
+    struct sockaddr_in sa;
+    sa.sin_family      = AF_INET;
+    sa.sin_port        = mk_htons(port);
+    sa.sin_addr.s_addr = (unsigned)ip[0] | ((unsigned)ip[1] << 8) | ((unsigned)ip[2] << 16) | ((unsigned)ip[3] << 24);
+    for (int i = 0; i < 8; i++) sa.sin_zero[i] = 0;
+    if (sys_connect(fd, &sa, (int)sizeof sa) != 0) { wdbg("[web] connect() FAILED\n"); sys_close(fd); return -1; }
+    wdbg("[web] tcp connected\n");
 
     conn_t c; c.fd = fd; c.tls = 0;
-    if (tls) { c.tls = tls_open(fd, host); if (!c.tls) { sys_close(fd); return -1; } }
+    if (tls) {
+        c.tls = tls_open(fd, host);
+        if (!c.tls) { wdbg("[web] tls_open FAILED (oom / reset)\n"); sys_close(fd); return -1; }
+        wdbg("[web] tls context ready (handshake on first write)\n");
+    }
 
     char req[1280]; unsigned rl = 0;
     const char *parts[] = { "GET ", path, " HTTP/1.1\r\nHost: ", host,
@@ -187,7 +214,13 @@ static int fetch_once(const char *url, unsigned char **out_body, unsigned *out_l
         const char *s = parts[i];
         while (*s && rl < sizeof(req) - 1) req[rl++] = *s++;
     }
-    if (conn_send(&c, req, (int)rl) != 0) { if (c.tls) tls_close(c.tls); sys_close(fd); return -1; }
+    if (conn_send(&c, req, (int)rl) != 0) {
+        wdbg("[web] request send FAILED");
+        if (c.tls) { wdbg(" tls_err="); wdbgn((unsigned)tls_error(c.tls)); tls_close(c.tls); }
+        wdbg("\n");
+        sys_close(fd); return -1;
+    }
+    wdbg("[web] request sent; reading response\n");
 
     unsigned cap = 16384, len = 0;
     unsigned char *buf = (unsigned char *)malloc(cap);
@@ -205,6 +238,9 @@ static int fetch_once(const char *url, unsigned char **out_body, unsigned *out_l
         if (n <= 0) break;
         len += (unsigned)n;
     }
+    wdbg("[web] received bytes="); wdbgn(len);
+    if (c.tls) { wdbg(" tls_err="); wdbgn((unsigned)tls_error(c.tls)); }
+    wdbg("\n");
     if (c.tls) tls_close(c.tls);
     sys_close(fd);
 

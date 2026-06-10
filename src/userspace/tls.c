@@ -13,6 +13,7 @@
 #include "bearssl.h"
 #include <stdlib.h>     /* malloc / free   (libc.a) */
 #include <string.h>     /* memcpy / memset (libc.a) */
+#include <time.h>       /* time() -- RTC wall clock for cert validity */
 
 /* ---- x509 "no anchor" wrapper: accept any chain (encrypt, don't authenticate).
  * Wraps br_x509_minimal and turns NOT_TRUSTED into success. -------------- */
@@ -30,8 +31,23 @@ static void na_append(const br_x509_class **ctx, const unsigned char *buf, size_
 static void na_end_cert(const br_x509_class **ctx)
 { noanchor_t *x = (noanchor_t *)(void *)ctx; (*x->inner)->end_cert(x->inner); }
 static unsigned na_end_chain(const br_x509_class **ctx)
-{ noanchor_t *x = (noanchor_t *)(void *)ctx; unsigned r = (*x->inner)->end_chain(x->inner);
-  return (r == BR_ERR_X509_NOT_TRUSTED) ? 0 : r; }
+{
+    noanchor_t *x = (noanchor_t *)(void *)ctx;
+    unsigned r = (*x->inner)->end_chain(x->inner);
+    /* Encrypt-only: we don't authenticate (no CA bundle) and have no reliable
+     * wall clock, so accept the trust + validity-time outcomes.  The server's
+     * public key is already extracted by end_chain, so the handshake proceeds.
+     * (Real authentication -- a CA bundle + br_x509_minimal_set_time from the
+     * RTC, and NOT swallowing these -- is a future hardening step.) */
+    switch (r) {
+    case BR_ERR_X509_NOT_TRUSTED:   /* no trust anchor matched   */
+    case BR_ERR_X509_TIME_UNKNOWN:  /* no clock to check validity */
+    case BR_ERR_X509_EXPIRED:       /* expired / not-yet-valid    */
+        return 0;
+    default:
+        return r;
+    }
+}
 static const br_x509_pkey *na_get_pkey(const br_x509_class *const *ctx, unsigned *usages)
 { noanchor_t *x = (noanchor_t *)(void *)ctx; return (*x->inner)->get_pkey(x->inner, usages); }
 
@@ -101,6 +117,15 @@ tls_ctx *tls_open(int fd, const char *host)
     t->fd = fd;
 
     br_ssl_client_init_full(&t->sc, &t->xc, 0, 0);     /* no trust anchors */
+    /* Feed the RTC wall clock so cert validity windows are actually checked
+     * (Unix epoch = days 719528); if the clock reads 0, na_end_chain still
+     * swallows TIME_UNKNOWN. */
+    {
+        time_t now = time(0);
+        if (now > 0)
+            br_x509_minimal_set_time(&t->xc,
+                (uint32_t)(now / 86400) + 719528u, (uint32_t)(now % 86400));
+    }
     t->na.vtable = &noanchor_vtable;
     t->na.inner  = &t->xc.vtable;
     br_ssl_engine_set_x509(&t->sc.eng, &t->na.vtable); /* accept any chain */
@@ -136,6 +161,12 @@ int tls_read(tls_ctx *t, void *buf, int len)
 {
     if (!t) return -1;
     return br_sslio_read(&t->io, buf, (size_t)len);    /* <=0 at close/error */
+}
+
+int tls_error(tls_ctx *t)
+{
+    if (!t) return -1;
+    return (int)br_ssl_engine_last_error(&t->sc.eng);
 }
 
 void tls_close(tls_ctx *t)

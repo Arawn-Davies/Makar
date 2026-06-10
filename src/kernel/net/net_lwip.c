@@ -540,25 +540,32 @@ int ksock_connect(int id, const uint8_t ip[4], uint16_t port)
         return -1;
     /* s_ready is set once at boot; by the time ring 3 opens a socket this just
      * returns 0.  Done outside the lock (net_lwip_init isn't lock-reentrant). */
-    if (net_lwip_init() != 0 || !net_lwip_ready())
+    if (net_lwip_init() != 0 || !net_lwip_ready()) {
+        Serial_WriteString("[ksock] connect: net not ready\n");
         return -1;
+    }
 
     net_lock();
     ksock_t *ks = ksock_get(id);
-    if (!ks || ks->pcb) { net_unlock(); return -1; }
+    if (!ks || ks->pcb) { net_unlock(); Serial_WriteString("[ksock] connect: bad id\n"); return -1; }
 
     struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
-    if (!pcb) { net_unlock(); return -1; }
+    if (!pcb) { net_unlock(); Serial_WriteString("[ksock] connect: tcp_new OOM\n"); return -1; }
     tcp_arg(pcb, ks);
     tcp_err(pcb, ksock_err_cb);
     ks->pcb = pcb;
 
     ip_addr_t dst;
     IP_ADDR4(&dst, ip[0], ip[1], ip[2], ip[3]);
+    Serial_WriteString("[ksock] connect -> ");
+    Serial_WriteHex(ip[0]); Serial_WriteString("."); Serial_WriteHex(ip[1]); Serial_WriteString(".");
+    Serial_WriteHex(ip[2]); Serial_WriteString("."); Serial_WriteHex(ip[3]);
+    Serial_WriteString(" port "); Serial_WriteHex(port); Serial_WriteString("\n");
     if (tcp_connect(pcb, &dst, port, ksock_connected_cb) != ERR_OK) {
         tcp_abort(pcb);
         ks->pcb = NULL;
         net_unlock();
+        Serial_WriteString("[ksock] connect: tcp_connect != ERR_OK\n");
         return -1;
     }
 
@@ -569,6 +576,9 @@ int ksock_connect(int id, const uint8_t ip[4], uint16_t port)
         task_yield();
     }
     int ok = ks->connected && !ks->err;
+    if (ok)           Serial_WriteString("[ksock] connect: established\n");
+    else if (ks->err) Serial_WriteString("[ksock] connect: error/refused\n");
+    else              Serial_WriteString("[ksock] connect: TIMEOUT (no SYN-ACK)\n");
     if (!ok && !ks->aborted && ks->pcb) {
         tcp_abort(ks->pcb);
         ks->pcb = NULL;
