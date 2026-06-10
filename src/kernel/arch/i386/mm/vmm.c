@@ -189,8 +189,12 @@ uint32_t *vmm_clone_pd_cow(uint32_t *parent_pd)
 
         if (!(ppde & PAGE_PRESENT) || (ppde & PAGE_LARGE))
             continue;
-        /* PDE shared with kernel - already mirrored above, nothing to clone. */
-        if (ppde == kpd[pdi])
+        /* PDE pointing at a kernel-owned page table - already mirrored above,
+         * nothing to clone.  Compare the PT frame only (not the whole PDE): the
+         * CPU's asynchronous Accessed/Dirty updates make the parent's copy
+         * diverge from kpd by status bits, and an exact compare would then
+         * wrongly clone the kernel PT into the child. */
+        if ((ppde & ~0xFFFu) == (kpd[pdi] & ~0xFFFu))
             continue;
 
         uint32_t parent_pt_phys = ppde & ~0xFFFu;
@@ -255,9 +259,13 @@ void vmm_free_pd(uint32_t *pd)
         uint32_t pde = pd[pdi];
         if (!(pde & PAGE_PRESENT) || (pde & PAGE_LARGE))
             continue;
-        /* Skip PDEs shared with the kernel - freeing them would corrupt the
-         * kernel's own mappings. */
-        if (pde == kpd[pdi])
+        /* Skip PDEs that point at a kernel-owned page table - freeing it would
+         * corrupt the kernel's mappings (and underflow its refcount, since
+         * kernel PTs never go through pmm_alloc).  Compare the PT *frame* only:
+         * the CPU sets Accessed/Dirty asynchronously on the kernel's PDE copy
+         * (e.g. drawing to the framebuffer at 0xFD400000), so an exact PDE
+         * compare would diverge by those status bits and miss the share. */
+        if ((pde & ~0xFFFu) == (kpd[pdi] & ~0xFFFu))
             continue;
 
         uint32_t pt_phys = pde & ~0xFFFu;
