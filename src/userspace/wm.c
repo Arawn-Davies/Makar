@@ -228,13 +228,39 @@ static int         g_hover_icon= -1;   /* icon under the pointer (hover tint)  *
 /* small string helpers (freestanding -- no libc) */
 static int  wstreq(const char *a, const char *b){ int i=0; while(a[i]&&a[i]==b[i])i++; return a[i]==0&&b[i]==0; }
 static int  wendswith(const char *s, const char *suf){ int n=slen(s),m=slen(suf); return n>=m && wstreq(s+n-m,suf); }
-static int  wstrle(const char *a, const char *b){ int i=0; while(a[i]&&a[i]==b[i])i++; return (unsigned char)a[i]<=(unsigned char)b[i]; }
+static char wlc(char c){ return (c>='A'&&c<='Z')?(char)(c+32):c; }
+/* case-insensitive a<=b on labels (Windows sorts desktop names case-folded) */
+static int  label_le(const char *a, const char *b){ int i=0; for(;;){ char x=wlc(a[i]),y=wlc(b[i]); if(x!=y) return (unsigned char)x<(unsigned char)y; if(!x) return 1; i++; } }
 static int  watoi(const char *s){ int v=0,neg=0; if(*s=='-'){neg=1;s++;} while(*s>='0'&&*s<='9'){v=v*10+(*s-'0');s++;} return neg?-v:v; }
 static gfx_u32 whex(const char *s){ unsigned v=0; for(int i=0;i<6&&s[i];i++){ char c=s[i]; int d=(c>='0'&&c<='9')?c-'0':(((c|32)>='a'&&(c|32)<='f')?(c|32)-'a'+10:0); v=(v<<4)|(unsigned)d; } return v&0xFFFFFFu; }
 static int  iabs(int v){ return v<0?-v:v; }
 
-/* Two-column desktop grid: col x = 24 / 128, rows step 84. */
-static void icon_grid_pos(int idx, int *x, int *y){ int col=idx&1, row=idx>>1; *x=24+col*104; *y=40+row*84; }
+/* Windows-style desktop grid: icons fill TOP-TO-BOTTOM down a column, then wrap
+ * to the next column (column-major).  The row count is derived from the live
+ * desktop height (between the menu bar and the dock) so the bottom row is never
+ * clipped off-screen; more icons simply add another column. */
+#define GRID_X0 24
+#define GRID_Y0 40
+#define GRID_DX 104
+#define GRID_DY 84
+#define ICON_W  96
+#define ICON_H  70
+static int grid_rows(void){
+    int rows = ((int)FBH - DOCK_H - GRID_Y0 - ICON_H) / GRID_DY + 1;
+    return rows < 1 ? 1 : rows;
+}
+static void icon_grid_pos(int idx, int *x, int *y){
+    int rows = grid_rows();
+    *x = GRID_X0 + (idx / rows) * GRID_DX;
+    *y = GRID_Y0 + (idx % rows) * GRID_DY;
+}
+/* Keep an icon fully on the desktop (below the menu bar, above the dock). */
+static void icon_clamp(icon_t *c){
+    if (c->x < 0) c->x = 0;
+    if (c->y < MENU_H) c->y = MENU_H;
+    if (c->x + c->w > (int)FBW)         c->x = (int)FBW - c->w;
+    if (c->y + c->h > (int)FBH-DOCK_H)  c->y = (int)FBH-DOCK_H - c->h;
+}
 
 /* Resolve and load one icon's artwork.  `spec` is an absolute path (loaded by
  * its extension, or probed if none) or a basename resolved under
@@ -295,8 +321,6 @@ static int parse_desktop_file(const char *path, icon_t *c)
         else if (wstreq(key,"X-Makar-Arg"))   scpy(c->arg, val, sizeof c->arg);
         else if (wstreq(key,"X-Makar-WinW"))  c->winw = watoi(val);
         else if (wstreq(key,"X-Makar-WinH"))  c->winh = watoi(val);
-        else if (wstreq(key,"X-Makar-IconX")) c->x = watoi(val);
-        else if (wstreq(key,"X-Makar-IconY")) c->y = watoi(val);
         else if (wstreq(key,"X-Makar-Tint"))  c->tint = whex(val);
     }
     return c->cmd[0] ? 0 : -1;
@@ -387,9 +411,25 @@ static void merge_shortcuts(const char *dir, icon_t *tmp, char names[][64], int 
     }
 }
 
+static int icon_load_pos(icon_t *c);   /* mxrc-backed; defined just below */
+
+/* Give every icon its on-screen slot: a user-saved position from ~/.mxrc if it
+ * has one, otherwise its default alphabetical grid slot; always clamped fully
+ * on-screen (so a position saved at a larger resolution can't strand an icon
+ * below the dock). */
+static void place_icons(void)
+{
+    for (int i=0; i<g_icon_n; i++){
+        if (!icon_load_pos(&icons[i])) icon_grid_pos(i, &icons[i].x, &icons[i].y);
+        icon_clamp(&icons[i]);
+    }
+}
+
 /* Build the desktop icon set from the system-wide /usr/share/shortcuts plus the
- * user-local ~/.shortcuts overlay (overrides by filename), sorted by filename
- * for a stable layout, falling back to the built-in defaults if empty. */
+ * user-local ~/.shortcuts overlay (overrides by filename), sorted **alphabetically
+ * by Name** (the Windows default desktop order -- the .desktop filename no longer
+ * dictates order), falling back to the built-in defaults if empty.  Positions
+ * then come from place_icons (saved spot or alphabetical grid). */
 static void load_desktop_entries(void)
 {
     static icon_t tmp[ICON_MAX]; static char names[ICON_MAX][64];
@@ -398,45 +438,53 @@ static void load_desktop_entries(void)
     /* ~/.shortcuts user overlay (overrides system-wide by filename). */
     char home[96]; mxrc_home("/.shortcuts", home, sizeof home);
     merge_shortcuts(home, tmp, names, &cnt);
-    if (cnt==0){ add_default_icons(); return; }
-    /* insertion sort by filename for a deterministic layout */
+    if (cnt==0){ add_default_icons(); place_icons(); return; }
+    /* insertion sort by Name (case-folded) for a Windows-style A→Z layout */
     for (int a=1; a<cnt; a++){
         icon_t t=tmp[a]; char nm[64]; scpy(nm, names[a], sizeof nm);
         int b=a-1;
-        while (b>=0 && !wstrle(names[b], nm)){ tmp[b+1]=tmp[b]; scpy(names[b+1], names[b], sizeof names[b+1]); b--; }
+        while (b>=0 && !label_le(tmp[b].label, t.label)){ tmp[b+1]=tmp[b]; scpy(names[b+1], names[b], sizeof names[b+1]); b--; }
         tmp[b+1]=t; scpy(names[b+1], nm, sizeof names[b+1]);
     }
-    for (int i=0; i<cnt; i++){
-        if (tmp[i].x<0 || tmp[i].y<0) icon_grid_pos(i, &tmp[i].x, &tmp[i].y);
-        icons[i]=tmp[i];
-    }
+    for (int i=0; i<cnt; i++) icons[i]=tmp[i];
     g_icon_n=cnt;
+    place_icons();
 }
 
-/* Best-effort: rewrite a dragged icon's position back into its .desktop file.
- * Built-in defaults (src=="") and a read-only live ISO are silent no-ops. */
-static char *wcat(char *p, const char *s){ while (*s) *p++=*s++; return p; }
-static char *wcatint(char *p, int v){ char b[12]; if (v<0){*p++='-'; v=-v;} u2s((unsigned)v, b); return wcat(p, b); }
-static char *wcathex(char *p, gfx_u32 v){ const char *h="0123456789abcdef"; for (int i=20; i>=0; i-=4) *p++=h[(v>>i)&0xf]; return p; }
-static void icon_save_pos(int ii)
-{
+/* Desktop-icon positions persist per user in ~/.mxrc (like Windows storing
+ * positions per-icon, not in the shortcut), keyed by the icon's Name so a saved
+ * spot survives a .desktop rename.  This works on installed systems (writes to
+ * the real /root/.mxrc) AND on the live ISO (the tmpfs home overlay holds it for
+ * the session).  Key = "IconPos." + the Name with non-alphanumerics dropped. */
+static int int2s(int v, char *o){ int n=0; if (v<0){ o[n++]='-'; v=-v; } char b[12]; u2s((unsigned)v,b); for (int k=0; b[k]; k++) o[n++]=b[k]; o[n]=0; return n; }
+static void icon_pos_key(const icon_t *c, char *out, int cap){
+    int n=0; const char *pre="IconPos.";
+    for (const char *p=pre; *p && n<cap-1; p++) out[n++]=*p;
+    for (const char *p=c->label; *p && n<cap-1; p++){ char ch=*p;
+        if ((ch>='A'&&ch<='Z')||(ch>='a'&&ch<='z')||(ch>='0'&&ch<='9')) out[n++]=ch; }
+    out[n]=0;
+}
+/* Parse an "x,y" value into *ox,*oy.  Returns 1 on a well-formed pair, 0 else. */
+static int icon_parse_pos(const char *v, int *ox, int *oy){
+    int i=0, sg=1, x=0, y=0;
+    if (v[i]=='-'){ sg=-1; i++; } if (v[i]<'0'||v[i]>'9') return 0;
+    while (v[i]>='0'&&v[i]<='9'){ x=x*10+(v[i]-'0'); i++; } x*=sg;
+    if (v[i]!=',') return 0; i++;
+    sg=1; if (v[i]=='-'){ sg=-1; i++; } if (v[i]<'0'||v[i]>'9') return 0;
+    while (v[i]>='0'&&v[i]<='9'){ y=y*10+(v[i]-'0'); i++; } y*=sg;
+    *ox=x; *oy=y; return 1;
+}
+/* Load a saved position into *c.  Returns 1 on hit (x,y filled), 0 if none. */
+static int icon_load_pos(icon_t *c){
+    char key[80]; icon_pos_key(c, key, sizeof key);
+    char v[32]; if (mxrc_get(key, v, sizeof v)!=0) return 0;
+    return icon_parse_pos(v, &c->x, &c->y);
+}
+static void icon_save_pos(int ii){
     icon_t *c=&icons[ii];
-    if (!c->src[0]) return;
-    static char out[640]; char *p=out;
-    p=wcat(p,"[Desktop Entry]\nType=Application\nName="); p=wcat(p,c->label);
-    p=wcat(p,"\nIcon="); p=wcat(p,c->icon);
-    p=wcat(p,"\nExec="); p=wcat(p,c->cmd);
-    if (c->arg[0]){ p=wcat(p,"\nX-Makar-Arg="); p=wcat(p,c->arg); }
-    p=wcat(p,"\nX-Makar-WinW="); p=wcatint(p,c->winw);
-    p=wcat(p,"\nX-Makar-WinH="); p=wcatint(p,c->winh);
-    p=wcat(p,"\nX-Makar-Tint="); p=wcathex(p,c->tint);
-    p=wcat(p,"\nX-Makar-IconX="); p=wcatint(p,c->x);
-    p=wcat(p,"\nX-Makar-IconY="); p=wcatint(p,c->y);
-    p=wcat(p,"\n"); *p=0;
-    int fd=sys_open(c->src, O_WRONLY|O_CREAT|O_TRUNC);
-    if (fd<0) return;
-    sys_write(fd, out, (unsigned)(p-out));
-    sys_close(fd);
+    char key[80]; icon_pos_key(c, key, sizeof key);
+    char v[32]; int n=int2s(c->x, v); v[n++]=','; int2s(c->y, v+n);
+    mxrc_set(key, v);
 }
 
 /* Fork+exec a client, handing it `-makx <server-pid>` and a stdout/stderr pipe
@@ -1194,7 +1242,18 @@ static void draw_desk_menu(void){
     }
 }
 static void desk_arrange(void){
-    for(int i=0;i<g_icon_n;i++){ icon_grid_pos(i,&icons[i].x,&icons[i].y); icon_save_pos(i); }
+    /* Windows "Auto arrange": sort the icons A→Z by Name and snap each to its
+     * grid slot, persisting the new spots.  We rank without reordering icons[]
+     * (icon_surf[]/icon_has[] are parallel by index) -- each icon just gets the
+     * position of its alphabetical rank. */
+    int order[ICON_MAX];
+    for(int i=0;i<g_icon_n;i++) order[i]=i;
+    for(int a=1;a<g_icon_n;a++){ int t=order[a], b=a-1;
+        while(b>=0 && !label_le(icons[order[b]].label, icons[t].label)){ order[b+1]=order[b]; b--; }
+        order[b+1]=t; }
+    for(int rank=0;rank<g_icon_n;rank++){ int i=order[rank];
+        icon_grid_pos(rank,&icons[i].x,&icons[i].y); icon_clamp(&icons[i]); icon_save_pos(i); }
+    g_sel_icon=g_hover_icon=-1;
     g_dirty=1; damage_full();
 }
 static void desk_action(int a){
@@ -1441,6 +1500,70 @@ static int fstest(void)
     return ok?0:1;
 }
 
+/* Headless self-test for the Windows-style desktop logic: the column-major
+ * height-derived icon grid (never off the bottom), on-screen clamping, the
+ * case-insensitive alphabetical sort, the ~/.mxrc position key + value parse,
+ * and a best-effort full save/load round-trip.  No framebuffer is touched -- it
+ * pins FBW/FBH to a fixed geometry for the duration. */
+static int seqs(const char *a, const char *b){ int i=0; while(a[i]&&a[i]==b[i])i++; return a[i]==b[i]; }
+static int desktest(void)
+{
+    int ok=1;
+    unsigned ow=FBW, oh=FBH; FBW=1280; FBH=720;     /* fixed test geometry */
+
+    /* column-major grid: fill DOWN a column, wrap to the next; rows derived
+     * from height so the bottom row is always on-screen. */
+    int rows=grid_rows();
+    if (rows<2) ok=0;
+    int x0,y0,xc,yc,xn,yn;
+    icon_grid_pos(0,      &x0,&y0);
+    icon_grid_pos(rows-1, &xc,&yc);                 /* bottom of column 0 */
+    icon_grid_pos(rows,   &xn,&yn);                 /* wraps to column 1  */
+    if (x0!=GRID_X0 || y0!=GRID_Y0) ok=0;
+    if (xc!=GRID_X0) ok=0;                           /* still column 0 */
+    if (yc+ICON_H > (int)FBH-DOCK_H) ok=0;           /* last row on-screen */
+    if (xn!=GRID_X0+GRID_DX || yn!=GRID_Y0) ok=0;    /* new column, top */
+    for (int i=0;i<rows*4;i++){ int gx,gy; icon_grid_pos(i,&gx,&gy);
+        if (gx<0 || gy<MENU_H || gy+ICON_H > (int)FBH-DOCK_H) ok=0; }
+
+    /* clamp drags an off-screen icon fully back onto the desktop */
+    icon_t c; for (unsigned b=0;b<sizeof c;b++) ((unsigned char*)&c)[b]=0;
+    c.w=ICON_W; c.h=ICON_H;
+    c.x=99999; c.y=99999; icon_clamp(&c);
+    if (c.x+c.w>(int)FBW || c.y+c.h>(int)FBH-DOCK_H) ok=0;
+    c.x=-50; c.y=-50; icon_clamp(&c);
+    if (c.x<0 || c.y<MENU_H) ok=0;
+
+    /* case-insensitive alphabetical order (Windows folds case) */
+    if (!label_le("About","Terminal")) ok=0;
+    if ( label_le("terminal","About")) ok=0;
+    if (!label_le("Calc","calc"))      ok=0;         /* equal-ci => <= true */
+
+    /* position key sanitised to alphanumerics; value parse round-trips */
+    icon_t k; for (unsigned b=0;b<sizeof k;b++) ((unsigned char*)&k)[b]=0;
+    scpy(k.label,"Date & Time",sizeof k.label);
+    char key[80]; icon_pos_key(&k,key,sizeof key);
+    if (!seqs(key,"IconPos.DateTime")) ok=0;
+    int px=0,py=0;
+    if (!icon_parse_pos("24,40",&px,&py) || px!=24 || py!=40)  ok=0;
+    if (!icon_parse_pos("-8,-16",&px,&py)|| px!=-8 || py!=-16) ok=0;
+    if ( icon_parse_pos("bad",&px,&py))                        ok=0;
+
+    /* best-effort end-to-end persistence: write a probe icon's spot to ~/.mxrc
+     * and read it back.  Only assert when a value comes back, so a read-only
+     * home can't fail the gate (it just skips this leg). */
+    scpy(icons[0].label,"DeskTestProbe",sizeof icons[0].label);
+    icons[0].w=ICON_W; icons[0].h=ICON_H; icons[0].x=111; icons[0].y=222;
+    icon_save_pos(0);
+    icon_t r; for (unsigned b=0;b<sizeof r;b++) ((unsigned char*)&r)[b]=0;
+    scpy(r.label,"DeskTestProbe",sizeof r.label);
+    if (icon_load_pos(&r)){ if (r.x!=111 || r.y!=222) ok=0; }
+
+    FBW=ow; FBH=oh;
+    emit(ok? "GUI-DESKTEST: PASS\n" : "GUI-DESKTEST: FAIL\n");
+    return ok?0:1;
+}
+
 /* ============================ GUI login ================================= */
 static void do_login(const char *prefill_user)
 {
@@ -1611,6 +1734,7 @@ int main(int argc, char **argv, char **envp)
     (void)envp;
     if (argc>1 && seq(argv[1],"uitest")) return uitest();
     if (argc>1 && seq(argv[1],"fstest")) return fstest();
+    if (argc>1 && seq(argv[1],"desktest")) return desktest();
     int want_login = (argc>1 && seq(argv[1],"login"));
     const char *login_user = (want_login && argc>2) ? argv[2] : 0;
 

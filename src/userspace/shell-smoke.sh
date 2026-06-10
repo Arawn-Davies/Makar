@@ -311,30 +311,10 @@ fi
 # Kernel sh (this interpreter) doesn't tokenize `|`; verify pipes by
 # typing `echo X | cat` directly into sh.elf during a UI scenario.
 
-# GUI widget framework self-test (no framebuffer touched: uitest returns
-# before sys_fb_info).  Also emits its own GUI-UITEST: PASS marker.
-echo SHELL-SMOKE: gui-uitest
-exec /apps/gui.elf uitest
-if [ $? -eq 0 ]
-then
-    echo SHELL-SMOKE: [PASS] gui-uitest
-else
-    echo SHELL-SMOKE: [FAIL] gui-uitest
-    fail=1
-fi
-
-# GUI file-browser navigation self-test against the real VFS (chdir/readdir/
-# getcwd) -- proves the Files window + editor dialog actually move about the
-# filesystem.  Emits its own GUI-FSTEST: PASS marker.
-echo SHELL-SMOKE: gui-fstest
-exec /apps/gui.elf fstest
-if [ $? -eq 0 ]
-then
-    echo SHELL-SMOKE: [PASS] gui-fstest
-else
-    echo SHELL-SMOKE: [FAIL] gui-fstest
-    fail=1
-fi
+# NB: the headless GUI self-tests (gui.elf uitest/fstest/desktest) used to live
+# here; they moved to their own suite -- /src/userspace/gui-smoke.sh, marker
+# GUI-SMOKE -- so the GUI tests are a separate logical section (and a separate
+# CI job) from this shell/VFS/apps smoke matrix.
 
 if [ $fail -eq 0 ]
 then

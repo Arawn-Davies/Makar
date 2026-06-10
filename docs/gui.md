@@ -163,19 +163,29 @@ and reusable by future surface-rendering apps.
   the window manager for desktop icons.
 
 **Desktop icons** are XFCE-style **`.desktop` shortcuts** (`Name`/`Icon`/`Exec`
-plus Makar `X-Makar-*` extensions for the launch window size, an extra argv, the
-tint and the grid position). The WM scans the system-wide
-`/usr/share/shortcuts/*.desktop` plus the user overlay `~/.shortcuts` (which
-overrides by filename), building the icon set in `load_desktop_entries`; if both
-are empty it falls back to a built-in default list so the desktop is never empty.
-Artwork named by `Icon=` is resolved under `/usr/share/icons/makar/` with
-`.ico` -> `.png` -> `.bmp` probing (`load_one_icon`), blitted in `draw_icons`;
-a missing asset falls back to the procedural `icon_glyph()`. Icons are
-**draggable** and **selectable**: a click selects (highlight) + a no-move click
-launches, while a drag drops the icon and persists `X-Makar-IconX/Y` back into
-the source `.desktop` (best-effort -- a silent no-op on a read-only live ISO).
-The `.ico` tiles are generated from the BMP tiles by `tools/bmp2ico.py`
-(committed).
+plus Makar `X-Makar-*` extensions for the launch window size, an extra argv and
+the tint). The WM scans the system-wide `/usr/share/shortcuts/*.desktop` plus the
+user overlay `~/.shortcuts` (which overrides by filename), building the icon set
+in `load_desktop_entries`; if both are empty it falls back to a built-in default
+list so the desktop is never empty. Artwork named by `Icon=` is resolved under
+`/usr/share/icons/makar/` with `.ico` -> `.png` -> `.bmp` probing
+(`load_one_icon`), blitted in `draw_icons`; a missing asset falls back to the
+procedural `icon_glyph()`. The `.ico` tiles are generated from the BMP tiles by
+`tools/bmp2ico.py` (committed).
+
+**Layout & ordering follow Windows conventions.** Icons sort **case-folded by
+`Name`** (the shortcut *filename* no longer dictates order — the files carry no
+numeric prefix), laid out in a **column-major, height-derived grid**
+(`icon_grid_pos`): they fill top-to-bottom down a column and wrap to the next,
+with the row count computed from the live desktop height so the bottom row is
+never clipped below the dock (more icons just add a column). `icon_clamp` keeps
+every icon fully on-screen. Icons are **draggable** and **selectable** (a click
+selects + a no-move click launches); a drag drop, and **View ▸ Auto Arrange**
+(which re-grids A→Z), both **persist positions per user in `~/.mxrc`** as
+`IconPos.<Name>=x,y` (`icon_save_pos`/`icon_load_pos`) — not in the `.desktop`,
+matching how Windows stores desktop positions per icon. This works on installed
+systems (the real `/root/.mxrc`) and for the session on the live ISO (the tmpfs
+home overlay).
 
 **Desktop wallpaper** is opt-in via the image viewer, set the way an X11 desktop
 does it -- a config file for persistence plus a shared root pixmap for the live
@@ -474,9 +484,9 @@ dropdown offers **Cut / Copy / Paste** and **View** offers **Auto Arrange**; a
 (RCCM). Cut/Copy/Paste inject the `^X`/`^C`/`^V` byte into the focused client via
 `win_push`, so the application's own clipboard handling runs exactly as if the
 keystroke had been typed — there is no separate desktop clipboard and **no
-undo/redo**. Auto Arrange re-grids every desktop icon (`icon_grid_pos`) and
-persists the positions back to each `.desktop` (best-effort; a no-op on a
-read-only live ISO). The edit verbs grey out when no window is focused. One
+undo/redo**. Auto Arrange sorts the icons A→Z and re-grids them
+(`icon_grid_pos`), persisting the new spots to `~/.mxrc` (see Desktop icons
+above). The edit verbs grey out when no window is focused. One
 shared popup module (`menu_items`/`menu_box`/`draw_desk_menu`/`desk_menu_click`,
 `wm.c`) backs both the menu-bar dropdowns and the RCCM, mirroring the dock
 tray-menu pattern; `menubar_hit` opens a dropdown, an empty-desktop right-click

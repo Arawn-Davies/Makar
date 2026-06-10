@@ -1,10 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=Terminal
+Name=BASIC
 Icon=terminal
 Exec=/apps/mxterm.elf
+X-Makar-Arg=/apps/basic.elf
 X-Makar-WinW=648
-X-Makar-WinH=424
+X-Makar-WinH=440
 X-Makar-Tint=4c8dff
-X-Makar-IconX=24
-X-Makar-IconY=40

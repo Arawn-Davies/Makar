@@ -196,6 +196,8 @@ case "${1:-}" in
         fi ;;
     guitest)
         MODE="guitest"; shift 1 ;;
+    guismoke|gui-smoke)
+        MODE="guismoke"; shift 1 ;;
     gui)
         # `gui <suite>` boots an in-guest test suite in a visible QEMU
         # window so the operator can watch the script driver run inside
@@ -596,18 +598,27 @@ _check_ktest() {
         smoke_status=fail
     fi
 
+    # GUI-SMOKE: headless GUI/desktop self-tests (its own section + CI job).
+    # Marker emitted by /src/userspace/gui-smoke.sh.
+    local gui_status=unknown
+    if grep -q "^GUI-SMOKE: ALL PASS" "$REPO_ROOT/ktest.log"; then
+        gui_status=pass
+    elif grep -q "^GUI-SMOKE: FAIL" "$REPO_ROOT/ktest.log"; then
+        gui_status=fail
+    fi
+
     # Any explicit FAIL is fatal.  Otherwise accept any combination
     # where at least one suite passed -- so focused `gui libc` /
-    # `gui smoke` runs don't trip the "ktest TIMEOUT" branch.  Only
-    # the all-unknown case is treated as a real failure (no marker on
+    # `gui smoke` / `guismoke` runs don't trip the "ktest TIMEOUT" branch.
+    # Only the all-unknown case is treated as a real failure (no marker on
     # serial usually means kernel hung or QEMU never booted).
-    case "$ktest_status:$incore_status:$libc_status:$smoke_status:$net_status" in
+    case "$ktest_status:$incore_status:$libc_status:$smoke_status:$gui_status:$net_status" in
         *fail*)
-            echo "==> FAILED ktest=$ktest_status incore=$incore_status libc=$libc_status smoke=$smoke_status net=$net_status -- see ktest.log"; exit 1 ;;
-        unknown:unknown:unknown:unknown:unknown)
+            echo "==> FAILED ktest=$ktest_status incore=$incore_status libc=$libc_status smoke=$smoke_status gui=$gui_status net=$net_status -- see ktest.log"; exit 1 ;;
+        unknown:unknown:unknown:unknown:unknown:unknown)
             echo "==> ktest: TIMEOUT or no result on serial - see ktest.log"; exit 1 ;;
         *)
-            echo "==> PASSED ktest=$ktest_status incore=$incore_status libc=$libc_status smoke=$smoke_status net=$net_status" ;;
+            echo "==> PASSED ktest=$ktest_status incore=$incore_status libc=$libc_status smoke=$smoke_status gui=$gui_status net=$net_status" ;;
     esac
 }
 
@@ -1019,6 +1030,17 @@ case "$MODE" in
 # Incremental build of makar-test.iso (ktest suite only), then run headless.
 ktest)
     _build_iso "TEST_CMDLINE='test_mode test=ktest' CFLAGS='-O0 -g3' TEST_ISO=1"
+    _run_ktest
+    ;;
+
+# ── guismoke ───────────────────────────────────────────────────────────────────
+# Headless GUI/desktop self-tests ONLY (gui.elf uitest/fstest/desktest via
+# /src/userspace/gui-smoke.sh), booted with test=gui-smoke so the kernel skips
+# every other suite.  A fast, deterministic, framebuffer-free GUI gate -- its
+# own logical section, separate from `ktest` (kernel) and `guitest` (GUI boot +
+# screendump).  Used by the gui-headless CI job.
+guismoke|gui-smoke)
+    _build_iso "TEST_CMDLINE='test_mode test=gui-smoke' CFLAGS='-O0 -g3' TEST_ISO=1"
     _run_ktest
     ;;
 
