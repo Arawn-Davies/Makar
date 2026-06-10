@@ -120,7 +120,7 @@ gui.elf: crt0.o wm.o gui_gfx.o gui_ui.o gui_browser.o img_bmp.o img_png.o img_ic
 # makx clients: each links the gui_gfx/gui_ui/gui_browser helpers it uses plus
 # the makx client library (makx.o).  Applications are independent processes that
 # talk to gui.elf (the display server) over IPC + a shared surface; see makx.h.
-mxterm.elf: crt0.o mxterm.o vt100.o gui_gfx.o makx.o
+mxterm.elf: crt0.o mxterm.o vt100.o gui_gfx.o gui_ui.o makx.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
 mxfiles.elf: crt0.o mxfiles.o gui_gfx.o gui_ui.o gui_browser.o makx.o

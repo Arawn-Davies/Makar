@@ -181,6 +181,12 @@ copies both with the rest of `/usr`.
   region, SGR colours, ED/EL, IL/DL/ICH/DCH/ECH, alt-screen, UTF-8 → one cell).
   Used by `mxterm` (and reusable by a future serial console); freestanding (no
   libc). The front-end renders the grid via a 16-colour palette → `gfx_char`.
+  A full-screen scroll pushes the evicted top line into a **scrollback ring**
+  (`sb[VT_SCROLLBACK]`, alt-screen excluded) that `mxterm` reads for its
+  scrollbar. `mxterm` adds an Edit/Help **menu bar**, a right-click **Copy /
+  Paste / Select All** menu, and **drag-to-select** over the cells (mapped to
+  logical scrollback+screen lines) that copies to the system clipboard; typing
+  snaps the view back to the live tail.
 
 ### Text-mode (TUI) apps in the GUI terminal — cell-API → ANSI bridge
 

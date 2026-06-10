@@ -94,7 +94,7 @@ Last reordered 2026-06-09 (after PR #204 merged).
   - [x] **mxedit** (reference): Edit menu + Ctrl-shortcuts + drag-select + Undo/Redo, **right-click context menu** (Cut/Copy/Paste/Select All/Undo/Redo, greyed by context) and a **scrollbar**.
   - [x] **mxfiles**: File/View/Help bar + About + right-click context menu (Open/Refresh) + **scrollbar** (list & icon views).
   - [x] **mxweb / mximg**: menu bar + Help→About with per-app credits (mxweb → BearSSL + lwIP; mximg → Arawn Davies).
-  - [ ] **mxterm**: menu bar + RCCM + drag-select + scrollback/scrollbar (next).
+  - [x] **mxterm**: Edit/Help menu bar + right-click menu (Copy/Paste/Select All), **drag-to-select** cells → clipboard, and a **scrollback buffer** (`vt100` keeps the last `VT_SCROLLBACK=500` evicted lines) with a draggable **scrollbar**; typing snaps to the live tail. Ctrl-C still reaches the shell as SIGINT (copy/paste are menu/RCCM/drag, terminal-correct).
   - [ ] **mxweb**: drag-to-highlight page text + Copy (next).
 
 ### Userspace tooling / terminals
