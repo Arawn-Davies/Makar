@@ -51,9 +51,18 @@ typedef struct {
 void ui_begin(ui_ctx *c, int mx, int my, int mdown, int mpressed,
               int mreleased, int key);
 
-/* A clickable button.  Returns 1 on the frame the click completes. */
+/* A clickable button.  Returns 1 on the frame the click completes.  Size it
+ * with ui_btn_w(label) so the text is never cramped against the edges. */
 int  ui_button(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
                const char *label);
+
+/* Comfortable horizontal padding inside a button (each side). */
+#define UI_BTN_PADX 12
+
+/* Recommended button width for `label`: glyph width + 2*UI_BTN_PADX, floored so
+ * even 1-2 char buttons stay tappable.  Put the padding maths in one place
+ * instead of magic widths per app. */
+int  ui_btn_w(const char *label);
 
 /* Horizontal slider over [lo,hi]; *val is read and written.  Returns 1 if the
  * value changed this frame. */
@@ -78,5 +87,44 @@ void ui_label(ui_ctx *c, gfx_surface *s, int x, int y, const char *str,
  * when focused, Up/Down move the selection.  Returns 1 if *sel changed. */
 int  ui_listbox(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
                 const char *const *items, int n, int *sel, int *scroll);
+
+/* ------------------------------------------------------------------------
+ * Menus (Windows-style): a top menu bar with dropdowns, a right-click context
+ * menu, and an About modal.  Disabled items grey out and don't react; a NULL
+ * label is a separator.  These DRAW LAST in the frame (they overlay content),
+ * so while a menu is open the caller must suppress its own content input
+ * (gate on `*open >= 0` for the bar / `*open` for the context menu).
+ * ------------------------------------------------------------------------ */
+#define UI_MENUBAR_H 18         /* height of the menu-bar strip (y = 0..)      */
+
+typedef struct {
+    const char *label;          /* item text; NULL => separator line           */
+    int         action;         /* returned when clicked (caller enum, use > 0)*/
+    int         enabled;        /* 0 => greyed, non-interactive                 */
+    const char *accel;          /* right-aligned hint e.g. "Ctrl+C", or NULL   */
+} ui_menu_item;
+
+typedef struct {
+    const char         *title;  /* top-level label, e.g. "File"                */
+    const ui_menu_item *items;
+    int                 n;
+} ui_menu;
+
+/* Menu bar at y=0 (height UI_MENUBAR_H) + the open dropdown.  *open = index of
+ * the open top menu (-1 = none), caller-owned.  Returns a clicked item's
+ * `action` (> 0) this frame, else 0.  Clicking a title toggles it; clicking an
+ * item or clicking away closes. */
+int  ui_menubar(ui_ctx *c, gfx_surface *s, const ui_menu *menus, int n, int *open);
+
+/* Floating context menu of `items` at (x,y).  *open is 1 while shown (the
+ * caller sets it on right-click).  Returns a clicked item's action, else 0;
+ * closes (clears *open) on select or click-away. */
+int  ui_context_menu(ui_ctx *c, gfx_surface *s, int x, int y,
+                     const ui_menu_item *items, int n, int *open);
+
+/* Modal About card: centered box with `title`, `lines` (nlines), an OK button.
+ * *open caller-owned (set 1 to show).  Returns 1 the frame it's dismissed. */
+int  ui_about(ui_ctx *c, gfx_surface *s, const char *title,
+             const char *const *lines, int nlines, int *open);
 
 #endif /* GUI_UI_H */

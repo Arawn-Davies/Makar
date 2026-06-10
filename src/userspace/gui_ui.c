@@ -26,6 +26,12 @@ void ui_label(ui_ctx *c, gfx_surface *s, int x, int y, const char *str, gfx_u32 
     gfx_str(s, x, y, str, fg);
 }
 
+int ui_btn_w(const char *label)
+{
+    int w = gfx_text_w(label) + 2 * UI_BTN_PADX;
+    return w < 36 ? 36 : w;
+}
+
 int ui_button(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
               const char *label)
 {
@@ -163,4 +169,118 @@ int ui_listbox(ui_ctx *c, gfx_surface *s, int x, int y, int w, int h,
                      idx == *sel ? UI_COL_TEXT : UI_COL_MUTED, x + w - 2);
     }
     return changed;
+}
+
+/* ---- menus -------------------------------------------------------------- */
+
+/* Shared dropdown/popup body: draw `items` as a list anchored at (x,y), width
+ * auto-fitting the longest label (+ an accel column).  Returns a clicked item's
+ * action (> 0), else 0; sets *outside when the click landed off the popup. */
+static int ui_popup_list(ui_ctx *c, gfx_surface *s, int x, int y,
+                         const ui_menu_item *items, int n, int *outside)
+{
+    const int rowh = 16, padx = 12, gap = 18;
+    int hasacc = 0, maxlw = 0, maxaw = 0;
+    for (int i = 0; i < n; i++) {
+        if (!items[i].label) continue;
+        int lw = gfx_text_w(items[i].label); if (lw > maxlw) maxlw = lw;
+        if (items[i].accel) { hasacc = 1; int aw = gfx_text_w(items[i].accel); if (aw > maxaw) maxaw = aw; }
+    }
+    int w = padx * 2 + maxlw + (hasacc ? gap + maxaw : 0);
+    if (w < 100) w = 100;
+    int h = 4;
+    for (int i = 0; i < n; i++) h += items[i].label ? rowh : 6;
+    if (x + w > s->w) x = s->w - w;
+    if (x < 0) x = 0;
+    if (y + h > s->h) y = s->h - h;
+    if (y < 0) y = 0;
+
+    gfx_fill(s, x, y, w, h, UI_COL_FIELD_FC);
+    gfx_outline(s, x, y, w, h, UI_COL_BORDER);
+
+    int action = 0, cy = y + 2;
+    for (int i = 0; i < n; i++) {
+        if (!items[i].label) { gfx_fill(s, x + 5, cy + 2, w - 10, 1, UI_COL_BORDER); cy += 6; continue; }
+        int hot = pt_in(c, x, cy, w, rowh) && items[i].enabled;
+        if (hot) gfx_fill(s, x + 1, cy, w - 2, rowh, UI_COL_SEL);
+        gfx_u32 fg = items[i].enabled ? UI_COL_TEXT : UI_COL_MUTED;
+        gfx_str_clip(s, x + padx, cy + 4, items[i].label, fg, x + w - 2);
+        if (items[i].accel)
+            gfx_str_clip(s, x + w - padx - gfx_text_w(items[i].accel), cy + 4,
+                         items[i].accel, UI_COL_MUTED, x + w - 2);
+        if (hot && c->mpressed) { action = items[i].action; c->got_input = 1; }
+        cy += rowh;
+    }
+    if (c->mpressed && !pt_in(c, x, y, w, h)) *outside = 1;
+    return action;
+}
+
+int ui_menubar(ui_ctx *c, gfx_surface *s, const ui_menu *menus, int n, int *open)
+{
+    if (n > 16) n = 16;
+    int prev_open = *open;
+
+    gfx_fill(s, 0, 0, s->w, UI_MENUBAR_H, UI_COL_BTN);
+    gfx_fill(s, 0, UI_MENUBAR_H - 1, s->w, 1, UI_COL_BORDER);
+
+    int title_x[16];
+    int clicked = -1, tx = 4;
+    for (int i = 0; i < n; i++) {
+        int tw  = gfx_text_w(menus[i].title) + 16;
+        int hot = pt_in(c, tx, 0, tw, UI_MENUBAR_H);
+        int isopen = (prev_open == i);
+        if (isopen || hot)
+            gfx_fill(s, tx, 0, tw, UI_MENUBAR_H, isopen ? UI_COL_BTN_ACT : UI_COL_BTN_HOT);
+        gfx_str(s, tx + 8, (UI_MENUBAR_H - 8) / 2, menus[i].title, UI_COL_TEXT);
+        if (hot && c->mpressed) { clicked = i; c->got_input = 1; }
+        title_x[i] = tx;
+        tx += tw;
+    }
+
+    int action = 0, outside = 0;
+    if (prev_open >= 0 && prev_open < n)
+        action = ui_popup_list(c, s, title_x[prev_open], UI_MENUBAR_H,
+                               menus[prev_open].items, menus[prev_open].n, &outside);
+
+    if (clicked >= 0)              *open = (clicked == prev_open) ? -1 : clicked; /* toggle/switch */
+    else if (action || outside)    *open = -1;                                   /* pick / click-away */
+    return action;
+}
+
+int ui_context_menu(ui_ctx *c, gfx_surface *s, int x, int y,
+                    const ui_menu_item *items, int n, int *open)
+{
+    if (!*open) return 0;
+    int outside = 0;
+    int action = ui_popup_list(c, s, x, y, items, n, &outside);
+    if (action || outside) *open = 0;
+    return action;
+}
+
+int ui_about(ui_ctx *c, gfx_surface *s, const char *title,
+             const char *const *lines, int nlines, int *open)
+{
+    if (!*open) return 0;
+    const int lh = 12, w = 380;
+    int h = 38 + nlines * lh + 40;
+    int x = (s->w - w) / 2, y = (s->h - h) / 2;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+
+    gfx_fill(s, x, y, w, h, UI_COL_FIELD_FC);
+    gfx_outline(s, x, y, w, h, UI_COL_BTN_ACT);
+    gfx_str(s, x + 14, y + 12, title, UI_COL_TEXT);
+    gfx_fill(s, x + 14, y + 26, w - 28, 1, UI_COL_BORDER);
+
+    int ly = y + 34;
+    for (int i = 0; i < nlines; i++) {
+        gfx_str_clip(s, x + 14, ly, lines[i], UI_COL_MUTED, x + w - 14);
+        ly += lh;
+    }
+
+    int bw = 70, bh = 22, bx = x + (w - bw) / 2, by = y + h - bh - 9;
+    int ok = ui_button(c, s, bx, by, bw, bh, "OK");
+    /* Clicking anywhere outside the card also dismisses (Windows-ish). */
+    if (ok || (c->mpressed && !pt_in(c, x, y, w, h))) { *open = 0; return 1; }
+    return 0;
 }
