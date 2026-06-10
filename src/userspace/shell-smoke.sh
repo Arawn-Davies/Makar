@@ -59,6 +59,19 @@ else
     fail=1
 fi
 
+# Dynamic-musl smoke (Phase 3/4): a PIE linked against musl's shared libc.so.
+# The kernel loads PT_INTERP=/lib/ld-musl-i386.so.1, which mmaps /lib/libc.so,
+# relocates, and jumps to the program -- the whole dynamic-linking runtime.
+echo SHELL-SMOKE: musl-dynamic
+exec /apps/muslhellodyn.elf musldyntest
+if [ $? -eq 0 ]
+then
+    echo SHELL-SMOKE: [PASS] musl-dynamic
+else
+    echo SHELL-SMOKE: [FAIL] musl-dynamic
+    fail=1
+fi
+
 echo SHELL-SMOKE: cd-root
 cd /
 pwd

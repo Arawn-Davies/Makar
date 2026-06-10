@@ -38,11 +38,33 @@
  * [ELF_STACK_TOP - USER_STACK_PAGES*PAGE_SIZE, ELF_STACK_TOP). */
 #define USER_STACK_PAGES  8u
 
-/* Maximum ELF file size that the staging buffer can hold. */
-#define ELF_BUF_MAX     (512u * 1024u)
+/* Maximum ELF file size that the staging buffer can hold.  Sized for the
+ * largest image we load whole: musl's libc.so / ld-musl (~820 KiB) and tcc.elf
+ * (~926 KiB), with headroom. */
+#define ELF_BUF_MAX     (2u * 1024u * 1024u)
 
-/* Static staging buffer so it does not live on any task stack. */
+/* Static staging buffer so it does not live on any task stack.  Reused for the
+ * dynamic interpreter after the main image's segments are copied into frames. */
 static uint8_t s_elf_buf[ELF_BUF_MAX];
+
+/* Dynamic-linking layout (user space < 0xC0000000):
+ *   PIE main image base        DYN_BASE     (ET_DYN; ET_EXEC keeps its own vaddrs)
+ *   dynamic interpreter base   INTERP_BASE  (ld-musl-i386.so.1, itself ET_DYN)
+ * The interpreter then mmaps libc.so into the 0x90000000 anon/mmap window.
+ * All clear of each other and the 0xBFFF0000 stack. */
+#define DYN_BASE        0x50000000u
+#define INTERP_BASE     0x70000000u
+
+/* System V i386 auxv entry types musl reads (a_type values). */
+#define AT_NULL    0
+#define AT_PHDR    3
+#define AT_PHENT   4
+#define AT_PHNUM   5
+#define AT_PAGESZ  6
+#define AT_BASE    7
+#define AT_ENTRY   9
+#define AT_RANDOM  25
+#define AT_EXECFN  31
 
 /* -------------------------------------------------------------------------
  * Helpers
@@ -96,6 +118,53 @@ void execve_unlock(void)
 #define ELF_MAX_ARGC  128   /* room for tcc.elf's full kernel-rebuild link line */
 #define ELF_ARG_MAX   256
 
+/* Map an ELF image's PT_LOAD segments into `pd` at `base + p_vaddr`, copying
+ * file data from `buf` and zero-filling the rest (bss).  `base` is 0 for an
+ * ET_EXEC, the chosen load base for an ET_DYN (PIE) or the interpreter.  Each
+ * segment keeps its own R/W permission (i386 has no NX, so X is implicit).
+ * Returns 0, or -1 (the caller frees the page directory). */
+static int map_load_segments(uint32_t *pd, const uint8_t *buf, uint32_t filesz,
+                             const Elf32_Ehdr *ehdr, uint32_t base)
+{
+    for (int i = 0; i < (int)ehdr->e_phnum; i++) {
+        const Elf32_Phdr *ph = (const Elf32_Phdr *)
+            (buf + ehdr->e_phoff + (uint32_t)i * ehdr->e_phentsize);
+
+        if (ph->p_type != PT_LOAD || ph->p_memsz == 0)
+            continue;
+
+        uint32_t vaddr = ph->p_vaddr + base;
+        if (vaddr < 0x10000000u)                  return -1;  /* into kernel window */
+        if (ph->p_offset + ph->p_filesz > filesz) return -1;
+
+        uint32_t flags = VMM_FLAG_USER;
+        if (ph->p_flags & PF_W) flags |= VMM_FLAG_WRITABLE;
+
+        uint32_t va  = align_down(vaddr, PAGE_SIZE);
+        uint32_t end = align_up(vaddr + ph->p_memsz, PAGE_SIZE);
+
+        for (; va < end; va += PAGE_SIZE) {
+            uint32_t phys = pmm_alloc_frame();
+            if (phys == PMM_ALLOC_ERROR) return -1;
+            memset((void *)phys, 0, PAGE_SIZE);
+
+            uint32_t file_start = vaddr;
+            uint32_t file_end   = vaddr + ph->p_filesz;
+            uint32_t page_end   = va + PAGE_SIZE;
+            uint32_t copy_from  = (file_start > va)       ? file_start : va;
+            uint32_t copy_to    = (file_end   < page_end) ? file_end   : page_end;
+
+            if (copy_from < copy_to) {
+                uint32_t dst_off = copy_from - va;
+                uint32_t src_off = ph->p_offset + (copy_from - vaddr);
+                memcpy((uint8_t *)phys + dst_off, buf + src_off, copy_to - copy_from);
+            }
+            vmm_map_page(pd, va, phys, flags);
+        }
+    }
+    return 0;
+}
+
 int elf_exec(const char *path, int argc, const char *const *argv)
 {
     /* 1. Read file into staging buffer. */
@@ -129,8 +198,8 @@ int elf_exec(const char *path, int argc, const char *const *argv)
         t_writestring("exec: not little-endian ELF\n");
         return -1;
     }
-    if (ehdr->e_type != ET_EXEC) {
-        t_writestring("exec: not an executable ELF (ET_EXEC required)\n");
+    if (ehdr->e_type != ET_EXEC && ehdr->e_type != ET_DYN) {
+        t_writestring("exec: not an executable ELF (ET_EXEC / ET_DYN)\n");
         return -1;
     }
     if (ehdr->e_machine != EM_386) {
@@ -145,7 +214,10 @@ int elf_exec(const char *path, int argc, const char *const *argv)
         t_writestring("exec: program header table out of range\n");
         return -1;
     }
-    if (ehdr->e_entry < 0x10000000u) {
+    /* ET_EXEC entries are absolute and must clear the low identity window.
+     * ET_DYN (PIE) entries are relative -- load_base (0x50000000+) is added
+     * below -- so they're legitimately small here; don't reject them. */
+    if (ehdr->e_type == ET_EXEC && ehdr->e_entry < 0x10000000u) {
         t_writestring("exec: entry point in kernel window (< 256 MiB)\n");
         return -1;
     }
@@ -159,75 +231,103 @@ int elf_exec(const char *path, int argc, const char *const *argv)
         return -1;
     }
 
-    /* 4. Map PT_LOAD segments. */
+    /* 4. Load base: ET_DYN (PIE) is relocatable; ET_EXEC keeps its vaddrs.
+     *    Map the main image's PT_LOAD segments. */
+    uint32_t load_base = (ehdr->e_type == ET_DYN) ? DYN_BASE : 0u;
+    if (map_load_segments(pd, s_elf_buf, filesz, ehdr, load_base) != 0) {
+        t_writestring("exec: bad or oversized PT_LOAD segment\n");
+        vmm_free_pd(pd);
+        return -1;
+    }
+
+    /* Save what the auxv needs from the main ehdr BEFORE the staging buffer is
+     * reused for the interpreter (the main's segments are now in frames, so
+     * s_elf_buf is free). */
+    uint32_t entry_main = ehdr->e_entry      + load_base;
+    uint32_t at_phent   = ehdr->e_phentsize;
+    uint32_t at_phnum   = ehdr->e_phnum;
+
+    /* AT_PHDR is the *in-memory* address of the program headers.  The phdrs live
+     * at file offset e_phoff; find the PT_LOAD that maps that offset and
+     * translate to a vaddr: load_base + p_vaddr + (e_phoff - p_offset).  Using
+     * load_base + e_phoff is wrong for ET_EXEC (segment vaddr is 0x40000000, not
+     * 0) and only happens to work for PIE because its first segment vaddr is 0;
+     * ld.so/__libc_start_main deref AT_PHDR, so a bad value faults near NULL. */
+    uint32_t at_phdr = ehdr->e_phoff + load_base;   /* fallback */
     for (int i = 0; i < (int)ehdr->e_phnum; i++) {
         const Elf32_Phdr *ph = (const Elf32_Phdr *)
             (s_elf_buf + ehdr->e_phoff + (uint32_t)i * ehdr->e_phentsize);
-
-        if (ph->p_type != PT_LOAD || ph->p_memsz == 0)
-            continue;
-
-        if (ph->p_vaddr < 0x10000000u) {
-            t_writestring("exec: segment below 256 MiB boundary\n");
-            vmm_free_pd(pd);
-            return -1;
-        }
-        if (ph->p_offset + ph->p_filesz > filesz) {
-            t_writestring("exec: segment file data out of range\n");
-            vmm_free_pd(pd);
-            return -1;
-        }
-
-        uint32_t flags = VMM_FLAG_USER;
-        if (ph->p_flags & PF_W)
-            flags |= VMM_FLAG_WRITABLE;
-
-        uint32_t va  = align_down(ph->p_vaddr, PAGE_SIZE);
-        uint32_t end = align_up(ph->p_vaddr + ph->p_memsz, PAGE_SIZE);
-
-        for (; va < end; va += PAGE_SIZE) {
-            uint32_t phys = pmm_alloc_frame();
-            if (phys == PMM_ALLOC_ERROR) {
-                t_writestring("exec: out of physical memory\n");
-                vmm_free_pd(pd);
-                return -1;
-            }
-            memset((void *)phys, 0, PAGE_SIZE);
-
-            /* Copy the portion of file data that falls in this page. */
-            uint32_t file_start = ph->p_vaddr;
-            uint32_t file_end   = ph->p_vaddr + ph->p_filesz;
-            uint32_t page_end   = va + PAGE_SIZE;
-
-            uint32_t copy_from = (file_start > va)       ? file_start : va;
-            uint32_t copy_to   = (file_end   < page_end) ? file_end   : page_end;
-
-            if (copy_from < copy_to) {
-                uint32_t dst_off = copy_from - va;
-                uint32_t src_off = ph->p_offset + (copy_from - ph->p_vaddr);
-                memcpy((uint8_t *)phys + dst_off,
-                       s_elf_buf + src_off,
-                       copy_to - copy_from);
-            }
-
-            vmm_map_page(pd, va, phys, flags);
+        if (ph->p_type == PT_LOAD &&
+            ehdr->e_phoff >= ph->p_offset &&
+            ehdr->e_phoff <  ph->p_offset + ph->p_filesz) {
+            at_phdr = load_base + ph->p_vaddr + (ehdr->e_phoff - ph->p_offset);
+            break;
         }
     }
 
-    /* 5. Record the initial heap break (page-aligned end of highest segment). */
+    /* 5. Heap break = end of the highest main segment (+ base). */
     uint32_t top_vaddr = 0;
     for (int i = 0; i < (int)ehdr->e_phnum; i++) {
         const Elf32_Phdr *ph = (const Elf32_Phdr *)
             (s_elf_buf + ehdr->e_phoff + (uint32_t)i * ehdr->e_phentsize);
         if (ph->p_type != PT_LOAD || ph->p_memsz == 0) continue;
-        uint32_t end = align_up(ph->p_vaddr + ph->p_memsz, PAGE_SIZE);
+        uint32_t end = align_up(ph->p_vaddr + load_base + ph->p_memsz, PAGE_SIZE);
         if (end > top_vaddr) top_vaddr = end;
     }
+
+    /* 5b. Find PT_INTERP and copy the interpreter path out before reuse.
+     * Only an ET_DYN (PIE) image drives the dynamic linker; an ET_EXEC may
+     * still carry a vestigial PT_INTERP (TCC stamps /lib/ld-linux.so.2 on its
+     * otherwise self-contained output), which we ignore exactly as the
+     * pre-dynamic loader did -- ET_EXEC stays jump-straight-to-entry. */
+    char interp_path[128];
+    int  has_interp = 0;
+    for (int i = 0; ehdr->e_type == ET_DYN && i < (int)ehdr->e_phnum; i++) {
+        const Elf32_Phdr *ph = (const Elf32_Phdr *)
+            (s_elf_buf + ehdr->e_phoff + (uint32_t)i * ehdr->e_phentsize);
+        if (ph->p_type != PT_INTERP) continue;
+        uint32_t n = ph->p_filesz;
+        if (n == 0 || n > sizeof interp_path)   break;
+        if (ph->p_offset + n > filesz)          break;
+        memcpy(interp_path, s_elf_buf + ph->p_offset, n);
+        interp_path[n - 1] = '\0';      /* p_filesz includes the NUL */
+        has_interp = 1;
+        break;
+    }
+
     task_current()->user_brk = top_vaddr;
     task_current()->user_brk_base = top_vaddr;  /* lower bound of the lazy brk region */
     task_current()->mmap_next = 0;   /* fresh address space: reset anon-mmap window */
     task_current()->tls_gs = 0x23u;  /* fresh image: drop any prior TLS */
     task_current()->tls_active = 0;
+
+    /* 5c. Dynamic executable: load the interpreter (ld-musl-i386.so.1, itself
+     * ET_DYN) at INTERP_BASE and enter *there* instead of the program entry.
+     * musl's ld.so then mmaps libc.so (DT_NEEDED), relocates, and jumps to
+     * AT_ENTRY.  Reuses s_elf_buf (the main image is already in frames). */
+    uint32_t enter_entry = entry_main;
+    uint32_t at_base     = 0;
+    if (has_interp) {
+        uint32_t isz = 0;
+        if (vfs_read_file(interp_path, s_elf_buf, ELF_BUF_MAX, &isz) != 0 ||
+            isz < sizeof(Elf32_Ehdr)) {
+            t_writestring("exec: cannot read interpreter '");
+            t_writestring(interp_path); t_writestring("'\n");
+            vmm_free_pd(pd); return -1;
+        }
+        const Elf32_Ehdr *ie = (const Elf32_Ehdr *)s_elf_buf;
+        if (ie->e_ident[EI_MAG0] != ELFMAG0 || ie->e_machine != EM_386 ||
+            ie->e_type != ET_DYN) {
+            t_writestring("exec: bad interpreter ELF\n");
+            vmm_free_pd(pd); return -1;
+        }
+        if (map_load_segments(pd, s_elf_buf, isz, ie, INTERP_BASE) != 0) {
+            t_writestring("exec: interpreter segment out of range\n");
+            vmm_free_pd(pd); return -1;
+        }
+        enter_entry = ie->e_entry + INTERP_BASE;
+        at_base     = INTERP_BASE;
+    }
 
     /* 6. Map user stack (USER_STACK_PAGES pages, read-write).  Only the
      * top page is used to write argc/argv; the rest grow downward as
@@ -306,29 +406,44 @@ int elf_exec(const char *path, int argc, const char *const *argv)
     off &= ~3u;
 
     /*
-     * Minimum space required below 'off' for the pointer table + argc:
-     *   6 words  auxv: AT_PAGESZ, AT_RANDOM, AT_NULL (type+val each)
-     *   1 word   envp[0]=NULL
-     *   1 word   argv[argc]=NULL
+     * Minimum space below 'off' for the pointer table + argc:
+     *   18 words  auxv: PHDR/PHENT/PHNUM/PAGESZ/BASE/ENTRY/RANDOM/EXECFN/NULL
+     *   1 word    envp[0]=NULL
+     *   1 word    argv[argc]=NULL
      *   argc words  argv[0..argc-1]
-     *   1 word   argc
+     *   1 word    argc
      */
-    uint32_t needed = (uint32_t)(argc + 9) * 4u;
+    uint32_t needed = (uint32_t)(argc + 21) * 4u;
     if (off < needed) {
         /* Pathological case - give up on arguments rather than corrupt memory. */
         argc = 0;
         off  = PAGE_SIZE & ~3u;
     }
 
-    /* auxv (System V i386), highest addr -> lowest: AT_NULL terminator,
-     * AT_RANDOM, AT_PAGESZ.  musl's _start walks this after the envp NULL.
-     * Each entry is {type, val} with type at the lower address. */
-    off -= 4u; *(uint32_t *)(spage + off) = 0u;          /* AT_NULL   val  */
-    off -= 4u; *(uint32_t *)(spage + off) = 0u;          /* AT_NULL   type */
-    off -= 4u; *(uint32_t *)(spage + off) = rand_ptr;    /* AT_RANDOM val  */
-    off -= 4u; *(uint32_t *)(spage + off) = 25u;         /* AT_RANDOM type */
-    off -= 4u; *(uint32_t *)(spage + off) = PAGE_SIZE;   /* AT_PAGESZ val  */
-    off -= 4u; *(uint32_t *)(spage + off) = 6u;          /* AT_PAGESZ type */
+    /* Full System V i386 auxv, highest addr -> lowest (AT_NULL terminates);
+     * each entry is {a_type, a_val} with a_type at the lower address.  The
+     * dynamic linker reads AT_PHDR/PHENT/PHNUM (the program's own headers),
+     * AT_BASE (where ld.so itself was loaded) and AT_ENTRY (the program entry).
+     * Static musl only needs AT_RANDOM + AT_PAGESZ.  AT_EXECFN = argv[0]. */
+    uint32_t execfn = (argc > 0) ? uargv[0] : 0u;
+    off -= 4u; *(uint32_t *)(spage + off) = 0u;          /* AT_NULL    val  */
+    off -= 4u; *(uint32_t *)(spage + off) = AT_NULL;     /* AT_NULL    type */
+    off -= 4u; *(uint32_t *)(spage + off) = execfn;      /* AT_EXECFN  val  */
+    off -= 4u; *(uint32_t *)(spage + off) = AT_EXECFN;   /* AT_EXECFN  type */
+    off -= 4u; *(uint32_t *)(spage + off) = rand_ptr;    /* AT_RANDOM  val  */
+    off -= 4u; *(uint32_t *)(spage + off) = AT_RANDOM;   /* AT_RANDOM  type */
+    off -= 4u; *(uint32_t *)(spage + off) = entry_main;  /* AT_ENTRY   val  */
+    off -= 4u; *(uint32_t *)(spage + off) = AT_ENTRY;    /* AT_ENTRY   type */
+    off -= 4u; *(uint32_t *)(spage + off) = at_base;     /* AT_BASE    val  */
+    off -= 4u; *(uint32_t *)(spage + off) = AT_BASE;     /* AT_BASE    type */
+    off -= 4u; *(uint32_t *)(spage + off) = PAGE_SIZE;   /* AT_PAGESZ  val  */
+    off -= 4u; *(uint32_t *)(spage + off) = AT_PAGESZ;   /* AT_PAGESZ  type */
+    off -= 4u; *(uint32_t *)(spage + off) = at_phnum;    /* AT_PHNUM   val  */
+    off -= 4u; *(uint32_t *)(spage + off) = AT_PHNUM;    /* AT_PHNUM   type */
+    off -= 4u; *(uint32_t *)(spage + off) = at_phent;    /* AT_PHENT   val  */
+    off -= 4u; *(uint32_t *)(spage + off) = AT_PHENT;    /* AT_PHENT   type */
+    off -= 4u; *(uint32_t *)(spage + off) = at_phdr;     /* AT_PHDR    val  */
+    off -= 4u; *(uint32_t *)(spage + off) = AT_PHDR;     /* AT_PHDR    type */
 
     /* envp[0] = NULL (empty environment). */
     off -= 4u; *(uint32_t *)(spage + off) = 0u;
@@ -367,5 +482,5 @@ int elf_exec(const char *path, int argc, const char *const *argv)
     vmm_switch(pd);
     if (old_pd && old_pd != paging_kernel_pd())
         vmm_free_pd(old_pd);
-    ring3_enter(ehdr->e_entry, initial_esp);   /* never returns */
+    ring3_enter(enter_entry, initial_esp);   /* interp (dynamic) or program entry */
 }

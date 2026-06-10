@@ -36,12 +36,14 @@ typedef uint32_t Elf32_Word;
 
 /* e_type */
 #define ET_EXEC     2
+#define ET_DYN      3   /* shared object / PIE -- relocatable load base */
 
 /* e_machine */
 #define EM_386      3
 
 /* p_type */
 #define PT_LOAD     1
+#define PT_INTERP   3   /* path to the dynamic linker (ld-musl-i386.so.1) */
 
 /* p_flags */
 #define PF_X        0x1u
