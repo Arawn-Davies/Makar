@@ -125,8 +125,12 @@ Chosen over newlib / an own-libc / an own dynamic linker.  Plan:
   each page with a refcounted PMM frame (`pagecache_acquire`), and a read-only
   file `mmap` maps that shared frame straight in: libc.so's ~700 KiB of
   text/rodata is **one copy in RAM** for every process (writable/data stays
-  private; the Linux page-cache model).  Also fixed a latent leak — `munmap`
-  never freed frames (`vmm_unmap_and_free`).  Proven by the `pagecache_share`
+  private; the Linux page-cache model).  Also fixed two latent teardown bugs:
+  `munmap` never freed frames (`vmm_unmap_and_free`), and `vmm_free_pd`/
+  `vmm_clone_pd_cow` skipped kernel-shared page tables with an *exact* PDE
+  compare that the CPU's async Accessed-bit updates defeated — so teardown could
+  mis-free the framebuffer's kernel PT (the `0x2EA` refcount-underflow warning);
+  now compares the PT frame address only.  Proven by the `pagecache_share`
   ktest (a 2nd mapper of a page allocates **zero** new frames).  Gate 894/0.
   This **unblocks** the userspace static→dynamic migration (was gated on exactly
   this so it wouldn't regress memory on a 32 MiB kernel).
