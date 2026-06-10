@@ -69,6 +69,11 @@
 #define USER_STACK_TOP    0xBFFF0000u
 #define USER_STACK_PAGES  8u
 
+/* System clipboard: one kernel-held buffer shared across all tasks, so
+ * Cut/Copy/Paste work between GUI apps (SYS_CLIP_SET / SYS_CLIP_GET). */
+static char    *g_clip;
+static uint32_t g_clip_len, g_clip_cap;
+
 /* Standard CGA/VGA 16-colour palette for SYS_PUTCH_AT VESA rendering. */
 static const uint32_t s_vga_palette[16] = {
     0x000000, 0x0000AA, 0x00AA00, 0x00AAAA,
@@ -2261,6 +2266,35 @@ static void syscall_dispatch_inner(registers_t *regs)
         uint8_t    *ipout = (uint8_t *)(uintptr_t)regs->ecx;
         if (!host || !ipout) { regs->eax = (uint32_t)-1; break; }
         regs->eax = (uint32_t)net_lwip_resolve(host, ipout, 400);
+        break;
+    }
+
+    /* ------------------------------------------------------------------
+     * SYS_CLIP_SET(283) / SYS_CLIP_GET(284): the shared system clipboard.
+     * SET: EBX=buf, ECX=len -> stores up to 1 MiB, returns bytes stored.
+     * GET: EBX=buf, ECX=cap -> copies min(len,cap), returns the FULL length
+     *      (so the caller can tell it was truncated and retry with a bigger buf).
+     * ------------------------------------------------------------------ */
+    case SYS_CLIP_SET: {
+        const char *buf = (const char *)(uintptr_t)regs->ebx;
+        uint32_t    len = regs->ecx;
+        if (len > (1u << 20)) len = 1u << 20;
+        if (len > g_clip_cap) {
+            char *p = (char *)krealloc(g_clip, len ? len : 1);
+            if (!p) { regs->eax = (uint32_t)-1; break; }
+            g_clip = p; g_clip_cap = len ? len : 1;
+        }
+        if (buf && len) memcpy(g_clip, buf, len);
+        g_clip_len = len;
+        regs->eax = len;
+        break;
+    }
+    case SYS_CLIP_GET: {
+        char    *buf = (char *)(uintptr_t)regs->ebx;
+        uint32_t cap = regs->ecx;
+        uint32_t n   = (g_clip_len < cap) ? g_clip_len : cap;
+        if (buf && n) memcpy(buf, g_clip, n);
+        regs->eax = g_clip_len;
         break;
     }
 

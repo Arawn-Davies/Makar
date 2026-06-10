@@ -625,6 +625,19 @@ static inline int sys_tcp_connect(const char *host, unsigned short port)
     return fd;
 }
 
+/* ---- system clipboard (cross-app Cut/Copy/Paste) ------------------------- */
+/* Store `len` bytes; returns bytes stored. */
+static inline int sys_clip_set(const void *buf, unsigned len)
+{
+    return (int)syscall2(SYS_CLIP_SET, (long)buf, (long)len);
+}
+/* Copy up to `cap` bytes into buf; returns the FULL clipboard length (so >cap
+ * means it was truncated). */
+static inline int sys_clip_get(void *buf, unsigned cap)
+{
+    return (int)syscall2(SYS_CLIP_GET, (long)buf, (long)cap);
+}
+
 /* Delete a file. Returns 0 on success, -1 on error. */
 static inline int sys_delete_file(const char *path)
 {
