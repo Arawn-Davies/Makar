@@ -141,7 +141,6 @@ vendor/tinycc/   vendored TinyCC source
 - In-guest tests assert on serial markers. The old host-driven keyboard/HMP
   harness is gone; use the script drivers or `kbtest`.
 - Commit one discrete work item at a time.
-- Do not add AI-attribution footers to commits.
 
 ## Licence
 
