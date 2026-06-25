@@ -36,6 +36,15 @@ memory-corruption sighting in QEMU. See *Kernel memory protection* in
   `#PF` instead of `.bss` corruption.
 - [x] **T62** — Audit: `SYS_SURFACE_MAP` is memory-safe (maps only a surface's
   own PMM frames into the bounded user window; no kernel-memory exposure).
+- [x] **T63** — Panic UX: (a) 15 s auto-reboot watchdog in `panic_halt()` (so a
+  panic can't wedge a headless/CI box) with a 1 Hz on-screen + serial countdown,
+  clocked off the CMOS RTC since the timer IRQ is dead during a panic; a key
+  press still reboots immediately. (b) Ignore AUX (PS/2 mouse) 8042 bytes while
+  polling — in the GUI the mouse streamed packets that read as a key-down and
+  rebooted instantly, skipping the countdown. (c) Prominent **`Faulting app:
+  <name> (pid N)`** line on the panic screen (names the userspace process even
+  for ring-0 syscall faults). Verified by an involuntary W^X-violation panic
+  (mxweb → corrupt `SYS_NET_RESOLVE` → ring-0 write to RO `.text`).
 
 Deferred to follow-up PRs (each a standalone effort): **NX-on-data via PAE**
 (the `^X` half — needs 3-level PAE paging), **`copy_from_user`/SMAP** (close the

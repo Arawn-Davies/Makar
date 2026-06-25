@@ -36,6 +36,7 @@
 #include <kernel/isr.h>
 #include <kernel/serial.h>
 #include <kernel/asm.h>
+#include <kernel/rtc.h>     /* CMOS RTC: panic auto-reboot countdown time source */
 #include <kernel/tty.h>
 #include <kernel/vesa.h>
 #include <kernel/vesa_tty.h>
@@ -275,19 +276,19 @@ static void render_panic_vga(const char *fault_type, const char *msg,
     {
         task_t *cur = task_current();
         int ring3 = (r && (r->cs & 3) == 3);
-        col = vga_puts(4, row, "Context: ", A_DIM);
-        if (ring3) {
-            col = vga_puts(col, row, "program '", A_DIM);
-            col = vga_puts(col, row, (cur && cur->name) ? cur->name : "?", A_VAL);
-            vga_puts(col, row, "' (ring 3 userspace)", A_DIM);
-        } else {
-            col = vga_puts(col, row, "kernel (ring 0)", A_VAL);
-            if (cur && cur->name) {
-                col = vga_puts(col, row, ", in task '", A_DIM);
-                col = vga_puts(col, row, cur->name, A_VAL);
-                vga_puts(col, row, "'", A_DIM);
-            }
+        /* Name the faulting application prominently (own highlighted line): for
+         * a ring-0 syscall fault this is the userspace process the kernel was
+         * working on behalf of -- e.g. a corrupt SYS_* path triggered by mxweb. */
+        col = vga_puts(1, row, "Faulting app: ", A_SECT);
+        col = vga_puts(col, row, (cur && cur->name) ? cur->name : "<kernel>", A_TITLE);
+        if (cur) {
+            char pidbuf[12]; fmt_dec(pidbuf, (uint32_t)cur->pid);
+            col = vga_puts(col, row, "  (pid ", A_DIM);
+            col = vga_puts(col, row, pidbuf, A_VAL);
+            col = vga_puts(col, row, ")", A_DIM);
         }
+        col = vga_puts(col, row, ring3 ? "  - fault in ring 3 (userspace)"
+                                       : "  - fault in ring 0 (kernel/syscall)", A_DIM);
         row++;
         /* Offline symbolisation: addr2line maps EIP -> exact function + .c:line.
          * Userspace ELFs link at 0x40000000 and the kernel image carries its own
@@ -669,6 +670,25 @@ static void render_panic_vesa(const vesa_fb_t *fb,
  * the keyboard-controller CPU-reset pulse, so the user escapes cleanly without
  * resetting the VM by hand.  Interrupts stay masked -- we poll, never take an
  * IRQ -- so no handler can run and re-fault after the panic. */
+/* Panic auto-reboot timeout (seconds).  A panicked kernel must not wedge a
+ * headless / CI box forever; after this many seconds we reboot ourselves.  A
+ * key press still reboots immediately. */
+#define PANIC_REBOOT_SECS 15u
+
+/* Repaint the bottom VGA-text line (the "press a key" prompt slot) with the
+ * live countdown.  Writes only the 0xB8000 text buffer (always present, cannot
+ * fault); attributes match render_panic_vga's dark body. */
+static void panic_countdown_line(uint32_t secs_left)
+{
+    int rows = (int)(t_height > 0 ? t_height : (size_t)VGA_ROWS);
+    int row  = rows - 1;
+    char num[12]; fmt_dec(num, secs_left);
+    for (int x = 0; x < VGA_COLS; x++) vga_putc(x, row, ' ', A_BODY);
+    int col = vga_puts(1,   row, "Rebooting in ",                    A_BODY);
+    col     = vga_puts(col, row, num,                                A_VAL);
+    (void)    vga_puts(col, row, " s  -  press a key to reboot now.", A_BODY);
+}
+
 static __attribute__((noreturn)) void panic_halt(void)
 {
     asm volatile("cli");
@@ -679,32 +699,69 @@ static __attribute__((noreturn)) void panic_halt(void)
     for (int t = 0; t < 100000 && (inb(0x64) & 0x01); t++)
         (void)inb(0x60);
 
+    /* Time source for the auto-reboot countdown: the CMOS RTC, because it is
+     * pure port I/O and keeps ticking with interrupts masked (the PIT timer IRQ
+     * is dead here, so timer_get_ticks() would never advance).  If the RTC read
+     * fails we simply fall back to the classic wait-for-key behaviour. */
+    uint32_t start = 0, now = 0;
+    int have_clock = (rtc_unix_time(&start) == 0);
+    uint32_t shown = 0xFFFFFFFFu;
+    if (have_clock) {
+        panic_countdown_line(PANIC_REBOOT_SECS);
+        Serial_WriteString("panic: auto-reboot in 15s (or press a key)\n");
+    }
+
     /* Spin alive (never cli;hlt -- that makes the VM report the CPU "disabled"
-     * and grab the host mouse) until a fresh key *press*, then reboot. */
+     * and grab the host mouse) until a fresh key *press* OR the timeout. */
     for (;;) {
-        if (inb(0x64) & 0x01) {              /* a fresh scancode arrived */
-            uint8_t sc = inb(0x60);
-            /* Only a make code (key DOWN) reboots.  Ignore break codes (bit 7)
-             * and the e0/e1 extended prefixes -- otherwise merely *releasing*
-             * the Ctrl+Alt+Shift+P panic chord would reboot before the user can
-             * read the panic. */
-            if (sc == 0xE0 || sc == 0xE1 || (sc & 0x80))
+        uint8_t st = inb(0x64);
+        if (st & 0x01) {                     /* 8042 output buffer full */
+            uint8_t b = inb(0x60);
+            /* Ignore AUX (PS/2 mouse) bytes: in the GUI the mouse streams
+             * packets whose data bytes look like key-down make codes, which
+             * would reboot instantly and skip the countdown.  Status bit 5
+             * (0x20) is set when the byte came from the mouse port. */
+            if (st & 0x20)
                 continue;
-            /* Reboot via the 8042: wait for its input buffer to drain, then
-             * pulse the CPU reset line. */
-            for (int t = 0; t < 100000 && (inb(0x64) & 0x02); t++)
-                ;
-            outb(0x64, 0xFE);
-            /* If the controller didn't take it, force a triple fault: load a
-             * zero-limit IDT and raise an interrupt the CPU can't deliver. */
-            for (int t = 0; t < 2000000; t++)
-                asm volatile("pause");
-            struct { uint16_t limit; uint32_t base; } __attribute__((packed))
-                null_idt = { 0, 0 };
-            asm volatile("lidt %0; int3" :: "m"(null_idt));
+            /* Only a keyboard make code (key DOWN) reboots.  Ignore break codes
+             * (bit 7) and the e0/e1 extended prefixes -- otherwise merely
+             * *releasing* the Ctrl+Alt+Shift+P panic chord would reboot before
+             * the user can read the panic. */
+            if (b == 0xE0 || b == 0xE1 || (b & 0x80))
+                continue;
+            break;                            /* keyboard key press -> reboot now */
+        }
+
+        if (have_clock && rtc_unix_time(&now) == 0) {
+            uint32_t elapsed = (now >= start) ? (now - start) : 0;  /* skew guard */
+            if (elapsed >= PANIC_REBOOT_SECS)
+                break;                        /* timeout -> auto-reboot */
+            uint32_t remain = PANIC_REBOOT_SECS - elapsed;
+            if (remain != shown) {            /* 1 Hz repaint */
+                shown = remain;
+                panic_countdown_line(remain);
+                Serial_WriteString("panic: rebooting in ");
+                Serial_WriteDec(remain);
+                Serial_WriteString("s\n");
+            }
         }
         asm volatile("pause");
     }
+
+    /* Reboot via the 8042: wait for its input buffer to drain, then pulse the
+     * CPU reset line. */
+    Serial_WriteString("panic: rebooting now\n");
+    for (int t = 0; t < 100000 && (inb(0x64) & 0x02); t++)
+        ;
+    outb(0x64, 0xFE);
+    /* If the controller didn't take it, force a triple fault: load a zero-limit
+     * IDT and raise an interrupt the CPU can't deliver. */
+    for (int t = 0; t < 2000000; t++)
+        asm volatile("pause");
+    struct { uint16_t limit; uint32_t base; } __attribute__((packed))
+        null_idt = { 0, 0 };
+    asm volatile("lidt %0; int3" :: "m"(null_idt));
+    for (;;) asm volatile("pause");   /* unreachable; satisfies noreturn */
 }
 
 /* Set once we begin painting a panic.  If the renderer itself faults -- e.g. it

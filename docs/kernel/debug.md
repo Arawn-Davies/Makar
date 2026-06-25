@@ -104,17 +104,28 @@ matter what failed:
   thing that failed, so the panic never depends on it. (`render_panic_vesa`, a
   framebuffer renderer, is kept `__attribute__((unused))` for a future UEFI/GOP
   target with no VGA text mode.)
-- **Names the culprit.** A **Context** line says whether it was a ring-3 program
-  (`program '<name>'`) or the kernel (`kernel (ring 0), in task '<name>'`), and a
-  **Resolve** line prints `addr2line -e makar.kernel <EIP>` so the faulting
-  instruction maps to an exact `file.c:line` offline.
+- **Names the culprit.** A prominent **`Faulting app: <name> (pid N)`** line
+  (highlighted) names the process the CPU was running — for a ring-0 syscall
+  fault that's the userspace app the kernel was working on behalf of (e.g. a
+  corrupt `SYS_*` path triggered by `mxweb`), with `- fault in ring 0/3` noting
+  the privilege level. A **Resolve** line prints `addr2line -e makar.kernel
+  <EIP>` so the faulting instruction maps to an exact `file.c:line` offline.
 - **Spin, never `cli; hlt`.** `panic_halt()` drains the 8042, then **spins**
   polling the keyboard controller — a `cli; hlt` makes hypervisors report the CPU
   "disabled" and grab the host mouse. A fresh key *press* reboots via the 8042
   CPU-reset pulse (`outb(0x64, 0xFE)`), with a triple-fault fallback.
+- **15-second auto-reboot watchdog.** So a panic never wedges a headless / CI
+  box forever, `panic_halt()` also reboots itself after `PANIC_REBOOT_SECS`
+  (15 s) — a key press still reboots immediately. The countdown uses the **CMOS
+  RTC** (`rtc_unix_time`) as its clock, because it is pure port I/O and keeps
+  advancing with interrupts masked (the PIT timer IRQ is dead during a panic, so
+  `timer_get_ticks()` would never move). The remaining seconds repaint once per
+  second on the bottom VGA-text line and on serial (`panic: rebooting in Ns`).
+  If the RTC read fails it falls back to the classic wait-for-key behaviour.
 
 A panic can also be triggered on purpose, for testing, with the
-**`Ctrl+Alt+Shift+P`** keyboard chord (see [keyboard](keyboard.md)).
+**`Ctrl+Alt+Shift+P`** keyboard chord (see [keyboard](keyboard.md)), or the
+`panic [msg]` command in the in-kernel rescue shell.
 
 ---
 
