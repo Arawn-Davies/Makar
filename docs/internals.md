@@ -210,6 +210,54 @@ Three things worth a lecture call-out:
   hobby OS (256 MiB / 4 MiB = 64 TLB fills), worth fixing on the day we
   benchmark scheduler throughput.
 
+### Kernel memory protection (W^X + uaccess)
+
+Two SELinux/OpenBSD-style safeguards harden the kernel/userspace boundary
+(`feat/mem-protection-hardening`):
+
+- **Read-only kernel `.text`/`.rodata` (W^X for code).** `paging_protect_kernel`
+  (`mm/paging.c`, called from `kernel_main` *before* `tasking_init`) splits the
+  4 MiB higher-half PDEs covering `[_text_start, _rodata_end)` (linker symbols)
+  into 4 KiB pages and clears the writable bit on the kernel code+constant
+  frames. `CR0.WP=1` (set in `paging_init`) makes the CPU honour that read-only
+  bit even for ring-0 stores, so a stray/hijacked kernel write into its own code
+  or constants **faults at the offending instruction** instead of silently
+  corrupting it — the live `#PF` handler prints a `W^X VIOLATION` line (cr2+EIP)
+  and panics. Only the *primary* higher-half mapping is protected; the low
+  identity window (`0`–`256 MiB`) is the kernel's physical-RAM aperture (PMM
+  frames, page tables, DMA) and stays writable, and the PMM reserves the kernel
+  image so no allocatable frame ever lands in the protected range. Per-task page
+  directories cloned later inherit the split PDEs via `vmm_create_pd`, so the
+  protection holds in every address space. 32-bit non-PAE has no NX bit, so
+  **non-executable data/stack (the `^X` half) is deferred** — it needs PAE.
+
+- **User-pointer validation (`uaccess`, `proc/syscall.c`).** Every syscall that
+  dereferences a ring-3 pointer first gates it through `access_ok` (range:
+  rejects any address `>= 0xC0000000`, i.e. all kernel space) plus `user_ok` /
+  `user_str_ok` (each page must be present+user or in a reserved lazy brk/mmap
+  window). A bad pointer returns **`-EFAULT`** instead of letting the kernel
+  read/write kernel memory on the caller's behalf (privilege escalation /
+  corruption) or take a ring-0 `#PF` (panic). Enforcement is gated on
+  `(regs->cs & 3) == 3` so a trusted in-kernel caller (ktest drives the
+  dispatcher directly with kernel buffers) is exempt — Linux's
+  `set_fs`/`uaccess_kernel` distinction. ktests `uaccess_efault` and `kernel_wx`
+  regression-guard both.
+
+- **SMEP** (`paging_init_smep`). When the CPU advertises it
+  (`CPUID.7:EBX[7]`), `CR4.SMEP` is set so ring 0 cannot *execute* a user
+  (`PAGE_USER`) page — a hijacked kernel code/return pointer can't redirect into
+  ring-3 shellcode (ret2usr). Complements W^X: W^X stops kernel text being
+  rewritten, SMEP stops control flow leaving it. Feature-gated, so a no-op on
+  CPUs/emulators that don't report it (QEMU's default `qemu32`). SMAP (`CR4`
+  bit 21) is intentionally **not** set — the syscall layer touches user buffers
+  in place, which SMAP would trap; it pairs with a future `copy_from_user`.
+
+- **Kernel stack guard page.** The boot/idle thread's 16 KiB stack
+  (`boot.S`) has a page-aligned, unmapped **guard page** (`kstack_guard`)
+  directly below it — `paging_protect_kernel` clears its PTE in the high window
+  — so a kernel-stack overflow takes a clean `#PF` instead of silently
+  corrupting `.bss`. (Per-task kernel stacks are not yet guarded.)
+
 ### Page-fault delivery
 
 Vector 14. The hardware pushes the faulting linear address into CR2 and a

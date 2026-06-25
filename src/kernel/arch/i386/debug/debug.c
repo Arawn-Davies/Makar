@@ -1073,6 +1073,28 @@ static void page_fault_handler(registers_t *regs)
     if (try_handle_cow_fault(fault_addr, regs->err_code))
         return;
 
+    /* W^X tripwire: a ring-0 WRITE to a present page inside the now read-only
+     * kernel image (.text/.rodata) is a corruption attempt or a kernel bug,
+     * caught at the offending instruction.  Name it explicitly -- the whole
+     * point of paging_protect_kernel() is to turn silent code/constant
+     * corruption into a precise, attributable fault. */
+    if ((regs->err_code & (PF_ERR_PRESENT | PF_ERR_WRITE)) ==
+            (PF_ERR_PRESENT | PF_ERR_WRITE) &&
+        !(regs->err_code & 0x4u) /* supervisor (ring 0), not user */) {
+        extern uint8_t _text_start[], _rodata_end[];
+        if (fault_addr >= (uint32_t)(uintptr_t)_text_start &&
+            fault_addr <  (uint32_t)(uintptr_t)_rodata_end) {
+            Serial_WriteString("[#PF] W^X VIOLATION: ring-0 write to read-only "
+                               "kernel .text/.rodata  cr2=");
+            ser_hex(fault_addr);
+            Serial_WriteString(" EIP=");
+            ser_hex(regs->eip);
+            Serial_WriteChar('\n');
+            kernel_panic("KERNEL W^X VIOLATION (write to RO .text/.rodata)",
+                         NULL, NULL, NULL, 0, fault_addr, 1, regs);
+        }
+    }
+
     /* Ring-3 page fault: a userspace bug (null deref, stack overflow,
      * unmapped access).  Don't take the kernel down with it -- log the
      * fault, deliver SIGSEGV, and let the scheduler reap the offender.

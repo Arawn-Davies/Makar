@@ -39,18 +39,30 @@ SECTIONS
 	   immediately after the boot stub in physical memory. */
 	. += KERNEL_VBASE;
 
+	/* _text_start.._rodata_end bound the region paging_protect_kernel() maps
+	 * read-only at 4 KiB granularity (W^X for kernel code + constants).  They
+	 * are *virtual* (high) addresses; the protector subtracts KERNEL_VBASE for
+	 * the physical frame.  The sections are page-aligned so the RO span never
+	 * clips a writable .data/.bss page. */
+	_text_start = .;
 	.text BLOCK(4K) : AT(ADDR(.text) - KERNEL_VBASE) ALIGN(4K)
 	{
 		*(.text)
 	}
+	. = ALIGN(4K);
+	_text_end = .;
 
 	/* Read-only data. */
+	_rodata_start = .;
 	.rodata BLOCK(4K) : AT(ADDR(.rodata) - KERNEL_VBASE) ALIGN(4K)
 	{
 		*(.rodata)
 	}
+	. = ALIGN(4K);
+	_rodata_end = .;
 
 	/* Read-write data (initialized) */
+	_data_start = .;
 	.data BLOCK(4K) : AT(ADDR(.data) - KERNEL_VBASE) ALIGN(4K)
 	{
 		*(.data)

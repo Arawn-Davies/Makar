@@ -776,6 +776,12 @@ void kernel_main(uint32_t magic, multiboot2_info_t *mbi)
 		}
 	}
 
+	/* Lock down kernel code + constants (W^X) before any per-task page
+	 * directory is cloned, so every address space inherits the read-only
+	 * .text/.rodata PDEs.  All earlier init only writes .data/.bss (still
+	 * writable), so this is safe here. */
+	paging_protect_kernel();
+
 	t_writestring("Initializing multitasking");
 	kprint_ok();
 	tasking_init();

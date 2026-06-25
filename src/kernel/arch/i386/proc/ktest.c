@@ -2167,6 +2167,88 @@ static void test_posix_fs_syscalls(void)
 }
 
 /* ---------------------------------------------------------------------------
+ * uaccess: a syscall that entered from ring 3 (CS RPL == 3) must reject a
+ * kernel-space pointer with -EFAULT (-14) instead of dereferencing it in ring 0
+ * -- the core kernel/userspace separation guarantee.  A kernel-context call
+ * (CS == 0, how ktest normally drives the dispatcher) is trusted and must still
+ * accept a kernel buffer, so the bypass is exercised too.
+ * ------------------------------------------------------------------------- */
+static void test_uaccess_efault(void)
+{
+    ktest_begin("uaccess_efault", "ring-3 syscall rejects a kernel pointer (-EFAULT)");
+
+    static char kbuf[64];
+    registers_t regs;
+
+    /* Ring-3 frame (RPL 3) + a kernel-space buffer pointer -> -EFAULT.
+     * SYS_GETCWD writes into EBX (ECX-sized); the kernel address trips
+     * access_ok before any dereference. */
+    memset(&regs, 0, sizeof(regs));
+    regs.cs  = 0x1Bu;                                  /* user code selector, RPL 3 */
+    regs.eax = SYS_GETCWD;
+    regs.ebx = (uint32_t)(uintptr_t)kbuf;              /* >= 0xC0000000 kernel addr */
+    regs.ecx = sizeof(kbuf);
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, -14);              /* -EFAULT, not a panic */
+
+    /* Same kernel buffer from a kernel-context call (CS == 0) is trusted and
+     * succeeds -- proves the ring-3 gate, not a blanket ban on kernel pointers. */
+    memset(&regs, 0, sizeof(regs));
+    regs.eax = SYS_GETCWD;
+    regs.ebx = (uint32_t)(uintptr_t)kbuf;
+    regs.ecx = sizeof(kbuf);
+    syscall_dispatch(&regs);
+    KTEST_ASSERT((int)regs.eax >= 0);                 /* cwd length written */
+
+    /* Ring-3 frame + a NUL-terminated path that is a kernel pointer
+     * (SYS_CHDIR) -> -EFAULT via the string validator. */
+    memset(&regs, 0, sizeof(regs));
+    regs.cs  = 0x1Bu;
+    regs.eax = SYS_CHDIR;
+    regs.ebx = (uint32_t)(uintptr_t)"/";              /* kernel .rodata string */
+    syscall_dispatch(&regs);
+    KTEST_ASSERT_EQ((int)regs.eax, -14);
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
+ * W^X: after paging_protect_kernel(), the page mapping kernel .rodata must be
+ * present and NON-writable (and split out of its 4 MiB large page).  Walk the
+ * kernel page directory and inspect the PTE bits -- non-destructive (we do NOT
+ * actually write, which would fault the test kernel; the live #PF handler's
+ * RO-kernel panic is the runtime guard).
+ * ------------------------------------------------------------------------- */
+static void test_kernel_wx(void)
+{
+    ktest_begin("kernel_wx", "kernel .rodata mapped read-only (W^X)");
+
+    extern uint8_t _rodata_start[];
+    uint32_t va  = (uint32_t)(uintptr_t)_rodata_start;
+    uint32_t *pd = paging_kernel_pd();
+    uint32_t pde = pd[va >> 22];
+
+    KTEST_ASSERT((pde & 0x1u) != 0);            /* PDE present */
+    KTEST_ASSERT((pde & 0x80u) == 0);           /* split to 4 KiB, not a large page */
+
+    uint32_t *pt  = (uint32_t *)(pde & ~0xFFFu);
+    uint32_t  pte = pt[(va >> 12) & 0x3FFu];
+    KTEST_ASSERT((pte & 0x1u) != 0);            /* PTE present */
+    KTEST_ASSERT((pte & 0x2u) == 0);            /* NOT writable -> RO (W^X) */
+
+    /* Kernel boot-stack guard page must be unmapped (overflow -> clean #PF). */
+    extern uint8_t kstack_guard[];
+    uint32_t gva  = (uint32_t)(uintptr_t)kstack_guard;
+    uint32_t gpde = pd[gva >> 22];
+    KTEST_ASSERT((gpde & 0x1u) != 0);           /* its PDE is present */
+    KTEST_ASSERT((gpde & 0x80u) == 0);          /* split to 4 KiB */
+    uint32_t *gpt = (uint32_t *)(gpde & ~0xFFFu);
+    KTEST_ASSERT((gpt[(gva >> 12) & 0x3FFu] & 0x1u) == 0);   /* guard NOT present */
+
+    ktest_summary();
+}
+
+/* ---------------------------------------------------------------------------
  * Suite: syscall
  *
  * Calls syscall_dispatch directly with a stack-allocated registers_t frame,
@@ -3757,6 +3839,14 @@ int ktest_run_all(void)
     total_fail += ktest_fail_count;
 
     test_posix_fs_syscalls();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_uaccess_efault();
+    total_pass += ktest_pass_count;
+    total_fail += ktest_fail_count;
+
+    test_kernel_wx();
     total_pass += ktest_pass_count;
     total_fail += ktest_fail_count;
 

@@ -88,21 +88,11 @@ uint32_t *paging_kernel_pd(void) { return page_directory; }
 static uint32_t extra_page_tables[EXTRA_PAGE_TABLES][1024]       __attribute__((aligned(4096)));
 static uint32_t next_extra_pt = 0;
 
-/* ISR 14 – Page-fault handler.
-   CR2 holds the linear address that caused the fault. */
-static void page_fault_handler(registers_t *regs)
-{
-    uint32_t faulting_address;
-    asm volatile("mov %%cr2, %0" : "=r"(faulting_address));
-
-    t_writestring("Page fault at 0x");
-    t_hex(faulting_address);
-    t_writestring(" (err=0x");
-    t_hex(regs->err_code);
-    t_writestring(")\n");
-
-    PANIC("Page fault");
-}
+/* NB: the live ISR-14 page-fault handler lives in debug/debug.c (it services
+ * demand-paging, COW, ring-3 SIGSEGV and the kernel W^X tripwire, and is the one
+ * registered via register_interrupt_handler(14, ...)).  A bare panic-only
+ * duplicate used to sit here; it was never registered and has been removed to
+ * avoid confusion. */
 
 /* Arm a write-combining (WC) memory type in the PAT so framebuffer pages can
  * be mapped WC instead of inheriting the firmware's uncacheable (UC) MTRR for
@@ -130,6 +120,40 @@ static void paging_init_pat(void)
     asm volatile("wrmsr" :: "a"(lo), "d"(hi), "c"(0x277u));
 
     s_pat_wc_ok = 1;
+}
+
+/* Enable SMEP (Supervisor-Mode Execution Prevention) when the CPU advertises
+ * it: ring 0 can no longer *execute* instructions fetched from a user
+ * (PAGE_USER) page, so a hijacked kernel code/return pointer can't redirect
+ * into attacker-controlled ring-3 code (the classic "ret2usr" escalation).
+ * Pairs with W^X on kernel .text (paging_protect_kernel): W^X stops the kernel
+ * text being rewritten, SMEP stops control flow leaving it for user pages.
+ *
+ * CPUID.(EAX=7,ECX=0):EBX[7] = SMEP; CR4.SMEP = bit 20.  Gated on the feature
+ * bit, so it's a clean no-op on CPUs/emulators that don't report it (e.g.
+ * QEMU's default `qemu32`).  Makar never executes ring-0 code from a user page
+ * -- ring-3 entry/return is via iret, not a kernel jump -- so this only ever
+ * fires on an actual exploit attempt.  (SMAP, CR4 bit 21, is deliberately NOT
+ * enabled: the syscall layer reads/writes user buffers in place, which SMAP
+ * would trap; it pairs with a future copy_from_user/STAC-CLAC conversion.) */
+static void paging_init_smep(void)
+{
+    uint32_t eax, ebx, ecx, edx;
+    asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(0u));
+    if (eax < 7u)
+        return;                          /* CPUID leaf 7 not available */
+    asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                         : "a"(7u), "c"(0u));
+    if (!(ebx & (1u << 7)))
+        return;                          /* no SMEP */
+
+    uint32_t cr4;
+    asm volatile("mov %%cr4, %0" : "=r"(cr4));
+    cr4 |= (1u << 20);                   /* CR4.SMEP */
+    asm volatile("mov %0, %%cr4" :: "r"(cr4) : "memory");
+
+    t_writestring("Paging: SMEP on (ring-0 cannot execute user pages)\n");
+    KLOG("paging_init: CR4.SMEP=1\n");
 }
 
 void paging_init(void)
@@ -176,6 +200,7 @@ void paging_init(void)
     asm volatile("mov %0, %%cr0" :: "r"(cr0) : "memory");
 
     paging_init_pat();
+    paging_init_smep();
 
     t_writestring("Paging: higher-half (0xC0000000->0, +256 MiB identity, 4 MiB pages, WP on)\n");
     KLOG("paging_init: higher-half kernel @ 0xC0000000, 256 MiB identity + high map, CR0.WP=1\n");
@@ -386,4 +411,110 @@ void paging_map_region_wc(uint32_t phys_start, uint32_t size)
         s_mtrr_fb_done = 1;
     }
 }
+
+/* ---------------------------------------------------------------------------
+ * Read-only kernel .text/.rodata (W^X for kernel code).
+ *
+ * After paging_init() the whole low 256 MiB -- including the kernel image -- is
+ * mapped via 4 MiB PSE large pages, all writable, so a stray kernel pointer (or
+ * a hijacked one) could overwrite kernel code or constants and corrupt the
+ * system silently.  This splits the 4 MiB PDEs covering [_text_start,
+ * _rodata_end) into 4 KiB page tables and re-maps every frame at page
+ * granularity, clearing PAGE_WRITABLE across the kernel text+rodata span.
+ * CR0.WP (set in paging_init) makes the CPU honour the read-only bit even for
+ * ring-0 writes, so the kernel faults on a write into its own code/constants
+ * instead of corrupting them -- and #PF can pinpoint the offending EIP.
+ *
+ * Only the kernel's PRIMARY higher-half mapping (PDE = KERNEL_PD_IDX + block)
+ * is protected.  The kernel executes its code and reads its constants solely
+ * via 0xC0000000+; the low identity window (PDE = block) is the physical-RAM
+ * aperture the kernel writes through -- the PMM hands out low frames (page
+ * tables, page directories, DMA buffers) that are dereferenced by their phys
+ * address there, so it must stay writable (marking the low alias RO faulted on
+ * the first task PD the PMM placed in low RAM).  The PMM reserves the kernel
+ * image, so no allocatable frame ever lands in the protected high range anyway.
+ * Per-task page directories cloned later inherit the split PDEs via
+ * vmm_create_pd (it copies the kernel PDEs), so the protection holds in every
+ * address space -- hence this must run BEFORE tasking_init / any task clone.
+ *
+ * 32-bit non-PAE paging has no NX bit, so data/stack stay executable; true W^X
+ * for data needs PAE and is deferred.  No-op on the low-half TCC build, which
+ * keeps the simple identity map. */
+#ifndef __TINYC__
+extern uint8_t _text_start[], _rodata_end[];
+
+/* Static page tables for the split kernel-image PDEs.  The image spans only a
+ * few MiB from phys 1 MiB, so at most a handful of 4 MiB blocks per window;
+ * 16 tables (8 blocks x 2 windows) is ample headroom. */
+static uint32_t prot_page_tables[16][1024] __attribute__((aligned(4096)));
+static uint32_t next_prot_pt = 0;
+
+/* Convert the large-page PDE at pd_idx (mapping [phys_base, phys_base+4 MiB))
+ * into a fresh 4 KiB page table, marking frames in [ro_lo, ro_hi) read-only and
+ * leaving the rest of the block writable. */
+static void protect_split_pde(uint32_t pd_idx, uint32_t phys_base,
+                              uint32_t ro_lo, uint32_t ro_hi)
+{
+    if (next_prot_pt >= 16) {
+        KLOG("paging_protect_kernel: prot-table pool exhausted\n");
+        return;
+    }
+    uint32_t *pt = prot_page_tables[next_prot_pt++];
+    for (uint32_t i = 0; i < 1024; i++) {
+        uint32_t phys  = phys_base + i * 0x1000u;
+        uint32_t flags = PAGE_PRESENT;
+        if (!(phys >= ro_lo && phys < ro_hi))
+            flags |= PAGE_WRITABLE;     /* RO only across kernel text+rodata */
+        pt[i] = phys | flags;
+    }
+    page_directory[pd_idx] = V2P(pt) | PAGE_PRESENT | PAGE_WRITABLE;
+}
+
+void paging_protect_kernel(void)
+{
+    uint32_t ro_lo = V2P((uint32_t)_text_start) & ~0xFFFu;
+    uint32_t ro_hi = (V2P((uint32_t)_rodata_end) + 0xFFFu) & ~0xFFFu;
+    if (ro_hi <= ro_lo)
+        return;
+
+    uint32_t first_blk = ro_lo / LARGE_PAGE_SIZE;
+    uint32_t last_blk  = (ro_hi - 1) / LARGE_PAGE_SIZE;
+    for (uint32_t blk = first_blk; blk <= last_blk; blk++) {
+        uint32_t phys_base = blk * LARGE_PAGE_SIZE;
+        uint32_t hidx = KERNEL_PD_IDX + blk;                  /* higher-half only */
+        if (page_directory[hidx] & PAGE_LARGE)
+            protect_split_pde(hidx, phys_base, ro_lo, ro_hi);
+    }
+
+    /* Punch out the kernel boot/idle stack's guard page (the page directly
+     * below stack_bottom) so an overflow faults instead of corrupting .bss.
+     * Its 4 MiB block usually overlaps the RO span above and is already split;
+     * split it writable-only first if not, then mark the guard not-present. */
+    {
+        extern uint8_t kstack_guard[];
+        uint32_t gva  = (uint32_t)(uintptr_t)kstack_guard;
+        uint32_t gpdi = gva >> 22;
+        if (page_directory[gpdi] & PAGE_LARGE) {
+            uint32_t pbase = (gpdi - KERNEL_PD_IDX) * LARGE_PAGE_SIZE;
+            protect_split_pde(gpdi, pbase, 0, 0);   /* ro_lo==ro_hi: all writable */
+        }
+        if ((page_directory[gpdi] & PAGE_PRESENT) &&
+            !(page_directory[gpdi] & PAGE_LARGE)) {
+            uint32_t *gpt = (uint32_t *)(page_directory[gpdi] & ~0xFFFu);
+            gpt[(gva >> 12) & 0x3FFu] = 0;          /* not present */
+        }
+    }
+
+    /* Drop the stale large-page TLB entries. */
+    uint32_t cr3;
+    asm volatile("mov %%cr3, %0" : "=r"(cr3));
+    asm volatile("mov %0, %%cr3" :: "r"(cr3) : "memory");
+
+    t_writestring("Paging: kernel .text/.rodata now read-only (W^X, CR0.WP)\n");
+    KLOG("paging_protect_kernel: RO phys [");
+    KLOG_HEX(ro_lo); KLOG(","); KLOG_HEX(ro_hi); KLOG(")\n");
+}
+#else
+void paging_protect_kernel(void) { }
+#endif
 

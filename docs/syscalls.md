@@ -46,6 +46,14 @@ Makar mostly follows the Unix pattern:
 Some older Makar-specific syscalls still return a simple `0`/`1` or `-1`
 without a detailed errno. Check the wrapper before assuming Linux parity.
 
+**`-EFAULT` (−14) on bad pointers.** Any syscall argument that is a userspace
+buffer, struct, or path is validated before the kernel dereferences it: a
+pointer into kernel space (`>= 0xC0000000`) or an unmapped/wild address yields
+**`-EFAULT`** rather than a kernel read/write or a panic. This is the
+kernel/userspace separation guard (`access_ok`/`user_ok`/`user_str_ok` in
+`proc/syscall.c`); see *Kernel memory protection* in `docs/internals.md`. It
+applies only to real ring-3 entries — in-kernel callers are trusted.
+
 ## Core Linux-Compatible Syscalls
 
 | Number | Name | Arguments | Status |

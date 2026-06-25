@@ -54,4 +54,16 @@ void paging_map_region_wc(uint32_t phys_start, uint32_t size);
    to propagate kernel PDEs into new per-process page directories. */
 uint32_t *paging_kernel_pd(void);
 
+/*
+ * Make the kernel's .text and .rodata read-only (W^X for kernel code).  Splits
+ * the 4 MiB large pages covering [_text_start, _rodata_end) -- in both the low
+ * identity and higher-half windows -- into 4 KiB pages and clears the writable
+ * bit on the kernel code/constant frames.  With CR0.WP set, a ring-0 write into
+ * kernel text/rodata then faults instead of silently corrupting it.  Must be
+ * called AFTER paging_init() and BEFORE the first per-task page directory is
+ * cloned (vmm_create_pd copies the kernel PDEs), i.e. before tasking_init().
+ * No-op on the low-half TCC build.
+ */
+void paging_protect_kernel(void);
+
 #endif /* _KERNEL_PAGING_H */

@@ -52,9 +52,17 @@ mb2_header_start:
 mb2_header_end:
 
 # Reserve a stack for the initial thread.  Linked high (.bss); only used once
-# paging is on.
+# paging is on.  A page-aligned guard page sits directly below the stack:
+# paging_protect_kernel() unmaps it in the high window, so a kernel-stack
+# overflow (ESP runs below stack_bottom) takes a clean #PF instead of silently
+# corrupting whatever .bss lies beyond -- the kernel-side analogue of the
+# unmapped page below the ring-3 stack.
 .section .bss
-.align 16
+.align 4096
+.global kstack_guard
+kstack_guard:
+.skip 4096                  # guard page (unmapped after paging is up)
+.global stack_bottom
 stack_bottom:
 .skip 16384 # 16 KiB
 stack_top:

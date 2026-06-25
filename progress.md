@@ -11,6 +11,38 @@ Last reordered 2026-06-09 (after PR #204 merged).
 
 ## Done
 
+### PR — Kernel memory-protection hardening (branch `feat/mem-protection-hardening`)
+
+SELinux/OpenBSD-style kernel/userspace separation, after a suspected
+memory-corruption sighting in QEMU. See *Kernel memory protection* in
+`docs/internals.md`.
+
+- [x] **T57** — User-pointer validation (`uaccess`). `access_ok`/`user_ok`/
+  `user_str_ok` in `proc/syscall.c`; every ring-3 buffer/path/struct argument
+  (~50 syscalls) is gated and returns `-EFAULT` instead of letting the kernel
+  deref a kernel-space or wild pointer in ring 0. Enforcement gated on a ring-3
+  CS so in-kernel (ktest) callers stay trusted. ktest `uaccess_efault`.
+- [x] **T58** — Read-only kernel `.text`/`.rodata` (W^X for code).
+  `paging_protect_kernel` splits the higher-half kernel PDEs to 4 KiB and clears
+  the writable bit on code+constants; `CR0.WP` makes ring-0 writes fault. Linker
+  symbols `_text_start`/`_rodata_end`; called before `tasking_init` so task PD
+  clones inherit it. ktest `kernel_wx`. (NX-on-data deferred — needs PAE.)
+- [x] **T59** — Fault diagnostics + cleanup: live `#PF` handler prints a
+  `W^X VIOLATION` (cr2+EIP) and panics on a ring-0 write to RO kernel memory;
+  removed the dead duplicate `page_fault_handler` in `paging.c`.
+- [x] **T60** — SMEP (`CR4.SMEP`, CPUID-gated): ring 0 can't execute user
+  pages (ret2usr defense, complements W^X). No-op where unreported (`qemu32`).
+- [x] **T61** — Kernel boot-stack guard page (`kstack_guard`): overflow → clean
+  `#PF` instead of `.bss` corruption.
+- [x] **T62** — Audit: `SYS_SURFACE_MAP` is memory-safe (maps only a surface's
+  own PMM frames into the bounded user window; no kernel-memory exposure).
+
+Deferred to follow-up PRs (each a standalone effort): **NX-on-data via PAE**
+(the `^X` half — needs 3-level PAE paging), **`copy_from_user`/SMAP** (close the
+validate-in-place TOCTOU), a real **uid/gid credential model** (privilege
+separation; `task_is_admin` is still a stub), and **syscall-surface narrowing**
+toward UNIX idioms (T37).
+
 ### PR 1 — GPU / video framework + display robustness (merged)
 
 - [x] **T1** — Video-driver vtable + VBE default backend + present routing (`kernel/video.h`)

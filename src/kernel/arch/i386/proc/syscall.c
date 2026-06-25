@@ -314,6 +314,112 @@ static int user_range_mapped(uint32_t base, uint32_t len)
     return 1;
 }
 
+/* ---- uaccess: validate userspace pointers before the kernel dereferences ----
+ *
+ * A syscall must never trust a raw pointer from ring 3.  Two distinct hazards:
+ *   (1) a *kernel* address (>= USER_ADDR_MAX, or a low identity-mapped frame):
+ *       dereferencing it in ring 0 reads/writes kernel memory on the caller's
+ *       behalf -- privilege escalation and arbitrary kernel-memory corruption.
+ *       access_ok() rejects these purely by range.
+ *   (2) a wild *in-range* address that isn't mapped: a kernel-mode access
+ *       faults, and #PF taken from a ring-0 frame panics the whole kernel
+ *       (kill_userspace_fault only reaps faults raised from ring 3).  user_ok()
+ *       additionally requires every page to be either present+user OR inside a
+ *       reserved lazy window (brk / anonymous mmap) that the page-fault handler
+ *       will fault in on first touch -- exactly the set try_handle_anon_fault()
+ *       services -- so the kernel's own access can never take it down.
+ *
+ * Linux factors this as access_ok() (range) + an exception-table fault fixup in
+ * copy_*_user(); we have no fixup table, so user_ok() folds the mapping/window
+ * check in and callers validate before dereferencing in place.  On failure the
+ * syscall returns -EFAULT, the Linux contract (userspace already maps errnos). */
+#define USER_ADDR_MAX 0xC0000000u
+#define SYS_EFAULT    ((uint32_t)-14)
+
+/* Enforce uaccess only for syscalls that actually entered from ring 3 (int 0x80
+ * with a user CS).  A trusted in-kernel caller -- ktest drives the dispatcher
+ * directly with a kernel-stack `regs` (CS=0) and kernel-address buffers -- is
+ * not crossing the user/kernel boundary, so its pointers are legitimately
+ * kernel-space and must not be EFAULT'd.  syscall_dispatch sets this from
+ * (regs->cs & 3) == 3 around each call.  Default 1 = secure.  Mirrors Linux's
+ * uaccess_kernel()/set_fs(KERNEL_DS) distinction. */
+static int s_uaccess_enforce = 1;
+
+/* Pure range check: [base, base+len) is non-NULL, doesn't wrap, and lies wholly
+ * below the kernel boundary.  Rejects any kernel pointer without a PD walk. */
+static int access_ok(uint32_t base, uint32_t len)
+{
+    if (!s_uaccess_enforce) return 1;        /* trusted in-kernel caller */
+    if (len == 0)            return 1;       /* zero-length is always fine */
+    uint32_t end = base + len;
+    if (end < base)          return 0;       /* address-space wrap */
+    if (base == 0)           return 0;       /* NULL page */
+    if (end > USER_ADDR_MAX) return 0;       /* runs into kernel space */
+    return 1;
+}
+
+/* Full validation for an in-place kernel dereference of [base, base+len):
+ * access_ok range plus every page either already mapped user-accessible or in a
+ * reserved lazy window the #PF handler will service.  This is the gate a
+ * syscall must pass before reading or writing a user buffer/struct directly. */
+static int user_ok(uint32_t base, uint32_t len)
+{
+    if (!s_uaccess_enforce) return 1;        /* trusted in-kernel caller */
+    if (!access_ok(base, len))
+        return 0;
+    if (len == 0)
+        return 1;
+    task_t *t = task_current();
+    if (!t || !t->page_dir)
+        return 0;
+    uint32_t *pd   = t->page_dir;
+    uint32_t  end  = base + len;
+    uint32_t  brk0 = t->user_brk_base, brk1 = t->user_brk;
+    uint32_t  mm1  = t->mmap_next;
+    for (uint32_t a = base & ~0xFFFu; a < end; a += 0x1000u) {
+        /* Reserved-but-lazy pages fault in on touch -- accept (the kernel
+         * access below will trip the anon handler, not panic). */
+        if (brk1 && a >= brk0 && a < brk1)               continue;
+        if (mm1  && a >= USER_MMAP_BASE && a < mm1)       continue;
+        uint32_t pde = pd[a >> 22];
+        if (!(pde & 0x1u) || !(pde & 0x4u))               /* present + user */
+            return 0;
+        if (pde & 0x80u)                                   /* 4 MiB: PDE governs */
+            continue;
+        uint32_t *pt  = (uint32_t *)(pde & ~0xFFFu);
+        uint32_t  pte = pt[(a >> 12) & 0x3FFu];
+        if (!(pte & 0x1u) || !(pte & 0x4u))
+            return 0;
+    }
+    return 1;
+}
+
+/* Validate a NUL-terminated user string starting at usrc, scanning at most
+ * `cap` bytes.  Walks page by page so an unmapped/kernel page is rejected
+ * before the kernel ever reads it (paths reach deep into the VFS in place, so
+ * we validate rather than copy).  Returns 1 if a terminator is found within a
+ * safe span, 0 (-> -EFAULT) otherwise.  cap bounds runaway scans (VFS_PATH_MAX
+ * is the natural ceiling for the path/name args). */
+static int user_str_ok(uint32_t usrc, uint32_t cap)
+{
+    if (!s_uaccess_enforce) return 1;        /* trusted in-kernel caller */
+    if (usrc == 0 || usrc >= USER_ADDR_MAX)
+        return 0;
+    for (uint32_t i = 0; i < cap; i++) {
+        uint32_t a = usrc + i;
+        if (a >= USER_ADDR_MAX)
+            return 0;
+        /* Validate the page once, as each new page is entered. */
+        if (i == 0 || (a & 0xFFFu) == 0) {
+            if (!user_ok(a, 1))
+                return 0;
+        }
+        if (*(const char *)(uintptr_t)a == '\0')
+            return 1;
+    }
+    return 0;                                /* no terminator within cap */
+}
+
 /* k_iovec: the Linux i386 `struct iovec` (8 bytes: ptr + size).  Used by writev. */
 struct k_iovec { uint32_t iov_base; uint32_t iov_len; };
 
@@ -324,6 +430,8 @@ struct k_iovec { uint32_t iov_base; uint32_t iov_len; };
 static long syscall_fd_write(int fd, const char *buf, uint32_t len)
 {
     if (!buf) return -1;
+    /* Reject a kernel/wild source pointer before reading it in ring 0. */
+    if (!user_ok((uint32_t)(uintptr_t)buf, len)) return -14;   /* -EFAULT */
     task_t     *cur = task_current();
     fd_entry_t *e   = fd_get(cur ? cur->fd_table : NULL, fd);
     if (!e) return -1;
@@ -456,6 +564,9 @@ static void syscall_dispatch_inner(registers_t *regs)
 
         task_t *me = task_current();
         if (!me) { regs->eax = (uint32_t)-1; break; }
+        if (ustatus && !user_ok((uint32_t)(uintptr_t)ustatus, sizeof(int))) {
+            regs->eax = SYS_EFAULT; break;
+        }
 
         for (;;) {
             int has_children = 0;
@@ -579,7 +690,7 @@ static void syscall_dispatch_inner(registers_t *regs)
         char *const *uargv = (char *const *)(uintptr_t)regs->ecx;
         /* envp deliberately ignored: Makar has no environment yet. */
 
-        if (!upath) { regs->eax = (uint32_t)-14; break; }   /* -EFAULT */
+        if (!user_str_ok((uint32_t)(uintptr_t)upath, 256)) { regs->eax = SYS_EFAULT; break; }
 
         /* Serialise execve so the shared argv scratch below is safe under
          * preemptible syscalls.  elf_exec releases the lock once argv is packed
@@ -603,8 +714,12 @@ static void syscall_dispatch_inner(registers_t *regs)
         int kargc = 0;
         if (uargv) {
             for (; kargc < EXECVE_MAX_ARGC; kargc++) {
+                if (!user_ok((uint32_t)(uintptr_t)&uargv[kargc], sizeof(char *)))
+                    break;
                 const char *us = uargv[kargc];
                 if (!us) break;
+                if (!user_str_ok((uint32_t)(uintptr_t)us, EXECVE_ARG_MAX))
+                    break;
                 char *dst = s_argbuf + kargc * EXECVE_ARG_MAX;
                 size_t i = 0;
                 while (us[i] && i < EXECVE_ARG_MAX - 1) { dst[i] = us[i]; i++; }
@@ -735,6 +850,7 @@ static void syscall_dispatch_inner(registers_t *regs)
         uint32_t len = regs->edx;
 
         if (!buf || len == 0) { regs->eax = 0; break; }
+        if (!user_ok((uint32_t)(uintptr_t)buf, len)) { regs->eax = SYS_EFAULT; break; }
 
         task_t     *cur = task_current();
         fd_entry_t *e   = fd_get(cur ? cur->fd_table : NULL, fd);
@@ -854,6 +970,9 @@ static void syscall_dispatch_inner(registers_t *regs)
         const struct k_iovec *iov = (const struct k_iovec *)(uintptr_t)regs->ecx;
         int  iovcnt = (int)regs->edx;
         if (!iov || iovcnt < 0) { regs->eax = (uint32_t)-1; break; }
+        if (!user_ok((uint32_t)(uintptr_t)iov, (uint32_t)iovcnt * sizeof(struct k_iovec))) {
+            regs->eax = SYS_EFAULT; break;
+        }
         long total = 0;
         for (int i = 0; i < iovcnt; i++) {
             const char *base = (const char *)(uintptr_t)iov[i].iov_base;
@@ -933,6 +1052,7 @@ static void syscall_dispatch_inner(registers_t *regs)
         char     *buf  = (char *)(uintptr_t)regs->ebx;
         uint32_t  size = regs->ecx;
         if (!buf || size == 0) { regs->eax = (uint32_t)-1; break; }
+        if (!user_ok((uint32_t)(uintptr_t)buf, size)) { regs->eax = SYS_EFAULT; break; }
         const char *cwd = vfs_getcwd();
         uint32_t    cl  = (uint32_t)strlen(cwd);
         if (cl + 1 > size) { regs->eax = (uint32_t)-1; break; }
@@ -950,7 +1070,7 @@ static void syscall_dispatch_inner(registers_t *regs)
      * ------------------------------------------------------------------ */
     case SYS_CHDIR: {
         const char *path = (const char *)(uintptr_t)regs->ebx;
-        if (!path) { regs->eax = (uint32_t)-1; break; }
+        if (!user_str_ok((uint32_t)(uintptr_t)path, VFS_PATH_MAX)) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (uint32_t)(vfs_cd(path) == 0 ? 0 : -1);
         break;
     }
@@ -979,6 +1099,8 @@ static void syscall_dispatch_inner(registers_t *regs)
     case SYS_LOGIN: {
         const char *user = (const char *)(uintptr_t)regs->ebx;
         const char *pass = (const char *)(uintptr_t)regs->ecx;
+        if (!user_str_ok((uint32_t)(uintptr_t)user, 256) ||
+            !user_str_ok((uint32_t)(uintptr_t)pass, 256)) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (uint32_t)(auth_login(user, pass) == 0 ? 0 : -1);
         break;
     }
@@ -994,6 +1116,8 @@ static void syscall_dispatch_inner(registers_t *regs)
         if (!oldp || !newp || !user || !user[0] || !vfs_rootfs_is_disk()) {
             regs->eax = (uint32_t)-1; break;
         }
+        if (!user_str_ok((uint32_t)(uintptr_t)oldp, 256) ||
+            !user_str_ok((uint32_t)(uintptr_t)newp, 256)) { regs->eax = SYS_EFAULT; break; }
         if (shadow_verify(user, oldp) != 0) { regs->eax = (uint32_t)-2; break; }
         regs->eax = (uint32_t)(shadow_set_password(user, newp) == 0 ? 0 : -1);
         break;
@@ -1035,7 +1159,7 @@ static void syscall_dispatch_inner(registers_t *regs)
      * ------------------------------------------------------------------ */
     case SYS_GETTIMEOFDAY: {
         struct timeval *tv = (struct timeval *)(uintptr_t)regs->ebx;
-        if (!tv) { regs->eax = (uint32_t)-1; break; }
+        if (!user_ok((uint32_t)(uintptr_t)tv, sizeof(struct timeval))) { regs->eax = SYS_EFAULT; break; }
         uint32_t secs = 0;
         if (rtc_unix_time(&secs) != 0) { regs->eax = (uint32_t)-1; break; }
         tv->tv_sec  = (int32_t)secs;
@@ -1075,7 +1199,7 @@ static void syscall_dispatch_inner(registers_t *regs)
     case SYS_CLOCK_GETTIME: {
         int clk = (int)regs->ebx;
         struct timespec *ts = (struct timespec *)(uintptr_t)regs->ecx;
-        if (!ts) { regs->eax = (uint32_t)-1; break; }
+        if (!user_ok((uint32_t)(uintptr_t)ts, sizeof(struct timespec))) { regs->eax = SYS_EFAULT; break; }
         if (clk == CLOCK_REALTIME) {
             uint32_t secs = 0;
             if (rtc_unix_time(&secs) != 0) { regs->eax = (uint32_t)-1; break; }
@@ -1272,6 +1396,7 @@ static void syscall_dispatch_inner(registers_t *regs)
         char *buf = (char *)regs->ebx;
         uint32_t size = regs->ecx;
         if (!buf || size == 0) { regs->eax = (uint32_t)-1; break; }
+        if (!user_ok((uint32_t)(uintptr_t)buf, size)) { regs->eax = SYS_EFAULT; break; }
         const vid_driver_t *d = video_active();
         const char *nm = (d && d->name) ? d->name : "VGA";
         uint32_t i = 0;
@@ -1291,6 +1416,9 @@ static void syscall_dispatch_inner(registers_t *regs)
         const uint32_t *argb = (const uint32_t *)(uintptr_t)regs->ebx;
         int w  = (int)((regs->ecx >> 16) & 0xFFFFu), h  = (int)(regs->ecx & 0xFFFFu);
         int hx = (int)((regs->edx >> 16) & 0xFFFFu), hy = (int)(regs->edx & 0xFFFFu);
+        if (!user_ok((uint32_t)(uintptr_t)argb, (uint32_t)w * (uint32_t)h * 4u)) {
+            regs->eax = SYS_EFAULT; break;
+        }
         const vid_driver_t *d = video_active();
         regs->eax = (d && d->cursor_define)
                         ? (uint32_t)d->cursor_define(argb, w, h, hx, hy)
@@ -1315,6 +1443,7 @@ static void syscall_dispatch_inner(registers_t *regs)
         uint32_t    len = regs->ecx;
 
         if (!buf) { regs->eax = (uint32_t)-1; break; }
+        if (!user_ok((uint32_t)(uintptr_t)buf, len)) { regs->eax = SYS_EFAULT; break; }
 
         for (uint32_t i = 0; i < len; i++)
             Serial_WriteChar(buf[i]);
@@ -1335,14 +1464,10 @@ static void syscall_dispatch_inner(registers_t *regs)
         const char *path = (const char *)(uintptr_t)regs->ebx;
         uint32_t    flags = regs->ecx;
 
-        if (!path) { regs->eax = (uint32_t)-1; break; }
-        /* Reject paths that wouldn't fit in fd_entry_t.path[] -- otherwise
-         * close-flush would write back to the wrong (truncated) path. */
-        {
-            uint32_t n = 0;
-            while (n < VFS_PATH_MAX && path[n]) n++;
-            if (n >= VFS_PATH_MAX) { regs->eax = (uint32_t)-1; break; }
-        }
+        /* Validate + bound the path: rejects a kernel/wild pointer (EFAULT) and
+         * any path that wouldn't fit fd_entry_t.path[] (else close-flush would
+         * write back to the wrong truncated path). */
+        if (!user_str_ok((uint32_t)(uintptr_t)path, VFS_PATH_MAX)) { regs->eax = SYS_EFAULT; break; }
 
         task_t *cur = task_current();
         if (!cur || !cur->fd_table) { regs->eax = (uint32_t)-1; break; }
@@ -1486,6 +1611,7 @@ static void syscall_dispatch_inner(registers_t *regs)
         task_t *cur = task_current();
         fd_table_t *tbl = cur ? cur->fd_table : NULL;
         if (!pipefd || !tbl) { regs->eax = (uint32_t)-1; break; }
+        if (!user_ok((uint32_t)(uintptr_t)pipefd, 2 * sizeof(int))) { regs->eax = SYS_EFAULT; break; }
         int rfd = fd_alloc(tbl);
         if (rfd < 0) { regs->eax = (uint32_t)-1; break; }
         /* Mark the reader slot allocated (so fd_alloc finds a different
@@ -1780,6 +1906,7 @@ static void syscall_dispatch_inner(registers_t *regs)
         uint32_t *u = (uint32_t *)(uintptr_t)regs->ebx;
         task_t   *t = task_current();
         if (!u || !t) { regs->eax = (uint32_t)-1; break; }
+        if (!user_ok((uint32_t)(uintptr_t)u, 4 * sizeof(uint32_t))) { regs->eax = SYS_EFAULT; break; }
 
         uint32_t entry = u[0];
         uint32_t base  = u[1];
@@ -1876,7 +2003,8 @@ static void syscall_dispatch_inner(registers_t *regs)
     case SYS_STAT: {
         const char  *upath = (const char *)(uintptr_t)regs->ebx;
         struct stat *ust   = (struct stat *)(uintptr_t)regs->ecx;
-        if (!upath || !ust) { regs->eax = (uint32_t)-1; break; }
+        if (!user_str_ok((uint32_t)(uintptr_t)upath, VFS_PATH_MAX) ||
+            !user_ok((uint32_t)(uintptr_t)ust, sizeof(struct stat))) { regs->eax = SYS_EFAULT; break; }
         vfs_stat_info_t si;
         if (vfs_stat(upath, &si) != 0) { regs->eax = (uint32_t)-1; break; }
         struct stat st; memset(&st, 0, sizeof st);
@@ -1910,7 +2038,8 @@ static void syscall_dispatch_inner(registers_t *regs)
         const char    *path = (const char *)(uintptr_t)regs->ebx;
         uint32_t       idx  = regs->ecx;
         struct dirent *ude  = (struct dirent *)(uintptr_t)regs->edx;
-        if (!path || !ude) { regs->eax = (uint32_t)-1; break; }
+        if (!user_str_ok((uint32_t)(uintptr_t)path, VFS_PATH_MAX) ||
+            !user_ok((uint32_t)(uintptr_t)ude, sizeof(struct dirent))) { regs->eax = SYS_EFAULT; break; }
         struct rd_ctx ctx = { idx, 0, 0, {0}, 0 };
         if (vfs_complete(path, "", readdir_collect_cb, &ctx) != 0) {
             regs->eax = (uint32_t)-1; break;
@@ -1931,7 +2060,7 @@ static void syscall_dispatch_inner(registers_t *regs)
     case SYS_FSTAT: {
         int          fd  = (int)regs->ebx;
         struct stat *ust = (struct stat *)(uintptr_t)regs->ecx;
-        if (!ust) { regs->eax = (uint32_t)-1; break; }
+        if (!user_ok((uint32_t)(uintptr_t)ust, sizeof(struct stat))) { regs->eax = SYS_EFAULT; break; }
         task_t *cur = task_current();
         fd_entry_t *e = fd_get(cur ? cur->fd_table : NULL, fd);
         if (!e) { regs->eax = (uint32_t)-1; break; }
@@ -1977,6 +2106,7 @@ static void syscall_dispatch_inner(registers_t *regs)
         const tty_cell_t *cells = (const tty_cell_t *)(uintptr_t)regs->ebx;
         uint32_t n = regs->ecx;
         if (!cells || n == 0) { regs->eax = 0; break; }
+        if (!user_ok((uint32_t)(uintptr_t)cells, n * sizeof(tty_cell_t))) { regs->eax = SYS_EFAULT; break; }
 
         /* GUI terminal: no live VT + piped stdout -> emit ANSI for mxterm. */
         { fd_entry_t *abr = ansi_bridge_fd();
@@ -2156,7 +2286,8 @@ static void syscall_dispatch_inner(registers_t *regs)
         const char *path = (const char *)(uintptr_t)regs->ebx;
         const void *buf  = (const void *)(uintptr_t)regs->ecx;
         uint32_t    len  = regs->edx;
-        if (!path || !buf) { regs->eax = (uint32_t)-1; break; }
+        if (!user_str_ok((uint32_t)(uintptr_t)path, VFS_PATH_MAX) ||
+            !user_ok((uint32_t)(uintptr_t)buf, len)) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (vfs_write_file(path, buf, len) == 0) ? 0 : (uint32_t)-1;
         break;
     }
@@ -2171,6 +2302,8 @@ static void syscall_dispatch_inner(registers_t *regs)
         char *buf        = (char *)(uintptr_t)regs->ecx;
         uint32_t bufsz   = regs->edx;
         if (!path || !buf || bufsz == 0) { regs->eax = 0; break; }
+        if (!user_str_ok((uint32_t)(uintptr_t)path, VFS_PATH_MAX) ||
+            !user_ok((uint32_t)(uintptr_t)buf, bufsz)) { regs->eax = SYS_EFAULT; break; }
         ls_ctx_t ctx = { buf, bufsz, 0 };
         buf[0] = '\0';
         vfs_complete(path, "", ls_cb, &ctx);
@@ -2187,6 +2320,7 @@ static void syscall_dispatch_inner(registers_t *regs)
         char    *buf   = (char *)(uintptr_t)regs->ebx;
         uint32_t cap   = regs->ecx;
         if (!buf || cap == 0) { regs->eax = 0; break; }
+        if (!user_ok((uint32_t)(uintptr_t)buf, cap)) { regs->eax = SYS_EFAULT; break; }
         uint32_t off = 0;
         for (int i = 0; i < IDE_MAX_DRIVES; i++) {
             const ide_drive_t *d = ide_get_drive((uint8_t)i);
@@ -2225,6 +2359,7 @@ static void syscall_dispatch_inner(registers_t *regs)
         char    *buf = (char *)(uintptr_t)regs->ebx;
         uint32_t cap = regs->ecx;
         if (!buf || cap == 0) { regs->eax = 0; break; }
+        if (!user_ok((uint32_t)(uintptr_t)buf, cap)) { regs->eax = SYS_EFAULT; break; }
         uint32_t off = 0;
 
 #define PCI_APPEND(s) do { for (const char *_p = (s); *_p && off < cap - 2; _p++) buf[off++] = *_p; } while(0)
@@ -2279,6 +2414,7 @@ static void syscall_dispatch_inner(registers_t *regs)
     case SYS_NET_INFO: {
         char    *buf = (char *)(uintptr_t)regs->ebx;
         uint32_t cap = regs->ecx;
+        if (!user_ok((uint32_t)(uintptr_t)buf, cap)) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (uint32_t)net_lwip_info(buf, cap);
         break;
     }
@@ -2295,7 +2431,7 @@ static void syscall_dispatch_inner(registers_t *regs)
     /* SYS_NET_CONFIG(286): EBX = net_cfg_t * -- DHCP or a static IPv4 config. */
     case SYS_NET_CONFIG: {
         const net_cfg_t *cfg = (const net_cfg_t *)(uintptr_t)regs->ebx;
-        if (!cfg) { regs->eax = (uint32_t)-1; break; }
+        if (!user_ok((uint32_t)(uintptr_t)cfg, sizeof(net_cfg_t))) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (uint32_t)net_lwip_config(cfg->dhcp, cfg->ip, cfg->mask, cfg->gw, cfg->dns);
         break;
     }
@@ -2309,7 +2445,8 @@ static void syscall_dispatch_inner(registers_t *regs)
     case SYS_WGET: {
         const char *url = (const char *)(uintptr_t)regs->ebx;
         const char *outpath = (const char *)(uintptr_t)regs->ecx;
-        if (!url || !outpath) { regs->eax = (uint32_t)-1; break; }
+        if (!user_str_ok((uint32_t)(uintptr_t)url, 2048) ||
+            !user_str_ok((uint32_t)(uintptr_t)outpath, VFS_PATH_MAX)) { regs->eax = SYS_EFAULT; break; }
         uint8_t *body = 0;
         uint32_t len = 0;
         int status = 0;
@@ -2362,6 +2499,7 @@ static void syscall_dispatch_inner(registers_t *regs)
         task_t     *cur = task_current();
         fd_entry_t *e   = fd_get(cur ? cur->fd_table : NULL, fd);
         if (!e || e->kind != FD_KIND_SOCKET || !sa) { regs->eax = (uint32_t)-1; break; }
+        if (!user_ok((uint32_t)(uintptr_t)sa, sizeof(struct sockaddr_in))) { regs->eax = SYS_EFAULT; break; }
         if (sa->sin_family != AF_INET) { regs->eax = (uint32_t)-1; break; }
         /* sin_addr is network byte order: on little-endian x86 the in-memory
          * octet order [a,b,c,d] reads back as byte i = (s_addr >> 8*i). */
@@ -2383,7 +2521,8 @@ static void syscall_dispatch_inner(registers_t *regs)
     case SYS_NET_RESOLVE: {
         const char *host  = (const char *)(uintptr_t)regs->ebx;
         uint8_t    *ipout = (uint8_t *)(uintptr_t)regs->ecx;
-        if (!host || !ipout) { regs->eax = (uint32_t)-1; break; }
+        if (!user_str_ok((uint32_t)(uintptr_t)host, 256) ||
+            !user_ok((uint32_t)(uintptr_t)ipout, 4)) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (uint32_t)net_lwip_resolve(host, ipout, 400);
         break;
     }
@@ -2398,6 +2537,7 @@ static void syscall_dispatch_inner(registers_t *regs)
         const char *buf = (const char *)(uintptr_t)regs->ebx;
         uint32_t    len = regs->ecx;
         if (len > (1u << 20)) len = 1u << 20;
+        if (buf && len && !user_ok((uint32_t)(uintptr_t)buf, len)) { regs->eax = SYS_EFAULT; break; }
         if (len > g_clip_cap) {
             char *p = (char *)krealloc(g_clip, len ? len : 1);
             if (!p) { regs->eax = (uint32_t)-1; break; }
@@ -2412,6 +2552,7 @@ static void syscall_dispatch_inner(registers_t *regs)
         char    *buf = (char *)(uintptr_t)regs->ebx;
         uint32_t cap = regs->ecx;
         uint32_t n   = (g_clip_len < cap) ? g_clip_len : cap;
+        if (buf && n && !user_ok((uint32_t)(uintptr_t)buf, n)) { regs->eax = SYS_EFAULT; break; }
         if (buf && n) memcpy(buf, g_clip, n);
         regs->eax = g_clip_len;
         break;
@@ -2425,7 +2566,7 @@ static void syscall_dispatch_inner(registers_t *regs)
     case SYS_DELETE_FILE:
     case SYS_UNLINK: {
         const char *path = (const char *)(uintptr_t)regs->ebx;
-        if (!path) { regs->eax = (uint32_t)-1; break; }
+        if (!user_str_ok((uint32_t)(uintptr_t)path, VFS_PATH_MAX)) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (vfs_delete_file(path) == 0) ? 0 : (uint32_t)-1;
         break;
     }
@@ -2439,7 +2580,8 @@ static void syscall_dispatch_inner(registers_t *regs)
     case SYS_RENAME: {
         const char *old_path = (const char *)(uintptr_t)regs->ebx;
         const char *new_path = (const char *)(uintptr_t)regs->ecx;
-        if (!old_path || !new_path) { regs->eax = (uint32_t)-1; break; }
+        if (!user_str_ok((uint32_t)(uintptr_t)old_path, VFS_PATH_MAX) ||
+            !user_str_ok((uint32_t)(uintptr_t)new_path, VFS_PATH_MAX)) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (vfs_rename(old_path, new_path) == 0) ? 0 : (uint32_t)-1;
         break;
     }
@@ -2452,7 +2594,7 @@ static void syscall_dispatch_inner(registers_t *regs)
     case SYS_DELETE_DIR:
     case SYS_RMDIR: {
         const char *path = (const char *)(uintptr_t)regs->ebx;
-        if (!path) { regs->eax = (uint32_t)-1; break; }
+        if (!user_str_ok((uint32_t)(uintptr_t)path, VFS_PATH_MAX)) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (vfs_delete_dir(path) == 0) ? 0 : (uint32_t)-1;
         break;
     }
@@ -2464,7 +2606,7 @@ static void syscall_dispatch_inner(registers_t *regs)
      * ------------------------------------------------------------------ */
     case SYS_MKDIR: {
         const char *path = (const char *)(uintptr_t)regs->ebx;
-        if (!path) { regs->eax = (uint32_t)-1; break; }
+        if (!user_str_ok((uint32_t)(uintptr_t)path, VFS_PATH_MAX)) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (vfs_mkdir(path) == 0) ? 0 : (uint32_t)-1;
         break;
     }
@@ -2637,16 +2779,19 @@ static void syscall_dispatch_inner(registers_t *regs)
     }
     case SYS_SETMODE: {
         if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
+        if (!user_str_ok((uint32_t)regs->ebx, 64)) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (uint32_t)admin_setmode((const char *)regs->ebx);
         break;
     }
     case SYS_FGCOL: {
         if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
+        if (!user_str_ok((uint32_t)regs->ebx, 64)) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (uint32_t)admin_fgcol((const char *)regs->ebx);
         break;
     }
     case SYS_BGCOL: {
         if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
+        if (!user_str_ok((uint32_t)regs->ebx, 64)) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (uint32_t)admin_bgcol((const char *)regs->ebx);
         break;
     }
@@ -2667,6 +2812,12 @@ static void syscall_dispatch_inner(registers_t *regs)
         if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
         int   cmd = (int)regs->ebx;
         void *ptr = (void *)(uintptr_t)regs->ecx;
+        /* Validate the caller's struct/array against the size the matching cmd
+         * touches before the install engine reads or writes it in ring 0. */
+        uint32_t need = (cmd == 1) ? sizeof(install_progress_t)
+                      : (cmd == 3) ? (uint32_t)INSTALL_MAX_DRIVES * sizeof(install_drive_t)
+                      : sizeof(install_params_t);
+        if (!user_ok((uint32_t)(uintptr_t)ptr, need)) { regs->eax = SYS_EFAULT; break; }
         /* NOTE: the install engine runs WITHOUT the FS big-lock held across the
          * step.  Holding vfs_fs_lock across a whole begin/step (the engine is
          * preemptible) stalled the copy, so we keep the v0.10.0 behaviour: the
@@ -2683,17 +2834,22 @@ static void syscall_dispatch_inner(registers_t *regs)
     }
     case SYS_MOUNT: {
         if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
+        if (!user_str_ok((uint32_t)regs->ebx, VFS_PATH_MAX) ||
+            !user_str_ok((uint32_t)regs->ecx, VFS_PATH_MAX)) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (uint32_t)admin_mount((const char *)regs->ebx,
                                           (const char *)regs->ecx);
         break;
     }
     case SYS_UMOUNT: {
         if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
+        if (!user_str_ok((uint32_t)regs->ebx, VFS_PATH_MAX)) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (uint32_t)admin_umount((const char *)regs->ebx);
         break;
     }
     case SYS_MKFS: {
         if (!task_is_admin(NULL)) { regs->eax = (uint32_t)-1; break; }
+        if (!user_str_ok((uint32_t)regs->ebx, VFS_PATH_MAX) ||
+            !user_str_ok((uint32_t)regs->ecx, 64)) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (uint32_t)admin_mkfs((const char *)regs->ebx,
                                          (const char *)regs->ecx);
         break;
@@ -2768,6 +2924,7 @@ static void syscall_dispatch_inner(registers_t *regs)
         char *buf = (char *)regs->ebx;
         uint32_t size = regs->ecx;
         if (!buf || size == 0) { regs->eax = (uint32_t)-1; break; }
+        if (!user_ok((uint32_t)(uintptr_t)buf, size)) { regs->eax = SYS_EFAULT; break; }
         /* Best-effort read of /etc/hostname; falls back to "makar".
          * No newline trimming for the read — but we strip the trailing
          * \n if the file ends with one (common case for hand-edited
@@ -2802,6 +2959,7 @@ static void syscall_dispatch_inner(registers_t *regs)
 
     case SYS_VT_OPEN_APP: {
         const char *path = (const char *)(uintptr_t)regs->ebx;
+        if (!user_str_ok((uint32_t)(uintptr_t)path, VFS_PATH_MAX)) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (uint32_t)vtty_open_app(path);
         break;
     }
@@ -2810,12 +2968,14 @@ static void syscall_dispatch_inner(registers_t *regs)
         char *buf = (char *)regs->ebx;
         int   cap = (int)regs->ecx;
         if (!buf || cap <= 0) { regs->eax = 0; break; }
+        if (!user_ok((uint32_t)(uintptr_t)buf, (uint32_t)cap)) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (uint32_t)vtty_take_app_request(buf, cap);
         break;
     }
 
     case SYS_VT_SETNAME: {
         const char *name = (const char *)(uintptr_t)regs->ebx;
+        if (!user_str_ok((uint32_t)(uintptr_t)name, 256)) { regs->eax = SYS_EFAULT; break; }
         task_t *me = task_current();
         if (me && me->tty >= 0)
             vtty_set_name(me->tty, name);
@@ -2826,6 +2986,8 @@ static void syscall_dispatch_inner(registers_t *regs)
     case SYS_STATFS: {
         uint32_t *total = (uint32_t *)(uintptr_t)regs->ebx;
         uint32_t *freeb = (uint32_t *)(uintptr_t)regs->ecx;
+        if (!user_ok((uint32_t)(uintptr_t)total, sizeof(uint32_t)) ||
+            !user_ok((uint32_t)(uintptr_t)freeb, sizeof(uint32_t))) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (uint32_t)vfs_statfs(total, freeb);
         break;
     }
@@ -2835,6 +2997,7 @@ static void syscall_dispatch_inner(registers_t *regs)
         char *buf  = (char *)regs->ecx;
         int   cap  = (int)regs->edx;
         if (!buf || cap <= 0) { regs->eax = (uint32_t)-1; break; }
+        if (!user_ok((uint32_t)(uintptr_t)buf, (uint32_t)cap)) { regs->eax = SYS_EFAULT; break; }
         const char *nm = vtty_get_name(slot);
         int i = 0;
         for (; nm[i] && i < cap - 1; i++) buf[i] = nm[i];
@@ -2847,6 +3010,7 @@ static void syscall_dispatch_inner(registers_t *regs)
         char *buf = (char *)regs->ebx;
         uint32_t size = regs->ecx;
         if (!buf || size == 0) { regs->eax = (uint32_t)-1; break; }
+        if (!user_ok((uint32_t)(uintptr_t)buf, size)) { regs->eax = SYS_EFAULT; break; }
         const char *u = auth_current_user();
         if (!u) u = "user";
         uint32_t slen = 0;
@@ -2859,21 +3023,25 @@ static void syscall_dispatch_inner(registers_t *regs)
     }
 
     case SYS_IPC_SEND:
+        if (!user_ok((uint32_t)regs->ecx, sizeof(ipc_msg_t))) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (uint32_t)ipc_send((int)regs->ebx,
                                        (const ipc_msg_t *)(uintptr_t)regs->ecx);
         break;
 
     case SYS_IPC_RECV:
+        if (!user_ok((uint32_t)regs->ecx, sizeof(ipc_msg_t))) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (uint32_t)ipc_recv((int)regs->ebx,
                                        (ipc_msg_t *)(uintptr_t)regs->ecx);
         break;
 
     case SYS_IPC_SENDREC:
+        if (!user_ok((uint32_t)regs->ecx, sizeof(ipc_msg_t))) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (uint32_t)ipc_sendrec((int)regs->ebx,
                                           (ipc_msg_t *)(uintptr_t)regs->ecx);
         break;
 
     case SYS_IPC_NBRECV:
+        if (!user_ok((uint32_t)regs->ecx, sizeof(ipc_msg_t))) { regs->eax = SYS_EFAULT; break; }
         regs->eax = (uint32_t)ipc_nbrecv((int)regs->ebx,
                                          (ipc_msg_t *)(uintptr_t)regs->ecx);
         break;
@@ -2931,7 +3099,13 @@ void syscall_dispatch(registers_t *regs)
     uint32_t fl;
     __asm__ volatile("pushfl; popl %0" : "=r"(fl) :: "memory");
     if (g_preempt_enabled) __asm__ volatile("sti");
+    /* Enforce user-pointer validation only for real ring-3 entries; a kernel
+     * caller (ktest) drives this with CS=0 and trusted kernel buffers.  Saved/
+     * restored so a preempting syscall can't leak its setting into ours. */
+    int prev_enforce = s_uaccess_enforce;
+    s_uaccess_enforce = ((regs->cs & 3) == 3);
     syscall_dispatch_inner(regs);
+    s_uaccess_enforce = prev_enforce;
     __asm__ volatile("pushl %0; popfl" :: "r"(fl) : "memory", "cc");
 }
 
